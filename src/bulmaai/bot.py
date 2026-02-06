@@ -1,0 +1,62 @@
+﻿import logging
+
+import discord
+from dotenv import load_dotenv
+
+from .config import Settings, load_settings
+from .logging_setup import setup_logging
+
+log = logging.getLogger("bulmaai")
+
+
+class BulmaAI(discord.Bot):
+    """"Main bot class for BulmaAI."""
+
+
+    def __init__(self, settings: Settings):
+        intents = discord.Intents.default()
+
+        # debug_guilds for testing, remove when ready for production. This makes command registration much faster.
+        debug_guilds = [settings.dev_guild_id] if settings.dev_guild_id else None
+
+        super().__init__(
+            intents=intents,
+            debug_guilds=debug_guilds,
+            auto_sync_commands=True,  # Default is True, but being explicit is nice.
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+        self.settings = settings
+
+    def load_pr_extensions(self) -> None:
+        for ext in self.settings.initial_extensions:
+            try:
+                self.load_extension(ext)
+                log.info("Loaded extension: %s", ext)
+            except Exception:
+                log.exception("Failed to load extension: %s", ext)
+
+    async def on_ready(self) -> None:
+        log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
+        log.info("Guilds: %d", len(self.guilds))
+
+    async def on_application_command_error(
+        self,
+        ctx: discord.ApplicationContext,
+        error: Exception,
+    ) -> None:
+        log.exception("Application command error: %s", error)
+        if ctx.response.is_done():
+            await ctx.followup.send("Something went wrong.", ephemeral=True)
+        else:
+            await ctx.respond("Something went wrong.", ephemeral=True)
+
+
+def run() -> None:
+    load_dotenv()
+    settings = load_settings()
+    setup_logging(settings.log_level)
+
+    bot = BulmaAI(settings)
+    bot.load_pr_extensions()
+    bot.run(settings.discord_token)

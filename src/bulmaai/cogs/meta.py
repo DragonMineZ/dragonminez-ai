@@ -20,7 +20,7 @@ class MetaCog(discord.Cog):
         await ctx.respond("Pong!")
         end_time = time.perf_counter()
         latency = (end_time - start_time) * 1000  # Convert to milliseconds
-        await ctx.edit(f"Pong! Latency: {latency:.2f} ms")
+        await ctx.edit(content=f"Pong! Latency: {latency:.2f} ms")
 
     @slash_command(name="about", description="Get information about the bot.")
     async def about(self, ctx: discord.ApplicationContext):

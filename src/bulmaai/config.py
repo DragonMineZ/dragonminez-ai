@@ -1,4 +1,4 @@
-﻿import os
+import os
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -20,7 +20,9 @@ def _get_env(name: str, default: str | None = None) -> str | None:
 def load_settings() -> Settings:
     token = _get_env("DISCORD_TOKEN")
     if not token:
-        raise RuntimeError("DISCORD_TOKEN is missing. Copy .env.example to .env and fill it in.")
+        raise RuntimeError(
+            "DISCORD_TOKEN is missing. Copy .env.example to .env and fill it in."
+        )
 
     dev_guild_raw = _get_env("DEV_GUILD_ID")
     dev_guild_id = int(dev_guild_raw) if dev_guild_raw else None

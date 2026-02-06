@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 
 import discord
 from dotenv import load_dotenv
@@ -10,7 +10,7 @@ log = logging.getLogger("bulmaai")
 
 
 class BulmaAI(discord.Bot):
-    """"Main bot class for BulmaAI."""
+    """Main bot class for BulmaAI."""
 
 
     def __init__(self, settings: Settings):

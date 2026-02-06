@@ -26,11 +26,11 @@ class MetaCog(discord.Cog):
     async def about(self, ctx: discord.ApplicationContext):
         embed = discord.Embed(
             title="About BulmaAI",
-            description="BulmaAI is a Discord bot that helps manage and moderate your server.",
+            description="BulmaAI is a Discord bot, yay.",
             color=discord.Color.blue(),
         )
         embed.add_field(name="Version", value="1.0.0", inline=False)
-        embed.add_field(name="Author", value="BulmaAI Team", inline=False)
+        embed.add_field(name="Author", value="DragonMineZ Team", inline=False)
         await ctx.respond(embed=embed)
 
 

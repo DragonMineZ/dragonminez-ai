@@ -8,6 +8,8 @@ class Settings:
     dev_guild_id: int | None
     log_level: str
     initial_extensions: Sequence[str]
+    openai_key: str
+    openai_model: str
 
 def _get_env(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name, default)
@@ -19,6 +21,8 @@ def _get_env(name: str, default: str | None = None) -> str | None:
 
 def load_settings() -> Settings:
     token = _get_env("DISCORD_TOKEN")
+    openai_key = _get_env("OPENAI_KEY")
+
     if not token:
         raise RuntimeError(
             "DISCORD_TOKEN is missing. Copy .env.example to .env and fill it in."
@@ -31,13 +35,22 @@ def load_settings() -> Settings:
 
     initial_extensions = (
         "bulmaai.cogs.meta",
-        "bulmaai.cogs.faq",
-        "bulmaai.cogs.admin",
+        # "bulmaai.cogs.faq", TODO: Re-enable when FAQ & Admin have code.
+        # "bulmaai.cogs.admin",
     )
+
+    if not openai_key:
+        raise RuntimeError(
+            "OPENAI_KEY is missing. Talk to Bruno to fix."
+        )
+
+    openai_model = _get_env("OPENAI_MODEL")
 
     return Settings(
         discord_token=token,
         dev_guild_id=dev_guild_id,
         log_level=log_level,
         initial_extensions=initial_extensions,
+        openai_key=openai_key,
+        openai_model=openai_model,
     )

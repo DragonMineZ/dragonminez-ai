@@ -1,0 +1,3 @@
+"""
+Cogs (extensions) for BulmaAI.
+"""

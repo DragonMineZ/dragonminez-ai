@@ -52,8 +52,8 @@ class MetaCog(discord.Cog):
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Try to always answer questions in 1900 characters or less."
-            }, # TODO: Adjust system prompt as needed.
+                "content": "You are a helpful assistant. Try to always answer questions in 1900 characters or less.",
+            },  # TODO: Adjust system prompt as needed.
             {"role": "user", "content": question},
         ]
 

@@ -68,7 +68,8 @@ class LLMClient:
         text_parts: list[str] = []
         for msg in message_items:
             text_blocks = [
-                block for block in getattr(msg, "content", [])
+                block
+                for block in getattr(msg, "content", [])
                 if getattr(block, "type", None) == "output_text"
             ]
             for block in text_blocks:

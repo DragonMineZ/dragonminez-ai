@@ -10,6 +10,7 @@ from bulmaai.services.llm_client import llm_client
 
 log = logging.getLogger(__name__)
 
+
 class MetaCog(discord.Cog):
     """Meta (Utility) commands for the bot."""
 
@@ -42,14 +43,17 @@ class MetaCog(discord.Cog):
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def ai_test(
-            self,
-            ctx: discord.ApplicationContext,
-            question: str,
+        self,
+        ctx: discord.ApplicationContext,
+        question: str,
     ):
         await ctx.defer()
 
         messages = [
-            {"role": "system", "content": "You are a helpful assistant. Try to always answer questions in 1900 characters or less."}, # TODO: Adjust system prompt as needed.
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Try to always answer questions in 1900 characters or less."
+            }, # TODO: Adjust system prompt as needed.
             {"role": "user", "content": question},
         ]
 

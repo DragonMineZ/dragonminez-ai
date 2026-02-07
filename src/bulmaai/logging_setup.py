@@ -6,13 +6,13 @@ import colorlog
 def setup_logging(level: str = "INFO") -> None:
     handler = colorlog.StreamHandler(stream=sys.stdout)
     handler.setFormatter(colorlog.ColoredFormatter(
-        "%(log_color)s%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "bold_red",
+    "%(log_color)s%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    log_colors={
+        "DEBUG": "cyan",
+        "INFO": "white",
+        "WARNING": "yellow",
+        "ERROR": "red",
+        "CRITICAL": "bold_red",
         },
     ))
 

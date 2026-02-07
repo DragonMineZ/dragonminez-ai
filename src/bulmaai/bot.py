@@ -12,7 +12,6 @@ log = logging.getLogger("bulmaai")
 class BulmaAI(discord.Bot):
     """Main bot class for BulmaAI."""
 
-
     def __init__(self, settings: Settings):
         intents = discord.Intents.default()
 

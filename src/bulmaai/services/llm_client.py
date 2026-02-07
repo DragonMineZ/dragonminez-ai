@@ -20,10 +20,10 @@ class LLMClient:
         return self._model
 
     async def chat(
-            self,
-            messages: list[dict[str, str]],
-            *,
-            max_output_tokens: int = 1500,
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_output_tokens: int = 1500,
     ) -> str:
 
         input_items = []
@@ -31,7 +31,9 @@ class LLMClient:
             input_items.append(
                 {
                     "type": "message",
-                    "role": msg["role"],  # "user" | "assistant" | "system" | "developer"
+                    "role": msg[
+                        "role"
+                    ],  # "user" | "assistant" | "system" | "developer"
                     "content": [
                         {
                             "type": "input_text",
@@ -57,18 +59,16 @@ class LLMClient:
             raise RuntimeError("LLM response contained no output")
 
         message_items = [
-            item for item in response.output
-            if getattr(item, "type", None) == "message"
+            item for item in response.output if getattr(item, "type", None) == "message"
         ]
         if not message_items:
             log.error("OpenAI response contained no message output: %r", response)
             raise RuntimeError("LLM response contained no message output")
 
-        # Collect all output_text blocks from all message items, preserving order
         text_parts: list[str] = []
         for msg in message_items:
             text_blocks = [
-                block for block in getattr(msg, "content", [])  # type: ignore[arg-type]
+                block for block in getattr(msg, "content", [])
                 if getattr(block, "type", None) == "output_text"
             ]
             for block in text_blocks:
@@ -79,8 +79,12 @@ class LLMClient:
         content = "".join(text_parts)
 
         usage = getattr(response, "usage", None)
-        input_tokens = getattr(usage, "input_tokens", None) if usage is not None else None
-        output_tokens = getattr(usage, "output_tokens", None) if usage is not None else None
+        input_tokens = (
+            getattr(usage, "input_tokens", None) if usage is not None else None
+        )
+        output_tokens = (
+            getattr(usage, "output_tokens", None) if usage is not None else None
+        )
 
         log.info(
             "LLM call success | model=%s input_tokens=%s output_tokens=%s",
@@ -89,6 +93,7 @@ class LLMClient:
             output_tokens,
         )
         return content
+
 
 load_dotenv()
 settings = load_settings()

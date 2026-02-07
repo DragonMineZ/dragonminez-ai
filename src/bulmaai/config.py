@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Sequence
 
+
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
@@ -10,6 +11,7 @@ class Settings:
     initial_extensions: Sequence[str]
     openai_key: str
     openai_model: str
+
 
 def _get_env(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name, default)
@@ -40,9 +42,7 @@ def load_settings() -> Settings:
     )
 
     if not openai_key:
-        raise RuntimeError(
-            "OPENAI_KEY is missing. Talk to Bruno to fix."
-        )
+        raise RuntimeError("OPENAI_KEY is missing. Talk to Bruno to fix.")
 
     openai_model = _get_env("OPENAI_MODEL")
 

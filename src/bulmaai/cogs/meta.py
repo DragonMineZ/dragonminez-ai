@@ -49,16 +49,12 @@ class MetaCog(discord.Cog):
     ):
         await ctx.defer()
 
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant. Try to always answer questions in 1900 characters or less.",
-            },  # TODO: Adjust system prompt as needed.
-            {"role": "user", "content": question},
-        ]
-
         try:
-            response_text = await llm_client.chat(messages)
+            response_text = await llm_client.chat(instructions=
+                                                  "You are a helpful assistant. "
+                                                  "Try to always answer questions in 1900 characters or less.",
+                                                  _input=question
+                                                  )
             prefix = "LLM response: "
             max_message_length = 2000
             available_length = max_message_length - len(prefix)

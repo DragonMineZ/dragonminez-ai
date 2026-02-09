@@ -37,8 +37,9 @@ def load_settings() -> Settings:
 
     initial_extensions = (
         "bulmaai.cogs.meta",
+        "bulmaai.cogs.llm_master",
         # "bulmaai.cogs.faq", TODO: Re-enable when FAQ & Admin have code.
-        # "bulmaai.cogs.admin",
+        "bulmaai.cogs.admin",
     )
 
     if not openai_key:

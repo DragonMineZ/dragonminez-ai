@@ -3,7 +3,7 @@ import logging
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from bulmaai.config import load_settings
+from src.bulmaai.config import load_settings
 
 log = logging.getLogger(__name__)
 

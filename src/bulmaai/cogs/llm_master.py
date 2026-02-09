@@ -2,7 +2,7 @@ import logging
 
 import discord
 
-from bulmaai.services.llm_client import llm_client
+from src.bulmaai.services.llm_client import llm_client
 
 
 log = logging.getLogger(__name__)

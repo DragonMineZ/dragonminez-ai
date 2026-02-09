@@ -2,3 +2,5 @@ py-cord[speed]==2.7.0
 python-dotenv==1.2.1
 requests
 cryptography
+openai
+pyjwt

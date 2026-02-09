@@ -5,7 +5,7 @@ import time
 
 from discord import slash_command
 
-from bulmaai.services.llm_client import llm_client
+from src.bulmaai.services.llm_client import llm_client
 
 
 log = logging.getLogger(__name__)

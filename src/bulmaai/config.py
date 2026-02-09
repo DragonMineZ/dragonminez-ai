@@ -36,10 +36,10 @@ def load_settings() -> Settings:
     log_level = _get_env("LOG_LEVEL", "INFO") or "INFO"
 
     initial_extensions = (
-        "bulmaai.cogs.meta",
-        "bulmaai.cogs.llm_master",
+        "src.bulmaai.cogs.meta",
+        "src.bulmaai.cogs.llm_master",
         # "bulmaai.cogs.faq", TODO: Re-enable when FAQ & Admin have code.
-        "bulmaai.cogs.admin",
+        "src.bulmaai.cogs.admin",
     )
 
     if not openai_key:

@@ -32,8 +32,7 @@ class BulmaAI(discord.Bot):
 
         BulmaAI.instance = self
 
-    @staticmethod
-    async def setup_hook() -> None:
+    async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""
         log.info("Initializing database pool...")
         await init_db_pool()

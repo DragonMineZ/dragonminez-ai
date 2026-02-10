@@ -167,9 +167,10 @@ async def _handle_tools_and_final_reply(
     reply_text = ""
 
     for item in getattr(response, "output", []) or []:
-        # In the Responses API, message-like outputs appear as 'output_text' segments.
-        if item.type == "output_text":
-            reply_text += item.text
+        if getattr(item, "type", None) == "message":
+            for part in getattr(item, "content", []) or []:
+                if getattr(part, "type", None) == "output_text":
+                    reply_text += getattr(part, "text", "")
 
     reply_text = reply_text.strip() or "(no reply)"
 

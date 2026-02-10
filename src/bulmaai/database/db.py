@@ -41,8 +41,6 @@ async def init_db_pool(
 ) -> asyncpg.Pool:
     """
     Initialize the global asyncpg connection pool.
-
-    Call this once on startup (e.g. before bot.run()).
     """
     global _pool
     if _pool is not None:

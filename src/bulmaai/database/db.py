@@ -64,6 +64,11 @@ async def get_pool() -> asyncpg.Pool:
     Raises RuntimeError if init_db_pool() was not called.
     """
     if _pool is None:
+        import traceback
+        import logging
+        log = logging.getLogger("bulmaai.database.db")
+        log.error("Database pool not initialized! Stack trace:")
+        traceback.print_stack()
         raise RuntimeError("Database pool not initialized. Call init_db_pool() on startup.")
     return _pool
 

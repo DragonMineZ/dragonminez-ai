@@ -41,6 +41,7 @@ class BulmaAI(discord.Bot):
     async def login(self, *args: Any, **kwargs: Any) -> Any:
         res = await super().login(*args, **kwargs)
         await self.setup_hook()
+        log.info("✅ setup_hook() completed")
         return res
 
     def load_pr_extensions(self) -> None:

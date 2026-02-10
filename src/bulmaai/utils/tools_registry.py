@@ -1,7 +1,5 @@
-
 from typing import Any, Callable
 
-from bulmaai.utils import docs_search, patreon_whitelist
 
 ToolFunc = Callable[..., Any]
 
@@ -69,11 +67,22 @@ TOOLS_SCHEMAS: dict[str, dict] = {
     },
 }
 
-# Bind tool names to Python functions
-TOOLS_FUNCS: dict[str, ToolFunc] = {
-    "docs_search": docs_search.run_docs_search,
-    "start_patreon_whitelist_flow": patreon_whitelist.start_patreon_whitelist_flow,
-}
+# Bind tool names to Python functions (lazy loaded to avoid import-time issues)
+TOOLS_FUNCS: dict[str, ToolFunc] = {}
+
+
+def _init_tools_funcs() -> None:
+    """Lazily import and initialize tool functions."""
+    global TOOLS_FUNCS
+    if TOOLS_FUNCS:  # Already initialized
+        return
+
+    from bulmaai.utils import docs_search, patreon_whitelist
+
+    TOOLS_FUNCS = {
+        "docs_search": docs_search.run_docs_search,
+        "start_patreon_whitelist_flow": patreon_whitelist.start_patreon_whitelist_flow,
+    }
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
@@ -88,4 +97,5 @@ def get_func(name: str) -> ToolFunc:
     Return the Python function for a given tool name.
     Raises KeyError if unknown.
     """
+    _init_tools_funcs()
     return TOOLS_FUNCS[name]

@@ -1,5 +1,6 @@
 from typing import Optional
 
+import logging
 import asyncpg
 from dotenv import load_dotenv
 
@@ -8,6 +9,7 @@ from bulmaai.config import load_settings
 _pool: Optional[asyncpg.Pool] = None
 load_dotenv()
 settings = load_settings()
+log = logging.getLogger(__name__)
 
 
 def _build_dsn() -> str:
@@ -53,6 +55,9 @@ async def init_db_pool(
         max_size=max_size,
         command_timeout=60,
     )
+
+    log.info(f"Pool initialized: {_pool}")
+    log.info(f"Pool initialized: {dsn}")
     return _pool
 
 

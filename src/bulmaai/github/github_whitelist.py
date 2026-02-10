@@ -66,3 +66,13 @@ class GitHubWhitelistService:
         r = await request("PATCH", f"{self.api}/pulls/{pr_number}",
                           headers=await self._headers(), json={"state": "closed"})
         r.raise_for_status()
+
+    async def add_comment(self, pr_number: int, comment: str) -> None:
+        r = await request("POST", f"{self.api}/issues/{pr_number}/comments",
+                          headers=await self._headers(), json={"body": comment})
+        r.raise_for_status()
+
+    async def remove_branch(self, branch: str) -> None:
+        r = await request("DELETE", f"{self.api}/git/refs/heads/{branch}", headers=await self._headers())
+        if r.status_code != 204:
+            r.raise_for_status()

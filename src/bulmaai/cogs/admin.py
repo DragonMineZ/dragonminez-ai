@@ -128,6 +128,8 @@ class AdminCog(discord.Cog):
 
             async def admin_confirm(admin_inter: discord.Interaction):
                 await self.gh.merge_pr(pr_number)
+                await self.gh.add_comment(pr_number, f"Request approved by {admin_inter.user}, PR merged.")
+                await self.gh.remove_branch(pr_number)
                 await admin_inter.followup.send(f"PR #{pr_number} merged. `{state['nick']}` approved.")
 
             async def admin_edit(admin_inter: discord.Interaction, new_nick: str):
@@ -156,6 +158,8 @@ class AdminCog(discord.Cog):
 
             async def admin_reject(admin_inter: discord.Interaction):
                 await self.gh.close_pr(pr_number)
+                await self.gh.add_comment(pr_number, f"Request rejected by {admin_inter.user}, PR closed.")
+                await self.gh.remove_branch(pr_number)
                 await admin_inter.followup.send(f"PR #{pr_number} closed. Request rejected.")
 
             admin_view = AdminPRView(
@@ -167,7 +171,7 @@ class AdminCog(discord.Cog):
             )
 
             await staff_channel.send(
-                f"{mention}\n"
+                f"{mention}\n\n"
                 f"{interaction.user.mention} has set their Patreon Minecraft nickname as `{state['nick']}`.\n"
                 f"Please wait for an administrator to approve the change.\n"
                 f"PR: {pr_url}",

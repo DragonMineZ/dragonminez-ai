@@ -1,5 +1,5 @@
-import asyncio
 import logging
+from typing import Any
 
 import discord
 from dotenv import load_dotenv
@@ -32,6 +32,18 @@ class BulmaAI(discord.Bot):
 
         BulmaAI.instance = self
 
+    @staticmethod
+    async def setup_hook() -> None:
+        """Called when the bot is starting up, before connecting to Discord."""
+        log.info("Initializing database pool...")
+        await init_db_pool()
+        log.info("Database pool initialized")
+
+    async def login(self, *args: Any, **kwargs: Any) -> Any:
+        res = await super().login(*args, **kwargs)
+        await self.setup_hook()
+        return res
+
     def load_pr_extensions(self) -> None:
         for ext in self.settings.initial_extensions:
             try:
@@ -43,6 +55,13 @@ class BulmaAI(discord.Bot):
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
         log.info("Guilds: %d", len(self.guilds))
+
+    async def close(self) -> None:
+        """Called when the bot is shutting down."""
+        log.info("Closing database pool...")
+        await close_db_pool()
+        log.info("Database pool closed")
+        await super().close()
 
     async def on_application_command_error(
         self,
@@ -64,12 +83,4 @@ def run() -> None:
     bot = BulmaAI(settings)
     bot.load_pr_extensions()
 
-    async def main() -> None:
-        await init_db_pool()
-
-        try:
-            await bot.start(settings.discord_token)
-        finally:
-            await close_db_pool()
-
-    asyncio.run(main())
+    bot.run(settings.discord_token)

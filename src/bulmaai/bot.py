@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from .config import Settings, load_settings
 from .logging_setup import setup_logging
-from database.db import init_db_pool, close_db_pool
+from .database.db import init_db_pool, close_db_pool
 
 log = logging.getLogger("bulmaai")
 

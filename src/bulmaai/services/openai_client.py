@@ -1,4 +1,4 @@
-
+import logging
 import json
 
 from typing import Any, Optional, TypedDict
@@ -13,7 +13,7 @@ load_dotenv()
 settings = load_settings()
 
 client = OpenAI(api_key=settings.openai_key)
-
+log = logging.getLogger(__name__)
 
 class ToolCallResult(TypedDict):
     name: str
@@ -158,6 +158,8 @@ async def _handle_tools_and_final_reply(
             instructions=system_prompt,
             input=transcript,
         )
+
+    log.info("RAW OPENAI RESPONSE: %r", response)
 
     # 3) Extract final reply text
     reply_text = ""

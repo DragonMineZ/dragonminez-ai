@@ -152,6 +152,8 @@ async def _handle_tools_and_final_reply(
             # Append a synthetic line to the transcript so the model sees tool result
             transcript += f"\nTool {name} output:\n{json.dumps(output, ensure_ascii=False)}\n"
 
+            log.info("RAW TRANSCRIPT OPENAI RESPONSE: %r", transcript)
+
         # 2) Second call: no tools, just generate final reply using updated transcript
         response = client.responses.create(
             model=model,

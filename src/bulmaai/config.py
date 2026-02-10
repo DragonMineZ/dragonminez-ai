@@ -5,12 +5,19 @@ from typing import Sequence
 
 @dataclass(frozen=True)
 class Settings:
+
     discord_token: str
     dev_guild_id: int | None
     log_level: str
     initial_extensions: Sequence[str]
     openai_key: str
     openai_model: str
+    POSTGRES_DSN: str | None
+    PGHOST: str
+    PGPORT: int
+    PGUSER: str
+    PGPASSWORD: str
+    PGDB: str
 
 
 def _get_env(name: str, default: str | None = None) -> str | None:
@@ -24,6 +31,12 @@ def _get_env(name: str, default: str | None = None) -> str | None:
 def load_settings() -> Settings:
     token = _get_env("DISCORD_TOKEN")
     openai_key = _get_env("OPENAI_KEY")
+    PGDSN = _get_env("PGDSN")
+    PGHOST = _get_env("PGHOST")
+    PGPORT = int(_get_env("PGPORT", "5432") or "5432")
+    PGUSER = _get_env("PGUSER")
+    PGPASSWORD = _get_env("PGPASSWORD")
+    PGDB = _get_env("PGDB")
 
     if not token:
         raise RuntimeError(
@@ -37,9 +50,9 @@ def load_settings() -> Settings:
 
     initial_extensions = (
         "src.bulmaai.cogs.meta",
-        "src.bulmaai.cogs.llm_master",
         # "bulmaai.cogs.faq", TODO: Re-enable when FAQ & Admin have code.
         "src.bulmaai.cogs.admin",
+        "src.bulmaai.cogs.ai_tickets",
     )
 
     if not openai_key:
@@ -54,4 +67,10 @@ def load_settings() -> Settings:
         initial_extensions=initial_extensions,
         openai_key=openai_key,
         openai_model=openai_model,
+        POSTGRES_DSN=PGDSN,
+        PGHOST=PGHOST or "localhost",
+        PGPORT=PGPORT,
+        PGUSER=PGUSER,
+        PGPASSWORD=PGPASSWORD,
+        PGDB=PGDB,
     )

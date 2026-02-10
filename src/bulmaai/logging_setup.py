@@ -10,7 +10,7 @@ def setup_logging(level: str = "INFO") -> None:
             "%(log_color)s%(asctime)s | %(levelname)s | %(name)s | %(message)s",
             log_colors={
                 "DEBUG": "cyan",
-                "INFO": "gray",
+                "INFO": "white",
                 "WARNING": "yellow",
                 "ERROR": "red",
                 "CRITICAL": "bold_red",

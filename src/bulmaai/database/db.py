@@ -47,13 +47,12 @@ async def init_db_pool(
         return _pool
 
     dsn = _build_dsn()
-    async with asyncpg.create_pool(
+    _pool = await asyncpg.create_pool(
         dsn=dsn,
         min_size=min_size,
         max_size=max_size,
         command_timeout=60,
-    ) as _pool:
-        await _pool.fetch('SELECT 1')
+    )
     return _pool
 
 

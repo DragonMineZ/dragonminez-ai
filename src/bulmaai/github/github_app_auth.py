@@ -1,7 +1,7 @@
 import time
 import jwt
 
-from src.bulmaai.services.http import request
+from bulmaai.services.http import request
 
 
 class GitHubAppAuth:

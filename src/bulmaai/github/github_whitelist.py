@@ -1,7 +1,7 @@
 import base64
 
-from src.bulmaai.services.http import request
-from src.bulmaai.github.github_app_auth import GitHubAppAuth
+from bulmaai.services.http import request
+from bulmaai.github.github_app_auth import GitHubAppAuth
 
 
 class GitHubWhitelistService:

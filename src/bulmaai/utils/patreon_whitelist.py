@@ -5,8 +5,8 @@ from typing import Any, Dict
 
 import discord
 
-from src.bulmaai.cogs.admin import AdminCog
-from src.bulmaai.bot import BulmaAI  # your Bot subclass
+from bulmaai.cogs.admin import AdminCog
+from bulmaai.bot import BulmaAI  # your Bot subclass
 
 
 def get_bot_instance() -> BulmaAI:

@@ -4,10 +4,10 @@ import os
 import discord
 from discord.ext import commands
 
-from src.bulmaai.github.github_app_auth import GitHubAppAuth
-from src.bulmaai.github.github_whitelist import GitHubWhitelistService
-from src.bulmaai.ui.patreon_views import UserConfirmView, AdminPRView, MC_NAME_RE
-from src.bulmaai.utils.permissions import is_admin, has_any_allowed_role
+from bulmaai.github.github_app_auth import GitHubAppAuth
+from bulmaai.github.github_whitelist import GitHubWhitelistService
+from bulmaai.ui.patreon_views import UserConfirmView, AdminPRView, MC_NAME_RE
+from bulmaai.utils.permissions import is_admin, has_any_allowed_role
 
 log = logging.getLogger(__name__)
 

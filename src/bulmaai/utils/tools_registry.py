@@ -1,7 +1,7 @@
 
 from typing import Any, Callable
 
-from src.bulmaai.utils import docs_search, patreon_whitelist
+from bulmaai.utils import docs_search, patreon_whitelist
 
 ToolFunc = Callable[..., Any]
 

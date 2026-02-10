@@ -1,7 +1,7 @@
 import re
 import discord
 
-from src.bulmaai.utils.permissions import is_admin
+from bulmaai.utils.permissions import is_admin
 
 MC_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 

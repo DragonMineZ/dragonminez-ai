@@ -3,7 +3,7 @@ from typing import Optional
 import asyncpg
 from dotenv import load_dotenv
 
-from src.bulmaai.config import load_settings
+from bulmaai.config import load_settings
 
 _pool: Optional[asyncpg.Pool] = None
 load_dotenv()

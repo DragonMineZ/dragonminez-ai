@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Literal, Tuple
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from src.bulmaai.config import load_settings
-from src.bulmaai.database.db import get_pool
+from bulmaai.config import load_settings
+from bulmaai.database.db import get_pool
 
 load_dotenv()
 settings = load_settings()

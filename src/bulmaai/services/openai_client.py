@@ -6,7 +6,7 @@ from typing import Any, Optional, TypedDict
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from bulmaai.config import load_settings
+from src.bulmaai.config import load_settings
 from src.bulmaai.utils import tools_registry
 
 load_dotenv()

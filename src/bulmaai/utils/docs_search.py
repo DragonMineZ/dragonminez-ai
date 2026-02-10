@@ -1,11 +1,16 @@
 import math
 from typing import Any, Dict, List, Literal, Tuple
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
+from src.bulmaai.config import load_settings
 from src.bulmaai.database.db import get_pool
 
-client = OpenAI()
+load_dotenv()
+settings = load_settings()
+
+client = OpenAI(api_key=settings.openai_key)
 
 Embedding = List[float]
 LangCode = Literal["en", "es", "pt"]

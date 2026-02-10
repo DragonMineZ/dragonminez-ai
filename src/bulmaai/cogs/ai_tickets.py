@@ -3,7 +3,7 @@ import discord
 
 from discord.ext import commands
 
-from bulmaai.services.openai_client import run_support_agent
+from src.bulmaai.services.openai_client import run_support_agent
 
 log = logging.getLogger(__name__)
 

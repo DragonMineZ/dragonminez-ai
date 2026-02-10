@@ -5,8 +5,6 @@ import time
 
 from discord import slash_command
 
-from src.bulmaai.services.openai_client import llm_client
-
 
 log = logging.getLogger(__name__)
 
@@ -35,36 +33,6 @@ class MetaCog(discord.Cog):
         embed.add_field(name="Version", value="1.0.0", inline=False)
         embed.add_field(name="Author", value="DragonMineZ Team", inline=False)
         await ctx.respond(embed=embed)
-
-    @slash_command(
-        name="ai_test",
-        description="Test the LLM integration.",
-        hidden=True,
-        default_member_permissions=discord.Permissions(administrator=True),
-    )
-    async def ai_test(
-        self,
-        ctx: discord.ApplicationContext,
-        question: str,
-    ):
-        await ctx.defer()
-
-        try:
-            response_text = await llm_client.chat(instructions=
-                                                  "You are a helpful assistant. "
-                                                  "Try to always answer questions in 1900 characters or less.",
-                                                  _input=question
-                                                  )
-            prefix = "LLM response: "
-            max_message_length = 2000
-            available_length = max_message_length - len(prefix)
-            if len(response_text) > available_length:
-                response_text = response_text[:available_length]
-            await ctx.followup.send(f"{prefix}{response_text}")
-        except Exception as exc:
-            log.exception("LLM test command failed: %s", exc)
-            await ctx.followup.send("LLM test failed.")
-
 
 def setup(bot):
     bot.add_cog(MetaCog(bot))

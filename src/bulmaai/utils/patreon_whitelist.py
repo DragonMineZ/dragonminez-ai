@@ -1,31 +1,20 @@
 import logging
 
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional
 
 import discord
+from discord import Bot
 
 from bulmaai.cogs.admin import AdminCog
+from bulmaai.bot import BulmaAI
 
-if TYPE_CHECKING:
-    from bulmaai.bot import BulmaAI  # your Bot subclass
-
-_bot: Optional["BulmaAI"] = None
+_bot: Optional[BulmaAI] = None
 log = logging.getLogger(__name__)
 
-def set_bot_instance(bot) -> None:
-    global _bot
-    _bot = bot
-
-def get_bot_instance() -> "BulmaAI":
-    """
-    Simple singleton-style getter.
-
-    In BulmaAI.__init__, make sure you set:
-        BulmaAI.instance = self
-    """
-    if _bot is None:
+def get_bot_instance() -> Bot:
+    if BulmaAI.instance is None:
         raise RuntimeError("BulmaAI instance not initialized yet.")
-    return _bot
+    return BulmaAI.instance
 
 
 async def start_patreon_whitelist_flow(

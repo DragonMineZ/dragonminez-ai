@@ -7,17 +7,18 @@ from dotenv import load_dotenv
 from .config import Settings, load_settings
 from .logging_setup import setup_logging
 from .database.db import init_db_pool, close_db_pool
-from .utils.patreon_whitelist import set_bot_instance
 
 log = logging.getLogger("bulmaai")
-
+instance = None
 
 class BulmaAI(discord.Bot):
     """Main bot class for BulmaAI."""
-    instance: "BulmaAI | None" = None
+
+    instance : discord.Bot = None
 
     def __init__(self, settings: Settings):
         intents = discord.Intents.default()
+
 
         # debug_guilds for testing, remove when ready for production. This makes command registration much faster.
         debug_guilds = [settings.dev_guild_id] if settings.dev_guild_id else None
@@ -31,7 +32,6 @@ class BulmaAI(discord.Bot):
 
         self.settings = settings
 
-        BulmaAI.instance = self
 
     async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""
@@ -54,10 +54,10 @@ class BulmaAI(discord.Bot):
                 log.exception("Failed to load extension: %s", ext)
 
     async def on_ready(self) -> None:
-        set_bot_instance(bot=self)
-
         log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
         log.info("Guilds: %d", len(self.guilds))
+        global instance
+        instance = self
 
     async def close(self) -> None:
         """Called when the bot is shutting down."""

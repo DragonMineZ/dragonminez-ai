@@ -7,11 +7,15 @@ from discord.ext import commands
 
 log = logging.getLogger(__name__)
 
+
 class PatreonWhitelistTool(commands.Cog):
+    """Cog for Patreon whitelist workflow tool."""
+
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
-    async def start_patreon_whitelist_flow(self,
+    async def start_patreon_whitelist_flow(
+        self,
         discord_user_id: str,
         ticket_channel_id: str,
     ) -> Dict[str, Any]:
@@ -79,5 +83,8 @@ class PatreonWhitelistTool(commands.Cog):
             "channel_id": ticket_channel_id,
         }
 
+
 def setup(bot: discord.Bot):
+    """Setup function to register the Cog with the bot."""
     bot.add_cog(PatreonWhitelistTool(bot))
+

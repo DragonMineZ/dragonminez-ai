@@ -1,9 +1,11 @@
+import logging
 from typing import Any, Callable
 
+log = logging.getLogger(__name__)
 
 ToolFunc = Callable[..., Any]
 
-# Responses API tools format (no nested "function" key) [web:240]
+# Responses API tools format (no nested "function" key)
 TOOLS_SCHEMAS: dict[str, dict] = {
     "docs_search": {
         "type": "function",
@@ -78,11 +80,23 @@ def _init_tools_funcs() -> None:
         return
 
     from bulmaai.utils import docs_search, patreon_whitelist
+    from bulmaai.bot import BulmaAI
+
+    bot = BulmaAI.instance
+    if bot is None:
+        raise RuntimeError("Bot instance not initialized when trying to set up tools")
+
+    # Get the Cog instance from the bot
+    patreon_cog = bot.get_cog("PatreonWhitelistTool")
+    if patreon_cog is None:
+        raise RuntimeError("PatreonWhitelistTool cog not loaded")
 
     TOOLS_FUNCS = {
         "docs_search": docs_search.run_docs_search,
-        "start_patreon_whitelist_flow": patreon_whitelist.PatreonWhitelistTool.start_patreon_whitelist_flow(self=None),
+        "start_patreon_whitelist_flow": patreon_cog.start_patreon_whitelist_flow,
     }
+
+    log.info(f"✅ Tools initialized: {list(TOOLS_FUNCS.keys())}")
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
@@ -99,3 +113,4 @@ def get_func(name: str) -> ToolFunc:
     """
     _init_tools_funcs()
     return TOOLS_FUNCS[name]
+

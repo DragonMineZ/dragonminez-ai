@@ -15,6 +15,7 @@ settings = load_settings()
 client = OpenAI(api_key=settings.openai_key)
 log = logging.getLogger(__name__)
 
+
 class ToolCallResult(TypedDict):
     name: str
     arguments: dict[str, Any]
@@ -27,6 +28,11 @@ class AgentResult(TypedDict):
     tool_results: list[ToolCallResult]
     suggested_close: bool
 
+def get_schemas(enabled_tools: list[str]) -> list[dict]:
+    """
+    Return tool schemas for the given tool names, in Responses API format.
+    """
+    return tools_registry.get_schemas(enabled_tools)
 
 def _detect_language_from_text(text: str) -> str:
     # TODO: replace with real detection; for now default to English
@@ -50,15 +56,14 @@ async def run_support_agent(
     messages: list[dict[str, str]],
     enabled_tools: list[str],
     language_hint: Optional[str] = None,
-    bot_instance: Optional[Any] = None,
-    user_id : int,
-    channel_id :int,
+    user_id: int,
+    channel_id: int,
 ) -> AgentResult:
     """
     High-level entrypoint for the support agent.
 
     messages: [{"role": "user"/"assistant", "content": "..."}]
-    enabled_tools: tool names registered in tools_registry.
+    enabled_tools: tool names registered.
     """
     model = settings.openai_model
 
@@ -73,7 +78,7 @@ async def run_support_agent(
 
     system_prompt = _load_system_prompt(lang)
 
-    tools = tools_registry.get_schemas(enabled_tools)
+    tools = get_schemas(enabled_tools)
 
     # Flatten conversation into one input string
     transcript = _collapse_history_to_text(messages, user_id=user_id, channel_id=channel_id)

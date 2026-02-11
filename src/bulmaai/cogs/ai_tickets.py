@@ -71,7 +71,6 @@ class AITicketsCog(commands.Cog):
                 messages=history,
                 enabled_tools=enabled_tools,
                 language_hint=None,
-                bot_instance=self.bot,
                 user_id=message.author.id,
                 channel_id=channel.id,
             )

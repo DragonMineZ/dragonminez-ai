@@ -7,8 +7,10 @@ from dotenv import load_dotenv
 from .config import Settings, load_settings
 from .logging_setup import setup_logging
 from .database.db import init_db_pool, close_db_pool
+from .utils import tools_registry
 
 log = logging.getLogger("bulmaai")
+
 
 class BulmaAI(discord.Bot):
     """Main bot class for BulmaAI."""
@@ -33,6 +35,8 @@ class BulmaAI(discord.Bot):
         BulmaAI.instance = self
         log.info(f"🟢 BulmaAI.instance set in __init__ as {BulmaAI.instance} (id={id(BulmaAI.instance)})")
 
+        # Also store in tools_registry for tool functions
+        tools_registry.set_bot_instance(self)
 
     async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""
@@ -69,15 +73,16 @@ class BulmaAI(discord.Bot):
         await super().close()
 
     async def on_application_command_error(
-        self,
-        ctx: discord.ApplicationContext,
-        error: Exception,
+            self,
+            ctx: discord.ApplicationContext,
+            error: Exception,
     ) -> None:
         log.exception("Application command error: %s", error)
         if ctx.response.is_done():
             await ctx.followup.send("Something went wrong.", ephemeral=True)
         else:
             await ctx.respond("Something went wrong.", ephemeral=True)
+
 
 def get_bot_instance() -> BulmaAI:
     if BulmaAI.instance is None:

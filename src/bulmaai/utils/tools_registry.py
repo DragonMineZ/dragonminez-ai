@@ -1,10 +1,16 @@
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 from bulmaai.utils import docs_search, patreon_whitelist
+
+if TYPE_CHECKING:
+    from bulmaai.bot import BulmaAI
 
 log = logging.getLogger(__name__)
 
 ToolFunc = Callable[..., Any]
+
+# Module-level bot instance, set during startup
+_bot_instance: "BulmaAI | None" = None
 
 # Responses API tools format (no nested "function" key)
 TOOLS_SCHEMAS: dict[str, dict] = {
@@ -99,3 +105,24 @@ def get_func(name: str) -> ToolFunc:
     """
     _init_tools_funcs()
     return TOOLS_FUNCS[name]
+
+
+def set_bot_instance(bot: "BulmaAI") -> None:
+    """
+    Store the bot instance for use by tools.
+    Should be called during bot startup.
+    """
+    global _bot_instance
+    _bot_instance = bot
+    log.info(f"Bot instance stored in tools_registry: {bot} (id={id(bot)})")
+
+
+def get_bot_instance() -> "BulmaAI":
+    """
+    Get the bot instance for use by tools.
+    Raises RuntimeError if not yet initialized.
+    """
+    if _bot_instance is None:
+        raise RuntimeError("Bot instance not set in tools_registry. Call set_bot_instance() during startup.")
+    return _bot_instance
+

@@ -6,6 +6,7 @@ from typing import Any, Dict
 import discord
 
 from bulmaai.cogs.admin import AdminCog
+from bulmaai.utils import tools_registry
 
 
 async def start_patreon_whitelist_flow(
@@ -24,21 +25,8 @@ async def start_patreon_whitelist_flow(
     NOTE: The tool is meant to be called by the OpenAI model, not directly.
     """
 
-    # The Bot instance is reachable via any cog; we’ll get it from AdminCog.
-    # To keep this util decoupled from global state, we’ll locate the bot via
-    # the currently-running loop and known cog name.
-
-    # Get ANY running bot instance (py-cord stores it on discord.Client._connection,
-    # but simplest is to expect AdminCog to exist on the first bot in discord.Client._clients).
-    # To avoid hacks, we’ll instead expect you to call register_bot() on startup.
-    from bulmaai.bot import BulmaAI  # change to your Bot subclass if needed
-    from bulmaai.bot import get_bot_instance  # optional helper, see below
-
-    # If you don’t have a global getter, simplest is:
-    # 1) In BulmaAI.__init__, set BulmaAI.instance = self
-    # 2) Define get_bot_instance() that returns BulmaAI.instance
-
-    bot: discord.Bot = get_bot_instance()
+    # Get the bot instance from tools_registry
+    bot: discord.Bot = tools_registry.get_bot_instance()
 
     guild = None
     member: discord.Member | None = None

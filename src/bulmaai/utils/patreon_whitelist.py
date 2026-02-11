@@ -6,7 +6,6 @@ from typing import Any, Dict
 import discord
 
 from bulmaai.cogs.admin import AdminCog
-from bulmaai.utils import tools_registry
 
 
 async def start_patreon_whitelist_flow(
@@ -24,6 +23,9 @@ async def start_patreon_whitelist_flow(
 
     NOTE: The tool is meant to be called by the OpenAI model, not directly.
     """
+
+    # Import inside function to avoid circular import at module load time
+    from bulmaai.utils import tools_registry
 
     # Get the bot instance from tools_registry
     bot: discord.Bot = tools_registry.get_bot_instance()

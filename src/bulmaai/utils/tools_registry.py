@@ -1,6 +1,5 @@
 import logging
 from typing import Any, Callable, TYPE_CHECKING
-from bulmaai.utils import docs_search, patreon_whitelist
 
 if TYPE_CHECKING:
     from bulmaai.bot import BulmaAI
@@ -85,6 +84,9 @@ def _init_tools_funcs() -> None:
     if TOOLS_FUNCS:  # Already initialized
         return
 
+    # Lazy import to avoid circular imports
+    from bulmaai.utils import docs_search, patreon_whitelist
+
     TOOLS_FUNCS = {
         "docs_search": docs_search.run_docs_search,
         "start_patreon_whitelist_flow": patreon_whitelist.start_patreon_whitelist_flow,
@@ -118,11 +120,11 @@ def set_bot_instance(bot: "BulmaAI") -> None:
 
 
 def get_bot_instance() -> "BulmaAI":
-    """
-    Get the bot instance for use by tools.
-    Raises RuntimeError if not yet initialized.
-    """
     if _bot_instance is None:
-        raise RuntimeError("Bot instance not set in tools_registry. Call set_bot_instance() during startup.")
+        log.error("Bot instance is None! set_bot_instance() was not called or failed.")
+        raise RuntimeError(
+            "Call set_bot_instance() during startup. "
+            "Check that BulmaAI.__init__() is being called and tools_registry is properly imported."
+        )
+    log.debug(f"Returning bot instance: {_bot_instance} (id={id(_bot_instance)})")
     return _bot_instance
-

@@ -50,6 +50,7 @@ async def run_support_agent(
     messages: list[dict[str, str]],
     enabled_tools: list[str],
     language_hint: Optional[str] = None,
+    bot_instance: Optional[Any] = None,
     user_id : int,
     channel_id :int,
 ) -> AgentResult:

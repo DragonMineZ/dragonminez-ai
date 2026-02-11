@@ -31,6 +31,9 @@ class BulmaAI(discord.Bot):
         )
 
         self.settings = settings
+        # Set instance immediately so tools can access it
+        BulmaAI.instance = self
+        log.info("BulmaAI instance set in __init__ as {}", BulmaAI.instance)
 
 
     async def setup_hook(self) -> None:
@@ -56,8 +59,6 @@ class BulmaAI(discord.Bot):
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
         log.info("Guilds: %d", len(self.guilds))
-        global instance
-        instance = self
 
     async def close(self) -> None:
         """Called when the bot is shutting down."""

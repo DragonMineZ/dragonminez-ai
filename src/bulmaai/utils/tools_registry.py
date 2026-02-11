@@ -81,7 +81,7 @@ def _init_tools_funcs() -> None:
 
     TOOLS_FUNCS = {
         "docs_search": docs_search.run_docs_search,
-        "start_patreon_whitelist_flow": patreon_whitelist.start_patreon_whitelist_flow,
+        "start_patreon_whitelist_flow": patreon_whitelist.PatreonWhitelistTool.start_patreon_whitelist_flow,
     }
 
 

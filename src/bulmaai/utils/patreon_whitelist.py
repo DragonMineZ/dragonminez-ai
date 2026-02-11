@@ -1,6 +1,6 @@
 # src/bulmaai/utils/patreon_whitelist.py
 from __future__ import annotations
-
+import logging
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import discord
@@ -10,6 +10,7 @@ from bulmaai.cogs.admin import AdminCog
 if TYPE_CHECKING:
     from bulmaai.bot import BulmaAI
 
+log = logging.getLogger(__name__)
 
 async def start_patreon_whitelist_flow(
     discord_user_id: str,
@@ -47,6 +48,7 @@ async def start_patreon_whitelist_flow(
         if isinstance(c, discord.TextChannel):
             guild = g
             channel = c
+            log.info("Found ticket channel %s in guild %s", c.id, g.id)
             break
 
     if guild is None or channel is None:
@@ -55,8 +57,11 @@ async def start_patreon_whitelist_flow(
             "reason": "Ticket channel not found in any guild.",
         }
 
+
     member = guild.get_member(int(discord_user_id))
+    log.info("Resolved member %s in guild %s", discord_user_id, guild.id)
     if member is None:
+        log.error("Member not found in guild %s", guild.id)
         return {
             "status": "error",
             "reason": "Discord member not found in the guild.",

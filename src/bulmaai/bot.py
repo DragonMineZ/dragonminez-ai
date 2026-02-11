@@ -16,6 +16,7 @@ class BulmaAI(discord.Bot):
     instance : discord.Bot = None
 
     def __init__(self, settings: Settings):
+        log.info("🔵 BulmaAI.__init__ START")
         intents = discord.Intents.default()
 
 
@@ -32,7 +33,7 @@ class BulmaAI(discord.Bot):
         self.settings = settings
         # Set instance immediately so tools can access it
         BulmaAI.instance = self
-        log.info(f"BulmaAI instance set in __init__ as {BulmaAI.instance}")
+        log.info(f"🟢 BulmaAI.instance set in __init__ as {BulmaAI.instance} (id={id(BulmaAI.instance)})")
 
 
     async def setup_hook(self) -> None:
@@ -48,17 +49,19 @@ class BulmaAI(discord.Bot):
         return res
 
     def load_pr_extensions(self) -> None:
+        log.info("🔵 load_pr_extensions START")
         for ext in self.settings.initial_extensions:
             try:
+                log.info(f"  Loading extension: {ext}")
                 self.load_extension(ext)
-                log.info("Loaded extension: %s", ext)
+                log.info(f"  ✅ Loaded extension: {ext}")
             except Exception:
-                log.exception("Failed to load extension: %s", ext)
+                log.exception(f"  ❌ Failed to load extension: {ext}")
 
     async def on_ready(self) -> None:
+        log.info("🟢 on_ready called")
         log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
         log.info("Guilds: %d", len(self.guilds))
-        log.info("Instance: %s", BulmaAI.instance)
 
     async def close(self) -> None:
         """Called when the bot is shutting down."""
@@ -84,7 +87,11 @@ def run() -> None:
     settings = load_settings()
     setup_logging(settings.log_level)
 
+    log.info("🔵 Creating BulmaAI instance...")
     bot = BulmaAI(settings)
+
+    log.info("🔵 Loading extensions...")
     bot.load_pr_extensions()
 
+    log.info(f"🔵 Starting bot.run() with token. BulmaAI.instance={BulmaAI.instance}")
     bot.run(settings.discord_token)

@@ -1,25 +1,25 @@
 import logging
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import discord
 from discord import Bot
 
-from bulmaai.cogs.admin import AdminCog
-from bulmaai.bot import BulmaAI
-
-_bot: Optional[BulmaAI] = None
 log = logging.getLogger(__name__)
 
-def __init__(bot_instance: BulmaAI):
-    global _bot
-    _bot = bot_instance
-    log.info(f"BulmaAI instance set in __init__ as {_bot}")
-
 def get_bot_instance() -> Bot:
-    if BulmaAI.instance is None:
-        raise RuntimeError("BulmaAI instance not initialized yet.")
-    return BulmaAI.instance
+    from bulmaai.bot import BulmaAI
+
+    log.debug(f"get_bot_instance called")
+    log.debug(f"  BulmaAI={BulmaAI}")
+    log.debug(f"  BulmaAI.instance={BulmaAI.instance} (type: {type(BulmaAI.instance)})")
+
+    if BulmaAI.instance is not None:
+        log.debug(f"✅ Using BulmaAI.instance")
+        return BulmaAI.instance
+
+    log.error(f"❌ Both BulmaAI.instance and bot_module.instance are None!")
+    raise RuntimeError("BulmaAI instance not initialized yet.")
 
 
 async def start_patreon_whitelist_flow(
@@ -34,6 +34,8 @@ async def start_patreon_whitelist_flow(
     - Call AdminCog.start_whitelist_flow_for_user(member, channel).
     - Return a JSON summary that the model can use.
     """
+    from bulmaai.cogs.admin import AdminCog
+
     bot: discord.Bot = get_bot_instance()
 
     member: discord.Member | None = None

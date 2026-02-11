@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple, Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -76,6 +76,7 @@ async def run_docs_search(
     query: str,
     language: LangCode = "en",
     max_results: int = 5,
+    _bot_context: Optional["BulmaAI"] = None
 ) -> Dict[str, Any]:
     """
     Tool implementation for 'docs_search'.

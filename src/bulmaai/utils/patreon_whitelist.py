@@ -11,7 +11,10 @@ from bulmaai.bot import BulmaAI
 _bot: Optional[BulmaAI] = None
 log = logging.getLogger(__name__)
 
-log.info(f"BulmaAI.instance is {BulmaAI.instance}")
+def __init__(bot_instance: BulmaAI):
+    global _bot
+    _bot = bot_instance
+    log.info(f"BulmaAI instance set in __init__ as {_bot}")
 
 def get_bot_instance() -> Bot:
     if BulmaAI.instance is None:

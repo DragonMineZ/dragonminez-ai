@@ -56,8 +56,6 @@ async def init_db_pool(
         command_timeout=60,
     )
 
-    log.info(f"Pool initialized: {_pool}")
-    log.info(f"Pool initialized: {dsn}")
     return _pool
 
 
@@ -65,15 +63,13 @@ async def get_pool() -> asyncpg.Pool:
     """
     Get the global connection pool.
 
-    Raises RuntimeError if init_db_pool() was not called.
+    If the pool is not initialized, it will be initialized automatically
+    to ensure a connection is always available.
     """
+    global _pool
     if _pool is None:
-        import traceback
-        import logging
-        log = logging.getLogger("bulmaai.database.db")
-        log.error("Database pool not initialized! Stack trace:")
-        traceback.print_stack()
-        raise RuntimeError("Database pool not initialized. Call init_db_pool() on startup.")
+        log.info("Pool not initialized, initializing now...")
+        _pool = await init_db_pool()
     return _pool
 
 

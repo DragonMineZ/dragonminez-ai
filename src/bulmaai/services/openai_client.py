@@ -86,6 +86,8 @@ async def run_support_agent(
         tool_choice="auto",
     )
 
+    log.debug(f"First Call OPENAI RESPONSE: {response}")
+
     # Handle function calls (if any), then get final answer
     return await _handle_tools_and_final_reply(
         response=response,

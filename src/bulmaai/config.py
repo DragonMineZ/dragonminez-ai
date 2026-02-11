@@ -70,7 +70,6 @@ def load_settings() -> Settings:
         "bulmaai.cogs.meta",
         # "bulmaai.cogs.faq", TODO: Re-enable when FAQ & Admin have code.
         "bulmaai.cogs.admin",
-        "bulmaai.utils.patreon_whitelist",
         "bulmaai.cogs.ai_tickets",
     )
 

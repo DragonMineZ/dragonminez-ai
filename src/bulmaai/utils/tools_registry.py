@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Callable
+from bulmaai.utils import docs_search, patreon_whitelist
 
 log = logging.getLogger(__name__)
 
@@ -79,24 +80,10 @@ def _init_tools_funcs() -> None:
     if TOOLS_FUNCS:  # Already initialized
         return
 
-    from bulmaai.utils import docs_search, patreon_whitelist
-    from bulmaai.bot import BulmaAI
-
-    bot = BulmaAI.instance
-    if bot is None:
-        raise RuntimeError("Bot instance not initialized when trying to set up tools")
-
-    # Get the Cog instance from the bot
-    patreon_cog = bot.get_cog("PatreonWhitelistTool")
-    if patreon_cog is None:
-        raise RuntimeError("PatreonWhitelistTool cog not loaded")
-
     TOOLS_FUNCS = {
         "docs_search": docs_search.run_docs_search,
-        "start_patreon_whitelist_flow": patreon_cog.start_patreon_whitelist_flow,
+        "start_patreon_whitelist_flow": patreon_whitelist.start_patreon_whitelist_flow,
     }
-
-    log.info(f"✅ Tools initialized: {list(TOOLS_FUNCS.keys())}")
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:

@@ -8,8 +8,8 @@ from bulmaai.cogs.admin import AdminCog
 
 if TYPE_CHECKING:
     from bulmaai.bot import BulmaAI  # your Bot subclass
+    _bot: Optional[BulmaAI] = None
 
-_bot: Optional[BulmaAI] = None
 log = logging.getLogger(__name__)
 
 def set_bot_instance(bot: BulmaAI) -> None:

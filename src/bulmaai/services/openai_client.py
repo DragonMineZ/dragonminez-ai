@@ -58,12 +58,14 @@ async def run_support_agent(
     language_hint: Optional[str] = None,
     user_id: int,
     channel_id: int,
+    bot: Any = None,  # Discord bot instance for tool context
 ) -> AgentResult:
     """
     High-level entrypoint for the support agent.
 
     messages: [{"role": "user"/"assistant", "content": "..."}]
     enabled_tools: tool names registered.
+    bot: Discord bot instance to pass to tools that need it.
     """
     model = settings.openai_model
 
@@ -102,6 +104,7 @@ async def run_support_agent(
         model=model,
         enabled_tools=enabled_tools,
         lang=lang,
+        bot=bot,
     )
 
 
@@ -113,6 +116,7 @@ async def _handle_tools_and_final_reply(
     model: str,
     enabled_tools: list[str],
     lang: str,
+    bot: Any = None,
 ) -> AgentResult:
     tool_results: list[ToolCallResult] = []
     transcript = base_transcript
@@ -147,7 +151,8 @@ async def _handle_tools_and_final_reply(
             except json.JSONDecodeError:
                 args = {}
 
-            func = tools_registry.get_func(name)
+            # Get function with bot context injected
+            func = tools_registry.get_func(name, bot_context=bot)
             output = await func(**args)
 
             tool_results.append(

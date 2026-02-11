@@ -8,9 +8,6 @@ log = logging.getLogger(__name__)
 
 ToolFunc = Callable[..., Any]
 
-# Module-level bot instance, set during startup
-_bot_instance: "BulmaAI | None" = None
-
 # Responses API tools format (no nested "function" key)
 TOOLS_SCHEMAS: dict[str, dict] = {
     "docs_search": {
@@ -100,31 +97,21 @@ def get_schemas(enabled_tools: list[str]) -> list[dict]:
     return [TOOLS_SCHEMAS[name] for name in enabled_tools if name in TOOLS_SCHEMAS]
 
 
-def get_func(name: str) -> ToolFunc:
+def get_func(name: str, bot_context: "BulmaAI | None" = None) -> ToolFunc:
     """
     Return the Python function for a given tool name.
+    If bot_context is provided, returns a wrapper that injects it.
     Raises KeyError if unknown.
     """
     _init_tools_funcs()
-    return TOOLS_FUNCS[name]
+    func = TOOLS_FUNCS[name]
 
+    # If bot_context is provided, wrap the function to inject it
+    if bot_context is not None:
+        async def wrapper(**kwargs):
+            # Inject _bot_context parameter
+            return await func(**kwargs, _bot_context=bot_context)
+        return wrapper
 
-def set_bot_instance(bot: "BulmaAI") -> None:
-    """
-    Store the bot instance for use by tools.
-    Should be called during bot startup.
-    """
-    global _bot_instance
-    _bot_instance = bot
-    log.info(f"Bot instance stored in tools_registry: {bot} (id={id(bot)})")
+    return func
 
-
-def get_bot_instance() -> "BulmaAI":
-    if _bot_instance is None:
-        log.error("Bot instance is None! set_bot_instance() was not called or failed.")
-        raise RuntimeError(
-            "Call set_bot_instance() during startup. "
-            "Check that BulmaAI.__init__() is being called and tools_registry is properly imported."
-        )
-    log.debug(f"Returning bot instance: {_bot_instance} (id={id(_bot_instance)})")
-    return _bot_instance

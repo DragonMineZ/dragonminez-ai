@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from .config import Settings, load_settings
 from .logging_setup import setup_logging
 from .database.db import init_db_pool, close_db_pool
-from .utils import tools_registry
 
 log = logging.getLogger("bulmaai")
 
@@ -35,8 +34,6 @@ class BulmaAI(discord.Bot):
         BulmaAI.instance = self
         log.info(f"🟢 BulmaAI.instance set in __init__ as {BulmaAI.instance} (id={id(BulmaAI.instance)})")
 
-        # Also store in tools_registry for tool functions
-        tools_registry.set_bot_instance(self)
 
     async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""

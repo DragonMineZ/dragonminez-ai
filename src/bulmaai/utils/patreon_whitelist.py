@@ -1,16 +1,20 @@
 # src/bulmaai/utils/patreon_whitelist.py
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import discord
 
 from bulmaai.cogs.admin import AdminCog
 
+if TYPE_CHECKING:
+    from bulmaai.bot import BulmaAI
+
 
 async def start_patreon_whitelist_flow(
     discord_user_id: str,
     ticket_channel_id: str,
+    _bot_context: Optional["BulmaAI"] = None,  # Injected by caller
 ) -> Dict[str, Any]:
     """
     Tool implementation for 'start_patreon_whitelist_flow'.
@@ -22,13 +26,16 @@ async def start_patreon_whitelist_flow(
     - Returns a JSON summary for the model.
 
     NOTE: The tool is meant to be called by the OpenAI model, not directly.
+    The _bot_context parameter is injected by the openai_client, not by the LLM.
     """
 
-    # Import inside function to avoid circular import at module load time
-    from bulmaai.utils import tools_registry
+    if _bot_context is None:
+        return {
+            "status": "error",
+            "reason": "Bot context not provided to tool function.",
+        }
 
-    # Get the bot instance from tools_registry
-    bot: discord.Bot = tools_registry.get_bot_instance()
+    bot: discord.Bot = _bot_context
 
     guild = None
     member: discord.Member | None = None
@@ -63,15 +70,6 @@ async def start_patreon_whitelist_flow(
             "reason": "AdminCog not loaded; cannot start whitelist flow.",
         }
 
-    # Optional: only allow if the user has Patreon roles; you can reuse your existing
-    # Patreon role check here, or trust that the model only calls this when appropriate.
-    # Example:
-    # from bulmaai.cogs.ai_tickets import PATREON_ROLE_IDS
-    # if not any(r.id in PATREON_ROLE_IDS for r in member.roles):
-    #     return {
-    #         "status": "error",
-    #         "reason": "User does not have a Patreon role; whitelist flow not started.",
-    #     }
 
     status_text = await admin_cog.start_whitelist_flow_for_user(member, channel)
 

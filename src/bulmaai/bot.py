@@ -17,7 +17,7 @@ class BulmaAI(discord.Bot):
     instance: "BulmaAI | None" = None
 
     def __init__(self, settings: Settings):
-        intents = discord.Intents.default()
+        intents = discord.Intents.all()
 
         # debug_guilds for testing, remove when ready for production. This makes command registration much faster.
         debug_guilds = [settings.dev_guild_id] if settings.dev_guild_id else None

@@ -12,10 +12,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
 async def start_patreon_whitelist_flow(
-    discord_user_id: str,
-    ticket_channel_id: str,
-    _bot_context: Optional["BulmaAI"] = None,  # Injected by caller
+        discord_user_id: str,
+        ticket_channel_id: str,
+        _bot_context: Optional["BulmaAI"] = None,  # Injected by caller
 ) -> Dict[str, Any]:
     """
     Tool implementation for 'start_patreon_whitelist_flow'.
@@ -57,15 +58,27 @@ async def start_patreon_whitelist_flow(
             "reason": "Ticket channel not found in any guild.",
         }
 
-
+    # Try to get member from cache first, then fetch from API if not cached
     member = guild.get_member(int(discord_user_id))
-    log.info("Resolved member %s in guild %s", discord_user_id, guild.id)
     if member is None:
-        log.error("Member not found in guild %s", guild.id)
-        return {
-            "status": "error",
-            "reason": "Discord member not found in the guild.",
-        }
+        log.info("Member %s not in cache, fetching from Discord API...", discord_user_id)
+        try:
+            member = await guild.fetch_member(int(discord_user_id))
+            log.info("Successfully fetched member %s from API", discord_user_id)
+        except discord.NotFound:
+            log.error("Member %s not found in guild %s (not in server)", discord_user_id, guild.id)
+            return {
+                "status": "error",
+                "reason": "Discord member not found in the guild. They may not be in the server.",
+            }
+        except Exception as e:
+            log.error("Error fetching member %s: %s", discord_user_id, e)
+            return {
+                "status": "error",
+                "reason": f"Error fetching member from Discord API: {e}",
+            }
+    else:
+        log.info("Found member %s in cache for guild %s", discord_user_id, guild.id)
 
     # Get AdminCog
     admin_cog = bot.get_cog("AdminCog")
@@ -74,7 +87,6 @@ async def start_patreon_whitelist_flow(
             "status": "error",
             "reason": "AdminCog not loaded; cannot start whitelist flow.",
         }
-
 
     status_text = await admin_cog.start_whitelist_flow_for_user(member, channel)
 

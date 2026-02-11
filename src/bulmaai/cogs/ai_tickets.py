@@ -71,6 +71,8 @@ class AITicketsCog(commands.Cog):
                 messages=history,
                 enabled_tools=enabled_tools,
                 language_hint=None,
+                user_id=message.author.id,
+                channel_id=channel.id,
             )
         except Exception as e:
             log.exception("AI support error: %s", e)

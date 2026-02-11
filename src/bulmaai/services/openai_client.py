@@ -33,12 +33,10 @@ def _detect_language_from_text(text: str) -> str:
     return "en"
 
 
-def _collapse_history_to_text(messages: list[dict[str, str]]) -> str:
-    """
-    messages: list of {"role": "user"|"assistant", "content": str}
-    We flatten to a text transcript for Responses API `input`.
-    """
-    parts: list[str] = []
+def _collapse_history_to_text(messages, user_id: int, channel_id: int) -> str:
+    parts = [
+        f"Conversation meta: discord_user_id={user_id}, ticket_channel_id={channel_id}"
+    ]
     for m in messages:
         role = m.get("role", "user")
         prefix = "User:" if role == "user" else "Assistant:"
@@ -46,11 +44,14 @@ def _collapse_history_to_text(messages: list[dict[str, str]]) -> str:
     return "\n".join(parts)
 
 
+
 async def run_support_agent(
     *,
     messages: list[dict[str, str]],
     enabled_tools: list[str],
     language_hint: Optional[str] = None,
+    user_id : int,
+    channel_id :int,
 ) -> AgentResult:
     """
     High-level entrypoint for the support agent.
@@ -74,7 +75,7 @@ async def run_support_agent(
     tools = tools_registry.get_schemas(enabled_tools)
 
     # Flatten conversation into one input string
-    transcript = _collapse_history_to_text(messages)
+    transcript = _collapse_history_to_text(messages, user_id=user_id, channel_id=channel_id)
 
     # First call: allow tools
     response = client.responses.create(

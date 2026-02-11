@@ -33,7 +33,7 @@ class BulmaAI(discord.Bot):
         self.settings = settings
         # Set instance immediately so tools can access it
         BulmaAI.instance = self
-        log.info("BulmaAI instance set in __init__ as {}", BulmaAI.instance)
+        log.info(f"BulmaAI instance set in __init__ as {BulmaAI.instance}")
 
 
     async def setup_hook(self) -> None:

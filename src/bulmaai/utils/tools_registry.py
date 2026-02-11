@@ -75,7 +75,6 @@ TOOLS_FUNCS: dict[str, ToolFunc] = {}
 
 
 def _init_tools_funcs() -> None:
-    """Lazily import and initialize tool functions."""
     global TOOLS_FUNCS
     if TOOLS_FUNCS:  # Already initialized
         return
@@ -100,4 +99,3 @@ def get_func(name: str) -> ToolFunc:
     """
     _init_tools_funcs()
     return TOOLS_FUNCS[name]
-

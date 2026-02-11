@@ -13,12 +13,10 @@ log = logging.getLogger("bulmaai")
 class BulmaAI(discord.Bot):
     """Main bot class for BulmaAI."""
 
-    instance : discord.Bot = None
+    instance: "BulmaAI | None" = None
 
     def __init__(self, settings: Settings):
-        log.info("🔵 BulmaAI.__init__ START")
         intents = discord.Intents.default()
-
 
         # debug_guilds for testing, remove when ready for production. This makes command registration much faster.
         debug_guilds = [settings.dev_guild_id] if settings.dev_guild_id else None
@@ -80,6 +78,11 @@ class BulmaAI(discord.Bot):
             await ctx.followup.send("Something went wrong.", ephemeral=True)
         else:
             await ctx.respond("Something went wrong.", ephemeral=True)
+
+def get_bot_instance() -> BulmaAI:
+    if BulmaAI.instance is None:
+        raise RuntimeError("BulmaAI instance not initialized yet.")
+    return BulmaAI.instance
 
 
 def run() -> None:

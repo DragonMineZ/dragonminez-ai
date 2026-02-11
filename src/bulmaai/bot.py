@@ -26,7 +26,6 @@ class BulmaAI(discord.Bot):
             intents=intents,
             debug_guilds=debug_guilds,
             auto_sync_commands=True,  # Default is True, but being explicit is nice.
-            allowed_mentions=discord.AllowedMentions.none(),
         )
 
         self.settings = settings

@@ -3,13 +3,18 @@ import os
 
 import discord
 from discord.ext import commands
+from dotenv import load_dotenv
 
+from bulmaai.config import load_settings
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_whitelist import GitHubWhitelistService
 from bulmaai.ui.patreon_views import UserConfirmView, AdminPRView, MC_NAME_RE
 from bulmaai.utils.permissions import is_admin, has_any_allowed_role
 
 log = logging.getLogger(__name__)
+
+load_dotenv()
+settings = load_settings()
 
 ALLOWED_ROLE_ID_1 = 1287877272224665640
 ALLOWED_ROLE_ID_2 = 1287877305259130900
@@ -56,14 +61,14 @@ class AdminCog(commands.Cog):
 
     @staticmethod
     def _env_required(name: str) -> str:
-        v = os.getenv(name)
+        v = getattr(settings, name, None)
         if not v:
             raise RuntimeError(f"Missing env var: {name}")
         return v
 
     @staticmethod
     def _env_default(name: str, default: str) -> str:
-        return os.getenv(name, default)
+        return getattr(settings, name, default) or default
 
     async def start_whitelist_flow_for_user(
         self,

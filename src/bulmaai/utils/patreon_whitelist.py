@@ -1,5 +1,4 @@
-# src/bulmaai/utils/patreon_whitelist.py
-from __future__ import annotations
+import logging
 
 from typing import Any, Dict
 
@@ -8,6 +7,7 @@ import discord
 from bulmaai.cogs.admin import AdminCog
 from bulmaai.bot import BulmaAI  # your Bot subclass
 
+log = logging.getLogger(__name__)
 
 def get_bot_instance() -> BulmaAI:
     """
@@ -57,6 +57,7 @@ async def start_patreon_whitelist_flow(
 
     member = guild.get_member(int(discord_user_id))
     if member is None:
+        log.exception(f"Member not found, instance: {bot}, guild: {guild}, user_id: {discord_user_id}")
         return {
             "status": "error",
             "reason": "Discord member not found in the guild.",
@@ -66,6 +67,7 @@ async def start_patreon_whitelist_flow(
 
     admin_cog = bot.get_cog("AdminCog")
     if not isinstance(admin_cog, AdminCog):
+        log.exception(f"AdminCog not found, instance: {bot}, guild: {guild}")
         return {
             "status": "error",
             "reason": "AdminCog not loaded; cannot start whitelist flow.",

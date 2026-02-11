@@ -1,13 +1,18 @@
 import logging
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import discord
 
 from bulmaai.cogs.admin import AdminCog
 from bulmaai.bot import BulmaAI  # your Bot subclass
 
+_bot: Optional[BulmaAI] = None
 log = logging.getLogger(__name__)
+
+def set_bot_instance(bot: BulmaAI) -> None:
+    global _bot
+    _bot = bot
 
 def get_bot_instance() -> BulmaAI:
     """
@@ -16,9 +21,9 @@ def get_bot_instance() -> BulmaAI:
     In BulmaAI.__init__, make sure you set:
         BulmaAI.instance = self
     """
-    if getattr(BulmaAI, "instance", None) is None:
+    if _bot is None:
         raise RuntimeError("BulmaAI instance not initialized yet.")
-    return BulmaAI.instance  # type: ignore[return-value]
+    return _bot
 
 
 async def start_patreon_whitelist_flow(

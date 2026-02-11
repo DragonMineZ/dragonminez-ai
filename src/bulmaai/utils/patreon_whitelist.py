@@ -1,11 +1,13 @@
 import logging
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import discord
 
 from bulmaai.cogs.admin import AdminCog
-from bulmaai.bot import BulmaAI  # your Bot subclass
+
+if TYPE_CHECKING:
+    from bulmaai.bot import BulmaAI  # your Bot subclass
 
 _bot: Optional[BulmaAI] = None
 log = logging.getLogger(__name__)

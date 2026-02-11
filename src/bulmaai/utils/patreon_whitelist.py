@@ -11,6 +11,8 @@ from bulmaai.bot import BulmaAI
 _bot: Optional[BulmaAI] = None
 log = logging.getLogger(__name__)
 
+log.info(f"BulmaAI.instance is {BulmaAI.instance}")
+
 def get_bot_instance() -> Bot:
     if BulmaAI.instance is None:
         raise RuntimeError("BulmaAI instance not initialized yet.")

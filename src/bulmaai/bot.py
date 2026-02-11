@@ -9,7 +9,6 @@ from .logging_setup import setup_logging
 from .database.db import init_db_pool, close_db_pool
 
 log = logging.getLogger("bulmaai")
-instance = None
 
 class BulmaAI(discord.Bot):
     """Main bot class for BulmaAI."""
@@ -59,6 +58,7 @@ class BulmaAI(discord.Bot):
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
         log.info("Guilds: %d", len(self.guilds))
+        log.info("Instance: %s", BulmaAI.instance)
 
     async def close(self) -> None:
         """Called when the bot is shutting down."""

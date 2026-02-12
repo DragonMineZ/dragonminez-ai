@@ -152,7 +152,7 @@ class AdminCog(commands.Cog):
                         pr_number,
                         f"Request approved by {admin_inter.user}, PR merged.",
                     )
-                    await self.gh.remove_branch(pr_number)
+                    await self.gh.remove_branch(branch)
                     await admin_inter.followup.send(
                         f"PR #{pr_number} merged. `{state['nick']}` approved."
                     )
@@ -191,7 +191,7 @@ class AdminCog(commands.Cog):
                         pr_number,
                         f"Request rejected by {admin_inter.user}, PR closed.",
                     )
-                    await self.gh.remove_branch(pr_number)
+                    await self.gh.remove_branch(branch)
                     await admin_inter.followup.send(
                         f"PR #{pr_number} closed. Request rejected."
                     )
@@ -199,6 +199,7 @@ class AdminCog(commands.Cog):
                 admin_view = AdminPRView(
                     pr_number=pr_number,
                     nickname=state["nick"],
+                    branch=branch,
                     on_confirm=admin_confirm,
                     on_edit=admin_edit,
                     on_reject=admin_reject,

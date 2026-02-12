@@ -73,6 +73,7 @@ class GitHubWhitelistService:
         r.raise_for_status()
 
     async def remove_branch(self, branch: str) -> None:
-        r = await request("DELETE", f"{self.api}/git/refs/heads/{branch}", headers=await self._headers())
-        if r.status_code != 204:
-            r.raise_for_status()
+        r = await request("DELETE",f"{self.api}/git/refs/heads/{branch}",
+                          headers=await self._headers(),
+        )
+        r.raise_for_status()

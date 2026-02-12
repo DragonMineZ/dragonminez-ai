@@ -70,10 +70,11 @@ class UserConfirmView(discord.ui.View):
         )
 
 class AdminPRView(discord.ui.View):
-    def __init__(self, *, pr_number: int, nickname: str, on_confirm, on_edit, on_reject):
+    def __init__(self, *, pr_number: int, nickname: str, branch: str, on_confirm, on_edit, on_reject):
         super().__init__(timeout=86400)
         self.pr_number = pr_number
         self.nickname = nickname
+        self.branch = branch
         self.on_confirm = on_confirm  # async (interaction) -> None
         self.on_edit = on_edit        # async (interaction, new_nick) -> None
         self.on_reject = on_reject    # async (interaction) -> None

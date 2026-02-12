@@ -65,6 +65,13 @@ TOOLS_SCHEMAS: dict[str, dict] = {
                         "ID of the Discord ticket channel where the request is happening."
                     ),
                 },
+                "nickname": {
+                    "type": "string",
+                    "description": (
+                        "Optional Minecraft nickname if the user already provided it "
+                        "in the conversation."
+                    ),
+                },
             },
             "required": ["discord_user_id", "ticket_channel_id"],
             "additionalProperties": False,

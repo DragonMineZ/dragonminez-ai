@@ -1,5 +1,4 @@
 import logging
-import os
 
 import discord
 from discord.ext import commands
@@ -122,7 +121,7 @@ class AdminCog(commands.Cog):
                 if state["nick"] in base_lines:
                     await interaction.followup.send(
                         f"`{state['nick']}` is already whitelisted. Nothing to do.",
-                        ephemeral=True,
+                        ephemeral=False,
                     )
                     return
 

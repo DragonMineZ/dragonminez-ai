@@ -17,6 +17,7 @@ async def start_patreon_whitelist_flow(
         discord_user_id: str,
         ticket_channel_id: str,
         _bot_context: Optional["BulmaAI"] = None,  # Injected by caller
+        nickname: str | None = None,
 ) -> Dict[str, Any]:
     """
     Tool implementation for 'start_patreon_whitelist_flow'.
@@ -88,11 +89,12 @@ async def start_patreon_whitelist_flow(
             "reason": "AdminCog not loaded; cannot start whitelist flow.",
         }
 
-    status_text = await admin_cog.start_whitelist_flow_for_user(member, channel)
+    status_text = await admin_cog.start_whitelist_flow_for_user(member, channel, nickname)
 
     return {
         "status": "ok",
         "message": status_text,
         "user_id": discord_user_id,
         "channel_id": ticket_channel_id,
+        "mc_nickname_used": nickname,
     }

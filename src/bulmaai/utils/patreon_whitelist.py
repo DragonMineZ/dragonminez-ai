@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import discord
 
-from bulmaai.cogs.admin import AdminCog
+from bulmaai.cogs.aionmessage import AiOnMessage
 
 if TYPE_CHECKING:
     from bulmaai.bot import BulmaAI
@@ -83,7 +83,7 @@ async def start_patreon_whitelist_flow(
 
     # Get AdminCog
     admin_cog = bot.get_cog("AdminCog")
-    if not isinstance(admin_cog, AdminCog):
+    if not isinstance(admin_cog, AiOnMessage):
         return {
             "status": "error",
             "reason": "AdminCog not loaded; cannot start whitelist flow.",

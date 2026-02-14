@@ -2,7 +2,7 @@ import math
 from typing import Any, Dict, List, Literal, Tuple, Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from bulmaai.config import load_settings
 from bulmaai.database.db import get_pool
@@ -10,7 +10,7 @@ from bulmaai.database.db import get_pool
 load_dotenv()
 settings = load_settings()
 
-client = OpenAI(api_key=settings.openai_key)
+client = AsyncOpenAI(api_key=settings.openai_key)
 
 Embedding = List[float]
 LangCode = Literal["en", "es", "pt"]

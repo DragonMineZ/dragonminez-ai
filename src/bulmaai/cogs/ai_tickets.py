@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 
 from bulmaai.services.openai_client import run_support_agent
+from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +45,8 @@ class AITicketsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignore bots and DMs
-        if message.author.bot or not message.guild:
+        # Ignore bots and DMs and staff
+        if message.author.bot or not message.guild or is_staff(message.author):
             return
 
         channel = message.channel

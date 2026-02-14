@@ -31,7 +31,7 @@ def _pick_staff_channel(ctx_or_inter: discord.Interaction | discord.ApplicationC
     return ctx_or_inter.channel  # type: ignore[return-value]
 
 
-class AdminCog(commands.Cog):
+class AiOnMessage(commands.Cog):
     """Admin logic for Patreon whitelist flow (no public commands)."""
 
     def __init__(self, bot: discord.Bot):
@@ -244,4 +244,4 @@ class AdminCog(commands.Cog):
 
 
 def setup(bot: discord.Bot):
-    bot.add_cog(AdminCog(bot))
+    bot.add_cog(AiOnMessage(bot))

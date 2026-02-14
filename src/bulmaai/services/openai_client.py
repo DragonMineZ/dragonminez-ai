@@ -4,7 +4,7 @@ import json
 from typing import Any, Optional, TypedDict
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from bulmaai.config import load_settings
 from bulmaai.utils import tools_registry
@@ -12,7 +12,7 @@ from bulmaai.utils import tools_registry
 load_dotenv()
 settings = load_settings()
 
-client = OpenAI(api_key=settings.openai_key)
+client = AsyncOpenAI(api_key=settings.openai_key)
 log = logging.getLogger(__name__)
 
 

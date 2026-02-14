@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Sequence
 
-
+# Frozen so read-only after creation
 @dataclass(frozen=True)
 class Settings:
 
@@ -15,7 +15,7 @@ class Settings:
 
     POSTGRES_DSN: str | None
     PGHOST: str
-    PGPORT: int
+    PGPORT: int | None
     PGUSER: str
     PGPASSWORD: str
     PGDB: str
@@ -27,6 +27,12 @@ class Settings:
     GITHUB_REPO: str
     GITHUB_BASE_BRANCH: str
     GITHUB_FILE_PATH: str
+
+    discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
+                                             1309022450671161476, # DMZ Author
+                                             1216431257660035132, # DMZ Owner
+                                             1341595261960589343, # DMZ Helper
+                                             1341596685339725885) # Staff role
 
 
 def _get_env(name: str, default: str | None = None) -> str | None:
@@ -43,7 +49,7 @@ def load_settings() -> Settings:
 
     PGDSN = _get_env("PGDSN")
     PGHOST = _get_env("PGHOST")
-    PGPORT = int(_get_env("PGPORT", "5432") or "5432")
+    PGPORT = _get_env("PGPORT")
     PGUSER = _get_env("PGUSER")
     PGPASSWORD = _get_env("PGPASSWORD")
     PGDB = _get_env("PGDB")
@@ -68,13 +74,15 @@ def load_settings() -> Settings:
 
     initial_extensions = (
         "bulmaai.cogs.meta",
-        # "bulmaai.cogs.faq", TODO: Re-enable when FAQ & Admin have code.
-        "bulmaai.cogs.admin",
+        # "bulmaai.cogs.faq", #Delete later
+        "bulmaai.cogs.aionmessage",
         "bulmaai.cogs.ai_tickets",
     )
 
     if not openai_key:
-        raise RuntimeError("OPENAI_KEY is missing. Talk to Bruno to fix.")
+        raise RuntimeError("OPENAI_KEY is missing. Check env vars.")
+    if not GH_APP_ID or not GH_INSTALLATION_ID or not GH_APP_PRIVATE_KEY_PEM:
+        raise RuntimeError("GitHub App credentials are missing. Check env vars.")
 
     openai_model = _get_env("OPENAI_MODEL")
 

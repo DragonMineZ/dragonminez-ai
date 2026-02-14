@@ -86,7 +86,7 @@ async def run_support_agent(
     transcript = _collapse_history_to_text(messages, user_id=user_id, channel_id=channel_id)
 
     # First call: allow tools
-    response = client.responses.create(
+    response = await client.responses.create(
         model=model,
         instructions=system_prompt,
         input=transcript,
@@ -169,7 +169,7 @@ async def _handle_tools_and_final_reply(
             log.info("RAW TRANSCRIPT OPENAI RESPONSE: %r", transcript)
 
         # 2) Second call: no tools, just generate final reply using updated transcript
-        response = client.responses.create(
+        response = await client.responses.create(
             model=model,
             instructions=system_prompt,
             input=transcript,

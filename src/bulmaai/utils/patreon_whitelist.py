@@ -82,14 +82,14 @@ async def start_patreon_whitelist_flow(
         log.info("Found member %s in cache for guild %s", discord_user_id, guild.id)
 
     # Get AdminCog
-    admin_cog = bot.get_cog("AdminCog")
-    if not isinstance(admin_cog, AiOnMessage):
+    ai_onmessage = bot.get_cog("AiOnMessage")
+    if not isinstance(ai_onmessage, AiOnMessage):
         return {
             "status": "error",
             "reason": "AdminCog not loaded; cannot start whitelist flow.",
         }
 
-    status_text = await admin_cog.start_whitelist_flow_for_user(member, channel, nickname)
+    status_text = await ai_onmessage.start_whitelist_flow_for_user(member, channel, nickname)
 
     return {
         "status": "ok",

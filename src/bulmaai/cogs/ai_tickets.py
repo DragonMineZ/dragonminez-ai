@@ -8,10 +8,8 @@ from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
 
-# Ticket category ID you gave
 TICKETS_CATEGORY_ID = 1262517992982315110
 
-# Patreon roles (fill with actual IDs)
 PATREON_ROLE_IDS = {
     1287877272224665640,
     1287877305259130900,
@@ -49,13 +47,16 @@ class AITicketsCog(commands.Cog):
         if message.author.bot or not message.guild or is_staff(message.author):
             return
 
+        # Temporal - only for Patreons
+        if PATREON_ROLE_IDS not in message.author.roles:
+            return
+
         channel = message.channel
         if not isinstance(channel, discord.TextChannel):
             return
         if not _is_ticket_channel(channel):
             return
 
-        # Optional: ignore messages that are clearly commands
         if message.content.startswith(("!", "/", ".")):
             return
 
@@ -91,10 +92,6 @@ class AITicketsCog(commands.Cog):
             await channel.send(
                 "*(AI note: I think this ticket can be closed now. A staff member should confirm.)*"
             )
-
-        # Tool side-effects (like starting the Patreon whitelist flow)
-        # are handled inside the tool functions (docs_search, start_patreon_whitelist_flow),
-        # so we don't need to do anything else here.
 
 
 def setup(bot: discord.Bot):

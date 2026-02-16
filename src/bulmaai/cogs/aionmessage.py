@@ -46,7 +46,7 @@ class AiOnMessage(commands.Cog):
         )
 
         owner = self._env_default("GITHUB_OWNER", "DragonMineZ")
-        repo = self._env_default("GITHUB_REPO", ".github")
+        repo = self._env_default("GITHUB_REPO1", ".github")
         base_branch = self._env_default("GITHUB_BASE_BRANCH", "main")
         file_path = self._env_default("GITHUB_FILE_PATH", "allowed_betatesters.txt")
 

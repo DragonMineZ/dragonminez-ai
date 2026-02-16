@@ -24,7 +24,8 @@ class Settings:
     GH_INSTALLATION_ID: str | None
     GH_APP_PRIVATE_KEY_PEM: str | None
     GITHUB_OWNER: str
-    GITHUB_REPO: str
+    GITHUB_REPO1: str
+    GITHUB_REPO2: str
     GITHUB_BASE_BRANCH: str
     GITHUB_FILE_PATH: str
 
@@ -58,7 +59,8 @@ def load_settings() -> Settings:
     GH_INSTALLATION_ID = _get_env("GH_INSTALLATION_ID")
     GH_APP_PRIVATE_KEY_PEM = _get_env("GH_APP_PRIVATE_KEY_PEM")
     GITHUB_OWNER = _get_env("GITHUB_OWNER", "DragonMineZ")
-    GITHUB_REPO = _get_env("GITHUB_REPO", ".github")
+    GITHUB_REPO1 = _get_env("GITHUB_REPO1", ".github")
+    GITHUB_REPO2 = _get_env("GITHUB_REPO2", "dragonminez")
     GITHUB_BASE_BRANCH = _get_env("GITHUB_BASE_BRANCH", "main")
     GITHUB_FILE_PATH = _get_env("GITHUB_FILE_PATH", "allowed_betatesters.txt")
 
@@ -103,7 +105,8 @@ def load_settings() -> Settings:
         GH_INSTALLATION_ID=GH_INSTALLATION_ID,
         GH_APP_PRIVATE_KEY_PEM=GH_APP_PRIVATE_KEY_PEM,
         GITHUB_OWNER=GITHUB_OWNER,
-        GITHUB_REPO=GITHUB_REPO,
+        GITHUB_REPO1=GITHUB_REPO1,
+        GITHUB_REPO2=GITHUB_REPO2,
         GITHUB_BASE_BRANCH=GITHUB_BASE_BRANCH,
         GITHUB_FILE_PATH=GITHUB_FILE_PATH,
     )

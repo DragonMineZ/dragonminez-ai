@@ -28,7 +28,7 @@ def _get_issues_service(owner: str | None = None, repo: str | None = None) -> Gi
     return GitHubIssuesService(
         auth=auth,
         owner=owner or settings.GITHUB_OWNER,
-        repo=repo or settings.GITHUB_REPO,
+        repo=repo or settings.GITHUB_REPO2,
     )
 
 
@@ -61,7 +61,7 @@ class GitHubCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.owner = settings.GITHUB_OWNER
-        self.repo = settings.GITHUB_REPO
+        self.repo = settings.GITHUB_REPO2
 
     @commands.Cog.listener()
     async def on_ready(self):

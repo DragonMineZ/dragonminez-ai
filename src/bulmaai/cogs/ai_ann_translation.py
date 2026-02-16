@@ -14,9 +14,9 @@ settings = load_settings()
 
 client = AsyncOpenAI(api_key=settings.openai_key)
 
-ANNOUNCEMENT_SOURCE_CHANNEL_ID = 0  # English announcements channel ID
-SPANISH_TARGET_CHANNEL_ID = 0       # Spanish announcements channel ID
-PORTUGUESE_TARGET_CHANNEL_ID = 0    # Portuguese announcements channel ID
+ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1216430625431748771  # English announcements channel ID
+SPANISH_TARGET_CHANNEL_ID = 1216430625431748771       # Spanish announcements channel ID
+PORTUGUESE_TARGET_CHANNEL_ID = 1216430625431748771    # Portuguese announcements channel ID
 
 TRANSLATION_INSTRUCTIONS = """
 You are a professional translator for a Minecraft Dragon Ball Z mod called DragonMineZ.

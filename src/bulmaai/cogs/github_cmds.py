@@ -4,7 +4,7 @@ from discord.ext import commands
 
 from bulmaai.config import load_settings
 from bulmaai.github.github_app_auth import GitHubAppAuth
-from bulmaai.github.github_issues import GitHubIssuesService
+from bulmaai.github.github_service import GitHubService
 from bulmaai.ui.github_views import (
     CreateIssueModal,
     AddCommentModal,
@@ -19,16 +19,25 @@ log = logging.getLogger(__name__)
 settings = load_settings()
 
 
-def _get_issues_service(owner: str | None = None, repo: str | None = None) -> GitHubIssuesService:
+async def repo_autocomplete(ctx: discord.AutocompleteContext) -> list[str]:
+    current = (ctx.value or "").lower()
+    return [r for r in settings.GITHUB_REPOS if current in r.lower()][:25]
+
+
+def _get_github_service(repo: str | None = None) -> GitHubService:
     auth = GitHubAppAuth(
         app_id=settings.GH_APP_ID,
         installation_id=settings.GH_INSTALLATION_ID,
         private_key_pem=settings.GH_APP_PRIVATE_KEY_PEM,
     )
-    return GitHubIssuesService(
+    target_repo = repo or settings.GITHUB_DEFAULT_REPO
+    whitelist_path = settings.GITHUB_WHITELIST_FILE_PATH if target_repo == settings.GITHUB_WHITELIST_REPO else None
+    return GitHubService(
         auth=auth,
-        owner=owner or settings.GITHUB_OWNER,
-        repo=repo or settings.GITHUB_REPO2,
+        owner=settings.GITHUB_OWNER,
+        repo=target_repo,
+        base_branch=settings.GITHUB_BASE_BRANCH,
+        whitelist_file_path=whitelist_path,
     )
 
 
@@ -61,7 +70,7 @@ class GitHubCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.owner = settings.GITHUB_OWNER
-        self.repo = settings.GITHUB_REPO2
+        self.default_repo = settings.GITHUB_DEFAULT_REPO
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -71,15 +80,15 @@ class GitHubCog(commands.Cog):
     github = discord.SlashCommandGroup("github", "GitHub issue management commands")
 
     @github.command(name="create", description="Create a new GitHub issue with labels")
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def create_issue(self, ctx: discord.ApplicationContext, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can create issues.", ephemeral=True)
 
         await ctx.defer(ephemeral=True)
 
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         try:
             labels = await service.get_labels()
@@ -142,13 +151,13 @@ class GitHubCog(commands.Cog):
 
     @github.command(name="close", description="Close a GitHub issue")
     @discord.option("issue_number", description="Issue number to close", required=True)
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def close_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can close issues.", ephemeral=True)
 
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         modal = CloseReasonModal(issue_number)
         await ctx.send_modal(modal)
@@ -161,7 +170,7 @@ class GitHubCog(commands.Cog):
 
         try:
             if modal.comment:
-                await service.add_comment(issue_number, modal.comment)
+                await service.add_issue_comment(issue_number, modal.comment)
             issue = await service.close_issue(issue_number, reason=modal.reason)
         except Exception as e:
             log.exception("Failed to close issue")
@@ -178,14 +187,14 @@ class GitHubCog(commands.Cog):
 
     @github.command(name="reopen", description="Reopen a closed GitHub issue")
     @discord.option("issue_number", description="Issue number to reopen", required=True)
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def reopen_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can reopen issues.", ephemeral=True)
 
         await ctx.defer(ephemeral=True)
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         try:
             issue = await service.reopen_issue(issue_number)
@@ -204,11 +213,11 @@ class GitHubCog(commands.Cog):
 
     @github.command(name="view", description="View a GitHub issue")
     @discord.option("issue_number", description="Issue number to view", required=True)
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def view_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         await ctx.defer(ephemeral=True)
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         try:
             issue = await service.get_issue(issue_number)
@@ -228,11 +237,11 @@ class GitHubCog(commands.Cog):
     @github.command(name="list", description="List open GitHub issues")
     @discord.option("state", description="Issue state", choices=["open", "closed", "all"], required=False)
     @discord.option("label", description="Filter by label", required=False)
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def list_issues(self, ctx: discord.ApplicationContext, state: str = "open", label: str = None, repo: str = None):
         await ctx.defer(ephemeral=True)
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         try:
             issues = await service.list_issues(state=state, labels=label)
@@ -277,13 +286,13 @@ class GitHubCog(commands.Cog):
 
     @github.command(name="comment", description="Add a comment to a GitHub issue")
     @discord.option("issue_number", description="Issue number", required=True)
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def add_comment(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can comment on issues.", ephemeral=True)
 
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         modal = AddCommentModal(issue_number)
         await ctx.send_modal(modal)
@@ -295,7 +304,7 @@ class GitHubCog(commands.Cog):
         await ctx.respond("Adding comment...", ephemeral=True)
 
         try:
-            await service.add_comment(issue_number, modal.comment)
+            await service.add_issue_comment(issue_number, modal.comment)
             issue = await service.get_issue(issue_number)
         except Exception as e:
             log.exception("Failed to add comment")
@@ -305,11 +314,11 @@ class GitHubCog(commands.Cog):
         await ctx.followup.send(f"💬 Comment added to issue #{issue_number}!", embed=embed)
 
     @github.command(name="labels", description="View available labels for a repository")
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def list_labels(self, ctx: discord.ApplicationContext, repo: str = None):
         await ctx.defer(ephemeral=True)
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         try:
             labels = await service.get_labels()
@@ -336,14 +345,14 @@ class GitHubCog(commands.Cog):
 
     @github.command(name="addlabel", description="Add a label to an issue")
     @discord.option("issue_number", description="Issue number", required=True)
-    @discord.option("repo", description="Repository name (optional)", required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def add_label_to_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can add labels.", ephemeral=True)
 
         await ctx.defer(ephemeral=True)
-        target_repo = repo or self.repo
-        service = _get_issues_service(self.owner, target_repo)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
 
         try:
             labels = await service.get_labels()
@@ -409,7 +418,7 @@ class GitHubCogWithListeners(GitHubCog):
             return await interaction.response.send_message("Invalid button data.", ephemeral=True)
 
         owner, repo, issue_number = parts[1], parts[2], int(parts[3])
-        service = _get_issues_service(owner, repo)
+        service = _get_github_service(repo)
 
         modal = CloseReasonModal(issue_number)
         await interaction.response.send_modal(modal)
@@ -420,7 +429,7 @@ class GitHubCogWithListeners(GitHubCog):
 
         try:
             if modal.comment:
-                await service.add_comment(issue_number, modal.comment)
+                await service.add_issue_comment(issue_number, modal.comment)
             issue = await service.close_issue(issue_number, reason=modal.reason)
         except Exception as e:
             return await interaction.followup.send(f"Failed to close issue: {e}", ephemeral=True)
@@ -440,7 +449,7 @@ class GitHubCogWithListeners(GitHubCog):
             return await interaction.response.send_message("Invalid button data.", ephemeral=True)
 
         owner, repo, issue_number = parts[1], parts[2], int(parts[3])
-        service = _get_issues_service(owner, repo)
+        service = _get_github_service(repo)
 
         await interaction.response.defer(ephemeral=True)
 
@@ -464,7 +473,7 @@ class GitHubCogWithListeners(GitHubCog):
             return await interaction.response.send_message("Invalid button data.", ephemeral=True)
 
         owner, repo, issue_number = parts[1], parts[2], int(parts[3])
-        service = _get_issues_service(owner, repo)
+        service = _get_github_service(repo)
 
         modal = AddCommentModal(issue_number)
         await interaction.response.send_modal(modal)
@@ -474,7 +483,7 @@ class GitHubCogWithListeners(GitHubCog):
             return
 
         try:
-            await service.add_comment(issue_number, modal.comment)
+            await service.add_issue_comment(issue_number, modal.comment)
         except Exception as e:
             return await interaction.followup.send(f"Failed to add comment: {e}", ephemeral=True)
 

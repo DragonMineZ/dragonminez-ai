@@ -24,10 +24,11 @@ class Settings:
     GH_INSTALLATION_ID: str | None
     GH_APP_PRIVATE_KEY_PEM: str | None
     GITHUB_OWNER: str
-    GITHUB_REPO1: str
-    GITHUB_REPO2: str
+    GITHUB_REPOS: Sequence[str]
+    GITHUB_DEFAULT_REPO: str
+    GITHUB_WHITELIST_REPO: str
     GITHUB_BASE_BRANCH: str
-    GITHUB_FILE_PATH: str
+    GITHUB_WHITELIST_FILE_PATH: str
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
@@ -59,10 +60,12 @@ def load_settings() -> Settings:
     GH_INSTALLATION_ID = _get_env("GH_INSTALLATION_ID")
     GH_APP_PRIVATE_KEY_PEM = _get_env("GH_APP_PRIVATE_KEY_PEM")
     GITHUB_OWNER = _get_env("GITHUB_OWNER", "DragonMineZ")
-    GITHUB_REPO1 = _get_env("GITHUB_REPO1", ".github")
-    GITHUB_REPO2 = _get_env("GITHUB_REPO2", "dragonminez")
+    GITHUB_REPOS_RAW = _get_env("GITHUB_REPOS")
+    GITHUB_REPOS = tuple(r.strip() for r in GITHUB_REPOS_RAW.split(",") if r.strip())
+    GITHUB_DEFAULT_REPO = _get_env("GITHUB_DEFAULT_REPO", "dragonminez")
+    GITHUB_WHITELIST_REPO = _get_env("GITHUB_WHITELIST_REPO", ".github")
     GITHUB_BASE_BRANCH = _get_env("GITHUB_BASE_BRANCH", "main")
-    GITHUB_FILE_PATH = _get_env("GITHUB_FILE_PATH", "allowed_betatesters.txt")
+    GITHUB_WHITELIST_FILE_PATH = _get_env("GITHUB_WHITELIST_FILE_PATH", "allowed_betatesters.txt")
 
     if not token:
         raise RuntimeError(
@@ -79,6 +82,7 @@ def load_settings() -> Settings:
         "bulmaai.cogs.aionmessage",
         "bulmaai.cogs.ai_tickets",
         "bulmaai.cogs.github_cmds",
+        "bulmaai.cogs.ai_ann_translation",
     )
 
     if not openai_key:
@@ -105,8 +109,9 @@ def load_settings() -> Settings:
         GH_INSTALLATION_ID=GH_INSTALLATION_ID,
         GH_APP_PRIVATE_KEY_PEM=GH_APP_PRIVATE_KEY_PEM,
         GITHUB_OWNER=GITHUB_OWNER,
-        GITHUB_REPO1=GITHUB_REPO1,
-        GITHUB_REPO2=GITHUB_REPO2,
+        GITHUB_REPOS=GITHUB_REPOS,
+        GITHUB_DEFAULT_REPO=GITHUB_DEFAULT_REPO,
+        GITHUB_WHITELIST_REPO=GITHUB_WHITELIST_REPO,
         GITHUB_BASE_BRANCH=GITHUB_BASE_BRANCH,
-        GITHUB_FILE_PATH=GITHUB_FILE_PATH,
+        GITHUB_WHITELIST_FILE_PATH=GITHUB_WHITELIST_FILE_PATH,
     )

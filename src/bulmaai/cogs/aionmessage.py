@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from bulmaai.config import load_settings
 from bulmaai.github.github_app_auth import GitHubAppAuth
-from bulmaai.github.github_whitelist import GitHubWhitelistService
+from bulmaai.github.github_service import GitHubService
 from bulmaai.ui.patreon_views import UserConfirmView, AdminPRView, MC_NAME_RE
 from bulmaai.utils.permissions import is_admin, has_any_allowed_role
 
@@ -18,7 +18,7 @@ settings = load_settings()
 ALLOWED_ROLE_ID_1 = 1287877272224665640
 ALLOWED_ROLE_ID_2 = 1287877305259130900
 ADMIN_PING_ROLE_ID = 1309022450671161476
-STAFF_CHANNEL_ID = 1470178423862460510  # Ticket 0201
+STAFF_CHANNEL_ID = 1470178423862460510
 
 
 def _pick_staff_channel(ctx_or_inter: discord.Interaction | discord.ApplicationContext) -> discord.abc.Messageable:
@@ -27,47 +27,28 @@ def _pick_staff_channel(ctx_or_inter: discord.Interaction | discord.ApplicationC
         ch = guild.get_channel(STAFF_CHANNEL_ID)
         if ch is not None:
             return ch
-    # Fallback: use the channel where the interaction happened
-    return ctx_or_inter.channel  # type: ignore[return-value]
+    return ctx_or_inter.channel
 
 
 class AiOnMessage(commands.Cog):
-    """Admin logic for Patreon whitelist flow (no public commands)."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.gh = self._build_github_service()
 
-    def _build_github_service(self) -> GitHubWhitelistService:
+    def _build_github_service(self) -> GitHubService:
         auth = GitHubAppAuth(
-            app_id=self._env_required("GH_APP_ID"),
-            installation_id=self._env_required("GH_INSTALLATION_ID"),
-            private_key_pem=self._env_required("GH_APP_PRIVATE_KEY_PEM").replace("\\n", "\n"),
+            app_id=settings.GH_APP_ID,
+            installation_id=settings.GH_INSTALLATION_ID,
+            private_key_pem=settings.GH_APP_PRIVATE_KEY_PEM.replace("\\n", "\n"),
         )
-
-        owner = self._env_default("GITHUB_OWNER", "DragonMineZ")
-        repo = self._env_default("GITHUB_REPO1", ".github")
-        base_branch = self._env_default("GITHUB_BASE_BRANCH", "main")
-        file_path = self._env_default("GITHUB_FILE_PATH", "allowed_betatesters.txt")
-
-        return GitHubWhitelistService(
+        return GitHubService(
             auth=auth,
-            owner=owner,
-            repo=repo,
-            base_branch=base_branch,
-            file_path=file_path,
+            owner=settings.GITHUB_OWNER,
+            repo=settings.GITHUB_WHITELIST_REPO,
+            base_branch=settings.GITHUB_BASE_BRANCH,
+            whitelist_file_path=settings.GITHUB_WHITELIST_FILE_PATH,
         )
-
-    @staticmethod
-    def _env_required(name: str) -> str:
-        v = getattr(settings, name, None)
-        if not v:
-            raise RuntimeError(f"Missing env var: {name}")
-        return v
-
-    @staticmethod
-    def _env_default(name: str, default: str) -> str:
-        return getattr(settings, name, default) or default
 
     async def start_whitelist_flow_for_user(
         self,
@@ -113,9 +94,7 @@ class AiOnMessage(commands.Cog):
                 # 1) Create/update PR branch with the new nickname appended
                 await self.gh.create_branch(branch, self.gh.base_branch)
 
-                base_text, base_sha = await self.gh.get_file(
-                    self.gh.file_path, ref=self.gh.base_branch
-                )
+                base_text, base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
                 base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
 
                 if state["nick"] in base_lines:
@@ -126,7 +105,7 @@ class AiOnMessage(commands.Cog):
                     return
 
                 new_text = "\n".join(base_lines + [state["nick"]]) + "\n"
-                await self.gh.put_file(
+                await self.gh.put_whitelist_file(
                     branch=branch,
                     new_text=new_text,
                     sha=base_sha,
@@ -148,7 +127,7 @@ class AiOnMessage(commands.Cog):
 
                 async def admin_confirm(admin_inter: discord.Interaction):
                     await self.gh.merge_pr(pr_number)
-                    await self.gh.add_comment(
+                    await self.gh.add_pr_comment(
                         pr_number,
                         f"Request approved by {admin_inter.user}, PR merged.",
                     )
@@ -160,17 +139,14 @@ class AiOnMessage(commands.Cog):
                 async def admin_edit(admin_inter: discord.Interaction, new_nick: str):
                     old_nick = state["nick"]
 
-                    # Update the PR branch file: remove old nick, add new nick
-                    branch_text, branch_sha = await self.gh.get_file(
-                        self.gh.file_path, ref=branch
-                    )
+                    branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
                     lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
                     lines = [ln for ln in lines if ln != old_nick]
                     if new_nick not in lines:
                         lines.append(new_nick)
 
                     updated = "\n".join(lines) + "\n"
-                    await self.gh.put_file(
+                    await self.gh.put_whitelist_file(
                         branch=branch,
                         new_text=updated,
                         sha=branch_sha,
@@ -187,7 +163,7 @@ class AiOnMessage(commands.Cog):
 
                 async def admin_reject(admin_inter: discord.Interaction):
                     await self.gh.close_pr(pr_number)
-                    await self.gh.add_comment(
+                    await self.gh.add_pr_comment(
                         pr_number,
                         f"Request rejected by {admin_inter.user}, PR closed.",
                     )

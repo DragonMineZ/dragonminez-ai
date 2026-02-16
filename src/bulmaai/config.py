@@ -74,9 +74,9 @@ def load_settings() -> Settings:
 
     initial_extensions = (
         "bulmaai.cogs.meta",
-        # "bulmaai.cogs.faq", #Delete later
         "bulmaai.cogs.aionmessage",
         "bulmaai.cogs.ai_tickets",
+        "bulmaai.cogs.github_cmds",
     )
 
     if not openai_key:

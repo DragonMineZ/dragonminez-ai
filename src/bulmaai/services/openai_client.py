@@ -35,7 +35,59 @@ def get_schemas(enabled_tools: list[str]) -> list[dict]:
     return tools_registry.get_schemas(enabled_tools)
 
 def _detect_language_from_text(text: str) -> str:
-    # TODO: replace with real detection; for now default to English
+    if not text or len(text.strip()) < 3:
+        return "en"
+
+    text_lower = text.lower()
+    words = set(text_lower.split())
+
+    pt_markers = {
+        "não", "você", "está", "são", "também", "muito", "porque", "obrigado",
+        "obrigada", "então", "isso", "assim", "aqui", "ainda", "pode", "fazer",
+        "tenho", "meu", "minha", "seu", "sua", "como", "quando", "onde", "qual",
+        "oi", "olá", "tudo", "bom", "boa", "dia", "noite", "tarde", "por", "favor",
+        "ajuda", "preciso", "quero", "problema", "funciona", "funcionando", "erro",
+        "jogo", "servidor", "baixar", "instalar", "versão", "atualização"
+    }
+
+    es_markers = {
+        "no", "está", "son", "también", "mucho", "porque", "gracias", "entonces",
+        "esto", "así", "aquí", "todavía", "puede", "hacer", "tengo", "mi", "tu",
+        "su", "como", "cuando", "donde", "cual", "cuál", "hola", "todo", "buen",
+        "buena", "día", "noche", "tarde", "por", "favor", "ayuda", "necesito",
+        "quiero", "problema", "funciona", "funcionando", "error", "juego",
+        "servidor", "descargar", "instalar", "versión", "actualización", "qué"
+    }
+
+    en_markers = {
+        "the", "is", "are", "was", "were", "have", "has", "been", "being", "do",
+        "does", "did", "will", "would", "could", "should", "can", "may", "might",
+        "must", "shall", "this", "that", "these", "those", "what", "which", "who",
+        "how", "why", "when", "where", "hello", "hi", "thanks", "thank", "please",
+        "help", "need", "want", "problem", "issue", "work", "working", "error",
+        "game", "server", "download", "install", "version", "update", "crash"
+    }
+
+    pt_score = len(words & pt_markers)
+    es_score = len(words & es_markers)
+    en_score = len(words & en_markers)
+
+    pt_chars = sum(1 for c in text_lower if c in "çãõáéíóúâêôàü")
+    es_chars = sum(1 for c in text_lower if c in "ñáéíóúü¿¡")
+
+    if pt_chars >= 2:
+        pt_score += pt_chars * 2
+    if es_chars >= 2:
+        es_score += es_chars * 2
+    if "ñ" in text_lower or "¿" in text_lower or "¡" in text_lower:
+        es_score += 5
+    if "ç" in text_lower or "ão" in text_lower or "ões" in text_lower:
+        pt_score += 5
+
+    if pt_score > es_score and pt_score > en_score:
+        return "pt"
+    if es_score > en_score and es_score > pt_score:
+        return "es"
     return "en"
 
 

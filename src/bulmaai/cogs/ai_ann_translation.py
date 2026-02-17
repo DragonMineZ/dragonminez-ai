@@ -83,6 +83,21 @@ class AiAnnTranslation(commands.Cog):
         except Exception as e:
             log.error(f"Failed to translate announcement: {e}", exc_info=True)
 
+    @commands.Cog.listener(name="on_message")
+    async def on_message_publish(self, message: discord.Message):
+        # Publish announcement messages automatically from the three announcement channels + releases + sneak peeks to the public
+        RELEASES_CHANNEL_ID = 1260409841424535624
+        SNEAK_PEEKS_CHANNEL_ID = 1280350775989637130
+
+        if message.author.bot:
+            return
+        if message.channel.id in {ANNOUNCEMENT_SOURCE_CHANNEL_ID, SPANISH_TARGET_CHANNEL_ID, PORTUGUESE_TARGET_CHANNEL_ID, RELEASES_CHANNEL_ID, SNEAK_PEEKS_CHANNEL_ID}:
+            try:
+                await message.publish()
+                log.info(f"Published announcement message from {message.author}")
+            except Exception as e:
+                log.error(f"Failed to publish announcement message: {e}", exc_info=True)
+
 
 def setup(bot: discord.Bot):
     bot.add_cog(AiAnnTranslation(bot))

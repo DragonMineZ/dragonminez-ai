@@ -89,10 +89,9 @@ class AiAnnTranslation(commands.Cog):
         RELEASES_CHANNEL_ID = 1260409841424535624
         SNEAK_PEEKS_CHANNEL_ID = 1280350775989637130
 
-        if message.author.bot:
-            return
         if message.channel.id in {ANNOUNCEMENT_SOURCE_CHANNEL_ID, SPANISH_TARGET_CHANNEL_ID, PORTUGUESE_TARGET_CHANNEL_ID, RELEASES_CHANNEL_ID, SNEAK_PEEKS_CHANNEL_ID}:
             try:
+                # Note: Forcefully publish bot-made messages because the translation messages are sent by the bot (hehe)
                 await message.publish()
                 log.info(f"Published announcement message from {message.author}")
             except Exception as e:

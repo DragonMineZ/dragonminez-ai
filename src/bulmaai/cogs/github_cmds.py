@@ -12,6 +12,10 @@ from bulmaai.ui.github_views import (
     LabelSelectView,
     IssueManagementView,
     QuickIssueSelect,
+    PRCommentModal,
+    MergeConfirmView,
+    PRManagementView,
+    QuickPRSelect,
 )
 from bulmaai.utils.permissions import is_staff
 
@@ -62,6 +66,57 @@ def _build_issue_embed(issue: dict, owner: str, repo: str) -> discord.Embed:
         embed.add_field(name="Assignees", value=assignee_str, inline=True)
 
     embed.add_field(name="State", value=issue["state"].title(), inline=True)
+    embed.set_footer(text=f"{owner}/{repo}")
+    return embed
+
+
+def _build_pr_embed(pr: dict, owner: str, repo: str) -> discord.Embed:
+    merged = pr.get("merged", False)
+    draft = pr.get("draft", False)
+
+    if merged:
+        state_emoji, color, state_text = "🟣", discord.Color.purple(), "Merged"
+    elif pr["state"] == "open":
+        state_emoji = "📝" if draft else "🟢"
+        color = discord.Color.dark_grey() if draft else discord.Color.green()
+        state_text = "Draft" if draft else "Open"
+    else:
+        state_emoji, color, state_text = "🔴", discord.Color.red(), "Closed"
+
+    embed = discord.Embed(
+        title=f"{state_emoji} PR #{pr['number']}: {pr['title']}",
+        url=pr["html_url"],
+        color=color,
+    )
+
+    body = pr.get("body") or "No description"
+    embed.description = body[:500] + "..." if len(body) > 500 else body
+
+    embed.add_field(name="State", value=state_text, inline=True)
+    embed.add_field(name="Branch", value=f"`{pr['head']['ref']}` → `{pr['base']['ref']}`", inline=True)
+
+    if pr.get("user"):
+        embed.add_field(name="Author", value=pr["user"]["login"], inline=True)
+
+    labels = pr.get("labels", [])
+    if labels:
+        embed.add_field(name="Labels", value=" ".join(f"`{l['name']}`" for l in labels[:10]), inline=False)
+
+    reviewers = pr.get("requested_reviewers", [])
+    if reviewers:
+        embed.add_field(name="Reviewers", value=", ".join(r["login"] for r in reviewers[:5]), inline=True)
+
+    stats = []
+    if pr.get("additions") is not None:
+        stats.append(f"**+{pr['additions']}** / **-{pr['deletions']}**")
+    if pr.get("changed_files") is not None:
+        stats.append(f"{pr['changed_files']} file(s)")
+    if stats:
+        embed.add_field(name="Changes", value=" · ".join(stats), inline=True)
+
+    if pr.get("mergeable_state"):
+        embed.add_field(name="Mergeable", value=pr["mergeable_state"].replace("_", " ").title(), inline=True)
+
     embed.set_footer(text=f"{owner}/{repo}")
     return embed
 
@@ -375,6 +430,209 @@ class GitHubCog(commands.Cog):
         embed = _build_issue_embed(issue, self.owner, target_repo)
         await ctx.followup.send(f"🏷️ Labels added to issue #{issue_number}!", embed=embed)
 
+    pr = github.create_subgroup("pr", "GitHub pull request management")
+
+    @pr.command(name="list", description="List pull requests")
+    @discord.option("state", description="PR state", choices=["open", "closed", "all"], required=False)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    async def list_prs(self, ctx: discord.ApplicationContext, state: str = "open", repo: str = None):
+        await ctx.defer(ephemeral=True)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
+
+        try:
+            prs = await service.list_prs(state=state)
+        except Exception as e:
+            log.exception("Failed to list PRs")
+            return await ctx.followup.send(f"Failed to list pull requests: {e}", ephemeral=True)
+
+        if not prs:
+            return await ctx.followup.send(f"No {state} pull requests found.", ephemeral=True)
+
+        embed = discord.Embed(
+            title=f"📋 {state.title()} Pull Requests - {self.owner}/{target_repo}",
+            color=discord.Color.blurple(),
+        )
+
+        desc_lines = []
+        for pr in prs[:15]:
+            merged = pr.get("merged_at") is not None
+            draft = pr.get("draft", False)
+            if merged:
+                emoji = "🟣"
+            elif pr["state"] == "open":
+                emoji = "📝" if draft else "🟢"
+            else:
+                emoji = "🔴"
+            title = pr["title"][:50]
+            desc_lines.append(f"{emoji} **#{pr['number']}** [{title}]({pr['html_url']}) by `{pr['user']['login']}`")
+
+        embed.description = "\n".join(desc_lines)
+        if len(prs) > 15:
+            embed.set_footer(text=f"Showing 15 of {len(prs)} pull requests")
+
+        select_view = QuickPRSelect(prs, owner=self.owner, repo=target_repo)
+        await ctx.followup.send("Select a PR to view details:", embed=embed, view=select_view, ephemeral=True)
+
+        await select_view.wait()
+        if select_view.selected_pr:
+            pr = await service.get_pr(select_view.selected_pr["number"])
+            detail_embed = _build_pr_embed(pr, self.owner, target_repo)
+            view = PRManagementView(
+                pr_number=pr["number"],
+                owner=self.owner,
+                repo=target_repo,
+                pr_state=pr["state"],
+                merged=pr.get("merged", False),
+            )
+            await ctx.followup.send(embed=detail_embed, view=view)
+
+    @pr.command(name="view", description="View a pull request")
+    @discord.option("pr_number", description="PR number to view", required=True)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    async def view_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
+        await ctx.defer(ephemeral=True)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
+
+        try:
+            pr = await service.get_pr(pr_number)
+        except Exception as e:
+            log.exception("Failed to fetch PR")
+            return await ctx.followup.send(f"Failed to fetch pull request: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, self.owner, target_repo)
+        view = PRManagementView(
+            pr_number=pr_number,
+            owner=self.owner,
+            repo=target_repo,
+            pr_state=pr["state"],
+            merged=pr.get("merged", False),
+        )
+        await ctx.followup.send(embed=embed, view=view)
+
+    @pr.command(name="merge", description="Merge a pull request")
+    @discord.option("pr_number", description="PR number to merge", required=True)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    async def merge_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
+        if not is_staff(ctx.author):
+            return await ctx.respond("Only staff can merge pull requests.", ephemeral=True)
+
+        await ctx.defer(ephemeral=True)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
+
+        confirm_view = MergeConfirmView()
+        await ctx.followup.send(
+            f"**Merge PR #{pr_number}** — Select a merge method and confirm:",
+            view=confirm_view,
+            ephemeral=True,
+        )
+
+        await confirm_view.wait()
+        if not confirm_view.confirmed or not confirm_view.merge_method:
+            return await ctx.followup.send("Merge cancelled.", ephemeral=True)
+
+        try:
+            await service.merge_pr(pr_number, merge_method=confirm_view.merge_method)
+            pr = await service.get_pr(pr_number)
+        except Exception as e:
+            log.exception("Failed to merge PR")
+            return await ctx.followup.send(f"Failed to merge pull request: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, self.owner, target_repo)
+        view = PRManagementView(
+            pr_number=pr_number,
+            owner=self.owner,
+            repo=target_repo,
+            pr_state=pr["state"],
+            merged=True,
+        )
+        await ctx.followup.send(f"✅ PR #{pr_number} merged via **{confirm_view.merge_method}**!", embed=embed, view=view)
+
+    @pr.command(name="close", description="Close a pull request")
+    @discord.option("pr_number", description="PR number to close", required=True)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    async def close_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
+        if not is_staff(ctx.author):
+            return await ctx.respond("Only staff can close pull requests.", ephemeral=True)
+
+        await ctx.defer(ephemeral=True)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
+
+        try:
+            pr = await service.close_pr(pr_number)
+        except Exception as e:
+            log.exception("Failed to close PR")
+            return await ctx.followup.send(f"Failed to close pull request: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, self.owner, target_repo)
+        view = PRManagementView(
+            pr_number=pr_number,
+            owner=self.owner,
+            repo=target_repo,
+            pr_state="closed",
+            merged=False,
+        )
+        await ctx.followup.send(f"🔒 PR #{pr_number} closed!", embed=embed, view=view)
+
+    @pr.command(name="reopen", description="Reopen a closed pull request")
+    @discord.option("pr_number", description="PR number to reopen", required=True)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    async def reopen_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
+        if not is_staff(ctx.author):
+            return await ctx.respond("Only staff can reopen pull requests.", ephemeral=True)
+
+        await ctx.defer(ephemeral=True)
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
+
+        try:
+            pr = await service.reopen_pr(pr_number)
+        except Exception as e:
+            log.exception("Failed to reopen PR")
+            return await ctx.followup.send(f"Failed to reopen pull request: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, self.owner, target_repo)
+        view = PRManagementView(
+            pr_number=pr_number,
+            owner=self.owner,
+            repo=target_repo,
+            pr_state="open",
+            merged=False,
+        )
+        await ctx.followup.send(f"🔓 PR #{pr_number} reopened!", embed=embed, view=view)
+
+    @pr.command(name="comment", description="Add a comment to a pull request")
+    @discord.option("pr_number", description="PR number", required=True)
+    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    async def comment_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
+        if not is_staff(ctx.author):
+            return await ctx.respond("Only staff can comment on pull requests.", ephemeral=True)
+
+        target_repo = repo or self.default_repo
+        service = _get_github_service(target_repo)
+
+        modal = PRCommentModal(pr_number)
+        await ctx.send_modal(modal)
+        await modal.wait()
+
+        if not modal.comment:
+            return
+
+        await ctx.respond("Adding comment...", ephemeral=True)
+
+        try:
+            await service.add_pr_comment(pr_number, modal.comment)
+            pr = await service.get_pr(pr_number)
+        except Exception as e:
+            log.exception("Failed to add PR comment")
+            return await ctx.followup.send(f"Failed to add comment: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, self.owner, target_repo)
+        await ctx.followup.send(f"💬 Comment added to PR #{pr_number}!", embed=embed)
+
 
 class PersistentGitHubView(discord.ui.View):
     def __init__(self, cog: GitHubCog):
@@ -393,6 +651,22 @@ class PersistentGitHubView(discord.ui.View):
     async def comment_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
         pass
 
+    @discord.ui.button(label="Merge PR", style=discord.ButtonStyle.success, custom_id="gh_pr_merge_persistent")
+    async def merge_pr_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        pass
+
+    @discord.ui.button(label="Close PR", style=discord.ButtonStyle.danger, custom_id="gh_pr_close_persistent")
+    async def close_pr_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        pass
+
+    @discord.ui.button(label="Reopen PR", style=discord.ButtonStyle.success, custom_id="gh_pr_reopen_persistent")
+    async def reopen_pr_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        pass
+
+    @discord.ui.button(label="Comment PR", style=discord.ButtonStyle.primary, custom_id="gh_pr_comment_persistent")
+    async def comment_pr_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        pass
+
 
 class GitHubCogWithListeners(GitHubCog):
     @commands.Cog.listener()
@@ -408,6 +682,14 @@ class GitHubCogWithListeners(GitHubCog):
             await self._handle_reopen(interaction, custom_id)
         elif custom_id.startswith("gh_comment:"):
             await self._handle_comment(interaction, custom_id)
+        elif custom_id.startswith("gh_pr_merge:"):
+            await self._handle_pr_merge(interaction, custom_id)
+        elif custom_id.startswith("gh_pr_close:"):
+            await self._handle_pr_close(interaction, custom_id)
+        elif custom_id.startswith("gh_pr_reopen:"):
+            await self._handle_pr_reopen(interaction, custom_id)
+        elif custom_id.startswith("gh_pr_comment:"):
+            await self._handle_pr_comment(interaction, custom_id)
 
     async def _handle_close(self, interaction: discord.Interaction, custom_id: str):
         if not is_staff(interaction.user):
@@ -488,6 +770,113 @@ class GitHubCogWithListeners(GitHubCog):
             return await interaction.followup.send(f"Failed to add comment: {e}", ephemeral=True)
 
         await interaction.followup.send(f"💬 Comment added to issue #{issue_number}!", ephemeral=True)
+
+    async def _handle_pr_merge(self, interaction: discord.Interaction, custom_id: str):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("Only staff can merge PRs.", ephemeral=True)
+
+        parts = custom_id.split(":")
+        if len(parts) < 4:
+            return await interaction.response.send_message("Invalid button data.", ephemeral=True)
+
+        owner, repo, pr_number = parts[1], parts[2], int(parts[3])
+        service = _get_github_service(repo)
+
+        confirm_view = MergeConfirmView()
+        await interaction.response.send_message(
+            f"**Merge PR #{pr_number}** — Select a merge method and confirm:",
+            view=confirm_view,
+            ephemeral=True,
+        )
+
+        await confirm_view.wait()
+        if not confirm_view.confirmed or not confirm_view.merge_method:
+            return await interaction.followup.send("Merge cancelled.", ephemeral=True)
+
+        try:
+            await service.merge_pr(pr_number, merge_method=confirm_view.merge_method)
+            pr = await service.get_pr(pr_number)
+        except Exception as e:
+            return await interaction.followup.send(f"Failed to merge PR: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, owner, repo)
+        view = PRManagementView(pr_number=pr_number, owner=owner, repo=repo, pr_state=pr["state"], merged=True)
+
+        await interaction.message.edit(embed=embed, view=view)
+        await interaction.followup.send(f"✅ PR #{pr_number} merged via **{confirm_view.merge_method}**!", ephemeral=True)
+
+    async def _handle_pr_close(self, interaction: discord.Interaction, custom_id: str):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("Only staff can close PRs.", ephemeral=True)
+
+        parts = custom_id.split(":")
+        if len(parts) < 4:
+            return await interaction.response.send_message("Invalid button data.", ephemeral=True)
+
+        owner, repo, pr_number = parts[1], parts[2], int(parts[3])
+        service = _get_github_service(repo)
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            pr = await service.close_pr(pr_number)
+        except Exception as e:
+            return await interaction.followup.send(f"Failed to close PR: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, owner, repo)
+        view = PRManagementView(pr_number=pr_number, owner=owner, repo=repo, pr_state="closed", merged=False)
+
+        await interaction.message.edit(embed=embed, view=view)
+        await interaction.followup.send(f"🔒 PR #{pr_number} closed!", ephemeral=True)
+
+    async def _handle_pr_reopen(self, interaction: discord.Interaction, custom_id: str):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("Only staff can reopen PRs.", ephemeral=True)
+
+        parts = custom_id.split(":")
+        if len(parts) < 4:
+            return await interaction.response.send_message("Invalid button data.", ephemeral=True)
+
+        owner, repo, pr_number = parts[1], parts[2], int(parts[3])
+        service = _get_github_service(repo)
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            pr = await service.reopen_pr(pr_number)
+        except Exception as e:
+            return await interaction.followup.send(f"Failed to reopen PR: {e}", ephemeral=True)
+
+        embed = _build_pr_embed(pr, owner, repo)
+        view = PRManagementView(pr_number=pr_number, owner=owner, repo=repo, pr_state="open", merged=False)
+
+        await interaction.message.edit(embed=embed, view=view)
+        await interaction.followup.send(f"🔓 PR #{pr_number} reopened!", ephemeral=True)
+
+    async def _handle_pr_comment(self, interaction: discord.Interaction, custom_id: str):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("Only staff can comment on PRs.", ephemeral=True)
+
+        parts = custom_id.split(":")
+        if len(parts) < 4:
+            return await interaction.response.send_message("Invalid button data.", ephemeral=True)
+
+        owner, repo, pr_number = parts[1], parts[2], int(parts[3])
+        service = _get_github_service(repo)
+
+        modal = PRCommentModal(pr_number)
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+
+        if not modal.comment:
+            return
+
+        try:
+            await service.add_pr_comment(pr_number, modal.comment)
+        except Exception as e:
+            return await interaction.followup.send(f"Failed to add comment: {e}", ephemeral=True)
+
+        await interaction.followup.send(f"💬 Comment added to PR #{pr_number}!", ephemeral=True)
 
 
 def setup(bot: discord.Bot):

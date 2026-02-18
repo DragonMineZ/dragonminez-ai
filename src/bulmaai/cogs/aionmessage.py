@@ -112,11 +112,13 @@ class AiOnMessage(commands.Cog):
                     message=f"Add beta tester: {state['nick']}",
                 )
 
-                pr_number, pr_url = await self.gh.create_pr(
+                pr_data = await self.gh.create_pr(
                     head_branch=branch,
                     title=f"Add beta tester: {state['nick']}",
                     body=f"Requested by Discord user {interaction.user} ({interaction.user.id}).",
                 )
+                pr_number = pr_data["number"]
+                pr_url = pr_data["html_url"]
 
                 # 2) Post staff approval message with admin-only buttons
                 admin_role = interaction.guild.get_role(ADMIN_PING_ROLE_ID)

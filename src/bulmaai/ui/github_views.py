@@ -222,3 +222,152 @@ class QuickIssueSelect(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
 
 
+class PRCommentModal(discord.ui.Modal):
+    def __init__(self, pr_number: int):
+        super().__init__(title=f"Comment on PR #{pr_number}")
+        self.pr_number = pr_number
+        self.comment: str | None = None
+
+        self.comment_input = discord.ui.InputText(
+            label="Comment",
+            placeholder="Your comment on this pull request...",
+            style=discord.InputTextStyle.long,
+            min_length=1,
+            max_length=4000,
+            required=True,
+        )
+        self.add_item(self.comment_input)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.comment = self.comment_input.value.strip()
+        await interaction.response.defer(ephemeral=True)
+
+
+class MergeConfirmView(discord.ui.View):
+    def __init__(self, *, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.merge_method: str | None = None
+        self.confirmed = False
+
+        select = discord.ui.Select(
+            placeholder="Select merge method",
+            options=[
+                discord.SelectOption(label="Squash and Merge", value="squash", description="Squash all commits into one", emoji="🔹"),
+                discord.SelectOption(label="Merge Commit", value="merge", description="Create a merge commit", emoji="🔸"),
+                discord.SelectOption(label="Rebase and Merge", value="rebase", description="Rebase commits onto base", emoji="🔻"),
+            ],
+            custom_id="merge_method_select_temp",
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        self.merge_method = interaction.data.get("values", [None])[0]
+        await interaction.response.defer(ephemeral=True)
+
+    @discord.ui.button(label="Confirm Merge", style=discord.ButtonStyle.success, row=1, emoji="✅")
+    async def confirm_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if not self.merge_method:
+            return await interaction.response.send_message("Please select a merge method first.", ephemeral=True)
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer(ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
+    async def cancel_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        self.confirmed = False
+        self.stop()
+        await interaction.response.defer(ephemeral=True)
+
+
+class PRManagementView(discord.ui.View):
+    def __init__(self, *, pr_number: int, owner: str, repo: str, pr_state: str = "open", merged: bool = False):
+        super().__init__(timeout=None)
+        self.pr_number = pr_number
+        self.owner = owner
+        self.repo = repo
+        self.pr_state = pr_state
+        self.merged = merged
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.clear_items()
+
+        if self.pr_state == "open":
+            merge_btn = discord.ui.Button(
+                label="Merge PR",
+                style=discord.ButtonStyle.success,
+                custom_id=f"gh_pr_merge:{self.owner}:{self.repo}:{self.pr_number}",
+                emoji="✅",
+            )
+            self.add_item(merge_btn)
+
+            close_btn = discord.ui.Button(
+                label="Close PR",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"gh_pr_close:{self.owner}:{self.repo}:{self.pr_number}",
+                emoji="🔒",
+            )
+            self.add_item(close_btn)
+        elif not self.merged:
+            reopen_btn = discord.ui.Button(
+                label="Reopen PR",
+                style=discord.ButtonStyle.success,
+                custom_id=f"gh_pr_reopen:{self.owner}:{self.repo}:{self.pr_number}",
+                emoji="🔓",
+            )
+            self.add_item(reopen_btn)
+
+        comment_btn = discord.ui.Button(
+            label="Comment",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"gh_pr_comment:{self.owner}:{self.repo}:{self.pr_number}",
+            emoji="💬",
+        )
+        self.add_item(comment_btn)
+
+        link_btn = discord.ui.Button(
+            label="View on GitHub",
+            style=discord.ButtonStyle.link,
+            url=f"https://github.com/{self.owner}/{self.repo}/pull/{self.pr_number}",
+            emoji="🔗",
+        )
+        self.add_item(link_btn)
+
+
+class QuickPRSelect(discord.ui.View):
+    def __init__(self, prs: list[dict], *, owner: str, repo: str, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.selected_pr: dict | None = None
+        self.owner = owner
+        self.repo = repo
+
+        options = []
+        for pr in prs[:25]:
+            title = pr["title"][:95] + "..." if len(pr["title"]) > 95 else pr["title"]
+            desc = f"#{pr['number']} by {pr['user']['login']}"
+            if pr.get("draft"):
+                desc += " (draft)"
+            options.append(discord.SelectOption(
+                label=title,
+                value=str(pr["number"]),
+                description=desc[:100],
+            ))
+
+        if options:
+            select = discord.ui.Select(
+                placeholder="Select a pull request",
+                options=options,
+                custom_id="quick_pr_select_temp",
+            )
+            select.callback = self.select_callback
+            self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        pr_num = interaction.data.get("values", [None])[0]
+        if pr_num:
+            self.selected_pr = {"number": int(pr_num)}
+        self.stop()
+        await interaction.response.defer(ephemeral=True)
+
+

@@ -119,24 +119,42 @@ class GitHubService:
 
     # ==================== PULL REQUESTS ====================
 
-    async def create_pr(self, *, head_branch: str, title: str, body: str) -> tuple[int, str]:
+    async def list_prs(self, *, state: str = "open", per_page: int = 25) -> list[dict]:
+        params = {"state": state, "per_page": per_page}
+        r = await request("GET", f"{self.api}/pulls", headers=await self._headers(), params=params)
+        r.raise_for_status()
+        return r.json()
+
+    async def get_pr(self, pr_number: int) -> dict:
+        r = await request("GET", f"{self.api}/pulls/{pr_number}", headers=await self._headers())
+        r.raise_for_status()
+        return r.json()
+
+    async def create_pr(self, *, head_branch: str, title: str, body: str) -> dict:
         payload = {"title": title, "head": head_branch, "base": self.base_branch, "body": body}
         r = await request("POST", f"{self.api}/pulls", headers=await self._headers(), json=payload)
         r.raise_for_status()
-        j = r.json()
-        return j["number"], j["html_url"]
+        return r.json()
 
-    async def merge_pr(self, pr_number: int) -> None:
-        r = await request("PUT", f"{self.api}/pulls/{pr_number}/merge", headers=await self._headers(), json={"merge_method": "squash"})
+    async def merge_pr(self, pr_number: int, *, merge_method: str = "squash") -> dict:
+        r = await request("PUT", f"{self.api}/pulls/{pr_number}/merge", headers=await self._headers(), json={"merge_method": merge_method})
         r.raise_for_status()
+        return r.json()
 
-    async def close_pr(self, pr_number: int) -> None:
+    async def close_pr(self, pr_number: int) -> dict:
         r = await request("PATCH", f"{self.api}/pulls/{pr_number}", headers=await self._headers(), json={"state": "closed"})
         r.raise_for_status()
+        return r.json()
 
-    async def add_pr_comment(self, pr_number: int, comment: str) -> None:
+    async def reopen_pr(self, pr_number: int) -> dict:
+        r = await request("PATCH", f"{self.api}/pulls/{pr_number}", headers=await self._headers(), json={"state": "open"})
+        r.raise_for_status()
+        return r.json()
+
+    async def add_pr_comment(self, pr_number: int, comment: str) -> dict:
         r = await request("POST", f"{self.api}/issues/{pr_number}/comments", headers=await self._headers(), json={"body": comment})
         r.raise_for_status()
+        return r.json()
 
     # ==================== WHITELIST HELPERS ====================
 

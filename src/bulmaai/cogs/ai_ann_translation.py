@@ -68,14 +68,16 @@ class AiAnnTranslation(commands.Cog):
             spanish_channel = self.bot.get_channel(SPANISH_TARGET_CHANNEL_ID)
             portuguese_channel = self.bot.get_channel(PORTUGUESE_TARGET_CHANNEL_ID)
 
+            no_mentions = discord.AllowedMentions.none()
+
             if spanish_channel:
-                await spanish_channel.send(spanish_text)
+                await spanish_channel.send(spanish_text, allowed_mentions=no_mentions)
                 log.info("Spanish translation sent successfully")
             else:
                 log.warning(f"Spanish channel {SPANISH_TARGET_CHANNEL_ID} not found")
 
             if portuguese_channel:
-                await portuguese_channel.send(portuguese_text)
+                await portuguese_channel.send(portuguese_text, allowed_mentions=no_mentions)
                 log.info("Portuguese translation sent successfully")
             else:
                 log.warning(f"Portuguese channel {PORTUGUESE_TARGET_CHANNEL_ID} not found")

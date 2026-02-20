@@ -340,5 +340,5 @@ def _looks_like_mc_log(text: str) -> bool:
     return any(ind in lower for ind in indicators)
 
 
-async def setup(bot: discord.Bot):
+def setup(bot: discord.Bot):
     bot.add_cog(LogParserCog(bot))

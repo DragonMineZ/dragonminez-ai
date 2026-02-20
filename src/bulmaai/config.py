@@ -84,6 +84,7 @@ def load_settings() -> Settings:
         "bulmaai.cogs.github_cmds",
         "bulmaai.cogs.ai_ann_translation",
         "bulmaai.cogs.rules",
+        "bulmaai.cogs.log_parser",
     )
 
     if not openai_key:

@@ -29,7 +29,7 @@ Offenses guidelines:
 
 We also comply with Discord's [ToS](https://discord.com/terms)!
 
-As of February 4, 2025, we fully comply with our [Code of Conduct](https://github.com/DragonMineZ/.github/blob/main/CODE_OF_CONDUCT.md) located in our GitHub Repository.
+As of February 4, 2025, we fully comply with our [Code of Conduct](https://github.com/DragonMineZ/dragonminez/blob/main/.github/CODE_OF_CONDUCT.md) located in our GitHub Repository.
 
 Updated: 2/4/2025"""
             },
@@ -67,7 +67,7 @@ Guía de Sanciones:
 
 ¡También cumplimos con los [Términos de Servicio](https://discord.com/terms) de Discord!
 
-A partir del 4 de febrero de 2025, cumplimos plenamente con nuestro [Código de Conducta](https://github.com/DragonMineZ/.github/blob/main/CODE_OF_CONDUCT.md) ubicado en nuestro Repositorio de GitHub.
+A partir del 4 de febrero de 2025, cumplimos plenamente con nuestro [Código de Conducta](https://github.com/DragonMineZ/dragonminez/blob/main/.github/CODE_OF_CONDUCT.md) ubicado en nuestro Repositorio de GitHub.
 
 Actualizado: 4/2/2025"""
             },
@@ -105,7 +105,7 @@ Diretrizes de Penalidades:
 
 Também cumprimos os [Termos de Serviço](https://discord.com/terms) do Discord!
 
-A partir de 4 de fevereiro de 2025, cumprimos totalmente nosso [Código de Conduta](https://github.com/DragonMineZ/.github/blob/main/CODE_OF_CONDUCT.md) localizado em nosso Repositório no GitHub.
+A partir de 4 de fevereiro de 2025, cumprimos totalmente nosso [Código de Conduta](https://github.com/DragonMineZ/dragonminez/blob/main/.github/CODE_OF_CONDUCT.md) localizado em nosso Repositório no GitHub.
 
 Atualizado: 04/02/2025"""
             },

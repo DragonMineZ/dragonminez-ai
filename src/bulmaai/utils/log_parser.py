@@ -43,29 +43,40 @@ _RE_MC_VERSION_ALT = re.compile(
     re.IGNORECASE,
 )
 
-# ── Mod discovery (primary) ───────────────────────────────────────────────────
+# ── Mod discovery (primary for latest.log) ────────────────────────────────────
 # Matches Forge LOADING debug lines:
 #   "Found valid mod file journeymap-....jar with {journeymap} mods - versions {5.8.0beta5}"
 _RE_MOD_DISCOVERY = re.compile(
-    r"Found valid mod file \S+ with \{([a-z0-9_\-]+)} mods - versions \{([^}]+)}",
+    r"Found valid mod file \S+ with \{([a-z0-9_-]+)} mods - versions \{([^}]+)}",
     re.IGNORECASE,
 )
 
 # ── Mod list fallbacks ────────────────────────────────────────────────────────
-# Crash-report pipe table (lines may start with | in some launcher outputs):
-#   "|forge-1.20.1-47.0.19-universal.jar |Forge |forge |47.0.19 |COMMON_SET|...|"
-_RE_MOD_TABLE = re.compile(
+
+# 1. Crash Report Table (found in crash-*.txt files)
+# Format: Filename | Name | Mod ID | Version | Status | Manifest
+# Example: xenon.jar | Xenon | xenon | 0.3.31 | DONE | ...
+_RE_MOD_CRASH_REPORT_TABLE = re.compile(
+    r"^\s*[^|]+\s*\|\s*[^|]+\s*\|\s*([a-z0-9_\-]+)\s*\|\s*([0-9][\w.\-+]+)",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# 2. Forge Log Table (found in latest.log usually with leading pipe)
+# Format: | Mod ID | Version | ...
+_RE_MOD_LOG_TABLE = re.compile(
     r"^\|?\s*(\w[\w\-]*)\s*\|\s*([\d][\w.\-+]*)\s*\|",
     re.MULTILINE,
 )
-# "Mod ID: 'modid', ... Version: 'x.x.x'" style
+
+# 3. "Mod ID: 'modid', ... Version: 'x.x.x'" style
 _RE_MOD_ENTRY = re.compile(
     r"(?:Mod ID:\s*'?|Loading\s+)([a-z_][a-z0-9_]*)'?.*?Version:\s*'?([^'\";\n]+)",
     re.IGNORECASE,
 )
-# Simple 2-space-separated list
+
+# 4. Simple 2-space-separated list
 _RE_MOD_SIMPLE = re.compile(
-    r"^\s{2,}([a-z_][a-z0-9_]{1,63})\s{2,}(\d\S{0,40})",
+    r"^\s{2,}([a-z_][a-z0-9_]{1,63})\s{2,}([\d][^\s]{0,40})",
     re.MULTILINE,
 )
 
@@ -90,7 +101,7 @@ _RE_ERROR_LINE = re.compile(
 _RE_STACKTRACE_START = re.compile(
     r"(?:java|net|com|org|io)\.\S+(?:Exception|Error)[^\n]*"
     r"|Caused by:\s*\S+"
-    r"|--- [^\-]+ ---",
+    r"|--- [^-]+ ---",
 )
 
 # ── OS / Memory ───────────────────────────────────────────────────────────────
@@ -123,7 +134,7 @@ class LogReport:
 
 
 def parse_log(text: str) -> LogReport:
-    """Parse a Minecraft Forge 1.20.1 latest.log and return a structured report."""
+    """Parse a Minecraft Forge latest.log OR crash report."""
     report = LogReport()
 
     # ── Java version ──────────────────────────────────────────────────────────
@@ -154,6 +165,9 @@ def parse_log(text: str) -> LogReport:
     # ── Forge detection ───────────────────────────────────────────────────────
     if _RE_MODLOADER.search(text):
         report.is_forge = True
+    # If it's a crash report with "Forge" mentioned in the stacktrace or headers
+    if "forge" in text.lower() and "minecraft crash report" in text.lower():
+        report.is_forge = True
 
     # ── OS ────────────────────────────────────────────────────────────────────
     m = _RE_OS.search(text)
@@ -176,21 +190,29 @@ def parse_log(text: str) -> LogReport:
         version = m.group(2).strip()
         report.mods[mod_id] = version
 
-    # 2. Crash-report pipe table (present if crash data is embedded)
-    for m in _RE_MOD_TABLE.finditer(text):
+    # 2. Crash Report Table (found in crash-*.txt files)
+    # Captures 3rd column (Mod ID) and 4th column (Version)
+    for m in _RE_MOD_CRASH_REPORT_TABLE.finditer(text):
+        mod_id = m.group(1).strip().lower()
+        version = m.group(2).strip()
+        if mod_id not in report.mods and mod_id not in ("mod id", "modid"):
+            report.mods[mod_id] = version
+
+    # 3. Log Table (found in latest.log, usually starts with |)
+    for m in _RE_MOD_LOG_TABLE.finditer(text):
         mod_id = m.group(1).strip().lower()
         version = m.group(2).strip()
         if mod_id not in report.mods:
             report.mods[mod_id] = version
 
-    # 3. "Mod ID: / Loading " style
+    # 4. "Mod ID: / Loading " style
     for m in _RE_MOD_ENTRY.finditer(text):
         mod_id = m.group(1).strip().lower()
         version = m.group(2).strip()
         if mod_id not in report.mods:
             report.mods[mod_id] = version
 
-    # 4. Simple indented list
+    # 5. Simple indented list
     for m in _RE_MOD_SIMPLE.finditer(text):
         mod_id = m.group(1).strip().lower()
         version = m.group(2).strip()
@@ -213,12 +235,24 @@ def parse_log(text: str) -> LogReport:
     in_trace = False
     consecutive_blanks = 0
 
+    # CRASH REPORT SPECIAL: If the file starts with "---- Minecraft Crash Report",
+    # the entire top section (Description + Stacktrace) is the error.
+    is_crash_report = "---- Minecraft Crash Report ----" in text
+
     for line in lines:
+        # Standard log error line
         if _RE_ERROR_LINE.match(line):
             error_lines.append(line.strip())
             in_trace = True
             consecutive_blanks = 0
             trace_lines.append(line.strip())
+            continue
+
+        # Crash report "Description" line
+        if is_crash_report and line.strip().startswith("Description:"):
+            error_lines.append(line.strip())
+            # Start collecting trace immediately after description in crash reports
+            in_trace = True
             continue
 
         if _RE_STACKTRACE_START.search(line):
@@ -232,8 +266,6 @@ def parse_log(text: str) -> LogReport:
                 trace_lines.append(stripped)
             else:
                 consecutive_blanks += 1
-                # Two consecutive blank lines reliably signal the end of a block.
-                # One blank may just be a separator between "Caused by:" chains.
                 if consecutive_blanks >= 2:
                     in_trace = False
                     consecutive_blanks = 0

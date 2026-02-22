@@ -57,11 +57,11 @@ SUPPORT_CONTENT: dict[str, SupportLanguageData] = {
         "boosting_description": (
             "Love DragonMineZ? Show your support by boosting the server and unlock exclusive roles!\n"
         ),
-        "boost_tier1_title": "<a:nitro_slide:1475248617416691874 1× Boost — Supporter",
+        "boost_tier1_title": "<a:nitro_slide:1475248617416691874> 1× Boost — Supporter",
         "boost_tier1_value": "Unlock the **Supporter** role! Get recognized as a valued member of our community with exclusive perks.",
-        "boost_tier2_title": "<:boostgem9:1332831821075271680> 3× Boosts — Contributor",
+        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 3× Boosts — Contributor",
         "boost_tier2_value": "Level up to the **Contributor** role! Stand out even more and gain access to additional benefits.",
-        "boost_tier3_title": "<:boostgem24:1332831836929605642> 4× Boosts — Benefactor",
+        "boost_tier3_title": "<a:boostgem9:1475248556792221898> 4× Boosts — Benefactor",
         "boost_tier3_value": "Achieve the prestigious **Benefactor** role! The ultimate recognition for your incredible generosity.",
         "boosting_footer": "Every boost helps keep the server running strong. Thank you for your support! 💜",
         "patreon_label": "Become a Patron",
@@ -92,11 +92,11 @@ SUPPORT_CONTENT: dict[str, SupportLanguageData] = {
         "boosting_description": (
             "¿Te encanta DragonMineZ? ¡Muestra tu apoyo impulsando el servidor y desbloquea roles exclusivos!\n"
         ),
-        "boost_tier1_title": "<a:nitro_slide:1475248617416691874 1× Boost — Supporter",
+        "boost_tier1_title": "<a:nitro_slide:1475248617416691874> 1× Boost — Supporter",
         "boost_tier1_value": "¡Desbloquea el rol de **Supporter**! Sé reconocido como un miembro valioso de nuestra comunidad con beneficios exclusivos.",
-        "boost_tier2_title": "<:boost2:1332831821075271680> 3× Boosts — Contributor",
+        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 3× Boosts — Contributor",
         "boost_tier2_value": "¡Sube de nivel al rol de **Contributor**! Destaca aún más y obtén acceso a beneficios adicionales.",
-        "boost_tier3_title": "<:boost3:1332831836929605642> 4× Boosts — Benefactor",
+        "boost_tier3_title": "<a:boostgem9:1475248556792221898> 4× Boosts — Benefactor",
         "boost_tier3_value": "¡Alcanza el prestigioso rol de **Benefactor**! El máximo reconocimiento por tu increíble generosidad.",
         "boosting_footer": "Cada boost ayuda a mantener el servidor fuerte. ¡Gracias por tu apoyo! 💜",
         "patreon_label": "Vuélvete un Patron",
@@ -127,11 +127,11 @@ SUPPORT_CONTENT: dict[str, SupportLanguageData] = {
         "boosting_description": (
             "Ama o DragonMineZ? Mostre seu apoio impulsionando o servidor e desbloqueie roles exclusivos!\n"
         ),
-        "boost_tier1_title": "<a:nitro_slide:1475248617416691874 1× Boost — Supporter",
+        "boost_tier1_title": "<a:nitro_slide:1475248617416691874> 1× Boost — Supporter",
         "boost_tier1_value": "Desbloqueie o cargo de **Supporter**! Seja reconhecido como um membro valioso da nossa comunidade com benefícios exclusivos.",
-        "boost_tier2_title": "<:boost2:1332831821075271680> 3× Boosts — Contributor",
+        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 3× Boosts — Contributor",
         "boost_tier2_value": "Suba de nível para o cargo de **Contributor**! Destaque-se ainda mais e ganhe acesso a benefícios adicionais.",
-        "boost_tier3_title": "<:boost3:1332831836929605642> 4× Boosts — Benefactor",
+        "boost_tier3_title": "<a:boostgem9:1475248556792221898> 4× Boosts — Benefactor",
         "boost_tier3_value": "Alcance o prestigioso cargo de **Benefactor**! O reconhecimento máximo pela sua incrível generosidade.",
         "boosting_footer": "Cada boost ajuda a manter o servidor forte. Obrigado pelo seu apoio! 💜",
         "patreon_label": "Torne-se um Patron",

@@ -56,14 +56,15 @@ SUPPORT_CONTENT: dict[str, SupportLanguageData] = {
         "boosting_title": "🚀 Server Boosting Rewards",
         "boosting_description": (
             "Love DragonMineZ? Show your support by boosting the server and unlock exclusive roles!\n"
+            "Choose your level and shine across the community."
         ),
         "boost_tier1_title": "<a:nitro_slide:1475248617416691874> 1× Boost — Supporter",
-        "boost_tier1_value": "Unlock the **Supporter** role! Get recognized as a valued member of our community with exclusive perks.",
-        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 3× Boosts — Contributor",
-        "boost_tier2_value": "Level up to the **Contributor** role! Stand out even more and gain access to additional benefits.",
+        "boost_tier1_value": "Claim the **Supporter** role and its perks — your badge of pride in the community.",
+        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 2× Boosts — Contributor",
+        "boost_tier2_value": "Step up to **Contributor** for extra flair and a louder presence in the server.",
         "boost_tier3_title": "<a:boostgem9:1475248556792221898> 4× Boosts — Benefactor",
-        "boost_tier3_value": "Achieve the prestigious **Benefactor** role! The ultimate recognition for your incredible generosity.",
-        "boosting_footer": "Every boost helps keep the server running strong. Thank you for your support! 💜",
+        "boost_tier3_value": "Ascend to **Benefactor** — the highest honor for legendary supporters.",
+        "boosting_footer": "Every boost keeps the server thriving. Thank you for your support! 💜",
         "patreon_label": "Become a Patron",
         "github_label": "GitHub Repository",
     },
@@ -91,14 +92,15 @@ SUPPORT_CONTENT: dict[str, SupportLanguageData] = {
         "boosting_title": "🚀 Recompensas por Impulsar el Servidor",
         "boosting_description": (
             "¿Te encanta DragonMineZ? ¡Muestra tu apoyo impulsando el servidor y desbloquea roles exclusivos!\n"
+            "Elige tu nivel y brilla en la comunidad."
         ),
         "boost_tier1_title": "<a:nitro_slide:1475248617416691874> 1× Boost — Supporter",
-        "boost_tier1_value": "¡Desbloquea el rol de **Supporter**! Sé reconocido como un miembro valioso de nuestra comunidad con beneficios exclusivos.",
-        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 3× Boosts — Contributor",
-        "boost_tier2_value": "¡Sube de nivel al rol de **Contributor**! Destaca aún más y obtén acceso a beneficios adicionales.",
+        "boost_tier1_value": "Obtén el rol de **Supporter** con sus beneficios: tu sello de orgullo en la comunidad.",
+        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 2× Boosts — Contributor",
+        "boost_tier2_value": "Sube a **Contributor** para más estilo y una presencia aún más fuerte en el servidor.",
         "boost_tier3_title": "<a:boostgem9:1475248556792221898> 4× Boosts — Benefactor",
-        "boost_tier3_value": "¡Alcanza el prestigioso rol de **Benefactor**! El máximo reconocimiento por tu increíble generosidad.",
-        "boosting_footer": "Cada boost ayuda a mantener el servidor fuerte. ¡Gracias por tu apoyo! 💜",
+        "boost_tier3_value": "Alcanza **Benefactor**, el máximo honor para quienes apoyan de verdad.",
+        "boosting_footer": "Cada boost mantiene el servidor vivo. ¡Gracias por tu apoyo! 💜",
         "patreon_label": "Vuélvete un Patron",
         "github_label": "Repositorio de GitHub",
     },
@@ -126,14 +128,15 @@ SUPPORT_CONTENT: dict[str, SupportLanguageData] = {
         "boosting_title": "🚀 Recompensas por Impulsionar o Servidor",
         "boosting_description": (
             "Ama o DragonMineZ? Mostre seu apoio impulsionando o servidor e desbloqueie roles exclusivos!\n"
+            "Escolha seu nivel e brilhe na comunidade."
         ),
         "boost_tier1_title": "<a:nitro_slide:1475248617416691874> 1× Boost — Supporter",
-        "boost_tier1_value": "Desbloqueie o cargo de **Supporter**! Seja reconhecido como um membro valioso da nossa comunidade com benefícios exclusivos.",
-        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 3× Boosts — Contributor",
-        "boost_tier2_value": "Suba de nível para o cargo de **Contributor**! Destaque-se ainda mais e ganhe acesso a benefícios adicionais.",
+        "boost_tier1_value": "Garanta o cargo **Supporter** com beneficios exclusivos — seu selo de orgulho na comunidade.",
+        "boost_tier2_title": "<a:boostgem3:1475248651658854654> 2× Boosts — Contributor",
+        "boost_tier2_value": "Suba para **Contributor** e ganhe mais destaque e presenca no servidor.",
         "boost_tier3_title": "<a:boostgem9:1475248556792221898> 4× Boosts — Benefactor",
-        "boost_tier3_value": "Alcance o prestigioso cargo de **Benefactor**! O reconhecimento máximo pela sua incrível generosidade.",
-        "boosting_footer": "Cada boost ajuda a manter o servidor forte. Obrigado pelo seu apoio! 💜",
+        "boost_tier3_value": "Alcance **Benefactor** — o maior reconhecimento para apoiadores lendarios.",
+        "boosting_footer": "Cada boost fortalece o servidor. Obrigado pelo seu apoio! 💜",
         "patreon_label": "Torne-se um Patron",
         "github_label": "Repositório do GitHub",
     },
@@ -227,4 +230,3 @@ class SupportLanguageView(discord.ui.View):
         embeds = build_support_embeds("pt")
         link_view = SupportLinkButtons("pt")
         await interaction.response.send_message(embeds=embeds, view=link_view, ephemeral=True)
-

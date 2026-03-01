@@ -30,6 +30,9 @@ class Settings:
     GITHUB_BASE_BRANCH: str
     GITHUB_WHITELIST_FILE_PATH: str
 
+    PATREON_CREATOR_TOKEN: str | None
+    PATREON_CAMPAIGN_ID: str | None
+
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
                                              1216431257660035132, # DMZ Owner
@@ -67,6 +70,9 @@ def load_settings() -> Settings:
     GITHUB_BASE_BRANCH = _get_env("GITHUB_BASE_BRANCH", "main")
     GITHUB_WHITELIST_FILE_PATH = _get_env("GITHUB_WHITELIST_FILE_PATH", "allowed_betatesters.txt")
 
+    PATREON_CREATOR_TOKEN = _get_env("PATREON_CREATOR_TOKEN")
+    PATREON_CAMPAIGN_ID = _get_env("PATREON_CAMPAIGN_ID")
+
     if not token:
         raise RuntimeError(
             "DISCORD_TOKEN is missing. Copy .env.example to .env and fill it in."
@@ -86,6 +92,7 @@ def load_settings() -> Settings:
         "bulmaai.cogs.rules",
         "bulmaai.cogs.support_us",
         "bulmaai.cogs.log_parser",
+        "bulmaai.cogs.patreon_announcements",
     )
 
     if not openai_key:
@@ -117,4 +124,6 @@ def load_settings() -> Settings:
         GITHUB_WHITELIST_REPO=GITHUB_WHITELIST_REPO,
         GITHUB_BASE_BRANCH=GITHUB_BASE_BRANCH,
         GITHUB_WHITELIST_FILE_PATH=GITHUB_WHITELIST_FILE_PATH,
+        PATREON_CREATOR_TOKEN=PATREON_CREATOR_TOKEN,
+        PATREON_CAMPAIGN_ID=PATREON_CAMPAIGN_ID,
     )

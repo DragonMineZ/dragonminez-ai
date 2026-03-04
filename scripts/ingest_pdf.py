@@ -173,9 +173,47 @@ async def reset_schema():
     """Drop and recreate tables from scratch."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS doc_embeddings CASCADE")
-        await conn.execute("DROP TABLE IF EXISTS docs CASCADE")
+        await conn.execute("DROP TABLE IF EXISTS doc_embeddings CASCADE;")
+        await conn.execute("DROP TABLE IF EXISTS docs CASCADE;")
     log.info("  old tables dropped")
+    await ensure_schema()
+
+
+async def ensure_or_reset_schema():
+    """
+    Check if the existing docs table has the expected schema.
+    If it has legacy columns (e.g. 'path') or is missing expected
+    ones (e.g. 'source'), drop and recreate from scratch.
+    Otherwise just ensure tables exist.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Check if docs table exists at all
+        table_exists = await conn.fetchval(
+            """
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = 'docs'
+            """
+        )
+        if table_exists:
+            # Check for legacy 'path' column that shouldn't be there
+            has_path = await conn.fetchval(
+                """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'docs' AND column_name = 'path'
+                """
+            )
+            # Check for expected 'source' column
+            has_source = await conn.fetchval(
+                """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'docs' AND column_name = 'source'
+                """
+            )
+            if has_path or not has_source:
+                log.info("  docs table has incompatible schema (legacy 'path' column or missing 'source'), resetting...")
+                await conn.execute("DROP TABLE IF EXISTS doc_embeddings CASCADE;")
+                await conn.execute("DROP TABLE IF EXISTS docs CASCADE;")
     await ensure_schema()
 
 
@@ -251,7 +289,7 @@ async def ingest(pdf_path: str, lang: str, source: str, replace: bool, reset: bo
     if reset:
         await reset_schema()
     else:
-        await ensure_schema()
+        await ensure_or_reset_schema()
 
     # ── optionally wipe old version ─────────────────────────────
     if replace:
@@ -285,14 +323,14 @@ async def ingest(pdf_path: str, lang: str, source: str, replace: bool, reset: bo
 
 async def run_list_sources():
     await init_db_pool()
-    await ensure_schema()
+    await ensure_or_reset_schema()
     await list_sources()
     await close_db_pool()
 
 
 async def run_delete_source(source: str):
     await init_db_pool()
-    await ensure_schema()
+    await ensure_or_reset_schema()
     n = await delete_source(source)
     if n:
         log.info("🗑️  Deleted %d chunks for source '%s'.", n, source)

@@ -44,12 +44,20 @@ class AITicketsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         # Ignore bots and DMs and staff
-        if message.author.bot or not message.guild or is_staff(message.author):
+        if message.author.bot or not message.guild:
             return
+        if is_staff(message.author):
+            if message.author.id == 348174141121101824: #yo perros
+                pass
+            else:
+                return
 
         # Temporal - only for Patreons
         if PATREON_ROLE_IDS not in message.author.roles:
-            return
+            if message.author.id == 348174141121101824: #yo perros
+                pass
+            else:
+                return
 
         channel = message.channel
         if not isinstance(channel, discord.TextChannel):

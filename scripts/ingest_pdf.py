@@ -169,59 +169,10 @@ async def ensure_schema():
     log.info("  schema OK")
 
 
-async def reset_schema():
-    """Drop and recreate tables from scratch."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS doc_embeddings CASCADE;")
-        await conn.execute("DROP TABLE IF EXISTS docs CASCADE;")
-    log.info("  old tables dropped")
-    await ensure_schema()
-
-
-async def ensure_or_reset_schema():
-    """
-    Check if the existing docs table has the expected schema.
-    If it has legacy columns (e.g. 'path') or is missing expected
-    ones (e.g. 'source'), drop and recreate from scratch.
-    Otherwise just ensure tables exist.
-    """
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Check if docs table exists at all
-        table_exists = await conn.fetchval(
-            """
-            SELECT 1 FROM information_schema.tables
-            WHERE table_name = 'docs'
-            """
-        )
-        if table_exists:
-            # Check for legacy 'path' column that shouldn't be there
-            has_path = await conn.fetchval(
-                """
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'docs' AND column_name = 'path'
-                """
-            )
-            # Check for expected 'source' column
-            has_source = await conn.fetchval(
-                """
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'docs' AND column_name = 'source'
-                """
-            )
-            if has_path or not has_source:
-                log.info("  docs table has incompatible schema (legacy 'path' column or missing 'source'), resetting...")
-                await conn.execute("DROP TABLE IF EXISTS doc_embeddings CASCADE;")
-                await conn.execute("DROP TABLE IF EXISTS docs CASCADE;")
-    await ensure_schema()
-
-
 async def delete_source(source: str) -> int:
     """Delete all docs (and their embeddings via CASCADE) for a source."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Use a CTE to count then delete
         rows = await conn.fetch(
             "DELETE FROM docs WHERE source = $1 RETURNING id",
             source,
@@ -283,13 +234,9 @@ async def insert_docs(
 # Main workflows
 # ═══════════════════════════════════════════════════════════════════
 
-async def ingest(pdf_path: str, lang: str, source: str, replace: bool, reset: bool = False):
+async def ingest(pdf_path: str, lang: str, source: str, replace: bool):
     await init_db_pool()
-
-    if reset:
-        await reset_schema()
-    else:
-        await ensure_or_reset_schema()
+    await ensure_schema()
 
     # ── optionally wipe old version ─────────────────────────────
     if replace:
@@ -323,14 +270,14 @@ async def ingest(pdf_path: str, lang: str, source: str, replace: bool, reset: bo
 
 async def run_list_sources():
     await init_db_pool()
-    await ensure_or_reset_schema()
+    await ensure_schema()
     await list_sources()
     await close_db_pool()
 
 
 async def run_delete_source(source: str):
     await init_db_pool()
-    await ensure_or_reset_schema()
+    await ensure_schema()
     n = await delete_source(source)
     if n:
         log.info("🗑️  Deleted %d chunks for source '%s'.", n, source)
@@ -364,10 +311,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--append", action="store_true",
         help="Append chunks instead of replacing existing ones for this source.",
     )
-    upload.add_argument(
-        "--reset", action="store_true",
-        help="Drop and recreate the docs tables before uploading (use when schema changed).",
-    )
 
     # ── list ────────────────────────────────────────────────────
     sub.add_parser("list", help="List all sources currently in the database.")
@@ -375,9 +318,6 @@ def build_parser() -> argparse.ArgumentParser:
     # ── delete ──────────────────────────────────────────────────
     delete = sub.add_parser("delete", help="Delete all chunks for a source.")
     delete.add_argument("source", help="The source name to delete.")
-
-    # ── reset ───────────────────────────────────────────────────
-    sub.add_parser("reset", help="Drop and recreate the docs tables (wipes all data).")
 
     return parser
 
@@ -393,21 +333,13 @@ if __name__ == "__main__":
             sys.exit(1)
         source = args.source or pdf.name          # e.g. "wiki_en.pdf"
         replace = not args.append
-        asyncio.run(ingest(str(pdf), args.lang, source, replace, reset=args.reset))
+        asyncio.run(ingest(str(pdf), args.lang, source, replace))
 
     elif args.command == "list":
         asyncio.run(run_list_sources())
 
     elif args.command == "delete":
         asyncio.run(run_delete_source(args.source))
-
-    elif args.command == "reset":
-        async def _reset():
-            await init_db_pool()
-            await reset_schema()
-            log.info("✅ Tables dropped and recreated.")
-            await close_db_pool()
-        asyncio.run(_reset())
 
     else:
         parser.print_help()

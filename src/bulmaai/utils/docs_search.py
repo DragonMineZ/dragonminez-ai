@@ -39,11 +39,10 @@ async def _get_query_embedding(text: str) -> Embedding:
     """
     Get an embedding for the query using OpenAI embeddings API. [web:274]
     """
-    res = client.embeddings.create(
+    res = await client.embeddings.create(
         model="text-embedding-3-small",
         input=text,
     )
-    # responses API returns .data list with embedding vectors
     return res.data[0].embedding  # type: ignore[no-any-return]
 
 

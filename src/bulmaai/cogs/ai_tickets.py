@@ -47,17 +47,19 @@ class AITicketsCog(commands.Cog):
         if message.author.bot or not message.guild:
             return
         if is_staff(message.author):
-            if message.author.id == 348174141121101824: #yo perros
-                pass
-            else:
-                return
+            return
+            # if message.author.id == 348174141121101824: #yo perros
+            #     pass
+            # else:
+            #     return
 
         # Temporal - only for Patreons
         if PATREON_ROLE_IDS not in message.author.roles:
-            if message.author.id == 348174141121101824: #yo perros
-                pass
-            else:
-                return
+            return
+            # if message.author.id == 348174141121101824: #yo perros
+            #     pass
+            # else:
+            #     return
 
         channel = message.channel
         if not isinstance(channel, discord.TextChannel):

@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import discord
 
-from bulmaai.cogs.aionmessage import AiOnMessage
+from bulmaai.cogs.patreon_whitelist_flow import PatreonWhitelistFlowCog
 
 if TYPE_CHECKING:
     from bulmaai.bot import BulmaAI
@@ -81,15 +81,15 @@ async def start_patreon_whitelist_flow(
     else:
         log.info("Found member %s in cache for guild %s", discord_user_id, guild.id)
 
-    # Get AdminCog
-    ai_onmessage = bot.get_cog("AiOnMessage")
-    if not isinstance(ai_onmessage, AiOnMessage):
+    # Get Patreon whitelist cog
+    whitelist_cog = bot.get_cog("PatreonWhitelistFlowCog") or bot.get_cog("AiOnMessage")
+    if not isinstance(whitelist_cog, PatreonWhitelistFlowCog):
         return {
             "status": "error",
-            "reason": "AdminCog not loaded; cannot start whitelist flow.",
+            "reason": "PatreonWhitelistFlowCog not loaded; cannot start whitelist flow.",
         }
 
-    status_text = await ai_onmessage.start_whitelist_flow_for_user(member, channel, nickname)
+    status_text = await whitelist_cog.start_whitelist_flow_for_user(member, channel, nickname)
 
     return {
         "status": "ok",

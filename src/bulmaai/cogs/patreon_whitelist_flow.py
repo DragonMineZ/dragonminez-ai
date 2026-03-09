@@ -30,7 +30,8 @@ def _pick_staff_channel(ctx_or_inter: discord.Interaction | discord.ApplicationC
     return ctx_or_inter.channel
 
 
-class AiOnMessage(commands.Cog):
+class PatreonWhitelistFlowCog(commands.Cog):
+    """Patreon beta whitelist workflow used by the AI tool."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -65,19 +66,18 @@ class AiOnMessage(commands.Cog):
         - 'asked_for_nickname'
         - 'flow_started'
         """
-        # Role-gated: 2 roles allowed; administrators bypass
         if not is_admin(member) and not has_any_allowed_role(
             member, (ALLOWED_ROLE_ID_1, ALLOWED_ROLE_ID_2)
         ):
             await channel.send(
-                f"{member.mention} You don’t have permission to request Patreon whitelist access."
+                f"{member.mention} You don't have permission to request Patreon whitelist access."
             )
             return "user_not_allowed"
 
         async def run_flow_with_nick(nickname: str) -> str:
             if not MC_NAME_RE.match(nickname):
                 await channel.send(
-                    f"{member.mention} Nickname must be 3–16 chars, letters/numbers/_ only."
+                    f"{member.mention} Nickname must be 3-16 chars, letters/numbers/_ only."
                 )
                 return "invalid_nickname"
 
@@ -85,13 +85,11 @@ class AiOnMessage(commands.Cog):
                 interaction: discord.Interaction,
                 initial_nick: str,
             ):
-                # Use mutable state so admin edit can update the nickname
                 state = {"nick": initial_nick}
 
                 safe_user = interaction.user.name.replace(" ", "_")
                 branch = f"patreon/{safe_user}-{interaction.user.id}"
 
-                # 1) Create/update PR branch with the new nickname appended
                 await self.gh.create_branch(branch, self.gh.base_branch)
 
                 base_text, base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
@@ -120,7 +118,6 @@ class AiOnMessage(commands.Cog):
                 pr_number = pr_data["number"]
                 pr_url = pr_data["html_url"]
 
-                # 2) Post staff approval message with admin-only buttons
                 admin_role = interaction.guild.get_role(ADMIN_PING_ROLE_ID)
                 mention = admin_role.mention if admin_role else f"<@&{ADMIN_PING_ROLE_ID}>"
                 staff_channel = _pick_staff_channel(interaction)
@@ -197,7 +194,6 @@ class AiOnMessage(commands.Cog):
                     ephemeral=True,
                 )
 
-            # Ask for Yes/No confirmation in this channel
             await channel.send(
                 f"You've said that `{nickname}` is your Minecraft nickname to get access to "
                 f"the Patreon-only releases, is this correct?",
@@ -209,11 +205,9 @@ class AiOnMessage(commands.Cog):
             )
             return "flow_started"
 
-        # If we already know a nickname (e.g. extracted by AI), start directly
         if initial_nickname:
             return await run_flow_with_nick(initial_nickname.strip())
 
-        # Otherwise ask user for nickname first (AI-triggered path)
         await channel.send(
             f"{member.mention} Please reply with your Minecraft nickname "
             f"so we can start the Patreon beta whitelist process."
@@ -222,4 +216,5 @@ class AiOnMessage(commands.Cog):
 
 
 def setup(bot: discord.Bot):
-    bot.add_cog(AiOnMessage(bot))
+    bot.add_cog(PatreonWhitelistFlowCog(bot))
+

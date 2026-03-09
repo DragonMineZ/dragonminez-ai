@@ -60,7 +60,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 # ── tunables ────────────────────────────────────────────────────────
 CHUNK_MAX_CHARS = 1500       # target max characters per chunk
 CHUNK_OVERLAP_CHARS = 200    # overlap between consecutive chunks
-EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_BATCH = 50         # how many texts to embed in one API call
 
 

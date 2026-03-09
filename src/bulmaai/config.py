@@ -85,7 +85,7 @@ def load_settings() -> Settings:
 
     initial_extensions = (
         "bulmaai.cogs.meta",
-        "bulmaai.cogs.aionmessage",
+        "bulmaai.cogs.patreon_whitelist_flow",
         "bulmaai.cogs.ai_tickets",
         "bulmaai.cogs.github_cmds",
         "bulmaai.cogs.ai_ann_translation",

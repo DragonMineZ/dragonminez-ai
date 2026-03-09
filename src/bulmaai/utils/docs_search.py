@@ -1,5 +1,6 @@
+import logging
 import math
-from typing import Any, Dict, List, Literal, Tuple, Optional
+from typing import Any, Dict, List, Literal, Tuple, Optional, TYPE_CHECKING
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -7,13 +8,21 @@ from openai import AsyncOpenAI
 from bulmaai.config import load_settings
 from bulmaai.database.db import get_pool
 
+if TYPE_CHECKING:
+    from bulmaai.bot import BulmaAI
+
+
 load_dotenv()
 settings = load_settings()
 
 client = AsyncOpenAI(api_key=settings.openai_key)
+log = logging.getLogger(__name__)
 
 Embedding = List[float]
 LangCode = Literal["en", "es", "pt"]
+
+EMBEDDING_MODEL = "text-embedding-3-large"  # Keep aligned with scripts/ingest_pdf.py
+MIN_SIMILARITY = 0.45
 
 
 def _pick_doc_language(user_lang: LangCode) -> str:
@@ -27,6 +36,9 @@ def _pick_doc_language(user_lang: LangCode) -> str:
 
 
 def _cosine_similarity(a: Embedding, b: Embedding) -> float:
+    if len(a) != len(b):
+        # Different dimensions means vectors are not comparable.
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -40,7 +52,7 @@ async def _get_query_embedding(text: str) -> Embedding:
     Get an embedding for the query using OpenAI embeddings API. [web:274]
     """
     res = await client.embeddings.create(
-        model="text-embedding-3-small",
+        model=EMBEDDING_MODEL,
         input=text,
     )
     return res.data[0].embedding  # type: ignore[no-any-return]
@@ -59,6 +71,7 @@ async def _fetch_candidate_docs(doc_lang: str, limit: int = 200) -> List[Tuple[i
             FROM docs AS d
             JOIN doc_embeddings AS e ON e.doc_id = d.id
             WHERE d.lang = $1
+            ORDER BY d.created_at DESC, d.id DESC
             LIMIT $2
             """,
             doc_lang,
@@ -75,7 +88,7 @@ async def run_docs_search(
     query: str,
     language: LangCode = "en",
     max_results: int = 5,
-    _bot_context: Optional["BulmaAI"] = None
+    _bot_context: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Tool implementation for 'docs_search'.
@@ -107,10 +120,9 @@ async def run_docs_search(
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # 5) Build result list with a similarity threshold
-    THRESHOLD = 0.70  # tweak later
     matches = []
     for sim, title, content in scored[: max_results * 2]:  # pick a bit more, then filter
-        if sim < THRESHOLD:
+        if sim < MIN_SIMILARITY:
             continue
         matches.append(
             {
@@ -123,10 +135,13 @@ async def run_docs_search(
             break
 
     best_sim = scored[0][0] if scored else 0.0
+    if scored:
+        log.info("docs_search best_similarity=%.4f threshold=%.2f candidates=%d", best_sim, MIN_SIMILARITY, len(scored))
 
     return {
         "matches": matches,
         "best_similarity": best_sim,
+        "similarity_threshold": MIN_SIMILARITY,
         "used_language": doc_lang,
         "query": query,
     }

@@ -134,10 +134,8 @@ class AITicketsCog(commands.Cog):
         # Ignore bots, DMs, and staff
         if message.author.bot or not message.guild:
             return
-        if is_staff(message.author):
-            if is_admin(message.author):
-                pass
-            return
+        # if is_staff(message.author):
+        #     return
 
         if not isinstance(message.author, discord.Member):
             return

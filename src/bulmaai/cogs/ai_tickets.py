@@ -131,11 +131,13 @@ class AITicketsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # Don't use this yet. WORK IN PROGRESS.
+        return
         # Ignore bots, DMs, and staff
         if message.author.bot or not message.guild:
             return
-        # if is_staff(message.author):
-        #     return
+        if is_staff(message.author):
+            return
 
         if not isinstance(message.author, discord.Member):
             return

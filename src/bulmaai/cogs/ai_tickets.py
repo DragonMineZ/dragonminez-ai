@@ -135,6 +135,8 @@ class AITicketsCog(commands.Cog):
         if message.author.bot or not message.guild:
             return
         if is_staff(message.author):
+            if is_admin(message.author):
+                pass
             return
 
         if not isinstance(message.author, discord.Member):
@@ -143,8 +145,6 @@ class AITicketsCog(commands.Cog):
         # Patreon-only while this feature is in beta.
         # TODO: remove this role gate when AI support is ready for all users.
         if not _user_has_patreon_role(message.author):
-            if is_admin(message.author):
-                pass
             return
 
         channel = message.channel

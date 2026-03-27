@@ -140,6 +140,24 @@ def _extract_output_text(response: Any) -> str:
     return reply_text.strip()
 
 
+def _hydrate_tool_args(
+    *,
+    name: str,
+    args: dict[str, Any],
+    lang: str,
+    user_id: int,
+    channel_id: int,
+) -> dict[str, Any]:
+    hydrated = dict(args)
+    if name == "docs_search":
+        hydrated.setdefault("language", lang)
+    elif name == "start_patreon_whitelist_flow":
+        hydrated.setdefault("discord_user_id", str(user_id))
+        hydrated.setdefault("ticket_channel_id", str(channel_id))
+        hydrated.setdefault("nickname", None)
+    return hydrated
+
+
 async def _create_response(**kwargs: Any) -> Any:
     timeout_seconds = settings.ai_support_timeout_seconds
     return await asyncio.wait_for(
@@ -238,6 +256,16 @@ async def _handle_tools_and_final_reply(
                 args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
             except json.JSONDecodeError:
                 args = {}
+            if not isinstance(args, dict):
+                args = {}
+
+            args = _hydrate_tool_args(
+                name=name,
+                args=args,
+                lang=lang,
+                user_id=user_id,
+                channel_id=channel_id,
+            )
 
             func = tools_registry.get_func(name, bot_context=bot)
             output = await func(**args)

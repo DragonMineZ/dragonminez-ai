@@ -1,3 +1,4 @@
+from copy import deepcopy
 import logging
 from typing import Any, Callable, TYPE_CHECKING
 
@@ -25,22 +26,6 @@ TOOLS_SCHEMAS: dict[str, dict] = {
                     "type": "string",
                     "description": "User query or question to search for.",
                 },
-                "language": {
-                    "type": "string",
-                    "enum": ["en", "es", "pt"],
-                    "description": (
-                        "Language of the user's question. "
-                        "Docs may be available in 'en' and 'es'; "
-                        "if 'pt', use the closest language."
-                    ),
-                },
-                "max_results": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                    "default": 5,
-                    "description": "Maximum number of doc snippets to return.",
-                },
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -57,25 +42,15 @@ TOOLS_SCHEMAS: dict[str, dict] = {
         "parameters": {
             "type": "object",
             "properties": {
-                "discord_user_id": {
-                    "type": "string",
-                    "description": "Discord user ID of the requester.",
-                },
-                "ticket_channel_id": {
-                    "type": "string",
-                    "description": (
-                        "ID of the Discord ticket channel where the request is happening."
-                    ),
-                },
                 "nickname": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "description": (
-                        "Optional Minecraft nickname if the user already provided it "
-                        "in the conversation."
+                        "Minecraft nickname if the user already provided it in the "
+                        "conversation. Use null if it is unknown."
                     ),
                 },
             },
-            "required": ["discord_user_id", "ticket_channel_id"],
+            "required": ["nickname"],
             "additionalProperties": False,
         },
     },
@@ -99,11 +74,21 @@ def _init_tools_funcs() -> None:
     }
 
 
+def _normalize_schema(name: str) -> dict[str, Any]:
+    schema = deepcopy(TOOLS_SCHEMAS[name])
+    parameters = schema.get("parameters")
+    if schema.get("strict") is True and isinstance(parameters, dict):
+        properties = parameters.get("properties")
+        if isinstance(properties, dict):
+            parameters["required"] = list(properties.keys())
+    return schema
+
+
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
     """
     Return tool schemas for the given tool names, in Responses API format.
     """
-    return [TOOLS_SCHEMAS[name] for name in enabled_tools if name in TOOLS_SCHEMAS]
+    return [_normalize_schema(name) for name in enabled_tools if name in TOOLS_SCHEMAS]
 
 
 def get_func(name: str, bot_context: "BulmaAI | None" = None) -> ToolFunc:

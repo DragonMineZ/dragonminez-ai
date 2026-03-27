@@ -171,6 +171,7 @@ async def run_support_agent(
     messages: list[dict[str, str]],
     enabled_tools: list[str],
     language_hint: Optional[str] = None,
+    use_cache: bool = True,
     user_id: int,
     channel_id: int,
     bot: Any = None,
@@ -184,17 +185,20 @@ async def run_support_agent(
     else:
         language = "en"
 
-    docs_version = await get_docs_version()
-    cache_key = build_support_cache_key(
-        messages=messages,
-        enabled_tools=enabled_tools,
-        language=language,
-        channel_id=channel_id,
-    )
-    cached = await fetch_cached_support_response(cache_key, docs_version)
-    if cached is not None:
-        log.info("support_cache hit channel=%s language=%s", channel_id, language)
-        return AgentResult(**cached)
+    docs_version = None
+    cache_key: str | None = None
+    if use_cache:
+        docs_version = await get_docs_version()
+        cache_key = build_support_cache_key(
+            messages=messages,
+            enabled_tools=enabled_tools,
+            language=language,
+            channel_id=channel_id,
+        )
+        cached = await fetch_cached_support_response(cache_key, docs_version)
+        if cached is not None:
+            log.info("support_cache hit channel=%s language=%s", channel_id, language)
+            return AgentResult(**cached)
 
     system_prompt = _load_system_prompt(language)
     transcript = _collapse_history_to_text(messages, user_id=user_id, channel_id=channel_id)
@@ -229,7 +233,8 @@ async def run_support_agent(
         user_id=user_id,
         channel_id=channel_id,
     )
-    await store_cached_support_response(cache_key, docs_version, dict(result))
+    if use_cache and cache_key is not None:
+        await store_cached_support_response(cache_key, docs_version, dict(result))
     return result
 
 

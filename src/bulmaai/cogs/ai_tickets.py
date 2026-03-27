@@ -34,6 +34,10 @@ def _is_general_ai_channel(channel: discord.TextChannel) -> bool:
     return channel.id in set(settings.ai_general_channel_ids)
 
 
+def _is_pinging_bot(message: discord.Message, bot_user: discord.ClientUser | None) -> bool:
+    return bot_user is not None and bot_user in message.mentions
+
+
 def _wants_whitelist_flow(text: str) -> bool:
     lowered = text.lower()
     triggers = (
@@ -164,6 +168,7 @@ class AITicketsCog(commands.Cog):
 
         in_ticket = _is_ticket_channel(channel)
         in_general_ai = _is_general_ai_channel(channel)
+        bot_pinged = _is_pinging_bot(message, self.bot.user)
         if not in_ticket and not in_general_ai:
             return
         if message.content.startswith(("!", "/", ".")):
@@ -192,6 +197,7 @@ class AITicketsCog(commands.Cog):
                         messages=history,
                         enabled_tools=enabled_tools,
                         language_hint=None,
+                        use_cache=in_ticket,
                         user_id=message.author.id,
                         channel_id=channel.id,
                         bot=self.bot,
@@ -216,10 +222,8 @@ class AITicketsCog(commands.Cog):
                     "I could not find a fully confident answer in the docs yet. A staff member should review this ticket."
                 )
                 return
-            if in_general_ai and docs_similarity < GENERAL_MIN_SIMILARITY:
-                suggestion_reply = _build_suggestion_reply(result["language"], docs_output)
-                if suggestion_reply:
-                    await channel.send(suggestion_reply)
+        if in_general_ai and not bot_pinged:
+            if docs_similarity is None or docs_similarity < GENERAL_MIN_SIMILARITY:
                 return
 
         reply_text = result["reply"]
@@ -227,11 +231,19 @@ class AITicketsCog(commands.Cog):
             await channel.send(reply_text)
         else:
             suggestion_reply = _build_suggestion_reply(result["language"], docs_output or {})
-            if suggestion_reply:
+            if suggestion_reply and (
+                in_ticket
+                or bot_pinged
+                or (docs_similarity is not None and docs_similarity >= GENERAL_MIN_SIMILARITY)
+            ):
                 await channel.send(suggestion_reply)
             elif in_ticket:
                 await channel.send(
                     "I could not confidently answer this from the docs. A staff member should review it."
+                )
+            elif in_general_ai and bot_pinged:
+                await channel.send(
+                    "I couldn't find a confident docs-backed answer for that. Please open a ticket if it needs follow-up."
                 )
 
         if in_ticket and result["suggested_close"]:

@@ -1,5 +1,7 @@
 import hashlib
 import json
+import logging
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -7,6 +9,7 @@ from bulmaai.config import load_settings
 from bulmaai.database.db import get_pool
 
 settings = load_settings()
+log = logging.getLogger(__name__)
 
 
 def build_support_cache_key(
@@ -31,6 +34,26 @@ async def get_docs_version() -> datetime | None:
         return await conn.fetchval("SELECT max(updated_at) FROM docs")
 
 
+def _decode_cached_response(value: Any) -> dict[str, Any] | None:
+    decoded = value
+    if isinstance(decoded, (bytes, bytearray)):
+        decoded = decoded.decode("utf-8")
+    if isinstance(decoded, str):
+        try:
+            decoded = json.loads(decoded)
+        except json.JSONDecodeError:
+            log.warning("Ignoring support cache entry with invalid JSON payload")
+            return None
+    if isinstance(decoded, Mapping):
+        return dict(decoded)
+    if decoded is not None:
+        log.warning(
+            "Ignoring support cache entry with unexpected payload type: %s",
+            type(decoded).__name__,
+        )
+    return None
+
+
 async def fetch_cached_support_response(cache_key: str, docs_version: datetime | None) -> dict[str, Any] | None:
     if not settings.support_response_cache_enabled:
         return None
@@ -49,6 +72,9 @@ async def fetch_cached_support_response(cache_key: str, docs_version: datetime |
         )
         if not row:
             return None
+        response = _decode_cached_response(row["response_json"])
+        if response is None:
+            return None
         await conn.execute(
             """
             UPDATE support_response_cache
@@ -58,7 +84,7 @@ async def fetch_cached_support_response(cache_key: str, docs_version: datetime |
             """,
             cache_key,
         )
-    return dict(row["response_json"])
+    return response
 
 
 async def store_cached_support_response(

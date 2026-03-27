@@ -7,4 +7,3 @@ pyjwt
 colorlog
 asyncpg
 pymupdf
-fitz

@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 
 from bulmaai.config import load_settings
 from bulmaai.services.openai_client import run_support_agent
-from bulmaai.utils.permissions import is_staff
+from bulmaai.utils.permissions import is_staff, is_bruno
 
 log = logging.getLogger(__name__)
 settings = load_settings()
@@ -151,8 +151,10 @@ class AITicketsCog(commands.Cog):
             return
         if message.author.bot or not message.guild:
             return
-        if is_staff(message.author):
-            return
+        if is_bruno(message.author):
+            pass
+            if is_staff(message.author):
+                return
         if not isinstance(message.author, discord.Member):
             return
 

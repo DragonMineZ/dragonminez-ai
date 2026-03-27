@@ -20,3 +20,6 @@ def is_staff(member: discord.Member) -> bool:
         if role.id in staff_roles:
             return True
     return False
+
+def is_bruno(member: discord.Member) -> bool:
+    return member.id == 348174141121101824

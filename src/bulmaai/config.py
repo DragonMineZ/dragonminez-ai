@@ -2,6 +2,19 @@ import os
 from dataclasses import dataclass
 from typing import Sequence
 
+
+def _parse_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_int_list(value: str | None) -> tuple[int, ...]:
+    if not value:
+        return ()
+    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
+
 # Frozen so read-only after creation
 @dataclass(frozen=True)
 class Settings:
@@ -12,6 +25,12 @@ class Settings:
     initial_extensions: Sequence[str]
     openai_key: str
     openai_model: str
+    openai_support_model: str
+    openai_support_reasoning_effort: str
+    openai_support_max_output_tokens: int
+    openai_vision_model: str
+    openai_translation_model: str
+    openai_embedding_model: str
 
     POSTGRES_DSN: str | None
     PGHOST: str
@@ -32,6 +51,13 @@ class Settings:
 
     PATREON_CREATOR_TOKEN: str | None
     PATREON_CAMPAIGN_ID: str | None
+    ai_support_enabled: bool
+    ai_ticket_category_id: int | None
+    ai_general_channel_ids: Sequence[int]
+    ai_support_history_limit: int
+    ai_support_timeout_seconds: int
+    support_response_cache_enabled: bool
+    message_presets_path: str
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
@@ -100,7 +126,22 @@ def load_settings() -> Settings:
     if not GH_APP_ID or not GH_INSTALLATION_ID or not GH_APP_PRIVATE_KEY_PEM:
         raise RuntimeError("GitHub App credentials are missing. Check env vars.")
 
-    openai_model = _get_env("OPENAI_MODEL")
+    openai_model = _get_env("OPENAI_MODEL", "gpt-5-mini") or "gpt-5-mini"
+    openai_support_model = _get_env("OPENAI_SUPPORT_MODEL", openai_model) or openai_model
+    openai_support_reasoning_effort = _get_env("OPENAI_SUPPORT_REASONING_EFFORT", "low") or "low"
+    openai_support_max_output_tokens = int(_get_env("OPENAI_SUPPORT_MAX_OUTPUT_TOKENS", "700") or "700")
+    openai_vision_model = _get_env("OPENAI_VISION_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini"
+    openai_translation_model = _get_env("OPENAI_TRANSLATION_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini"
+    openai_embedding_model = _get_env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large") or "text-embedding-3-large"
+
+    ai_support_enabled = _parse_bool(_get_env("AI_SUPPORT_ENABLED"), default=False)
+    ai_ticket_category_raw = _get_env("AI_TICKET_CATEGORY_ID")
+    ai_ticket_category_id = int(ai_ticket_category_raw) if ai_ticket_category_raw else None
+    ai_general_channel_ids = _parse_int_list(_get_env("AI_GENERAL_CHANNEL_IDS"))
+    ai_support_history_limit = int(_get_env("AI_SUPPORT_HISTORY_LIMIT", "12") or "12")
+    ai_support_timeout_seconds = int(_get_env("AI_SUPPORT_TIMEOUT_SECONDS", "45") or "45")
+    support_response_cache_enabled = _parse_bool(_get_env("SUPPORT_RESPONSE_CACHE_ENABLED"), default=True)
+    message_presets_path = _get_env("MESSAGE_PRESETS_PATH", "data/message_presets.json") or "data/message_presets.json"
 
     return Settings(
         discord_token=token,
@@ -109,6 +150,12 @@ def load_settings() -> Settings:
         initial_extensions=initial_extensions,
         openai_key=openai_key,
         openai_model=openai_model,
+        openai_support_model=openai_support_model,
+        openai_support_reasoning_effort=openai_support_reasoning_effort,
+        openai_support_max_output_tokens=openai_support_max_output_tokens,
+        openai_vision_model=openai_vision_model,
+        openai_translation_model=openai_translation_model,
+        openai_embedding_model=openai_embedding_model,
         POSTGRES_DSN=PGDSN,
         PGHOST=PGHOST or "localhost",
         PGPORT=PGPORT,
@@ -126,4 +173,11 @@ def load_settings() -> Settings:
         GITHUB_WHITELIST_FILE_PATH=GITHUB_WHITELIST_FILE_PATH,
         PATREON_CREATOR_TOKEN=PATREON_CREATOR_TOKEN,
         PATREON_CAMPAIGN_ID=PATREON_CAMPAIGN_ID,
+        ai_support_enabled=ai_support_enabled,
+        ai_ticket_category_id=ai_ticket_category_id,
+        ai_general_channel_ids=ai_general_channel_ids,
+        ai_support_history_limit=ai_support_history_limit,
+        ai_support_timeout_seconds=ai_support_timeout_seconds,
+        support_response_cache_enabled=support_response_cache_enabled,
+        message_presets_path=message_presets_path,
     )

@@ -1,5 +1,5 @@
-py-cord[speed]==2.7.1
-python-dotenv==1.2.1
+py-cord[speed]
+python-dotenv
 requests
 cryptography
 openai
@@ -7,3 +7,4 @@ pyjwt
 colorlog
 asyncpg
 pymupdf
+fitz

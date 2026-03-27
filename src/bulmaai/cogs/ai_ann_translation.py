@@ -53,9 +53,10 @@ async def translate_text(text: str, target_language: str) -> str:
     language_name = "Spanish" if target_language == "es" else "Brazilian Portuguese"
 
     response = await client.responses.create(
-        model=settings.openai_model,
+        model=settings.openai_translation_model,
         instructions=f"{TRANSLATION_INSTRUCTIONS}\n\nTranslate to {language_name}.",
         input=text,
+        text={"verbosity": "low"},
     )
 
     return response.output_text.strip()

@@ -1,10 +1,11 @@
 import logging
-from typing import Any
 
 import discord
 from dotenv import load_dotenv
 
 from .config import Settings, load_settings
+from .services.docs_ingestion import ensure_schema
+from .services.message_presets import ensure_message_presets_file
 from .logging_setup import setup_logging
 from .database.db import init_db_pool, close_db_pool
 
@@ -33,11 +34,8 @@ class BulmaAI(discord.Bot):
     async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""
         await init_db_pool()
-
-    async def login(self, *args: Any, **kwargs: Any) -> Any:
-        res = await super().login(*args, **kwargs)
-        await self.setup_hook()
-        return res
+        await ensure_schema()
+        ensure_message_presets_file()
 
     def load_pr_extensions(self) -> None:
         for ext in self.settings.initial_extensions:

@@ -17,6 +17,7 @@ TOOLS_SCHEMAS: dict[str, dict] = {
             "Search DragonMineZ documentation for relevant information "
             "to answer the user's question."
         ),
+        "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
@@ -52,6 +53,7 @@ TOOLS_SCHEMAS: dict[str, dict] = {
             "Start the Patreon whitelist workflow for a Discord user. "
             "Use when a Patreon asks how to get beta access / whitelist."
         ),
+        "strict": True,
         "parameters": {
             "type": "object",
             "properties": {

@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from collections import defaultdict
 from typing import Any
 
 import discord
@@ -7,40 +9,29 @@ from openai import AsyncOpenAI
 
 from bulmaai.config import load_settings
 from bulmaai.services.openai_client import run_support_agent
-from bulmaai.utils.permissions import is_staff, is_admin
+from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
 settings = load_settings()
 vision_client = AsyncOpenAI(api_key=settings.openai_key)
 
-TICKETS_CATEGORY_ID = 1262517992982315110
-
-PATREON_ROLE_IDS = {
-    1287877272224665640,
-    1287877305259130900,
-}
-
-GENERAL_AI_CHANNEL_IDS: set[int] = set()
 GENERAL_MIN_SIMILARITY = 0.70
 TICKET_MIN_SIMILARITY = 0.45
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 
 
-def _user_has_patreon_role(member: discord.Member) -> bool:
-    return any(role.id in PATREON_ROLE_IDS for role in member.roles)
-
-
 def _is_ticket_channel(channel: discord.abc.GuildChannel) -> bool:
     return (
         isinstance(channel, discord.TextChannel)
         and channel.category
-        and channel.category.id == TICKETS_CATEGORY_ID
+        and settings.ai_ticket_category_id is not None
+        and channel.category.id == settings.ai_ticket_category_id
     )
 
 
 def _is_general_ai_channel(channel: discord.TextChannel) -> bool:
-    return channel.id in GENERAL_AI_CHANNEL_IDS
+    return channel.id in set(settings.ai_general_channel_ids)
 
 
 def _wants_whitelist_flow(text: str) -> bool:
@@ -53,15 +44,14 @@ def _wants_whitelist_flow(text: str) -> bool:
         "acesso patreon",
         "acceso patreon",
     )
-    return any(t in lowered for t in triggers)
+    return any(trigger in lowered for trigger in triggers)
 
 
 def _contains_log_attachment(message: discord.Message) -> bool:
-    for attachment in message.attachments:
-        filename = attachment.filename.lower()
-        if filename.endswith(LOG_ATTACHMENT_EXTENSIONS):
-            return True
-    return False
+    return any(
+        attachment.filename.lower().endswith(LOG_ATTACHMENT_EXTENSIONS)
+        for attachment in message.attachments
+    )
 
 
 def _is_image_attachment(attachment: discord.Attachment) -> bool:
@@ -71,15 +61,31 @@ def _is_image_attachment(attachment: discord.Attachment) -> bool:
     return attachment.filename.lower().endswith(IMAGE_ATTACHMENT_EXTENSIONS)
 
 
-def _extract_docs_similarity(tool_results: list[Any]) -> float | None:
+def _extract_docs_output(tool_results: list[Any]) -> dict[str, Any] | None:
     for entry in tool_results:
-        if entry.get("name") != "docs_search":
-            continue
-        output = entry.get("output") or {}
-        best = output.get("best_similarity")
-        if isinstance(best, (int, float)):
-            return float(best)
+        if entry.get("name") == "docs_search":
+            output = entry.get("output")
+            if isinstance(output, dict):
+                return output
     return None
+
+
+def _build_suggestion_reply(language: str, docs_output: dict[str, Any]) -> str | None:
+    suggestions = docs_output.get("suggested_answers") or []
+    if not suggestions:
+        return None
+
+    labels = {
+        "en": "Possible answers from the docs",
+        "es": "Posibles respuestas según la documentación",
+        "pt": "Possíveis respostas segundo a documentação",
+    }
+    lines = [f"**{labels.get(language, labels['en'])}:**"]
+    for suggestion in suggestions[:3]:
+        title = suggestion.get("title") or "Doc match"
+        answer = suggestion.get("answer") or ""
+        lines.append(f"• **{title}**: {answer}")
+    return "\n".join(lines)
 
 
 class AITicketsCog(commands.Cog):
@@ -87,23 +93,32 @@ class AITicketsCog(commands.Cog):
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
+        self._channel_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-    async def _build_history(self, channel: discord.TextChannel, limit: int = 10) -> list[dict[str, str]]:
+    async def _build_history(self, channel: discord.TextChannel, limit: int | None = None) -> list[dict[str, str]]:
         history: list[dict[str, str]] = []
-        async for msg in channel.history(limit=limit, oldest_first=True):
+        async for msg in channel.history(
+            limit=limit or settings.ai_support_history_limit,
+            oldest_first=True,
+        ):
+            content = msg.content.strip()
+            if not content and msg.attachments:
+                content = "\n".join(f"[Attachment] {attachment.filename}" for attachment in msg.attachments)
+            if not content:
+                continue
             role = "assistant" if msg.author == self.bot.user else "user"
-            history.append({"role": role, "content": msg.content})
+            history.append({"role": role, "content": content})
         return history
 
     async def _extract_ticket_image_context(self, message: discord.Message) -> str:
-        image_urls = [a.url for a in message.attachments if _is_image_attachment(a)]
+        image_urls = [attachment.url for attachment in message.attachments if _is_image_attachment(attachment)]
         if not image_urls:
             return ""
 
         snippets: list[str] = []
         for url in image_urls[:2]:
             try:
-                input_payload: Any = [
+                payload: Any = [
                     {
                         "role": "user",
                         "content": [
@@ -111,40 +126,34 @@ class AITicketsCog(commands.Cog):
                                 "type": "input_text",
                                 "text": (
                                     "Read this support screenshot and extract only actionable "
-                                    "details (errors, warnings, version hints, symptoms)."
+                                    "details: errors, warnings, version hints, symptoms, and buttons clicked."
                                 ),
                             },
                             {"type": "input_image", "image_url": url},
                         ],
                     }
                 ]
-                resp = await vision_client.responses.create(
-                    model=settings.openai_model,
-                    input=input_payload,
+                response = await vision_client.responses.create(
+                    model=settings.openai_vision_model,
+                    input=payload,
+                    text={"verbosity": "low"},
                 )
-                snippets.append((resp.output_text or "").strip())
+                if response.output_text:
+                    snippets.append(response.output_text.strip())
             except Exception:
                 log.exception("Failed to extract image context from %s", url)
 
-        merged = "\n".join(s for s in snippets if s)
-        return merged[:2000]
+        return "\n".join(snippets)[:2000]
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Don't use this yet. WORK IN PROGRESS.
-        return
-        # Ignore bots, DMs, and staff
+        if not settings.ai_support_enabled:
+            return
         if message.author.bot or not message.guild:
             return
         if is_staff(message.author):
             return
-
         if not isinstance(message.author, discord.Member):
-            return
-
-        # Patreon-only while this feature is in beta.
-        # TODO: remove this role gate when AI support is ready for all users.
-        if not _user_has_patreon_role(message.author):
             return
 
         channel = message.channel
@@ -155,72 +164,77 @@ class AITicketsCog(commands.Cog):
         in_general_ai = _is_general_ai_channel(channel)
         if not in_ticket and not in_general_ai:
             return
-
         if message.content.startswith(("!", "/", ".")):
             return
-
-        # Ignore AI processing for log uploads; LogParserCog handles these already.
         if _contains_log_attachment(message):
             return
 
-        try:
-            history = await self._build_history(channel, limit=10)
-            if in_ticket:
-                image_context = await self._extract_ticket_image_context(message)
-                if image_context:
-                    history.append(
-                        {
-                            "role": "user",
-                            "content": f"[Image context extracted from attachment]\n{image_context}",
-                        }
+        async with self._channel_locks[channel.id]:
+            try:
+                async with channel.typing():
+                    history = await self._build_history(channel)
+                    if in_ticket:
+                        image_context = await self._extract_ticket_image_context(message)
+                        if image_context:
+                            history.append(
+                                {
+                                    "role": "user",
+                                    "content": f"[Image context extracted from attachment]\n{image_context}",
+                                }
+                            )
+
+                    enabled_tools = [
+                        "start_patreon_whitelist_flow" if _wants_whitelist_flow(message.content) else "docs_search"
+                    ]
+                    result = await run_support_agent(
+                        messages=history,
+                        enabled_tools=enabled_tools,
+                        language_hint=None,
+                        user_id=message.author.id,
+                        channel_id=channel.id,
+                        bot=self.bot,
                     )
-        except Exception as e:
-            log.exception("Error preparing support context: %s", e)
-            return
+            except Exception as error:
+                log.exception("AI support error: %s", error)
+                if in_ticket:
+                    await channel.send(
+                        "I ran into an error while processing this. A staff member should take a look."
+                    )
+                return
 
-        enabled_tools = [
-            "start_patreon_whitelist_flow" if _wants_whitelist_flow(message.content) else "docs_search"
-        ]
+        docs_output = _extract_docs_output(result["tool_results"])
+        docs_similarity = float(docs_output.get("best_similarity", 0.0)) if docs_output else None
 
-        try:
-            result = await run_support_agent(
-                messages=history,
-                enabled_tools=enabled_tools,
-                language_hint=None,
-                user_id=message.author.id,
-                channel_id=channel.id,
-                bot=self.bot,
-            )
-        except Exception as e:
-            log.exception("AI support error: %s", e)
-            if in_ticket:
-                await channel.send(
-                    "I ran into an error while processing this. A staff member will take a look."
-                )
-            return
-
-        docs_similarity = _extract_docs_similarity(result["tool_results"])
         if docs_similarity is not None:
             if in_ticket and docs_similarity < TICKET_MIN_SIMILARITY:
+                suggestion_reply = _build_suggestion_reply(result["language"], docs_output)
+                if suggestion_reply:
+                    await channel.send(suggestion_reply)
                 await channel.send(
-                    "I could not find a confident answer in the docs yet. "
-                    "A staff member should step in for this ticket."
+                    "I could not find a fully confident answer in the docs yet. A staff member should review this ticket."
                 )
                 return
             if in_general_ai and docs_similarity < GENERAL_MIN_SIMILARITY:
+                suggestion_reply = _build_suggestion_reply(result["language"], docs_output)
+                if suggestion_reply:
+                    await channel.send(suggestion_reply)
                 return
 
         reply_text = result["reply"]
         if reply_text and reply_text != "(no reply)":
             await channel.send(reply_text)
-        elif in_ticket:
-            await channel.send(
-                "I could not confidently answer this from docs. A staff member should review it."
-            )
+        else:
+            suggestion_reply = _build_suggestion_reply(result["language"], docs_output or {})
+            if suggestion_reply:
+                await channel.send(suggestion_reply)
+            elif in_ticket:
+                await channel.send(
+                    "I could not confidently answer this from the docs. A staff member should review it."
+                )
 
         if in_ticket and result["suggested_close"]:
             await channel.send(
-                "*(AI note: I think this ticket can be closed now. A staff member should confirm.)*"
+                "*(AI note: this looks solved based on the docs, but a staff member should confirm before closing.)*"
             )
 
 

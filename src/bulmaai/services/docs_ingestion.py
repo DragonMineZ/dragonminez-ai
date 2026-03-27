@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-import fitz
+import pymupdf
 from openai import AsyncOpenAI
 
 from bulmaai.config import load_settings
@@ -69,7 +69,7 @@ def detect_source_type(filename: str, source_type: str = "auto") -> str:
 
 
 def extract_text_from_pdf_bytes(data: bytes) -> str:
-    doc = fitz.open(stream=data, filetype="pdf")
+    doc = pymupdf.open(stream=data, filetype="pdf")
     pages = [page.get_text("text") for page in doc]
     doc.close()
     return "\n".join(pages)

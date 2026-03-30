@@ -155,11 +155,9 @@ class AITicketsCog(commands.Cog):
             return
         if message.author.bot or not message.guild:
             return
-        if is_bruno(message.author):
-            pass
-            if is_staff(message.author):
-                return
         if not isinstance(message.author, discord.Member):
+            return
+        if is_staff(message.author) and not is_bruno(message.author):
             return
 
         channel = message.channel

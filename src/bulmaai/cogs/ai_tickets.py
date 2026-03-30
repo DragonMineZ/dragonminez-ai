@@ -99,6 +99,26 @@ class AITicketsCog(commands.Cog):
         self.bot = bot
         self._channel_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+    async def _send_messages_with_typing(
+        self,
+        channel: discord.TextChannel,
+        messages: list[str],
+    ) -> None:
+        messages = [message for message in messages if message]
+        if not messages:
+            return
+
+        typing_lead_seconds = max(settings.ai_support_typing_lead_seconds, 0)
+        if typing_lead_seconds <= 0:
+            for message in messages:
+                await channel.send(message)
+            return
+
+        async with channel.typing():
+            await asyncio.sleep(typing_lead_seconds)
+            for message in messages:
+                await channel.send(message)
+
     async def _build_history(self, channel: discord.TextChannel, limit: int | None = None) -> list[dict[str, str]]:
         history: list[dict[str, str]] = []
         async for msg in channel.history(
@@ -176,30 +196,29 @@ class AITicketsCog(commands.Cog):
 
         async with self._channel_locks[channel.id]:
             try:
-                async with channel.typing():
-                    history = await self._build_history(channel)
-                    if in_ticket:
-                        image_context = await self._extract_ticket_image_context(message)
-                        if image_context:
-                            history.append(
-                                {
-                                    "role": "user",
-                                    "content": f"[Image context extracted from attachment]\n{image_context}",
-                                }
-                            )
+                history = await self._build_history(channel)
+                if in_ticket:
+                    image_context = await self._extract_ticket_image_context(message)
+                    if image_context:
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": f"[Image context extracted from attachment]\n{image_context}",
+                            }
+                        )
 
-                    enabled_tools = [
-                        "start_patreon_whitelist_flow" if _wants_whitelist_flow(message.content) else "docs_search"
-                    ]
-                    result = await run_support_agent(
-                        messages=history,
-                        enabled_tools=enabled_tools,
-                        language_hint=None,
-                        use_cache=in_ticket,
-                        user_id=message.author.id,
-                        channel_id=channel.id,
-                        bot=self.bot,
-                    )
+                enabled_tools = [
+                    "start_patreon_whitelist_flow" if _wants_whitelist_flow(message.content) else "docs_search"
+                ]
+                result = await run_support_agent(
+                    messages=history,
+                    enabled_tools=enabled_tools,
+                    language_hint=None,
+                    use_cache=in_ticket,
+                    user_id=message.author.id,
+                    channel_id=channel.id,
+                    bot=self.bot,
+                )
             except Exception as error:
                 log.exception("AI support error: %s", error)
                 if in_ticket:
@@ -208,46 +227,50 @@ class AITicketsCog(commands.Cog):
                     )
                 return
 
-        docs_output = _extract_docs_output(result["tool_results"])
-        docs_similarity = float(docs_output.get("best_similarity", 0.0)) if docs_output else None
+            docs_output = _extract_docs_output(result["tool_results"])
+            docs_similarity = float(docs_output.get("best_similarity", 0.0)) if docs_output else None
+            outgoing_messages: list[str] = []
 
-        if docs_similarity is not None:
-            if in_ticket and docs_similarity < TICKET_MIN_SIMILARITY:
+            if docs_similarity is not None and in_ticket and docs_similarity < TICKET_MIN_SIMILARITY:
                 suggestion_reply = _build_suggestion_reply(result["language"], docs_output)
                 if suggestion_reply:
-                    await channel.send(suggestion_reply)
-                await channel.send(
+                    outgoing_messages.append(suggestion_reply)
+                outgoing_messages.append(
                     "I could not find a fully confident answer in the docs yet. A staff member should review this ticket."
                 )
-                return
-        if in_general_ai and not bot_pinged:
-            if docs_similarity is None or docs_similarity < GENERAL_MIN_SIMILARITY:
+                await self._send_messages_with_typing(channel, outgoing_messages)
                 return
 
-        reply_text = result["reply"]
-        if reply_text and reply_text != "(no reply)":
-            await channel.send(reply_text)
-        else:
-            suggestion_reply = _build_suggestion_reply(result["language"], docs_output or {})
-            if suggestion_reply and (
-                in_ticket
-                or bot_pinged
-                or (docs_similarity is not None and docs_similarity >= GENERAL_MIN_SIMILARITY)
-            ):
-                await channel.send(suggestion_reply)
-            elif in_ticket:
-                await channel.send(
-                    "I could not confidently answer this from the docs. A staff member should review it."
-                )
-            elif in_general_ai and bot_pinged:
-                await channel.send(
-                    "I couldn't find a confident docs-backed answer for that. Please open a ticket if it needs follow-up."
+            if in_general_ai and not bot_pinged:
+                if docs_similarity is None or docs_similarity < GENERAL_MIN_SIMILARITY:
+                    return
+
+            reply_text = result["reply"]
+            if reply_text and reply_text != "(no reply)":
+                outgoing_messages.append(reply_text)
+            else:
+                suggestion_reply = _build_suggestion_reply(result["language"], docs_output or {})
+                if suggestion_reply and (
+                    in_ticket
+                    or bot_pinged
+                    or (docs_similarity is not None and docs_similarity >= GENERAL_MIN_SIMILARITY)
+                ):
+                    outgoing_messages.append(suggestion_reply)
+                elif in_ticket:
+                    outgoing_messages.append(
+                        "I could not confidently answer this from the docs. A staff member should review it."
+                    )
+                elif in_general_ai and bot_pinged:
+                    outgoing_messages.append(
+                        "I couldn't find a confident docs-backed answer for that. Please open a ticket if it needs follow-up."
+                    )
+
+            if in_ticket and result["suggested_close"]:
+                outgoing_messages.append(
+                    "*(AI note: this looks solved based on the docs, but a staff member should confirm before closing.)*"
                 )
 
-        if in_ticket and result["suggested_close"]:
-            await channel.send(
-                "*(AI note: this looks solved based on the docs, but a staff member should confirm before closing.)*"
-            )
+            await self._send_messages_with_typing(channel, outgoing_messages)
 
 
 def setup(bot: discord.Bot):

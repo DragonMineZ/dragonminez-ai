@@ -227,12 +227,13 @@ async def run_support_agent(
     messages: list[ConversationMessage],
     enabled_tools: list[str],
     language_hint: Optional[str] = None,
+    model_override: Optional[str] = None,
     use_cache: bool = True,
     user_id: int,
     channel_id: int,
     bot: Any = None,
 ) -> AgentResult:
-    model = settings.openai_support_model or settings.openai_model
+    model = model_override or settings.openai_support_model or settings.openai_model
     target_speaker_id = str(user_id)
     last_user = _latest_user_message(messages, target_speaker_id=target_speaker_id)
     if language_hint:

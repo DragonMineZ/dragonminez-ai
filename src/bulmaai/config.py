@@ -48,11 +48,14 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
-DEFAULT_OPENAI_SUPPORT_MODEL = "gpt-5-mini"
+# Ticket help uses tools, which are excluded from the data-sharing incentive program,
+# so default to the higher-capability model there.
+DEFAULT_OPENAI_SUPPORT_MODEL = "gpt-5.4"
 DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT = "medium"
 DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS = 700
-DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini"
-DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini"
+# Pin helper models to incentive-eligible IDs where possible.
+DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
+DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini-2025-04-14"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
 DEFAULT_PGHOST = "localhost"
@@ -169,13 +172,37 @@ def load_settings() -> Settings:
         log_level=DEFAULT_LOG_LEVEL,
         initial_extensions=DEFAULT_INITIAL_EXTENSIONS,
         openai_key=openai_key,
-        openai_model=DEFAULT_OPENAI_MODEL,
-        openai_support_model=DEFAULT_OPENAI_SUPPORT_MODEL,
-        openai_support_reasoning_effort=DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT,
-        openai_support_max_output_tokens=DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS,
-        openai_vision_model=DEFAULT_OPENAI_VISION_MODEL,
-        openai_translation_model=DEFAULT_OPENAI_TRANSLATION_MODEL,
-        openai_embedding_model=DEFAULT_OPENAI_EMBEDDING_MODEL,
+        openai_model=_get_env("OPENAI_MODEL", DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL,
+        openai_support_model=(
+            _get_env("OPENAI_SUPPORT_MODEL", DEFAULT_OPENAI_SUPPORT_MODEL)
+            or DEFAULT_OPENAI_SUPPORT_MODEL
+        ),
+        openai_support_reasoning_effort=(
+            _get_env(
+                "OPENAI_SUPPORT_REASONING_EFFORT",
+                DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT,
+            )
+            or DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT
+        ),
+        openai_support_max_output_tokens=(
+            _get_env_int(
+                "OPENAI_SUPPORT_MAX_OUTPUT_TOKENS",
+                DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS,
+            )
+            or DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS
+        ),
+        openai_vision_model=(
+            _get_env("OPENAI_VISION_MODEL", DEFAULT_OPENAI_VISION_MODEL)
+            or DEFAULT_OPENAI_VISION_MODEL
+        ),
+        openai_translation_model=(
+            _get_env("OPENAI_TRANSLATION_MODEL", DEFAULT_OPENAI_TRANSLATION_MODEL)
+            or DEFAULT_OPENAI_TRANSLATION_MODEL
+        ),
+        openai_embedding_model=(
+            _get_env("OPENAI_EMBEDDING_MODEL", DEFAULT_OPENAI_EMBEDDING_MODEL)
+            or DEFAULT_OPENAI_EMBEDDING_MODEL
+        ),
         POSTGRES_DSN=PGDSN,
         PGHOST=DEFAULT_PGHOST,
         PGPORT=DEFAULT_PGPORT,

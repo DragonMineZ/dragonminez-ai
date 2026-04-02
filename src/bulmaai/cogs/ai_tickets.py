@@ -346,6 +346,9 @@ class AITicketsCog(commands.Cog):
                     messages=history,
                     enabled_tools=enabled_tools,
                     language_hint=None,
+                    model_override=(
+                        settings.openai_support_model if in_ticket else settings.openai_model
+                    ),
                     use_cache=in_ticket,
                     user_id=message.author.id,
                     channel_id=channel.id,

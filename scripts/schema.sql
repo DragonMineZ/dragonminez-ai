@@ -65,3 +65,21 @@ CREATE TABLE IF NOT EXISTS support_response_cache (
 
 CREATE INDEX IF NOT EXISTS idx_support_response_cache_updated_at
     ON support_response_cache (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ticket_knowledge_sync_state (
+    channel_id      BIGINT PRIMARY KEY,
+    category_id     BIGINT,
+    source          TEXT NOT NULL,
+    lang            VARCHAR(5),
+    last_message_id BIGINT NOT NULL,
+    message_count   INTEGER NOT NULL DEFAULT 0,
+    indexed         BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_knowledge_sync_state_category
+    ON ticket_knowledge_sync_state (category_id);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_knowledge_sync_state_updated_at
+    ON ticket_knowledge_sync_state (updated_at DESC);

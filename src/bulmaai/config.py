@@ -10,6 +10,28 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _get_env_int(name: str, default: int | None = None) -> int | None:
+    value = _get_env(name)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _get_env_bool(name: str, default: bool) -> bool:
+    value = _get_env(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _get_env_int_list(name: str, default: Sequence[int]) -> tuple[int, ...]:
+    value = _get_env(name)
+    if value is None:
+        return tuple(default)
+    parts = [part.strip() for part in value.split(",")]
+    return tuple(int(part) for part in parts if part)
+
+
 # Non-secret project config lives in source so `.env` stays secret-only.
 DEFAULT_DEV_GUILD_ID: int | None = None
 DEFAULT_LOG_LEVEL = "INFO"
@@ -64,6 +86,7 @@ DEFAULT_AI_GENERAL_CHANNEL_IDS: Sequence[int] = (
 DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 12
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 45
 DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 3
+DEFAULT_AI_CLOSED_TICKET_CATEGORY_IDS: Sequence[int] = ()
 DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED = True
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 
@@ -110,6 +133,7 @@ class Settings:
     ai_support_history_limit: int
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
+    ai_closed_ticket_category_ids: Sequence[int]
     support_response_cache_enabled: bool
     message_presets_path: str
 
@@ -169,12 +193,16 @@ def load_settings() -> Settings:
         GITHUB_WHITELIST_FILE_PATH=DEFAULT_GITHUB_WHITELIST_FILE_PATH,
         PATREON_CREATOR_TOKEN=PATREON_CREATOR_TOKEN,
         PATREON_CAMPAIGN_ID=DEFAULT_PATREON_CAMPAIGN_ID,
-        ai_support_enabled=DEFAULT_AI_SUPPORT_ENABLED,
-        ai_ticket_category_id=DEFAULT_AI_TICKET_CATEGORY_ID,
-        ai_general_channel_ids=DEFAULT_AI_GENERAL_CHANNEL_IDS,
-        ai_support_history_limit=DEFAULT_AI_SUPPORT_HISTORY_LIMIT,
-        ai_support_timeout_seconds=DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS,
-        ai_support_typing_lead_seconds=DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS,
-        support_response_cache_enabled=DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED,
-        message_presets_path=DEFAULT_MESSAGE_PRESETS_PATH,
+        ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
+        ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),
+        ai_general_channel_ids=_get_env_int_list("AI_GENERAL_CHANNEL_IDS", DEFAULT_AI_GENERAL_CHANNEL_IDS),
+        ai_support_history_limit=_get_env_int("AI_SUPPORT_HISTORY_LIMIT", DEFAULT_AI_SUPPORT_HISTORY_LIMIT) or DEFAULT_AI_SUPPORT_HISTORY_LIMIT,
+        ai_support_timeout_seconds=_get_env_int("AI_SUPPORT_TIMEOUT_SECONDS", DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS) or DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS,
+        ai_support_typing_lead_seconds=_get_env_int("AI_SUPPORT_TYPING_LEAD_SECONDS", DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS) or DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS,
+        ai_closed_ticket_category_ids=_get_env_int_list("AI_CLOSED_TICKET_CATEGORY_IDS", DEFAULT_AI_CLOSED_TICKET_CATEGORY_IDS),
+        support_response_cache_enabled=_get_env_bool(
+            "SUPPORT_RESPONSE_CACHE_ENABLED",
+            DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED,
+        ),
+        message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
     )

@@ -1,6 +1,7 @@
 import logging
 import math
 import re
+import unicodedata
 from collections import OrderedDict
 from typing import Any, Literal
 
@@ -17,28 +18,38 @@ Embedding = list[float]
 LangCode = Literal["en", "es", "pt"]
 
 MIN_SIMILARITY = 0.42
+MIN_RESULT_SCORE = 0.58
 MAX_LEXICAL_CANDIDATES = 36
 MAX_RECENT_CANDIDATES = 18
 EMBED_CACHE_SIZE = 256
 EMBED_CACHE: OrderedDict[str, Embedding] = OrderedDict()
+SOURCE_TYPE_SCORE_BONUS = {
+    "ticket_solution": 0.03,
+}
+RECENT_ONLY_PENALTY = 0.06
 
 
 def _pick_doc_languages(user_lang: LangCode) -> tuple[str, ...]:
     if user_lang == "es":
         return ("es", "en")
     if user_lang == "pt":
-        return ("en",)
+        return ("pt", "en")
     return ("en",)
 
 
+def _normalize_text(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
 def _normalize_query(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().lower())
+    return re.sub(r"\s+", " ", _normalize_text(text).strip())
 
 
 def _tokenize(text: str) -> set[str]:
     return {
         token
-        for token in re.findall(r"[a-zA-Z0-9_]{3,}", text.lower())
+        for token in re.findall(r"[a-z0-9_]{3,}", _normalize_text(text))
         if token not in {"with", "from", "that", "this", "have", "about", "para", "como", "where"}
     }
 
@@ -68,7 +79,7 @@ def _trim_content(content: str, limit: int = 700) -> str:
     compact = re.sub(r"\s+", " ", content).strip()
     if len(compact) <= limit:
         return compact
-    return compact[: limit - 1].rsplit(" ", 1)[0] + "…"
+    return compact[: limit - 3].rsplit(" ", 1)[0] + "..."
 
 
 async def _get_query_embedding(text: str) -> Embedding:
@@ -97,7 +108,7 @@ async def _fetch_candidate_docs(
     recent_limit: int = MAX_RECENT_CANDIDATES,
 ) -> list[dict[str, Any]]:
     pool = await get_pool()
-    query_text = query.strip() or "support"
+    query_text = re.sub(r"\s+", " ", query).strip() or "support"
     candidates: OrderedDict[int, dict[str, Any]] = OrderedDict()
 
     async with pool.acquire() as conn:
@@ -187,6 +198,9 @@ async def run_docs_search(
         lexical_score = lexical_rank / lexical_max if lexical_max > 0 else 0.0
         keyword_score = _keyword_overlap_score(query_tokens, candidate["title"], candidate["content"])
         hybrid_score = (semantic_similarity * 0.72) + (lexical_score * 0.18) + (keyword_score * 0.10)
+        hybrid_score += SOURCE_TYPE_SCORE_BONUS.get(candidate["source_type"], 0.0)
+        if lexical_rank == 0.0 and keyword_score == 0.0:
+            hybrid_score -= RECENT_ONLY_PENALTY
         scored.append(
             {
                 "id": candidate["id"],
@@ -207,7 +221,7 @@ async def run_docs_search(
 
     matches: list[dict[str, Any]] = []
     for item in scored:
-        if item["similarity"] < MIN_SIMILARITY and item["score"] < 0.55:
+        if item["similarity"] < MIN_SIMILARITY and item["score"] < MIN_RESULT_SCORE:
             continue
         matches.append(
             {

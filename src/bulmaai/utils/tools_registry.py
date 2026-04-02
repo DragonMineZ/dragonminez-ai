@@ -15,8 +15,8 @@ TOOLS_SCHEMAS: dict[str, dict] = {
         "type": "function",
         "name": "docs_search",
         "description": (
-            "Search DragonMineZ documentation for relevant information "
-            "to answer the user's question."
+            "Search DragonMineZ documentation and indexed resolved tickets "
+            "for relevant information to answer the user's question."
         ),
         "strict": True,
         "parameters": {

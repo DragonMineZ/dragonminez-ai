@@ -22,6 +22,7 @@ PATREON_COLOUR = discord.Colour.from_rgb(255, 85, 0)
 PATREON_POST_PAGE_SIZE = 50
 PATREON_POST_MAX_PAGES = 20
 PATREON_POST_ID_RE = re.compile(r"(?<!\d)(\d{6,})(?!\d)")
+PUBLIC_POST_DESCRIPTION_LIMIT = 3500
 
 
 def _parse_published_at(value: str | None) -> datetime | None:
@@ -66,16 +67,35 @@ def _extract_post_id(reference: str) -> str | None:
     return None
 
 
+def _strip_html(html: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.I)
+    text = re.sub(r"</p>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rsplit(" ", 1)[0] + "..."
+
+
 def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
     attrs = post_data.get("attributes", {})
     title = attrs.get("title") or "New Patreon Post"
     url = _normalize_post_url(post_data)
+    content = attrs.get("content") or ""
+    content_text = _strip_html(content)
 
     if is_public:
-        description = "A new Patreon post is live. This announcement shares the public title and link only."
+        description = content_text or "A new public Patreon post is live."
+        description = _truncate(description, PUBLIC_POST_DESCRIPTION_LIMIT)
         visibility = "Public"
     else:
-        description = "A new Patreon post is live. This public announcement shares the title and Patreon link only."
+        description = (
+            "A new Patreon post is live. The Patreon link below is included so Discord can show only the public-safe preview Patreon exposes."
+        )
         visibility = "Patrons Only"
 
     embed = discord.Embed(
@@ -229,7 +249,7 @@ class PatreonAnnouncementsCog(commands.Cog):
         url = f"{PATREON_API}/campaigns/{self.campaign_id}/posts"
         headers = {"Authorization": f"Bearer {self.token}"}
         params = {
-            "fields[post]": "title,url,published_at,is_public",
+            "fields[post]": "title,url,published_at,is_public,content",
             "page[count]": str(PATREON_POST_PAGE_SIZE),
         }
 
@@ -268,7 +288,7 @@ class PatreonAnnouncementsCog(commands.Cog):
         url = f"{PATREON_API}/posts/{post_id}"
         headers = {"Authorization": f"Bearer {self.token}"}
         params = {
-            "fields[post]": "title,url,published_at,is_public",
+            "fields[post]": "title,url,published_at,is_public,content",
         }
 
         resp = await request("GET", url, headers=headers, params=params)
@@ -285,7 +305,9 @@ class PatreonAnnouncementsCog(commands.Cog):
         post_data: dict,
     ) -> None:
         attrs = post_data.get("attributes", {})
+        post_url = _normalize_post_url(post_data)
         await channel.send(
+            content=post_url,
             embed=_build_post_embed(post_data, is_public=bool(attrs.get("is_public"))),
             view=_build_post_view(post_data),
             allowed_mentions=discord.AllowedMentions.none(),

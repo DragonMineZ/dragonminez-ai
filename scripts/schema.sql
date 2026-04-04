@@ -97,3 +97,16 @@ CREATE TABLE IF NOT EXISTS curseforge_project_state (
 
 CREATE INDEX IF NOT EXISTS idx_curseforge_project_state_updated_at
     ON curseforge_project_state (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS patreon_campaign_state (
+    campaign_id              TEXT PRIMARY KEY,
+    last_processed_post_id   TEXT,
+    last_processed_post_title TEXT,
+    last_processed_post_url  TEXT,
+    last_processed_at        TIMESTAMPTZ,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patreon_campaign_state_updated_at
+    ON patreon_campaign_state (updated_at DESC);

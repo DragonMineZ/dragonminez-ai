@@ -1,13 +1,15 @@
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
 
 from bulmaai.services.http import request
+from bulmaai.services.patreon_state import (
+    get_patreon_campaign_state,
+    upsert_patreon_campaign_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +17,6 @@ PATREON_API = "https://www.patreon.com/api/oauth2/v2"
 PATREON_COLOUR = discord.Colour.from_rgb(255, 85, 0)
 PATREON_POST_PAGE_SIZE = 50
 PATREON_POST_MAX_PAGES = 20
-STATE_FILE = Path(__file__).resolve().parents[3] / "data" / "patreon_state.json"
-LEGACY_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "patreon_state.json"
 
 
 def _parse_published_at(value: str | None) -> datetime | None:
@@ -80,31 +80,6 @@ def _build_post_view(post_data: dict) -> discord.ui.View | None:
     return view
 
 
-def _get_last_post_id() -> str:
-    for path in (STATE_FILE, LEGACY_STATE_FILE):
-        if not path.exists():
-            continue
-
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-
-        last_post_id = str(data.get("last_post_id") or "")
-        if last_post_id:
-            return last_post_id
-
-    return ""
-
-
-def _set_last_post_id(post_id: str) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(
-        json.dumps({"last_post_id": str(post_id)}, indent=2),
-        encoding="utf-8",
-    )
-
-
 class PatreonAnnouncementsCog(commands.Cog):
     """Polls Patreon for new posts and announces them in Discord."""
 
@@ -162,12 +137,14 @@ class PatreonAnnouncementsCog(commands.Cog):
             return
 
         posts.sort(key=_post_sort_key)
-        newest_post_id = str(posts[-1]["id"])
-        last_id = _get_last_post_id()
+        newest_post = posts[-1]
+        newest_post_id = str(newest_post["id"])
+        state = await get_patreon_campaign_state(self.campaign_id)
+        last_id = state.last_processed_post_id if state is not None else None
 
         if not last_id:
             logger.info("First Patreon run; seeding last_post_id with %s", newest_post_id)
-            _set_last_post_id(newest_post_id)
+            await self._store_latest_post(newest_post)
             return
 
         try:
@@ -180,7 +157,7 @@ class PatreonAnnouncementsCog(commands.Cog):
                 last_id,
                 newest_post_id,
             )
-            _set_last_post_id(newest_post_id)
+            await self._store_latest_post(newest_post)
             return
 
         new_posts = posts[last_seen_index + 1:]
@@ -204,7 +181,7 @@ class PatreonAnnouncementsCog(commands.Cog):
             )
             logger.info("Announced Patreon post %s: %s", post["id"], attrs.get("title"))
 
-        _set_last_post_id(newest_post_id)
+        await self._store_latest_post(newest_post)
 
     async def _resolve_target_channel(self) -> discord.abc.Messageable | None:
         if self.channel_id is None:
@@ -262,6 +239,16 @@ class PatreonAnnouncementsCog(commands.Cog):
             )
 
         return posts
+
+    async def _store_latest_post(self, post_data: dict) -> None:
+        attrs = post_data.get("attributes", {})
+        await upsert_patreon_campaign_state(
+            campaign_id=self.campaign_id,
+            post_id=str(post_data["id"]),
+            post_title=attrs.get("title"),
+            post_url=attrs.get("url"),
+            published_at=_parse_published_at(attrs.get("published_at")),
+        )
 
 
 def setup(bot: discord.Bot) -> None:

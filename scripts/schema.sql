@@ -83,3 +83,17 @@ CREATE INDEX IF NOT EXISTS idx_ticket_knowledge_sync_state_category
 
 CREATE INDEX IF NOT EXISTS idx_ticket_knowledge_sync_state_updated_at
     ON ticket_knowledge_sync_state (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS curseforge_project_state (
+    project_id               BIGINT PRIMARY KEY,
+    project_slug             TEXT NOT NULL,
+    last_processed_file_id   BIGINT,
+    last_processed_file_name TEXT,
+    last_processed_file_url  TEXT,
+    last_processed_at        TIMESTAMPTZ,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_curseforge_project_state_updated_at
+    ON curseforge_project_state (updated_at DESC);

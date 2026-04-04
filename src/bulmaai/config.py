@@ -45,6 +45,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.support_us",
     "bulmaai.cogs.log_parser",
     "bulmaai.cogs.patreon_announcements",
+    "bulmaai.cogs.curseforge_updates",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -92,6 +93,20 @@ DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 3
 DEFAULT_AI_CLOSED_TICKET_CATEGORY_IDS: Sequence[int] = (1303543643377893466,)
 DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED = True
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
+DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
+DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
+DEFAULT_ANNOUNCEMENT_PORTUGUESE_CHANNEL_ID = 1472964446866636892
+DEFAULT_RELEASES_CHANNEL_ID = 1260409841424535624
+DEFAULT_SNEAK_PEEKS_CHANNEL_ID = 1280350775989637130
+DEFAULT_PATREON_ANNOUNCEMENT_CHANNEL_ID = 1490060558110822542
+DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
+DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
+DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
+DEFAULT_CURSEFORGE_ENABLED = False # Esperando respuesta de CurseForge para un API key
+DEFAULT_CURSEFORGE_PROJECT_ID = 1136088
+DEFAULT_CURSEFORGE_PROJECT_SLUG = "minecraft/mc-mods/dragonminez"
+DEFAULT_CURSEFORGE_ANNOUNCEMENT_CHANNEL_ID = DEFAULT_RELEASES_CHANNEL_ID
+DEFAULT_CURSEFORGE_POLL_MINUTES = 15
 
 
 # Frozen so read-only after creation
@@ -130,6 +145,7 @@ class Settings:
 
     PATREON_CREATOR_TOKEN: str | None
     PATREON_CAMPAIGN_ID: str | None
+    patreon_announcement_channel_id: int | None
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_general_channel_ids: Sequence[int]
@@ -139,6 +155,20 @@ class Settings:
     ai_closed_ticket_category_ids: Sequence[int]
     support_response_cache_enabled: bool
     message_presets_path: str
+    announcement_source_channel_id: int | None
+    announcement_spanish_channel_id: int | None
+    announcement_portuguese_channel_id: int | None
+    releases_channel_id: int | None
+    sneak_peeks_channel_id: int | None
+    announcement_role_en_id: int | None
+    announcement_role_es_id: int | None
+    announcement_role_pt_id: int | None
+    curseforge_api_key: str | None
+    curseforge_enabled: bool
+    curseforge_project_id: int
+    curseforge_project_slug: str
+    curseforge_announcement_channel_id: int | None
+    curseforge_poll_minutes: int
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
@@ -165,6 +195,7 @@ def load_settings() -> Settings:
     GH_APP_PRIVATE_KEY_PEM = _require_env("GH_APP_PRIVATE_KEY_PEM")
 
     PATREON_CREATOR_TOKEN = _get_env("PATREON_CREATOR_TOKEN")
+    CURSEFORGE_API_KEY = _get_env("CURSEFORGE_API_KEY")
 
     return Settings(
         discord_token=token,
@@ -219,7 +250,14 @@ def load_settings() -> Settings:
         GITHUB_BASE_BRANCH=DEFAULT_GITHUB_BASE_BRANCH,
         GITHUB_WHITELIST_FILE_PATH=DEFAULT_GITHUB_WHITELIST_FILE_PATH,
         PATREON_CREATOR_TOKEN=PATREON_CREATOR_TOKEN,
-        PATREON_CAMPAIGN_ID=DEFAULT_PATREON_CAMPAIGN_ID,
+        PATREON_CAMPAIGN_ID=(
+            _get_env("PATREON_CAMPAIGN_ID", DEFAULT_PATREON_CAMPAIGN_ID)
+            or DEFAULT_PATREON_CAMPAIGN_ID
+        ),
+        patreon_announcement_channel_id=_get_env_int(
+            "PATREON_ANNOUNCEMENT_CHANNEL_ID",
+            DEFAULT_PATREON_ANNOUNCEMENT_CHANNEL_ID,
+        ),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),
         ai_general_channel_ids=_get_env_int_list("AI_GENERAL_CHANNEL_IDS", DEFAULT_AI_GENERAL_CHANNEL_IDS),
@@ -232,4 +270,54 @@ def load_settings() -> Settings:
             DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED,
         ),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
+        announcement_source_channel_id=_get_env_int(
+            "ANNOUNCEMENT_SOURCE_CHANNEL_ID",
+            DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID,
+        ),
+        announcement_spanish_channel_id=_get_env_int(
+            "ANNOUNCEMENT_SPANISH_CHANNEL_ID",
+            DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID,
+        ),
+        announcement_portuguese_channel_id=_get_env_int(
+            "ANNOUNCEMENT_PORTUGUESE_CHANNEL_ID",
+            DEFAULT_ANNOUNCEMENT_PORTUGUESE_CHANNEL_ID,
+        ),
+        releases_channel_id=_get_env_int(
+            "RELEASES_CHANNEL_ID",
+            DEFAULT_RELEASES_CHANNEL_ID,
+        ),
+        sneak_peeks_channel_id=_get_env_int(
+            "SNEAK_PEEKS_CHANNEL_ID",
+            DEFAULT_SNEAK_PEEKS_CHANNEL_ID,
+        ),
+        announcement_role_en_id=_get_env_int(
+            "ANNOUNCEMENT_ROLE_EN_ID",
+            DEFAULT_ANNOUNCEMENT_ROLE_EN_ID,
+        ),
+        announcement_role_es_id=_get_env_int(
+            "ANNOUNCEMENT_ROLE_ES_ID",
+            DEFAULT_ANNOUNCEMENT_ROLE_ES_ID,
+        ),
+        announcement_role_pt_id=_get_env_int(
+            "ANNOUNCEMENT_ROLE_PT_ID",
+            DEFAULT_ANNOUNCEMENT_ROLE_PT_ID,
+        ),
+        curseforge_api_key=CURSEFORGE_API_KEY,
+        curseforge_enabled=_get_env_bool("CURSEFORGE_ENABLED", DEFAULT_CURSEFORGE_ENABLED),
+        curseforge_project_id=(
+            _get_env_int("CURSEFORGE_PROJECT_ID", DEFAULT_CURSEFORGE_PROJECT_ID)
+            or DEFAULT_CURSEFORGE_PROJECT_ID
+        ),
+        curseforge_project_slug=(
+            _get_env("CURSEFORGE_PROJECT_SLUG", DEFAULT_CURSEFORGE_PROJECT_SLUG)
+            or DEFAULT_CURSEFORGE_PROJECT_SLUG
+        ),
+        curseforge_announcement_channel_id=_get_env_int(
+            "CURSEFORGE_ANNOUNCEMENT_CHANNEL_ID",
+            DEFAULT_CURSEFORGE_ANNOUNCEMENT_CHANNEL_ID,
+        ),
+        curseforge_poll_minutes=(
+            _get_env_int("CURSEFORGE_POLL_MINUTES", DEFAULT_CURSEFORGE_POLL_MINUTES)
+            or DEFAULT_CURSEFORGE_POLL_MINUTES
+        ),
     )

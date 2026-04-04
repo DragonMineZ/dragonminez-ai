@@ -1,206 +1,260 @@
+import asyncio
 import json
 import logging
-import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
-from dotenv import load_dotenv
 
-from bulmaai.config import load_settings
 from bulmaai.services.http import request
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-load_dotenv()
-settings = load_settings()
-
-# ── Channel where announcements are posted ──────────────────────────
-PATREON_NEWS_CHANNEL_ID = 1287884173054316574
-
-# ── Patreon API v2 base ─────────────────────────────────────────────
 PATREON_API = "https://www.patreon.com/api/oauth2/v2"
-
-# ── State file for tracking last seen post ──────────────────────────
-STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "patreon_state.json"
-
-# ── Patreon brand colour ────────────────────────────────────────────
 PATREON_COLOUR = discord.Colour.from_rgb(255, 85, 0)
+PATREON_POST_PAGE_SIZE = 50
+PATREON_POST_MAX_PAGES = 20
+STATE_FILE = Path(__file__).resolve().parents[3] / "data" / "patreon_state.json"
+LEGACY_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "patreon_state.json"
 
 
-# ── Helpers ─────────────────────────────────────────────────────────
-def _strip_html(html: str) -> str:
-    """Rough HTML → plain-text conversion for Patreon post content."""
-    # Replace <br> and </p> with newlines
-    text = re.sub(r"<br\s*/?>", "\n", html)
-    text = re.sub(r"</p>", "\n", text)
-    # Strip remaining tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Collapse multiple blank lines
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+def _parse_published_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
-def _truncate(text: str, limit: int = 300) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rsplit(" ", 1)[0] + "…"
+def _post_sort_key(post_data: dict) -> tuple[datetime, str]:
+    attrs = post_data.get("attributes", {})
+    published_at = _parse_published_at(attrs.get("published_at"))
+    if published_at is None:
+        published_at = datetime.min.replace(tzinfo=timezone.utc)
+    return published_at, str(post_data.get("id", ""))
 
 
 def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
-    """Build a rich Discord embed from a Patreon post API object."""
     attrs = post_data.get("attributes", {})
     post_id = post_data["id"]
-
     title = attrs.get("title") or "New Patreon Post"
-    content_html = attrs.get("content") or ""
-    published_at = attrs.get("published_at")
     url = attrs.get("url") or f"https://www.patreon.com/posts/{post_id}"
-    thumbnail = (attrs.get("image") or {}).get("large_url")
 
-    description_text = _strip_html(content_html)
-    description_text = _truncate(description_text, 350)
-
-    visibility = "🌐 Public" if is_public else "🔒 Patrons Only"
+    if is_public:
+        description = "A new Patreon post is live. This announcement shares the public title and link only."
+        visibility = "Public"
+    else:
+        description = "A new Patreon post is live. This public announcement shares the title and Patreon link only."
+        visibility = "Patrons Only"
 
     embed = discord.Embed(
         title=title,
         url=url,
-        description=description_text or "*No text content.*",
+        description=description,
         colour=PATREON_COLOUR,
     )
     embed.set_author(
         name="New Patreon Post",
         icon_url="https://c5.patreon.com/external/favicon/favicon-32x32.png",
     )
-    if thumbnail:
-        embed.set_image(url=thumbnail)
-
     embed.add_field(name="Visibility", value=visibility, inline=True)
 
-    if published_at:
-        try:
-            dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-            embed.timestamp = dt
-        except ValueError:
-            pass
+    published_at = _parse_published_at(attrs.get("published_at"))
+    if published_at is not None:
+        embed.timestamp = published_at
 
-    embed.set_footer(text="Patreon • DragonMineZ")
+    embed.set_footer(text="Patreon | DragonMineZ")
     return embed
 
 
-# ── State file helpers ──────────────────────────────────────────────
+def _build_post_view(post_data: dict) -> discord.ui.View | None:
+    url = (post_data.get("attributes") or {}).get("url")
+    if not url:
+        return None
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Open on Patreon", url=url))
+    return view
+
+
 def _get_last_post_id() -> str:
-    if not STATE_FILE.exists():
-        return ""
-    try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return data.get("last_post_id", "")
-    except (json.JSONDecodeError, OSError):
-        return ""
+    for path in (STATE_FILE, LEGACY_STATE_FILE):
+        if not path.exists():
+            continue
+
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        last_post_id = str(data.get("last_post_id") or "")
+        if last_post_id:
+            return last_post_id
+
+    return ""
 
 
 def _set_last_post_id(post_id: str) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(
-        json.dumps({"last_post_id": post_id}, indent=2),
+        json.dumps({"last_post_id": str(post_id)}, indent=2),
         encoding="utf-8",
     )
 
 
-# ── Cog ─────────────────────────────────────────────────────────────
 class PatreonAnnouncementsCog(commands.Cog):
     """Polls Patreon for new posts and announces them in Discord."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.token: str | None = settings.PATREON_CREATOR_TOKEN
-        self.campaign_id: str | None = settings.PATREON_CAMPAIGN_ID
+        self.settings = bot.settings
+        self.token = self.settings.PATREON_CREATOR_TOKEN
+        self.campaign_id = self.settings.PATREON_CAMPAIGN_ID
+        self.channel_id = self.settings.patreon_announcement_channel_id
+        self._poll_lock = asyncio.Lock()
 
-    # ── lifecycle ────────────────────────────────────────────────────
     async def cog_load(self) -> None:
         if not self.token or not self.campaign_id:
-            log.warning(
-                "Patreon credentials missing – PatreonAnnouncementsCog will NOT poll."
+            logger.warning(
+                "Patreon credentials missing; PatreonAnnouncementsCog will not poll."
+            )
+            return
+        if self.channel_id is None:
+            logger.warning(
+                "Patreon announcement channel missing; PatreonAnnouncementsCog will not poll."
             )
             return
 
         self.poll_patreon.start()
-        log.info("Patreon polling loop started (every 5 min).")
+        logger.info("Patreon polling loop started (every 5 min).")
 
     def cog_unload(self) -> None:
         self.poll_patreon.cancel()
 
-    # ── polling loop ─────────────────────────────────────────────────
     @tasks.loop(minutes=5)
     async def poll_patreon(self) -> None:
-        try:
-            posts = await self._fetch_recent_posts()
-        except Exception:
-            log.exception("Failed to fetch Patreon posts")
-            return
-
-        if not posts:
-            return
-
-        last_id = _get_last_post_id()
-
-        # Posts come sorted newest-first.  Find the ones we haven't seen.
-        new_posts: list[dict] = []
-        for post in posts:
-            if post["id"] == last_id:
-                break
-            new_posts.append(post)
-
-        if not new_posts:
-            return
-
-        # First-run seeding: if we had no stored ID yet, just save the
-        # latest post without announcing, to avoid flooding the channel.
-        if not last_id:
-            log.info("First run – seeding last_post_id with %s", new_posts[0]["id"])
-            _set_last_post_id(new_posts[0]["id"])
-            return
-
-        # Announce oldest-first so the channel reads chronologically.
-        channel = self.bot.get_channel(PATREON_NEWS_CHANNEL_ID)
-        if channel is None:
-            log.error("Patreon news channel %s not found!", PATREON_NEWS_CHANNEL_ID)
-            return
-
-        for post in reversed(new_posts):
-            attrs = post.get("attributes", {})
-            is_public = attrs.get("is_public", False)
-
-            embed = _build_post_embed(post, is_public=is_public)
-            await channel.send(embed=embed)
-            log.info("Announced Patreon post %s: %s", post["id"], attrs.get("title"))
-
-        # Store the newest post ID so we don't re-announce.
-        _set_last_post_id(new_posts[0]["id"])
+        async with self._poll_lock:
+            try:
+                await self._poll_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to poll Patreon posts")
 
     @poll_patreon.before_loop
     async def _before_poll(self) -> None:
         await self.bot.wait_until_ready()
 
-    # ── Patreon API call ─────────────────────────────────────────────
+    async def _poll_once(self) -> None:
+        posts = await self._fetch_recent_posts()
+        if not posts:
+            return
+
+        posts.sort(key=_post_sort_key)
+        newest_post_id = str(posts[-1]["id"])
+        last_id = _get_last_post_id()
+
+        if not last_id:
+            logger.info("First Patreon run; seeding last_post_id with %s", newest_post_id)
+            _set_last_post_id(newest_post_id)
+            return
+
+        try:
+            last_seen_index = next(
+                index for index, post in enumerate(posts) if str(post["id"]) == last_id
+            )
+        except StopIteration:
+            logger.warning(
+                "Stored Patreon post id %s was not found in fetched results; reseeding with %s.",
+                last_id,
+                newest_post_id,
+            )
+            _set_last_post_id(newest_post_id)
+            return
+
+        new_posts = posts[last_seen_index + 1:]
+        if not new_posts:
+            return
+
+        channel = await self._resolve_target_channel()
+        if channel is None:
+            logger.error(
+                "Patreon announcement channel %s could not be resolved.",
+                self.channel_id,
+            )
+            return
+
+        for post in new_posts:
+            attrs = post.get("attributes", {})
+            await channel.send(
+                embed=_build_post_embed(post, is_public=bool(attrs.get("is_public"))),
+                view=_build_post_view(post),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            logger.info("Announced Patreon post %s: %s", post["id"], attrs.get("title"))
+
+        _set_last_post_id(newest_post_id)
+
+    async def _resolve_target_channel(self) -> discord.abc.Messageable | None:
+        if self.channel_id is None:
+            return None
+
+        channel = self.bot.get_channel(self.channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(self.channel_id)
+            except Exception:
+                logger.exception(
+                    "Failed to fetch Patreon announcement channel %s",
+                    self.channel_id,
+                )
+                return None
+
+        return channel if hasattr(channel, "send") else None
+
     async def _fetch_recent_posts(self) -> list[dict]:
-        """Return the latest posts for the configured campaign (newest first)."""
+        """Return the campaign posts fetched through cursor pagination."""
         url = f"{PATREON_API}/campaigns/{self.campaign_id}/posts"
         headers = {"Authorization": f"Bearer {self.token}"}
         params = {
-            "fields[post]": "title,content,url,published_at,image,is_public",
-            "sort": "-published_at",
-            "page[count]": "5",
+            "fields[post]": "title,url,published_at,is_public",
+            "page[count]": str(PATREON_POST_PAGE_SIZE),
         }
 
-        resp = await request("GET", url, headers=headers, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("data", [])
+        posts: list[dict] = []
+        cursor: str | None = None
+        page_count = 0
+
+        while page_count < PATREON_POST_MAX_PAGES:
+            page_params = dict(params)
+            if cursor:
+                page_params["page[cursor]"] = cursor
+
+            resp = await request("GET", url, headers=headers, params=page_params)
+            resp.raise_for_status()
+
+            payload = resp.json()
+            posts.extend(payload.get("data", []))
+
+            pagination = (payload.get("meta") or {}).get("pagination") or {}
+            cursors = pagination.get("cursors") or {}
+            cursor = cursors.get("next")
+            page_count += 1
+
+            if not cursor:
+                break
+
+        if cursor:
+            logger.warning(
+                "Patreon post fetch stopped after %s pages; older posts were truncated.",
+                PATREON_POST_MAX_PAGES,
+            )
+
+        return posts
 
 
-def setup(bot: discord.Bot):
+def setup(bot: discord.Bot) -> None:
     bot.add_cog(PatreonAnnouncementsCog(bot))
-

@@ -3,26 +3,9 @@ import logging
 
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from bulmaai.config import load_settings
-
 log = logging.getLogger(__name__)
-
-load_dotenv()
-settings = load_settings()
-
-client = AsyncOpenAI(api_key=settings.openai_key)
-
-ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838  # English announcements channel ID
-SPANISH_TARGET_CHANNEL_ID = 1280350384992288778       # Spanish announcements channel ID
-PORTUGUESE_TARGET_CHANNEL_ID = 1472964446866636892    # Portuguese announcements channel ID
-
-# Language role IDs for mention swapping in translations
-ENGLISH_ROLE_ID = 1260413114898317387
-SPANISH_ROLE_ID = 1260413006202802276
-PORTUGUESE_ROLE_ID = 1469153940749680821
 
 TRANSLATION_INSTRUCTIONS = """
 You are a professional translator for a Minecraft Dragon Ball Z mod called DragonMineZ.
@@ -37,23 +20,27 @@ Be AWARE of the 2000 character limit for Discord messages and truncate if necess
 """
 
 
-def swap_role_mentions(text: str, target_language: str) -> str:
+def swap_role_mentions(text: str, target_language: str, cog: "AiAnnTranslation") -> str:
     """Replace the English lang role mention with the target language's role mention."""
-    if ENGLISH_ROLE_ID is None:
+    if cog.settings.announcement_role_en_id is None:
         return text
-    english_mention = f"<@&{ENGLISH_ROLE_ID}>"
+    english_mention = f"<@&{cog.settings.announcement_role_en_id}>"
     if target_language == "es":
-        return text.replace(english_mention, f"<@&{SPANISH_ROLE_ID}>")
+        if cog.settings.announcement_role_es_id is None:
+            return text
+        return text.replace(english_mention, f"<@&{cog.settings.announcement_role_es_id}>")
     elif target_language == "pt":
-        return text.replace(english_mention, f"<@&{PORTUGUESE_ROLE_ID}>")
+        if cog.settings.announcement_role_pt_id is None:
+            return text
+        return text.replace(english_mention, f"<@&{cog.settings.announcement_role_pt_id}>")
     return text
 
 
-async def translate_text(text: str, target_language: str) -> str:
+async def translate_text(cog: "AiAnnTranslation", text: str, target_language: str) -> str:
     language_name = "Spanish" if target_language == "es" else "Brazilian Portuguese"
 
-    response = await client.responses.create(
-        model=settings.openai_translation_model,
+    response = await cog.client.responses.create(
+        model=cog.settings.openai_translation_model,
         instructions=f"{TRANSLATION_INSTRUCTIONS}\n\nTranslate to {language_name}.",
         input=text,
         text={"verbosity": "medium"},
@@ -66,13 +53,15 @@ class AiAnnTranslation(commands.Cog):
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
+        self.settings = bot.settings
+        self.client = AsyncOpenAI(api_key=self.settings.openai_key)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.author.guild_permissions.administrator:
             return
 
-        if message.channel.id != ANNOUNCEMENT_SOURCE_CHANNEL_ID:
+        if message.channel.id != self.settings.announcement_source_channel_id:
             return
 
         if not message.content.strip() and not message.attachments:
@@ -97,17 +86,17 @@ class AiAnnTranslation(commands.Cog):
                     log.warning(f"Failed to download attachment {attachment.filename}: {e}")
 
             if message.content.strip():
-                spanish_text = await translate_text(message.content, "es")
-                portuguese_text = await translate_text(message.content, "pt")
+                spanish_text = await translate_text(self, message.content, "es")
+                portuguese_text = await translate_text(self, message.content, "pt")
 
-                spanish_text = swap_role_mentions(spanish_text, "es")
-                portuguese_text = swap_role_mentions(portuguese_text, "pt")
+                spanish_text = swap_role_mentions(spanish_text, "es", self)
+                portuguese_text = swap_role_mentions(portuguese_text, "pt", self)
             else:
                 spanish_text = ""
                 portuguese_text = ""
 
-            spanish_channel = self.bot.get_channel(SPANISH_TARGET_CHANNEL_ID)
-            portuguese_channel = self.bot.get_channel(PORTUGUESE_TARGET_CHANNEL_ID)
+            spanish_channel = self.bot.get_channel(self.settings.announcement_spanish_channel_id)
+            portuguese_channel = self.bot.get_channel(self.settings.announcement_portuguese_channel_id)
 
             role_mentions_only = discord.AllowedMentions(roles=True, users=False, everyone=False)
 
@@ -117,7 +106,10 @@ class AiAnnTranslation(commands.Cog):
                 )
                 log.info("Spanish translation sent successfully")
             else:
-                log.warning(f"Spanish channel {SPANISH_TARGET_CHANNEL_ID} not found")
+                log.warning(
+                    "Spanish channel %s not found",
+                    self.settings.announcement_spanish_channel_id,
+                )
 
             if portuguese_channel:
                 await portuguese_channel.send(
@@ -125,20 +117,28 @@ class AiAnnTranslation(commands.Cog):
                 )
                 log.info("Portuguese translation sent successfully")
             else:
-                log.warning(f"Portuguese channel {PORTUGUESE_TARGET_CHANNEL_ID} not found")
+                log.warning(
+                    "Portuguese channel %s not found",
+                    self.settings.announcement_portuguese_channel_id,
+                )
 
         except Exception as e:
             log.error(f"Failed to translate announcement: {e}", exc_info=True)
 
     @commands.Cog.listener(name="on_message")
     async def on_message_publish(self, message: discord.Message):
-        # Publish announcement messages automatically from the three announcement channels + releases + sneak peeks to the public
-        RELEASES_CHANNEL_ID = 1260409841424535624
-        SNEAK_PEEKS_CHANNEL_ID = 1280350775989637130
+        publishable_channels = {
+            self.settings.announcement_source_channel_id,
+            self.settings.announcement_spanish_channel_id,
+            self.settings.announcement_portuguese_channel_id,
+            self.settings.releases_channel_id,
+            self.settings.sneak_peeks_channel_id,
+            self.settings.patreon_announcement_channel_id,
+        }
+        publishable_channels.discard(None)
 
-        if message.channel.id in {ANNOUNCEMENT_SOURCE_CHANNEL_ID, SPANISH_TARGET_CHANNEL_ID, PORTUGUESE_TARGET_CHANNEL_ID, RELEASES_CHANNEL_ID, SNEAK_PEEKS_CHANNEL_ID}:
+        if message.channel.id in publishable_channels:
             try:
-                # Note: Forcefully publish bot-made messages because the translation messages are sent by the bot (hehe)
                 await message.publish()
                 log.info(f"Published announcement message from {message.author}")
             except Exception as e:

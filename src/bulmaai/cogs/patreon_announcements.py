@@ -115,8 +115,11 @@ class PatreonAnnouncementsCog(commands.Cog):
         self.campaign_id = self.settings.PATREON_CAMPAIGN_ID
         self.channel_id = self.settings.patreon_announcement_channel_id
         self._poll_lock = asyncio.Lock()
+        self._poll_started = False
 
-    async def cog_load(self) -> None:
+    def _start_polling_if_configured(self) -> None:
+        if self._poll_started or self.poll_patreon.is_running():
+            return
         if not self.token or not self.campaign_id:
             logger.warning(
                 "Patreon credentials missing; PatreonAnnouncementsCog will not poll."
@@ -129,7 +132,12 @@ class PatreonAnnouncementsCog(commands.Cog):
             return
 
         self.poll_patreon.start()
+        self._poll_started = True
         logger.info("Patreon polling loop started (every 5 min).")
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        self._start_polling_if_configured()
 
     def cog_unload(self) -> None:
         self.poll_patreon.cancel()

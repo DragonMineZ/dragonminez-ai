@@ -103,8 +103,11 @@ class CurseForgeUpdatesCog(commands.Cog):
         self.settings = bot.settings
         self.client = CurseForgeClient(self.settings)
         self._poll_lock = asyncio.Lock()
+        self._poll_started = False
 
-    async def cog_load(self) -> None:
+    def _start_polling_if_configured(self) -> None:
+        if self._poll_started or self.poll_curseforge.is_running():
+            return
         if not self.settings.curseforge_enabled:
             logger.info("CurseForge updates disabled in settings.")
             return
@@ -116,11 +119,16 @@ class CurseForgeUpdatesCog(commands.Cog):
             minutes=max(self.settings.curseforge_poll_minutes, 1),
         )
         self.poll_curseforge.start()
+        self._poll_started = True
         logger.info(
             "CurseForge polling loop started for project %s every %s minutes.",
             self.settings.curseforge_project_id,
             self.settings.curseforge_poll_minutes,
         )
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        self._start_polling_if_configured()
 
     def cog_unload(self) -> None:
         self.poll_curseforge.cancel()

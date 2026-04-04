@@ -1,8 +1,9 @@
 import asyncio
+import html
 import logging
 import re
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import discord
 from discord.ext import commands, tasks
@@ -81,15 +82,52 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 3].rsplit(" ", 1)[0] + "..."
 
 
+def _get_embed_data(attrs: dict) -> dict:
+    embed_data = attrs.get("embed_data")
+    return embed_data if isinstance(embed_data, dict) else {}
+
+
+def _extract_embed_image_url(embed_data: dict) -> str | None:
+    html_snippet = embed_data.get("html")
+    if not html_snippet:
+        return None
+
+    match = re.search(r'src="([^"]+)"', html_snippet)
+    if not match:
+        return None
+
+    iframe_src = html.unescape(match.group(1))
+    if iframe_src.startswith("//"):
+        iframe_src = "https:" + iframe_src
+
+    image_values = parse_qs(urlparse(iframe_src).query).get("image")
+    if not image_values:
+        return None
+
+    image_url = unquote(image_values[0])
+    if image_url.startswith("//"):
+        image_url = "https:" + image_url
+    if image_url.startswith(("http://", "https://")):
+        return image_url
+    return None
+
+
 def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
     attrs = post_data.get("attributes", {})
     title = attrs.get("title") or "New Patreon Post"
     url = _normalize_post_url(post_data)
     content = attrs.get("content") or ""
     content_text = _strip_html(content)
+    embed_data = _get_embed_data(attrs)
+    embed_subject = (embed_data.get("subject") or "").strip()
+    embed_description = (embed_data.get("description") or "").strip()
+    embed_provider = (embed_data.get("provider") or "").strip()
 
     if is_public:
-        description = content_text or "A new public Patreon post is live."
+        description_source = content_text or embed_description or "A new public Patreon post is live."
+        if content_text and embed_description and embed_description not in content_text:
+            description_source = f"{content_text}\n\n{embed_description}"
+        description = description_source
         description = _truncate(description, PUBLIC_POST_DESCRIPTION_LIMIT)
         visibility = "Public"
     else:
@@ -110,6 +148,17 @@ def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
     )
     embed.add_field(name="Visibility", value=visibility, inline=True)
 
+    if is_public and (embed_subject or embed_provider):
+        media_summary = embed_subject or "Embedded media available"
+        if embed_provider:
+            media_summary = f"{media_summary}\nProvider: {embed_provider}"
+        embed.add_field(name="Embedded Media", value=_truncate(media_summary, 1024), inline=False)
+
+    if is_public:
+        image_url = _extract_embed_image_url(embed_data)
+        if image_url:
+            embed.set_image(url=image_url)
+
     published_at = _parse_published_at(attrs.get("published_at"))
     if published_at is not None:
         embed.timestamp = published_at
@@ -119,12 +168,21 @@ def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
 
 
 def _build_post_view(post_data: dict) -> discord.ui.View | None:
+    attrs = post_data.get("attributes", {})
     url = _normalize_post_url(post_data)
     if not url:
         return None
 
     view = discord.ui.View()
     view.add_item(discord.ui.Button(label="Open on Patreon", url=url))
+
+    if attrs.get("is_public"):
+        embed_url = (attrs.get("embed_url") or "").strip()
+        if embed_url and embed_url.startswith(("http://", "https://")) and embed_url != url:
+            provider = (_get_embed_data(attrs).get("provider") or "").strip()
+            label = f"Open {provider}" if provider else "Open Embedded Media"
+            view.add_item(discord.ui.Button(label=_truncate(label, 80), url=embed_url))
+
     return view
 
 
@@ -249,7 +307,7 @@ class PatreonAnnouncementsCog(commands.Cog):
         url = f"{PATREON_API}/campaigns/{self.campaign_id}/posts"
         headers = {"Authorization": f"Bearer {self.token}"}
         params = {
-            "fields[post]": "title,url,published_at,is_public,content",
+            "fields[post]": "title,url,published_at,is_public,content,embed_url,embed_data",
             "page[count]": str(PATREON_POST_PAGE_SIZE),
         }
 
@@ -288,7 +346,7 @@ class PatreonAnnouncementsCog(commands.Cog):
         url = f"{PATREON_API}/posts/{post_id}"
         headers = {"Authorization": f"Bearer {self.token}"}
         params = {
-            "fields[post]": "title,url,published_at,is_public,content",
+            "fields[post]": "title,url,published_at,is_public,content,embed_url,embed_data",
         }
 
         resp = await request("GET", url, headers=headers, params=params)

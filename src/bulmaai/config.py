@@ -99,6 +99,7 @@ DEFAULT_ANNOUNCEMENT_PORTUGUESE_CHANNEL_ID = 1472964446866636892
 DEFAULT_RELEASES_CHANNEL_ID = 1260409841424535624
 DEFAULT_SNEAK_PEEKS_CHANNEL_ID = 1280350775989637130
 DEFAULT_PATREON_ANNOUNCEMENT_CHANNEL_ID = 1490060558110822542
+DEFAULT_BOT_RESTART_CHANNEL_ID = 1223439164121419838
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
 DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
@@ -146,6 +147,7 @@ class Settings:
     PATREON_CREATOR_TOKEN: str | None
     PATREON_CAMPAIGN_ID: str | None
     patreon_announcement_channel_id: int | None
+    bot_restart_channel_id: int | None
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_general_channel_ids: Sequence[int]
@@ -257,6 +259,10 @@ def load_settings() -> Settings:
         patreon_announcement_channel_id=_get_env_int(
             "PATREON_ANNOUNCEMENT_CHANNEL_ID",
             DEFAULT_PATREON_ANNOUNCEMENT_CHANNEL_ID,
+        ),
+        bot_restart_channel_id=_get_env_int(
+            "BOT_RESTART_CHANNEL_ID",
+            DEFAULT_BOT_RESTART_CHANNEL_ID,
         ),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),

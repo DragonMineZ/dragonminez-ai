@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
+from urllib.parse import urljoin
 
 import discord
 from discord.ext import commands, tasks
@@ -10,13 +12,16 @@ from bulmaai.services.patreon_state import (
     get_patreon_campaign_state,
     upsert_patreon_campaign_state,
 )
+from bulmaai.utils.permissions import is_admin
 
 logger = logging.getLogger(__name__)
 
 PATREON_API = "https://www.patreon.com/api/oauth2/v2"
+PATREON_SITE = "https://www.patreon.com"
 PATREON_COLOUR = discord.Colour.from_rgb(255, 85, 0)
 PATREON_POST_PAGE_SIZE = 50
 PATREON_POST_MAX_PAGES = 20
+PATREON_POST_ID_RE = re.compile(r"(?<!\d)(\d{6,})(?!\d)")
 
 
 def _parse_published_at(value: str | None) -> datetime | None:
@@ -37,11 +42,34 @@ def _post_sort_key(post_data: dict) -> tuple[datetime, str]:
     return published_at, str(post_data.get("id", ""))
 
 
+def _normalize_post_url(post_data: dict) -> str:
+    attrs = post_data.get("attributes", {})
+    post_id = str(post_data["id"])
+    raw_url = (attrs.get("url") or "").strip()
+    if raw_url:
+        if raw_url.startswith(("http://", "https://")):
+            return raw_url
+        return urljoin(f"{PATREON_SITE}/", raw_url)
+    return f"{PATREON_SITE}/posts/{post_id}"
+
+
+def _extract_post_id(reference: str) -> str | None:
+    value = (reference or "").strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return value
+
+    match = PATREON_POST_ID_RE.search(value)
+    if match:
+        return match.group(1)
+    return None
+
+
 def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
     attrs = post_data.get("attributes", {})
-    post_id = post_data["id"]
     title = attrs.get("title") or "New Patreon Post"
-    url = attrs.get("url") or f"https://www.patreon.com/posts/{post_id}"
+    url = _normalize_post_url(post_data)
 
     if is_public:
         description = "A new Patreon post is live. This announcement shares the public title and link only."
@@ -71,7 +99,7 @@ def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
 
 
 def _build_post_view(post_data: dict) -> discord.ui.View | None:
-    url = (post_data.get("attributes") or {}).get("url")
+    url = _normalize_post_url(post_data)
     if not url:
         return None
 
@@ -82,6 +110,8 @@ def _build_post_view(post_data: dict) -> discord.ui.View | None:
 
 class PatreonAnnouncementsCog(commands.Cog):
     """Polls Patreon for new posts and announces them in Discord."""
+
+    patreon = discord.SlashCommandGroup("patreon", "Patreon announcement tools")
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -173,13 +203,7 @@ class PatreonAnnouncementsCog(commands.Cog):
             return
 
         for post in new_posts:
-            attrs = post.get("attributes", {})
-            await channel.send(
-                embed=_build_post_embed(post, is_public=bool(attrs.get("is_public"))),
-                view=_build_post_view(post),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            logger.info("Announced Patreon post %s: %s", post["id"], attrs.get("title"))
+            await self._announce_post_to_channel(channel, post)
 
         await self._store_latest_post(newest_post)
 
@@ -240,14 +264,139 @@ class PatreonAnnouncementsCog(commands.Cog):
 
         return posts
 
+    async def _fetch_post_by_id(self, post_id: str) -> dict:
+        url = f"{PATREON_API}/posts/{post_id}"
+        headers = {"Authorization": f"Bearer {self.token}"}
+        params = {
+            "fields[post]": "title,url,published_at,is_public",
+        }
+
+        resp = await request("GET", url, headers=headers, params=params)
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload["data"]
+
+    async def _resolve_announcement_channel(self) -> discord.abc.Messageable | None:
+        return await self._resolve_target_channel()
+
+    async def _announce_post_to_channel(
+        self,
+        channel: discord.abc.Messageable,
+        post_data: dict,
+    ) -> None:
+        attrs = post_data.get("attributes", {})
+        await channel.send(
+            embed=_build_post_embed(post_data, is_public=bool(attrs.get("is_public"))),
+            view=_build_post_view(post_data),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        logger.info("Announced Patreon post %s: %s", post_data["id"], attrs.get("title"))
+
     async def _store_latest_post(self, post_data: dict) -> None:
         attrs = post_data.get("attributes", {})
         await upsert_patreon_campaign_state(
             campaign_id=self.campaign_id,
             post_id=str(post_data["id"]),
             post_title=attrs.get("title"),
-            post_url=attrs.get("url"),
+            post_url=_normalize_post_url(post_data),
             published_at=_parse_published_at(attrs.get("published_at")),
+        )
+
+    async def _update_state_if_newer(self, post_data: dict) -> bool:
+        current_state = await get_patreon_campaign_state(self.campaign_id)
+        if current_state is None or current_state.last_processed_post_id is None:
+            await self._store_latest_post(post_data)
+            return True
+
+        current_time = current_state.last_processed_at or datetime.min.replace(tzinfo=timezone.utc)
+        post_time = _parse_published_at((post_data.get("attributes") or {}).get("published_at"))
+        if post_time is None:
+            post_time = datetime.min.replace(tzinfo=timezone.utc)
+
+        current_key = (current_time, str(current_state.last_processed_post_id))
+        post_key = (post_time, str(post_data["id"]))
+        if post_key >= current_key:
+            await self._store_latest_post(post_data)
+            return True
+        return False
+
+    @patreon.command(name="manual_post", description="Manually announce a Patreon post by URL or ID")
+    @discord.option(
+        "post_reference",
+        description="Patreon post ID or Patreon post URL",
+        required=True,
+    )
+    @discord.option(
+        "record_state",
+        description="Advance Patreon state if this post is the newest known post",
+        required=False,
+        default=True,
+    )
+    async def manual_post(
+        self,
+        ctx: discord.ApplicationContext,
+        post_reference: str,
+        record_state: bool = True,
+    ) -> None:
+        author = ctx.author if isinstance(ctx.author, discord.Member) else None
+        if author is None or not is_admin(author):
+            await ctx.respond("Only staff can manually post Patreon announcements.", ephemeral=True)
+            return
+
+        post_id = _extract_post_id(post_reference)
+        if post_id is None:
+            await ctx.respond(
+                "Could not determine a Patreon post ID from that value. Use a numeric Patreon post ID or a Patreon post URL.",
+                ephemeral=True,
+            )
+            return
+
+        await ctx.defer(ephemeral=True)
+
+        try:
+            post_data = await self._fetch_post_by_id(post_id)
+        except Exception:
+            logger.exception("Failed to fetch Patreon post %s for manual post", post_id)
+            await ctx.followup.send(
+                f"Failed to fetch Patreon post `{post_id}` from Patreon.",
+                ephemeral=True,
+            )
+            return
+
+        channel = await self._resolve_announcement_channel()
+        if channel is None:
+            await ctx.followup.send(
+                "The Patreon announcement channel could not be resolved.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await self._announce_post_to_channel(channel, post_data)
+        except Exception:
+            logger.exception("Failed to manually announce Patreon post %s", post_id)
+            await ctx.followup.send(
+                f"Failed to send Patreon post `{post_id}` to Discord.",
+                ephemeral=True,
+            )
+            return
+
+        state_updated = False
+        if record_state:
+            state_updated = await self._update_state_if_newer(post_data)
+
+        post_url = _normalize_post_url(post_data)
+        if record_state:
+            if state_updated:
+                state_message = "Campaign state was updated."
+            else:
+                state_message = "Campaign state was left unchanged because a newer post is already recorded."
+        else:
+            state_message = "Campaign state was not changed."
+
+        await ctx.followup.send(
+            f"Manually posted Patreon post `{post_id}` to <#{self.channel_id}>.\n{post_url}\n{state_message}",
+            ephemeral=True,
         )
 
 

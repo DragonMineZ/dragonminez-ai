@@ -1,6 +1,10 @@
+import json
 import os
-from dataclasses import dataclass
-from typing import Sequence
+from collections.abc import Sequence as SequenceABC
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from types import UnionType
+from typing import Any, Sequence, Union, get_args, get_origin
 
 
 def _require_env(name: str) -> str:
@@ -108,6 +112,20 @@ DEFAULT_CURSEFORGE_PROJECT_ID = 1136088
 DEFAULT_CURSEFORGE_PROJECT_SLUG = "minecraft/mc-mods/dragonminez"
 DEFAULT_CURSEFORGE_ANNOUNCEMENT_CHANNEL_ID = DEFAULT_RELEASES_CHANNEL_ID
 DEFAULT_CURSEFORGE_POLL_MINUTES = 15
+DEFAULT_SETTINGS_OVERRIDES_PATH = "data/settings_overrides.json"
+
+NON_OVERRIDABLE_SETTINGS = {
+    "discord_token",
+    "openai_key",
+    "POSTGRES_DSN",
+    "PGPASSWORD",
+    "GH_APP_PRIVATE_KEY_PEM",
+    "PATREON_CREATOR_TOKEN",
+    "curseforge_api_key",
+}
+
+TRUE_VALUES = {"1", "true", "yes", "on"}
+FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 # Frozen so read-only after creation
@@ -187,7 +205,14 @@ def _get_env(name: str, default: str | None = None) -> str | None:
     return value if value else None
 
 
-def load_settings() -> Settings:
+def _settings_overrides_path() -> Path:
+    configured = Path(DEFAULT_SETTINGS_OVERRIDES_PATH)
+    if configured.is_absolute():
+        return configured
+    return Path(__file__).resolve().parents[2] / configured
+
+
+def _build_settings_from_env() -> Settings:
     token = _require_env("DISCORD_TOKEN")
     openai_key = _require_env("OPENAI_KEY")
 
@@ -327,3 +352,131 @@ def load_settings() -> Settings:
             or DEFAULT_CURSEFORGE_POLL_MINUTES
         ),
     )
+
+
+def load_settings_overrides() -> dict[str, Any]:
+    path = _settings_overrides_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def save_settings_overrides(overrides: dict[str, Any]) -> None:
+    path = _settings_overrides_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(overrides, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_editable_setting_names() -> tuple[str, ...]:
+    names = [
+        name
+        for name in Settings.__annotations__
+        if name not in NON_OVERRIDABLE_SETTINGS
+    ]
+    return tuple(sorted(names))
+
+
+def _unwrap_optional(annotation: Any) -> tuple[Any, bool]:
+    origin = get_origin(annotation)
+    if origin not in {Union, UnionType}:
+        return annotation, False
+    args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
+    if not args:
+        return annotation, False
+    if len(args) == 1:
+        return args[0], True
+    return annotation, False
+
+
+def _parse_bool(value: str) -> bool:
+    lowered = value.strip().lower()
+    if lowered in TRUE_VALUES:
+        return True
+    if lowered in FALSE_VALUES:
+        return False
+    raise ValueError("Expected a boolean value: true/false, yes/no, on/off, or 1/0.")
+
+
+def _parse_sequence(value: str, *, item_type: type) -> tuple[Any, ...]:
+    stripped = value.strip()
+    if not stripped:
+        return tuple()
+
+    items: list[Any]
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, list):
+        items = parsed
+    else:
+        normalized = stripped.replace("\r", "\n")
+        parts: list[str] = []
+        for line in normalized.split("\n"):
+            parts.extend(segment.strip() for segment in line.split(","))
+        items = [part for part in parts if part]
+
+    if item_type is int:
+        return tuple(int(item) for item in items)
+    return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+def _coerce_setting_value(field_name: str, raw_value: str) -> Any:
+    annotation = Settings.__annotations__[field_name]
+    target_type, allows_none = _unwrap_optional(annotation)
+    lowered = raw_value.strip().lower()
+    if allows_none and lowered in {"none", "null"}:
+        return None
+
+    origin = get_origin(target_type)
+    if origin in {list, tuple, SequenceABC}:
+        item_args = get_args(target_type)
+        item_type = item_args[0] if item_args else str
+        return _parse_sequence(raw_value, item_type=item_type)
+    if target_type is bool:
+        return _parse_bool(raw_value)
+    if target_type is int:
+        return int(raw_value.strip())
+    return raw_value.strip()
+
+
+def format_setting_value(value: Any) -> str:
+    serializable = list(value) if isinstance(value, tuple) else value
+    return json.dumps(serializable, ensure_ascii=False)
+
+
+def set_setting_override(field_name: str, raw_value: str) -> Any:
+    if field_name not in get_editable_setting_names():
+        raise KeyError(field_name)
+    overrides = load_settings_overrides()
+    overrides[field_name] = _coerce_setting_value(field_name, raw_value)
+    save_settings_overrides(overrides)
+    return overrides[field_name]
+
+
+def reset_setting_override(field_name: str) -> None:
+    if field_name not in get_editable_setting_names():
+        raise KeyError(field_name)
+    overrides = load_settings_overrides()
+    overrides.pop(field_name, None)
+    save_settings_overrides(overrides)
+
+
+def load_settings(*, include_overrides: bool = True) -> Settings:
+    settings = _build_settings_from_env()
+    if not include_overrides:
+        return settings
+
+    overrides = load_settings_overrides()
+    merged = asdict(settings)
+    for field_name in get_editable_setting_names():
+        if field_name in overrides:
+            merged[field_name] = overrides[field_name]
+    return Settings(**merged)

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import math
 import re
@@ -10,8 +11,7 @@ from openai import AsyncOpenAI
 from bulmaai.config import load_settings
 from bulmaai.database.db import get_pool
 
-settings = load_settings()
-client = AsyncOpenAI(api_key=settings.openai_key)
+client = AsyncOpenAI(api_key=load_settings().openai_key)
 log = logging.getLogger(__name__)
 
 Embedding = list[float]
@@ -83,14 +83,18 @@ def _trim_content(content: str, limit: int = 700) -> str:
 
 
 async def _get_query_embedding(text: str) -> Embedding:
+    settings = load_settings()
     cache_key = _normalize_query(text)
     if cache_key in EMBED_CACHE:
         EMBED_CACHE.move_to_end(cache_key)
         return EMBED_CACHE[cache_key]
 
-    res = await client.embeddings.create(
-        model=settings.openai_embedding_model,
-        input=text,
+    res = await asyncio.wait_for(
+        client.embeddings.create(
+            model=settings.openai_embedding_model,
+            input=text,
+        ),
+        timeout=settings.ai_support_timeout_seconds,
     )
     embedding = res.data[0].embedding
     EMBED_CACHE[cache_key] = embedding

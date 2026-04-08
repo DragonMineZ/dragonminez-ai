@@ -7,7 +7,7 @@ from typing import Any, Optional, TypedDict
 
 from openai import AsyncOpenAI
 
-from bulmaai.config import load_settings
+from bulmaai.config import Settings, load_settings
 from bulmaai.services.support_cache import (
     build_support_cache_key,
     fetch_cached_support_response,
@@ -17,8 +17,7 @@ from bulmaai.services.support_cache import (
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils import tools_registry
 
-settings = load_settings()
-client = AsyncOpenAI(api_key=settings.openai_key)
+client = AsyncOpenAI(api_key=load_settings().openai_key)
 log = logging.getLogger(__name__)
 
 
@@ -214,8 +213,7 @@ def _hydrate_tool_args(
     return hydrated
 
 
-async def _create_response(**kwargs: Any) -> Any:
-    timeout_seconds = settings.ai_support_timeout_seconds
+async def _create_response(*, timeout_seconds: int, **kwargs: Any) -> Any:
     return await asyncio.wait_for(
         client.responses.create(**kwargs),
         timeout=timeout_seconds,
@@ -232,8 +230,10 @@ async def run_support_agent(
     user_id: int,
     channel_id: int,
     bot: Any = None,
+    settings: Settings | None = None,
 ) -> AgentResult:
-    model = model_override or settings.openai_support_model or settings.openai_model
+    runtime_settings = settings or load_settings()
+    model = model_override or runtime_settings.openai_support_model or runtime_settings.openai_model
     target_speaker_id = str(user_id)
     last_user = _latest_user_message(messages, target_speaker_id=target_speaker_id)
     if language_hint:
@@ -282,7 +282,7 @@ async def run_support_agent(
         "model": model,
         "instructions": system_prompt,
         "input": response_input,
-        "max_output_tokens": settings.openai_support_max_output_tokens,
+        "max_output_tokens": runtime_settings.openai_support_max_output_tokens,
         "prompt_cache_key": f"support:{channel_id}:{language}",
         "safety_identifier": _build_safety_identifier(user_id),
         "text": {"verbosity": "medium"},
@@ -292,11 +292,14 @@ async def run_support_agent(
         request_kwargs["tool_choice"] = "auto"
     if model.startswith("gpt-5"):
         request_kwargs["reasoning"] = {
-            "effort": settings.openai_support_reasoning_effort,
+            "effort": runtime_settings.openai_support_reasoning_effort,
             "summary": "auto",
         }
 
-    response = await _create_response(**request_kwargs)
+    response = await _create_response(
+        timeout_seconds=runtime_settings.ai_support_timeout_seconds,
+        **request_kwargs,
+    )
     result = await _handle_tools_and_final_reply(
         response=response,
         base_input=response_input,
@@ -304,6 +307,7 @@ async def run_support_agent(
         system_prompt=system_prompt,
         model=model,
         lang=language,
+        settings=runtime_settings,
         bot=bot,
         user_id=user_id,
         channel_id=channel_id,
@@ -321,6 +325,7 @@ async def _handle_tools_and_final_reply(
     system_prompt: str,
     model: str,
     lang: str,
+    settings: Settings,
     user_id: int,
     channel_id: int,
     bot: Any = None,
@@ -367,7 +372,10 @@ async def _handle_tools_and_final_reply(
                 "effort": settings.openai_support_reasoning_effort,
                 "summary": "auto",
             }
-        response = await _create_response(**followup_kwargs)
+        response = await _create_response(
+            timeout_seconds=settings.ai_support_timeout_seconds,
+            **followup_kwargs,
+        )
 
     reply_text = _extract_output_text(response) or "(no reply)"
     lowered = reply_text.lower()

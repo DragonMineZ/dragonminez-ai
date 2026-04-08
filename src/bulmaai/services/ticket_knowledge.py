@@ -10,7 +10,6 @@ from bulmaai.services.docs_ingestion import ingest_bytes
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.permissions import is_staff
 
-settings = load_settings()
 log = logging.getLogger(__name__)
 
 SOURCE_PREFIX = "closed-ticket"
@@ -158,6 +157,7 @@ async def _store_ticket_sync_state(
 
 
 async def sync_closed_ticket_knowledge(bot: discord.Client) -> dict[str, Any]:
+    settings = load_settings()
     if not settings.ai_closed_ticket_category_ids:
         return {"scanned": 0, "indexed": 0, "skipped": 0}
 

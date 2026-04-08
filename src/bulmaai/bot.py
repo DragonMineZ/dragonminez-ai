@@ -122,6 +122,10 @@ class BulmaAI(discord.Bot):
         await ensure_schema()
         ensure_message_presets_file()
 
+    def reload_settings(self) -> Settings:
+        self.settings = load_settings()
+        return self.settings
+
     def load_pr_extensions(self) -> None:
         for ext in self.settings.initial_extensions:
             try:

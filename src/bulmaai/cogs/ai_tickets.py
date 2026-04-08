@@ -13,16 +13,18 @@ from bulmaai.services.ticket_knowledge import sync_closed_ticket_knowledge
 from bulmaai.utils.permissions import is_bruno, is_staff
 
 log = logging.getLogger(__name__)
-settings = load_settings()
-vision_client = AsyncOpenAI(api_key=settings.openai_key)
+vision_client = AsyncOpenAI(api_key=load_settings().openai_key)
 
-GENERAL_MIN_SCORE = 0.68
 TICKET_MIN_SCORE = 0.52
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 
 
-def _is_ticket_channel(channel: discord.abc.GuildChannel) -> bool:
+def _is_ticket_channel(
+    channel: discord.abc.GuildChannel,
+    *,
+    settings,
+) -> bool:
     return (
         isinstance(channel, discord.TextChannel)
         and channel.category
@@ -31,26 +33,33 @@ def _is_ticket_channel(channel: discord.abc.GuildChannel) -> bool:
     )
 
 
-def _is_general_ai_channel(channel: discord.TextChannel) -> bool:
-    return channel.id in set(settings.ai_general_channel_ids)
-
-
 def _is_pinging_bot(message: discord.Message, bot_user: discord.ClientUser | None) -> bool:
     return bot_user is not None and bot_user in message.mentions
 
 
-def _wants_whitelist_flow(text: str) -> bool:
-    lowered = text.lower()
-    triggers = (
-        "whitelist",
-        "beta access",
-        "patreon access",
-        "patreon role",
-        "acesso patreon",
-        "acceso patreon",
-        "alpha access version",
-    )
-    return any(trigger in lowered for trigger in triggers)
+def _strip_bot_mentions(text: str, bot_user: discord.ClientUser | None) -> str:
+    stripped = text.strip()
+    if bot_user is None:
+        return stripped
+
+    mention_tokens = {
+        bot_user.mention,
+        f"<@{bot_user.id}>",
+        f"<@!{bot_user.id}>",
+    }
+    for token in mention_tokens:
+        stripped = stripped.replace(token, " ")
+    return " ".join(stripped.split())
+
+
+def _has_support_request_content(
+    message: discord.Message,
+    bot_user: discord.ClientUser | None,
+) -> bool:
+    text = _strip_bot_mentions(message.content, bot_user)
+    if len(text.strip()) >= 3:
+        return True
+    return any(_is_image_attachment(attachment) for attachment in message.attachments)
 
 
 def _contains_log_attachment(message: discord.Message) -> bool:
@@ -163,7 +172,7 @@ class AITicketsCog(commands.Cog):
         if not messages:
             return
 
-        typing_lead_seconds = max(settings.ai_support_typing_lead_seconds, 0)
+        typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
         if typing_lead_seconds <= 0:
             for message in messages:
                 await channel.send(message)
@@ -225,7 +234,7 @@ class AITicketsCog(commands.Cog):
         messages = [
             entry
             async for entry in channel.history(
-                limit=settings.ai_support_history_limit,
+                limit=self.bot.settings.ai_support_history_limit,
                 oldest_first=True,
             )
         ]
@@ -277,7 +286,8 @@ class AITicketsCog(commands.Cog):
             return await self._build_ticket_history(message)
         return await self._build_general_history(message)
 
-    async def _extract_ticket_image_context(self, message: discord.Message) -> str:
+    async def _extract_image_context(self, message: discord.Message) -> str:
+        settings = self.bot.settings
         image_urls = [attachment.url for attachment in message.attachments if _is_image_attachment(attachment)]
         if not image_urls:
             return ""
@@ -293,17 +303,23 @@ class AITicketsCog(commands.Cog):
                                 "type": "input_text",
                                 "text": (
                                     "Read this support screenshot and extract only actionable "
-                                    "details: errors, warnings, version hints, symptoms, and buttons clicked."
+                                    "details relevant to support: errors, warnings, version hints, "
+                                    "symptoms, access or whitelist requests, visible roles or status, "
+                                    "buttons clicked, and any text that changes the recommended next step."
                                 ),
                             },
                             {"type": "input_image", "image_url": url},
                         ],
                     }
                 ]
-                response = await vision_client.responses.create(
-                    model=settings.openai_vision_model,
-                    input=payload,
-                    text={"verbosity": "medium"},
+                response = await asyncio.wait_for(
+                    vision_client.responses.create(
+                        model=settings.openai_vision_model,
+                        input=payload,
+                        max_output_tokens=settings.openai_support_max_output_tokens,
+                        text={"verbosity": "medium"},
+                    ),
+                    timeout=settings.ai_support_timeout_seconds,
                 )
                 if response.output_text:
                     snippets.append(response.output_text.strip())
@@ -317,9 +333,13 @@ class AITicketsCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
 
-        in_ticket = _is_ticket_channel(channel)
-        in_general_ai = _is_general_ai_channel(channel)
+        settings = self.bot.settings
+        in_ticket = _is_ticket_channel(channel, settings=settings)
         bot_pinged = _is_pinging_bot(message, self.bot.user)
+        mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
+
+        if not in_ticket and not mention_request:
+            return
 
         if in_ticket and channel.id in self._escalated_ticket_channels:
             return
@@ -327,22 +347,19 @@ class AITicketsCog(commands.Cog):
         async with self._channel_locks[channel.id]:
             try:
                 history = await self._build_history(message, in_ticket=in_ticket)
-                if in_ticket:
-                    image_context = await self._extract_ticket_image_context(message)
-                    if image_context:
-                        history.append(
-                            ConversationMessage(
-                                role="user",
-                                content=f"[Image context extracted from attachment]\n{image_context}",
-                                speaker_name=getattr(message.author, "display_name", message.author.name),
-                                speaker_id=str(message.author.id),
-                                speaker_kind="requester",
-                            )
+                image_context = await self._extract_image_context(message)
+                if image_context:
+                    history.append(
+                        ConversationMessage(
+                            role="user",
+                            content=f"[Image context extracted from attachment]\n{image_context}",
+                            speaker_name=getattr(message.author, "display_name", message.author.name),
+                            speaker_id=str(message.author.id),
+                            speaker_kind="requester",
                         )
+                    )
 
-                enabled_tools = ["docs_search"]
-                if _wants_whitelist_flow(message.clean_content):
-                    enabled_tools.append("start_patreon_whitelist_flow")
+                enabled_tools = ["docs_search", "start_patreon_whitelist_flow"]
                 result = await run_support_agent(
                     messages=history,
                     enabled_tools=enabled_tools,
@@ -354,6 +371,7 @@ class AITicketsCog(commands.Cog):
                     user_id=message.author.id,
                     channel_id=channel.id,
                     bot=self.bot,
+                    settings=settings,
                 )
             except asyncio.CancelledError:
                 raise
@@ -363,6 +381,11 @@ class AITicketsCog(commands.Cog):
                     self._mark_ticket_escalated(channel.id)
                     await channel.send(
                         "I ran into an error while processing this. A staff member should take a look."
+                    )
+                elif mention_request:
+                    await channel.send(
+                        f"{message.author.mention} I ran into an error while processing that. "
+                        "Please try again or open a support ticket."
                     )
                 return
 
@@ -381,27 +404,19 @@ class AITicketsCog(commands.Cog):
                 await self._send_messages_with_typing(channel, outgoing_messages)
                 return
 
-            if in_general_ai and not bot_pinged:
-                if docs_score is None or docs_score < GENERAL_MIN_SCORE:
-                    return
-
             reply_text = result["reply"].strip()
             if reply_text and reply_text != "(no reply)":
                 outgoing_messages.append(reply_text)
             else:
                 suggestion_reply = _build_suggestion_reply(result["language"], docs_output or {})
-                if suggestion_reply and (
-                    in_ticket
-                    or bot_pinged
-                    or (docs_score is not None and docs_score >= GENERAL_MIN_SCORE)
-                ):
+                if suggestion_reply and (in_ticket or mention_request):
                     outgoing_messages.append(suggestion_reply)
                 elif in_ticket:
                     outgoing_messages.append(
                         "I could not confidently answer this from the docs. A staff member should review it."
                     )
                     self._mark_ticket_escalated(channel.id)
-                elif in_general_ai and bot_pinged:
+                elif mention_request:
                     outgoing_messages.append(
                         "I couldn't find a confident docs-backed answer for that. Please open a ticket if it needs follow-up."
                     )
@@ -445,7 +460,7 @@ class AITicketsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        if not settings.ai_closed_ticket_category_ids:
+        if not self.bot.settings.ai_closed_ticket_category_ids:
             return
         if self._ticket_knowledge_task is not None and not self._ticket_knowledge_task.done():
             return
@@ -453,6 +468,7 @@ class AITicketsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        settings = self.bot.settings
         if not settings.ai_support_enabled or not message.guild:
             return
 
@@ -460,9 +476,10 @@ class AITicketsCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
 
-        in_ticket = _is_ticket_channel(channel)
-        in_general_ai = _is_general_ai_channel(channel)
-        if not in_ticket and not in_general_ai:
+        in_ticket = _is_ticket_channel(channel, settings=settings)
+        bot_pinged = _is_pinging_bot(message, self.bot.user)
+        mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
+        if not in_ticket and not mention_request:
             return
 
         if not message.author.bot and isinstance(message.author, discord.Member):
@@ -477,7 +494,7 @@ class AITicketsCog(commands.Cog):
             return
         if in_ticket and channel.id in self._escalated_ticket_channels:
             return
-        if message.content.startswith(("!", "/", ".")):
+        if message.content.startswith(("!", "/", ".")) and not mention_request:
             return
         if _contains_log_attachment(message):
             return

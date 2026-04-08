@@ -36,7 +36,8 @@ TOOLS_SCHEMAS: dict[str, dict] = {
         "name": "start_patreon_whitelist_flow",
         "description": (
             "Start the Patreon whitelist workflow for a Discord user. "
-            "Use when a Patreon asks how to get beta access / whitelist."
+            "Use when a Patreon asks for beta, whitelist, allowlist, Patreon release access, "
+            "or equivalent phrasing in any language, including when screenshots or images imply that request."
         ),
         "strict": True,
         "parameters": {

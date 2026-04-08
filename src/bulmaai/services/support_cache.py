@@ -8,7 +8,6 @@ from typing import Any
 from bulmaai.config import load_settings
 from bulmaai.database.db import get_pool
 
-settings = load_settings()
 log = logging.getLogger(__name__)
 
 
@@ -55,7 +54,7 @@ def _decode_cached_response(value: Any) -> dict[str, Any] | None:
 
 
 async def fetch_cached_support_response(cache_key: str, docs_version: datetime | None) -> dict[str, Any] | None:
-    if not settings.support_response_cache_enabled:
+    if not load_settings().support_response_cache_enabled:
         return None
 
     pool = await get_pool()
@@ -92,7 +91,7 @@ async def store_cached_support_response(
     docs_version: datetime | None,
     response: dict[str, Any],
 ) -> None:
-    if not settings.support_response_cache_enabled:
+    if not load_settings().support_response_cache_enabled:
         return
 
     pool = await get_pool()

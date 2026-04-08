@@ -302,7 +302,7 @@ class AITicketsCog(commands.Cog):
                 response = await vision_client.responses.create(
                     model=settings.openai_vision_model,
                     input=payload,
-                    text={"verbosity": "low"},
+                    text={"verbosity": "medium"},
                 )
                 if response.output_text:
                     snippets.append(response.output_text.strip())

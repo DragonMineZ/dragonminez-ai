@@ -285,7 +285,7 @@ async def run_support_agent(
         "max_output_tokens": settings.openai_support_max_output_tokens,
         "prompt_cache_key": f"support:{channel_id}:{language}",
         "safety_identifier": _build_safety_identifier(user_id),
-        "text": {"verbosity": "low"},
+        "text": {"verbosity": "medium"},
     }
     if tools:
         request_kwargs["tools"] = tools
@@ -360,7 +360,7 @@ async def _handle_tools_and_final_reply(
             "max_output_tokens": settings.openai_support_max_output_tokens,
             "prompt_cache_key": f"support:{channel_id}:{lang}:post-tool",
             "safety_identifier": _build_safety_identifier(user_id),
-            "text": {"verbosity": "low"},
+            "text": {"verbosity": "medium"},
         }
         if model.startswith("gpt-5"):
             followup_kwargs["reasoning"] = {

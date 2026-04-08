@@ -48,6 +48,7 @@ def _wants_whitelist_flow(text: str) -> bool:
         "patreon role",
         "acesso patreon",
         "acceso patreon",
+        "alpha access version",
     )
     return any(trigger in lowered for trigger in triggers)
 

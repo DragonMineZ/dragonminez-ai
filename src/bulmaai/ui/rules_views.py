@@ -48,9 +48,21 @@ class RulesLanguageView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def _swap_language(self, interaction: discord.Interaction, language: str) -> None:
-        await interaction.response.edit_message(
-            embeds=build_rules_embeds(language),
-            view=self,
+        embeds = build_rules_embeds(language)
+        is_ephemeral_message = bool(
+            interaction.message and getattr(interaction.message.flags, "ephemeral", False)
+        )
+        if is_ephemeral_message:
+            await interaction.response.edit_message(
+                embeds=embeds,
+                view=RulesLanguageView(),
+            )
+            return
+
+        await interaction.response.send_message(
+            embeds=embeds,
+            view=RulesLanguageView(),
+            ephemeral=True,
         )
 
     @discord.ui.button(
@@ -63,7 +75,7 @@ class RulesLanguageView(discord.ui.View):
         await self._swap_language(interaction, "en")
 
     @discord.ui.button(
-        label="Español",
+        label="Espanol",
         style=discord.ButtonStyle.secondary,
         custom_id="rules_lang:es",
         emoji="🇪🇸",
@@ -72,7 +84,7 @@ class RulesLanguageView(discord.ui.View):
         await self._swap_language(interaction, "es")
 
     @discord.ui.button(
-        label="Português",
+        label="Portugues",
         style=discord.ButtonStyle.secondary,
         custom_id="rules_lang:pt",
         emoji="🇧🇷",

@@ -83,6 +83,8 @@ DEFAULT_GITHUB_BASE_BRANCH = "main"
 DEFAULT_GITHUB_WHITELIST_FILE_PATH = "allowed_betatesters.txt"
 
 DEFAULT_PATREON_CAMPAIGN_ID = "12861895"
+DEFAULT_PATREON_WELCOME_CHANNEL_ID = 1287883800805642351
+DEFAULT_PATREON_BOT_USER_ID = 216303189073461248
 
 DEFAULT_AI_SUPPORT_ENABLED = True
 DEFAULT_AI_TICKET_CATEGORY_ID = 1262517992982315110
@@ -164,6 +166,8 @@ class Settings:
 
     PATREON_CREATOR_TOKEN: str | None
     PATREON_CAMPAIGN_ID: str | None
+    patreon_welcome_channel_id: int | None
+    patreon_bot_user_id: int | None
     patreon_announcement_channel_id: int | None
     bot_restart_channel_id: int | None
     ai_support_enabled: bool
@@ -280,6 +284,14 @@ def _build_settings_from_env() -> Settings:
         PATREON_CAMPAIGN_ID=(
             _get_env("PATREON_CAMPAIGN_ID", DEFAULT_PATREON_CAMPAIGN_ID)
             or DEFAULT_PATREON_CAMPAIGN_ID
+        ),
+        patreon_welcome_channel_id=_get_env_int(
+            "PATREON_WELCOME_CHANNEL_ID",
+            DEFAULT_PATREON_WELCOME_CHANNEL_ID,
+        ),
+        patreon_bot_user_id=_get_env_int(
+            "PATREON_BOT_USER_ID",
+            DEFAULT_PATREON_BOT_USER_ID,
         ),
         patreon_announcement_channel_id=_get_env_int(
             "PATREON_ANNOUNCEMENT_CHANNEL_ID",

@@ -79,6 +79,22 @@ class SupportPresetView(discord.ui.View):
             )
         )
 
+    async def _preview_language(self, interaction: discord.Interaction, language: str) -> None:
+        embeds = build_support_embeds(language)
+        view = SupportPresetView(language)
+        is_ephemeral_message = bool(
+            interaction.message and getattr(interaction.message.flags, "ephemeral", False)
+        )
+        if is_ephemeral_message:
+            await interaction.response.edit_message(embeds=embeds, view=view)
+            return
+
+        await interaction.response.send_message(
+            embeds=embeds,
+            view=view,
+            ephemeral=True,
+        )
+
     @discord.ui.button(
         label="English",
         style=discord.ButtonStyle.primary,
@@ -87,33 +103,24 @@ class SupportPresetView(discord.ui.View):
         row=1,
     )
     async def english_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            embeds=build_support_embeds("en"),
-            view=SupportPresetView("en"),
-        )
+        await self._preview_language(interaction, "en")
 
     @discord.ui.button(
-        label="Español",
+        label="Espanol",
         style=discord.ButtonStyle.secondary,
         custom_id="support_lang:es",
         emoji="🇪🇸",
         row=1,
     )
     async def spanish_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            embeds=build_support_embeds("es"),
-            view=SupportPresetView("es"),
-        )
+        await self._preview_language(interaction, "es")
 
     @discord.ui.button(
-        label="Português",
+        label="Portugues",
         style=discord.ButtonStyle.secondary,
         custom_id="support_lang:pt",
         emoji="🇧🇷",
         row=1,
     )
     async def portuguese_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            embeds=build_support_embeds("pt"),
-            view=SupportPresetView("pt"),
-        )
+        await self._preview_language(interaction, "pt")

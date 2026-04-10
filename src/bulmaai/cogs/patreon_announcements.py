@@ -3,6 +3,7 @@ import html
 import logging
 import re
 from datetime import datetime, timezone
+from time import monotonic
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import discord
@@ -24,6 +25,24 @@ PATREON_POST_PAGE_SIZE = 50
 PATREON_POST_MAX_PAGES = 20
 PATREON_POST_ID_RE = re.compile(r"(?<!\d)(\d{6,})(?!\d)")
 PUBLIC_POST_DESCRIPTION_LIMIT = 3500
+
+PATREON_WELCOME_AUDIT_WINDOW_SECONDS = 30
+PATREON_WELCOME_CACHE_SECONDS = 120
+# Edit the Patreon welcome copy here.
+PATREON_WELCOME_CHANNEL_TITLE = "New Patreon!"
+PATREON_WELCOME_CHANNEL_DESCRIPTION = (
+    "{member} just received {role}. Welcome, and thank you for supporting DragonMineZ!"
+)
+PATREON_WELCOME_CHANNEL_ROLE_LABEL = "Role"
+PATREON_WELCOME_CHANNEL_FOOTER = "DragonMineZ"
+PATREON_WELCOME_DM_TITLE = "Welcome to DragonMineZ - Patreon"
+PATREON_WELCOME_DM_DESCRIPTION = (
+    "Hi {member_name}, thanks for joining the DragonMineZ Patreon! "
+    "You now have {role} in the server, we're glad to have you here! "
+    "If you want to receive access to the beta, please ask me for it in any channel on the DMZ server."
+    "Your support is invaluable, thank you again!"
+)
+PATREON_WELCOME_DM_FOOTER = "DragonMineZ Patreon"
 
 
 def _parse_published_at(value: str | None) -> datetime | None:
@@ -186,6 +205,61 @@ def _build_post_view(post_data: dict) -> discord.ui.View | None:
     return view
 
 
+def _render_welcome_text(template: str, *, member: discord.Member, role: discord.Role) -> str:
+    replacements = {
+        "{member}": member.mention,
+        "{member_name}": member.display_name,
+        "{role}": role.mention,
+        "{role_name}": role.name,
+        "{server_name}": member.guild.name,
+    }
+    rendered = template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered
+
+
+def _build_channel_welcome_embed(*, member: discord.Member, role: discord.Role) -> discord.Embed:
+    embed = discord.Embed(
+        title=_render_welcome_text(PATREON_WELCOME_CHANNEL_TITLE, member=member, role=role) or None,
+        description=_render_welcome_text(
+            PATREON_WELCOME_CHANNEL_DESCRIPTION,
+            member=member,
+            role=role,
+        ) or None,
+        colour=PATREON_COLOUR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(
+        name=_render_welcome_text(PATREON_WELCOME_CHANNEL_ROLE_LABEL, member=member, role=role) or "Role",
+        value=role.mention,
+        inline=False,
+    )
+    footer = _render_welcome_text(PATREON_WELCOME_CHANNEL_FOOTER, member=member, role=role)
+    if footer:
+        embed.set_footer(text=footer)
+    return embed
+
+
+def _build_dm_welcome_embed(*, member: discord.Member, role: discord.Role) -> discord.Embed:
+    embed = discord.Embed(
+        title=_render_welcome_text(PATREON_WELCOME_DM_TITLE, member=member, role=role) or None,
+        description=_render_welcome_text(
+            PATREON_WELCOME_DM_DESCRIPTION,
+            member=member,
+            role=role,
+        ) or None,
+        colour=PATREON_COLOUR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    footer = _render_welcome_text(PATREON_WELCOME_DM_FOOTER, member=member, role=role)
+    if footer:
+        embed.set_footer(text=footer)
+    return embed
+
+
 class PatreonAnnouncementsCog(commands.Cog):
     """Polls Patreon for new posts and announces them in Discord."""
 
@@ -199,6 +273,88 @@ class PatreonAnnouncementsCog(commands.Cog):
         self.channel_id = self.settings.patreon_announcement_channel_id
         self._poll_lock = asyncio.Lock()
         self._poll_started = False
+        self._recent_welcome_events: dict[tuple[int, tuple[int, ...]], float] = {}
+
+    def _cleanup_recent_welcome_events(self) -> None:
+        now = monotonic()
+        for key, timestamp in list(self._recent_welcome_events.items()):
+            if now - timestamp > PATREON_WELCOME_CACHE_SECONDS:
+                self._recent_welcome_events.pop(key, None)
+
+    def _is_recent_welcome_event(self, member_id: int, roles: list[discord.Role]) -> bool:
+        self._cleanup_recent_welcome_events()
+        role_ids = tuple(sorted(role.id for role in roles))
+        return (member_id, role_ids) in self._recent_welcome_events
+
+    def _mark_recent_welcome_event(self, member_id: int, roles: list[discord.Role]) -> None:
+        role_ids = tuple(sorted(role.id for role in roles))
+        self._recent_welcome_events[(member_id, role_ids)] = monotonic()
+
+    async def _resolve_patreon_welcome_channel(self) -> discord.abc.Messageable | None:
+        channel_id = self.bot.settings.patreon_welcome_channel_id
+        if channel_id is None:
+            return None
+
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except Exception:
+                logger.exception("Failed to fetch Patreon welcome channel %s", channel_id)
+                return None
+
+        return channel if hasattr(channel, "send") else None
+
+    async def _find_patreon_role_update(
+        self,
+        member: discord.Member,
+    ) -> discord.AuditLogEntry | None:
+        patreon_bot_user_id = self.bot.settings.patreon_bot_user_id
+        if patreon_bot_user_id is None:
+            return None
+
+        for attempt in range(3):
+            try:
+                async for entry in member.guild.audit_logs(
+                    limit=6,
+                    action=discord.AuditLogAction.member_role_update,
+                ):
+                    if getattr(entry.target, "id", None) != member.id:
+                        continue
+                    if getattr(entry.user, "id", None) != patreon_bot_user_id:
+                        continue
+                    age_seconds = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
+                    if age_seconds <= PATREON_WELCOME_AUDIT_WINDOW_SECONDS:
+                        return entry
+            except discord.Forbidden:
+                logger.warning("Missing permission to read audit logs for Patreon welcome detection.")
+                return None
+            except Exception:
+                logger.exception("Failed to inspect audit logs for Patreon welcome detection.")
+                return None
+
+            if attempt < 2:
+                await asyncio.sleep(1)
+
+        return None
+
+    async def _send_patreon_welcome(self, member: discord.Member, role: discord.Role) -> None:
+        welcome_channel = await self._resolve_patreon_welcome_channel()
+        if welcome_channel is not None:
+            await welcome_channel.send(
+                embed=_build_channel_welcome_embed(member=member, role=role),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        try:
+            await member.send(
+                embed=_build_dm_welcome_embed(member=member, role=role),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.Forbidden:
+            logger.info("Could not DM Patreon welcome message to user %s", member.id)
+        except Exception:
+            logger.exception("Failed to DM Patreon welcome message to user %s", member.id)
 
     def _start_polling_if_configured(self) -> None:
         if self._poll_started or self.poll_patreon.is_running():
@@ -221,6 +377,29 @@ class PatreonAnnouncementsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         self._start_polling_if_configured()
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        if after.bot or before.roles == after.roles:
+            return
+
+        added_roles = [
+            role
+            for role in after.roles
+            if role not in before.roles and role != after.guild.default_role
+        ]
+        if not added_roles:
+            return
+        if self._is_recent_welcome_event(after.id, added_roles):
+            return
+
+        audit_entry = await self._find_patreon_role_update(after)
+        if audit_entry is None:
+            return
+
+        self._mark_recent_welcome_event(after.id, added_roles)
+        primary_role = max(added_roles, key=lambda role: (role.position, role.id))
+        await self._send_patreon_welcome(after, primary_role)
 
     def cog_unload(self) -> None:
         self.poll_patreon.cancel()

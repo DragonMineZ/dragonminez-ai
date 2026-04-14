@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from bulmaai.config import load_settings
 from bulmaai.services.openai_client import ConversationMessage, run_support_agent
 from bulmaai.services.ticket_knowledge import sync_closed_ticket_knowledge
-from bulmaai.utils.permissions import is_bruno, is_staff
+from bulmaai.utils.permissions import can_use_ai_support, is_staff
 
 log = logging.getLogger(__name__)
 vision_client = AsyncOpenAI(api_key=load_settings().openai_key)
@@ -105,7 +105,7 @@ def _build_suggestion_reply(language: str, docs_output: dict[str, Any]) -> str |
 
 
 class AITicketsCog(commands.Cog):
-    """AI triage / support for ticket and configured AI channels."""
+    """AI triage / support for ticket channels and role-authorized support requests."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -207,11 +207,11 @@ class AITicketsCog(commands.Cog):
         if message.author == self.bot.user:
             speaker_kind = "assistant"
             role = "assistant"
-        elif isinstance(message.author, discord.Member) and is_staff(message.author):
-            speaker_kind = "staff"
-            role = "user"
         elif requester_id is not None and message.author.id == requester_id:
             speaker_kind = "requester"
+            role = "user"
+        elif isinstance(message.author, discord.Member) and is_staff(message.author):
+            speaker_kind = "staff"
             role = "user"
         else:
             speaker_kind = "participant"
@@ -238,16 +238,7 @@ class AITicketsCog(commands.Cog):
                 oldest_first=True,
             )
         ]
-        requester_id = next(
-            (
-                entry.author.id
-                for entry in messages
-                if not entry.author.bot
-                and isinstance(entry.author, discord.Member)
-                and not is_staff(entry.author)
-            ),
-            message.author.id,
-        )
+        requester_id = message.author.id
 
         history: list[ConversationMessage] = []
         for entry in messages:
@@ -337,8 +328,14 @@ class AITicketsCog(commands.Cog):
         in_ticket = _is_ticket_channel(channel, settings=settings)
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
+        author_has_support_access = (
+            isinstance(message.author, discord.Member)
+            and can_use_ai_support(message.author, settings=settings)
+        )
 
         if not in_ticket and not mention_request:
+            return
+        if mention_request and not in_ticket and not author_has_support_access:
             return
 
         if in_ticket and channel.id in self._escalated_ticket_channels:
@@ -479,16 +476,17 @@ class AITicketsCog(commands.Cog):
         in_ticket = _is_ticket_channel(channel, settings=settings)
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
+        author_has_support_access = (
+            isinstance(message.author, discord.Member)
+            and can_use_ai_support(message.author, settings=settings)
+        )
         if not in_ticket and not mention_request:
+            return
+        if mention_request and not in_ticket and not author_has_support_access:
             return
 
         if not message.author.bot and isinstance(message.author, discord.Member):
             self._cancel_pending_task_for_message(message, in_ticket=in_ticket)
-
-        if isinstance(message.author, discord.Member) and is_staff(message.author) and not is_bruno(message.author):
-            if in_ticket:
-                self._mark_ticket_escalated(channel.id)
-            return
 
         if message.author.bot or not isinstance(message.author, discord.Member):
             return

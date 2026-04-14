@@ -2,21 +2,14 @@ import logging
 
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 
-from bulmaai.config import load_settings
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
 from bulmaai.ui.patreon_views import UserConfirmView, AdminPRView, MC_NAME_RE
-from bulmaai.utils.permissions import is_admin, has_any_allowed_role
+from bulmaai.utils.permissions import has_patreon_access_role, is_admin
 
 log = logging.getLogger(__name__)
 
-load_dotenv()
-settings = load_settings()
-
-ALLOWED_ROLE_ID_1 = 1287877272224665640
-ALLOWED_ROLE_ID_2 = 1287877305259130900
 ADMIN_PING_ROLE_ID = 1309022450671161476
 STAFF_CHANNEL_ID = 1470178423862460510
 
@@ -38,6 +31,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         self.gh = self._build_github_service()
 
     def _build_github_service(self) -> GitHubService:
+        settings = self.bot.settings
         auth = GitHubAppAuth(
             app_id=settings.GH_APP_ID,
             installation_id=settings.GH_INSTALLATION_ID,
@@ -66,8 +60,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
         - 'asked_for_nickname'
         - 'flow_started'
         """
-        if not is_admin(member) and not has_any_allowed_role(
-            member, (ALLOWED_ROLE_ID_1, ALLOWED_ROLE_ID_2)
+        if not is_admin(member) and not has_patreon_access_role(
+            member,
+            settings=self.bot.settings,
         ):
             await channel.send(
                 f"{member.mention} You don't have permission to request Patreon whitelist access."

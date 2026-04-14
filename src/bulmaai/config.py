@@ -85,13 +85,16 @@ DEFAULT_GITHUB_WHITELIST_FILE_PATH = "allowed_betatesters.txt"
 DEFAULT_PATREON_CAMPAIGN_ID = "12861895"
 DEFAULT_PATREON_WELCOME_CHANNEL_ID = 1287883800805642351
 DEFAULT_PATREON_BOT_USER_ID = 216303189073461248
+DEFAULT_PATREON_ACCESS_ROLE_IDS: Sequence[int] = (
+    1287877272224665640,
+    1287877305259130900,
+)
 
 DEFAULT_AI_SUPPORT_ENABLED = True
 DEFAULT_AI_TICKET_CATEGORY_ID = 1262517992982315110
-DEFAULT_AI_GENERAL_CHANNEL_IDS: Sequence[int] = (
-    1216429658459869195,
-    1216430966667739198,
-    1379205640387432569,
+DEFAULT_AI_SUPPORT_ALLOWED_ROLE_IDS: Sequence[int] = (
+    *DEFAULT_PATREON_ACCESS_ROLE_IDS,
+    1286814599215317034,
 )
 DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 12
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 70
@@ -169,10 +172,11 @@ class Settings:
     patreon_welcome_channel_id: int | None
     patreon_bot_user_id: int | None
     patreon_announcement_channel_id: int | None
+    patreon_access_role_ids: Sequence[int]
     bot_restart_channel_id: int | None
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
-    ai_general_channel_ids: Sequence[int]
+    ai_support_allowed_role_ids: Sequence[int]
     ai_support_history_limit: int
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
@@ -297,13 +301,20 @@ def _build_settings_from_env() -> Settings:
             "PATREON_ANNOUNCEMENT_CHANNEL_ID",
             DEFAULT_PATREON_ANNOUNCEMENT_CHANNEL_ID,
         ),
+        patreon_access_role_ids=_get_env_int_list(
+            "PATREON_ACCESS_ROLE_IDS",
+            DEFAULT_PATREON_ACCESS_ROLE_IDS,
+        ),
         bot_restart_channel_id=_get_env_int(
             "BOT_RESTART_CHANNEL_ID",
             DEFAULT_BOT_RESTART_CHANNEL_ID,
         ),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),
-        ai_general_channel_ids=_get_env_int_list("AI_GENERAL_CHANNEL_IDS", DEFAULT_AI_GENERAL_CHANNEL_IDS),
+        ai_support_allowed_role_ids=_get_env_int_list(
+            "AI_SUPPORT_ALLOWED_ROLE_IDS",
+            DEFAULT_AI_SUPPORT_ALLOWED_ROLE_IDS,
+        ),
         ai_support_history_limit=_get_env_int("AI_SUPPORT_HISTORY_LIMIT", DEFAULT_AI_SUPPORT_HISTORY_LIMIT) or DEFAULT_AI_SUPPORT_HISTORY_LIMIT,
         ai_support_timeout_seconds=_get_env_int("AI_SUPPORT_TIMEOUT_SECONDS", DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS) or DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS,
         ai_support_typing_lead_seconds=_get_env_int("AI_SUPPORT_TYPING_LEAD_SECONDS", DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS) or DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS,

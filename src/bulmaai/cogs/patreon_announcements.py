@@ -38,8 +38,11 @@ PATREON_WELCOME_CHANNEL_FOOTER = "DragonMineZ"
 PATREON_WELCOME_DM_TITLE = "Welcome to DragonMineZ - Patreon"
 PATREON_WELCOME_DM_DESCRIPTION = (
     "Hi {member_name}, thanks for joining the DragonMineZ Patreon! "
-    "You now have {role} in the server, we're glad to have you here! "
-    "If you want to receive access to the beta, please ask me for it in any channel on the DMZ server."
+    "You now have {role} ({role_name}) in the server, we're glad to have you here! "
+    "If your perk is Supporter, it does not include beta access. "
+    "To play the beta, you need the Contributor role/perk, which is USD $9.99. "
+    "If your perk is Contributor or Benefactor, you can ask for beta access in any channel on the DMZ server; "
+    "just ask however you want, and the bot can recognize beta access requests from messages or images. "
     "Your support is invaluable, thank you again!"
 )
 PATREON_WELCOME_DM_FOOTER = "DragonMineZ Patreon"

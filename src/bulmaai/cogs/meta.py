@@ -69,12 +69,50 @@ class MetaCog(commands.Cog):
     async def about(self, ctx: discord.ApplicationContext):
         embed = discord.Embed(
             title="About BulmaAI",
-            description="BulmaAI is a Discord bot, yay.",
+            description="BulmaAI helps the DragonMineZ server with support, announcements, logs, and staff tooling.",
             color=discord.Color.blue(),
         )
         embed.add_field(name="Version", value="1.0.0", inline=False)
         embed.add_field(name="Author", value="DragonMineZ Team", inline=False)
         await ctx.respond(embed=embed)
+
+    @discord.slash_command(name="botfaq", description="Show how to use BulmaAI support features.")
+    async def botfaq(self, ctx: discord.ApplicationContext):
+        embed = discord.Embed(
+            title="BulmaAI FAQ",
+            description="Quick guide for using the DragonMineZ server bot.",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="AI Support",
+            value=(
+                "BulmaAI answers in support ticket channels. Staff and allowed support roles can also "
+                "mention the bot with a question outside tickets."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Logs",
+            value=(
+                "Upload `latest.log`, `debug.log`, or a crash report and the bot will summarize useful "
+                "Minecraft, Forge, DragonMineZ, mod, and error details. Use `/loghelp` if you need help finding logs."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Patreon Access",
+            value=(
+                "Patreon whitelist and beta access requests can be handled through the support flow. "
+                "When the bot has enough information, it starts the whitelist process for staff review."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Useful Commands",
+            value="`/ping`, `/about`, `/botfaq`, `/loghelp`, `/rules preview`, `/supportus preview`",
+            inline=False,
+        )
+        await ctx.respond(embed=embed, ephemeral=True)
 
     @discord.slash_command(
         name="loghelp",

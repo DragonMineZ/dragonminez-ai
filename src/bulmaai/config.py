@@ -36,6 +36,14 @@ def _get_env_int_list(name: str, default: Sequence[int]) -> tuple[int, ...]:
     return tuple(int(part) for part in parts if part)
 
 
+def _get_env_str_list(name: str, default: Sequence[str]) -> tuple[str, ...]:
+    value = _get_env(name)
+    if value is None:
+        return tuple(default)
+    parts = [part.strip() for part in value.replace("\n", ",").split(",")]
+    return tuple(part for part in parts if part)
+
+
 # Non-secret project config lives in source so `.env` stays secret-only.
 DEFAULT_DEV_GUILD_ID: int | None = None
 DEFAULT_LOG_LEVEL = "INFO"
@@ -48,6 +56,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.rules",
     "bulmaai.cogs.support_us",
     "bulmaai.cogs.log_parser",
+    "bulmaai.cogs.moderation",
     "bulmaai.cogs.patreon_announcements",
     "bulmaai.cogs.curseforge_updates",
 )
@@ -117,6 +126,28 @@ DEFAULT_CURSEFORGE_PROJECT_ID = 1136088
 DEFAULT_CURSEFORGE_PROJECT_SLUG = "minecraft/mc-mods/dragonminez"
 DEFAULT_CURSEFORGE_ANNOUNCEMENT_CHANNEL_ID = DEFAULT_RELEASES_CHANNEL_ID
 DEFAULT_CURSEFORGE_POLL_MINUTES = 15
+DEFAULT_DISCORD_LOG_FORWARDING_ENABLED = True
+DEFAULT_DISCORD_LOG_CHANNEL_ID = 1350534736795275357
+DEFAULT_DISCORD_LOG_MIN_LEVEL = "WARNING"
+DEFAULT_MODERATION_ENABLED = True
+DEFAULT_MODERATION_LOG_CHANNEL_ID = DEFAULT_DISCORD_LOG_CHANNEL_ID
+DEFAULT_MODERATION_EXEMPT_ROLE_IDS: Sequence[int] = ()
+DEFAULT_MODERATION_EXCLUDED_CHANNEL_IDS: Sequence[int] = ()
+DEFAULT_MODERATION_BLOCKED_DOMAINS: Sequence[str] = ()
+DEFAULT_MODERATION_ALLOWED_DOMAINS: Sequence[str] = (
+    "discord.com",
+    "discord.gg",
+    "curseforge.com",
+    "github.com",
+    "patreon.com",
+    "youtube.com",
+    "youtu.be",
+)
+DEFAULT_MODERATION_BLOCK_DISCORD_INVITES = False
+DEFAULT_MODERATION_IMAGE_BURST_COUNT = 3
+DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS = 20
+DEFAULT_MODERATION_LINK_BURST_COUNT = 5
+DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS = 60
 DEFAULT_SETTINGS_OVERRIDES_PATH = "data/settings_overrides.json"
 
 NON_OVERRIDABLE_SETTINGS = {
@@ -197,6 +228,20 @@ class Settings:
     curseforge_project_slug: str
     curseforge_announcement_channel_id: int | None
     curseforge_poll_minutes: int
+    discord_log_forwarding_enabled: bool
+    discord_log_channel_id: int | None
+    discord_log_min_level: str
+    moderation_enabled: bool
+    moderation_log_channel_id: int | None
+    moderation_exempt_role_ids: Sequence[int]
+    moderation_excluded_channel_ids: Sequence[int]
+    moderation_blocked_domains: Sequence[str]
+    moderation_allowed_domains: Sequence[str]
+    moderation_block_discord_invites: bool
+    moderation_image_burst_count: int
+    moderation_image_burst_window_seconds: int
+    moderation_link_burst_count: int
+    moderation_link_burst_window_seconds: int
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
@@ -373,6 +418,71 @@ def _build_settings_from_env() -> Settings:
         curseforge_poll_minutes=(
             _get_env_int("CURSEFORGE_POLL_MINUTES", DEFAULT_CURSEFORGE_POLL_MINUTES)
             or DEFAULT_CURSEFORGE_POLL_MINUTES
+        ),
+        discord_log_forwarding_enabled=_get_env_bool(
+            "DISCORD_LOG_FORWARDING_ENABLED",
+            DEFAULT_DISCORD_LOG_FORWARDING_ENABLED,
+        ),
+        discord_log_channel_id=_get_env_int(
+            "DISCORD_LOG_CHANNEL_ID",
+            DEFAULT_DISCORD_LOG_CHANNEL_ID,
+        ),
+        discord_log_min_level=(
+            _get_env("DISCORD_LOG_MIN_LEVEL", DEFAULT_DISCORD_LOG_MIN_LEVEL)
+            or DEFAULT_DISCORD_LOG_MIN_LEVEL
+        ),
+        moderation_enabled=_get_env_bool("MODERATION_ENABLED", DEFAULT_MODERATION_ENABLED),
+        moderation_log_channel_id=_get_env_int(
+            "MODERATION_LOG_CHANNEL_ID",
+            DEFAULT_MODERATION_LOG_CHANNEL_ID,
+        ),
+        moderation_exempt_role_ids=_get_env_int_list(
+            "MODERATION_EXEMPT_ROLE_IDS",
+            DEFAULT_MODERATION_EXEMPT_ROLE_IDS,
+        ),
+        moderation_excluded_channel_ids=_get_env_int_list(
+            "MODERATION_EXCLUDED_CHANNEL_IDS",
+            DEFAULT_MODERATION_EXCLUDED_CHANNEL_IDS,
+        ),
+        moderation_blocked_domains=_get_env_str_list(
+            "MODERATION_BLOCKED_DOMAINS",
+            DEFAULT_MODERATION_BLOCKED_DOMAINS,
+        ),
+        moderation_allowed_domains=_get_env_str_list(
+            "MODERATION_ALLOWED_DOMAINS",
+            DEFAULT_MODERATION_ALLOWED_DOMAINS,
+        ),
+        moderation_block_discord_invites=_get_env_bool(
+            "MODERATION_BLOCK_DISCORD_INVITES",
+            DEFAULT_MODERATION_BLOCK_DISCORD_INVITES,
+        ),
+        moderation_image_burst_count=(
+            _get_env_int(
+                "MODERATION_IMAGE_BURST_COUNT",
+                DEFAULT_MODERATION_IMAGE_BURST_COUNT,
+            )
+            or DEFAULT_MODERATION_IMAGE_BURST_COUNT
+        ),
+        moderation_image_burst_window_seconds=(
+            _get_env_int(
+                "MODERATION_IMAGE_BURST_WINDOW_SECONDS",
+                DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS,
+            )
+            or DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS
+        ),
+        moderation_link_burst_count=(
+            _get_env_int(
+                "MODERATION_LINK_BURST_COUNT",
+                DEFAULT_MODERATION_LINK_BURST_COUNT,
+            )
+            or DEFAULT_MODERATION_LINK_BURST_COUNT
+        ),
+        moderation_link_burst_window_seconds=(
+            _get_env_int(
+                "MODERATION_LINK_BURST_WINDOW_SECONDS",
+                DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS,
+            )
+            or DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS
         ),
     )
 

@@ -12,6 +12,10 @@ from .config import Settings, load_settings
 from .database.db import close_db_pool, init_db_pool
 from .logging_setup import setup_logging
 from .services.docs_ingestion import ensure_schema
+from .services.discord_log_forwarding import (
+    DiscordLogForwarder,
+    install_discord_log_forwarder,
+)
 from .services.message_presets import ensure_message_presets_file
 
 log = logging.getLogger("bulmaai")
@@ -114,6 +118,7 @@ class BulmaAI(discord.Bot):
 
         self.settings = settings
         self._restart_announcement_sent = False
+        self._discord_log_forwarder: DiscordLogForwarder | None = None
         BulmaAI.instance = self
 
     async def setup_hook(self) -> None:
@@ -121,6 +126,12 @@ class BulmaAI(discord.Bot):
         await init_db_pool()
         await ensure_schema()
         ensure_message_presets_file()
+        if self.settings.discord_log_forwarding_enabled and self.settings.discord_log_channel_id:
+            self._discord_log_forwarder = install_discord_log_forwarder(
+                bot=self,
+                channel_id=self.settings.discord_log_channel_id,
+                min_level_name=self.settings.discord_log_min_level,
+            )
 
     def reload_settings(self) -> Settings:
         self.settings = load_settings()
@@ -145,6 +156,9 @@ class BulmaAI(discord.Bot):
 
     async def close(self) -> None:
         """Called when the bot is shutting down."""
+        if self._discord_log_forwarder is not None:
+            await self._discord_log_forwarder.stop()
+            self._discord_log_forwarder = None
         log.info("Closing database pool...")
         await close_db_pool()
         log.info("Database pool closed")

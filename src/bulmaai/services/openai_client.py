@@ -5,7 +5,14 @@ import json
 import logging
 from typing import Any, Optional, TypedDict
 
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    InternalServerError,
+    RateLimitError,
+)
 
 from bulmaai.config import Settings, load_settings
 from bulmaai.services.support_cache import (
@@ -218,6 +225,17 @@ async def _create_response(*, timeout_seconds: int, **kwargs: Any) -> Any:
         client.responses.create(**kwargs),
         timeout=timeout_seconds,
     )
+
+
+def is_transient_ai_error(error: BaseException) -> bool:
+    if isinstance(error, (asyncio.TimeoutError, APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
+        return True
+    if isinstance(error, APIStatusError):
+        status_code = getattr(error, "status_code", None)
+        return status_code in {408, 409, 425, 429} or bool(
+            isinstance(status_code, int) and status_code >= 500
+        )
+    return False
 
 
 async def run_support_agent(

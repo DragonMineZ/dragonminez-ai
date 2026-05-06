@@ -8,7 +8,11 @@ from discord.ext import commands
 from openai import AsyncOpenAI
 
 from bulmaai.config import load_settings
-from bulmaai.services.openai_client import ConversationMessage, run_support_agent
+from bulmaai.services.openai_client import (
+    ConversationMessage,
+    is_transient_ai_error,
+    run_support_agent,
+)
 from bulmaai.services.ticket_knowledge import sync_closed_ticket_knowledge
 from bulmaai.utils.permissions import can_use_ai_support, is_staff
 
@@ -18,6 +22,30 @@ vision_client = AsyncOpenAI(api_key=load_settings().openai_key)
 TICKET_MIN_SCORE = 0.52
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+DISCORD_MESSAGE_LIMIT = 1900
+
+
+def _chunk_discord_message(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    remaining = text
+    chunks: list[str] = []
+    while len(remaining) > limit:
+        split_at = max(
+            remaining.rfind("\n", 0, limit + 1),
+            remaining.rfind(" ", 0, limit + 1),
+        )
+        if split_at < max(1, limit // 2):
+            split_at = limit
+        else:
+            split_at += 1
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 def _is_ticket_channel(
@@ -167,21 +195,41 @@ class AITicketsCog(commands.Cog):
         self,
         channel: discord.TextChannel,
         messages: list[str],
-    ) -> None:
-        messages = [message for message in messages if message]
-        if not messages:
-            return
+    ) -> bool:
+        chunks = [
+            chunk
+            for message in messages
+            if message
+            for chunk in _chunk_discord_message(message)
+            if chunk.strip()
+        ]
+        if not chunks:
+            return True
 
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
-        if typing_lead_seconds <= 0:
-            for message in messages:
-                await channel.send(message)
-            return
+        allowed_mentions = discord.AllowedMentions.none()
+        try:
+            if typing_lead_seconds <= 0:
+                for chunk in chunks:
+                    await channel.send(chunk, allowed_mentions=allowed_mentions)
+                return True
 
-        async with channel.typing():
-            await asyncio.sleep(typing_lead_seconds)
-            for message in messages:
-                await channel.send(message)
+            async with channel.typing():
+                await asyncio.sleep(typing_lead_seconds)
+                for chunk in chunks:
+                    await channel.send(chunk, allowed_mentions=allowed_mentions)
+            return True
+        except discord.HTTPException:
+            log.exception(
+                "Failed to send AI support response",
+                extra={
+                    "event": "ai_support_send_failed",
+                    "channel_id": getattr(channel, "id", None),
+                    "chunk_count": len(chunks),
+                    "max_chunk_length": max((len(chunk) for chunk in chunks), default=0),
+                },
+            )
+            return False
 
     def _message_content(self, message: discord.Message) -> str:
         content = message.clean_content.strip()
@@ -373,16 +421,41 @@ class AITicketsCog(commands.Cog):
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                log.exception("AI support error: %s", error)
+                transient = is_transient_ai_error(error)
+                log.exception(
+                    "AI support error: %s",
+                    error,
+                    extra={
+                        "event": "ai_support_error",
+                        "guild_id": getattr(message.guild, "id", None),
+                        "channel_id": channel.id,
+                        "message_id": message.id,
+                        "user_id": message.author.id,
+                        "is_ticket": in_ticket,
+                        "transient": transient,
+                    },
+                )
                 if in_ticket:
-                    self._mark_ticket_escalated(channel.id)
-                    await channel.send(
-                        "I ran into an error while processing this. A staff member should take a look."
-                    )
+                    if transient:
+                        await self._send_messages_with_typing(
+                            channel,
+                            [
+                                "I ran into a temporary AI service issue while processing this. "
+                                "Please try again in a moment."
+                            ],
+                        )
+                    elif await self._send_messages_with_typing(
+                        channel,
+                        ["I ran into an error while processing this. A staff member should take a look."],
+                    ):
+                        self._mark_ticket_escalated(channel.id)
                 elif mention_request:
-                    await channel.send(
-                        f"{message.author.mention} I ran into an error while processing that. "
-                        "Please try again or open a support ticket."
+                    await self._send_messages_with_typing(
+                        channel,
+                        [
+                            f"{message.author.mention} I ran into an error while processing that. "
+                            "Please try again or open a support ticket."
+                        ],
                     )
                 return
 
@@ -397,8 +470,8 @@ class AITicketsCog(commands.Cog):
                 outgoing_messages.append(
                     "I could not find a confident enough answer yet. A staff member should review this ticket."
                 )
-                self._mark_ticket_escalated(channel.id)
-                await self._send_messages_with_typing(channel, outgoing_messages)
+                if await self._send_messages_with_typing(channel, outgoing_messages):
+                    self._mark_ticket_escalated(channel.id)
                 return
 
             reply_text = result["reply"].strip()
@@ -412,18 +485,24 @@ class AITicketsCog(commands.Cog):
                     outgoing_messages.append(
                         "I could not confidently answer this from the docs. A staff member should review it."
                     )
-                    self._mark_ticket_escalated(channel.id)
+                    should_mark_escalated = True
                 elif mention_request:
                     outgoing_messages.append(
                         "I couldn't find a confident docs-backed answer for that. Please open a ticket if it needs follow-up."
                     )
+                    should_mark_escalated = False
+            if reply_text and reply_text != "(no reply)":
+                should_mark_escalated = False
+            elif suggestion_reply and (in_ticket or mention_request):
+                should_mark_escalated = False
 
             if in_ticket and result["suggested_close"]:
                 outgoing_messages.append(
                     "*(Support note: this looks solved based on the docs, but a staff member should confirm before closing.)*"
                 )
 
-            await self._send_messages_with_typing(channel, outgoing_messages)
+            if await self._send_messages_with_typing(channel, outgoing_messages) and should_mark_escalated:
+                self._mark_ticket_escalated(channel.id)
 
     async def _process_message_after_debounce(
         self,

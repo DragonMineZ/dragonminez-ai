@@ -15,6 +15,7 @@ from bulmaai.services.phishing_feed import (
     canonicalize_url,
     parse_domain_feed,
     parse_url_feed,
+    resolve_cache_dir,
 )
 
 
@@ -64,6 +65,17 @@ class FakeResponse:
 
 
 class PhishingFeedRefreshTests(unittest.IsolatedAsyncioTestCase):
+    def test_relative_cache_dir_resolves_under_project_root(self) -> None:
+        resolved = resolve_cache_dir("data/cache/moderation/phishing_database")
+
+        self.assertTrue(resolved.is_absolute())
+        self.assertTrue(str(resolved).endswith("dragonminez-ai\\data\\cache\\moderation\\phishing_database"))
+
+    def test_absolute_cache_dir_is_preserved(self) -> None:
+        absolute = resolve_cache_dir("C:/tmp/bulmaai-cache")
+
+        self.assertEqual(str(absolute), "C:\\tmp\\bulmaai-cache")
+
     async def test_checksum_verifies_raw_response_bytes_not_decoded_text(self) -> None:
         domains = b"Example.COM\n"
         urls = "https://bad.example/\n".encode("utf-16")

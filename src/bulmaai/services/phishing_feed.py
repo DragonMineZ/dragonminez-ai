@@ -22,6 +22,7 @@ DEFAULT_URL_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/ch
 DOMAINS_CACHE_FILE = "phishing-domains-ACTIVE.txt"
 URLS_CACHE_FILE = "phishing-links-ACTIVE.txt"
 METADATA_CACHE_FILE = "metadata.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _now_utc() -> datetime:
@@ -38,6 +39,13 @@ def _parse_datetime(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def resolve_cache_dir(cache_dir: str | Path) -> Path:
+    path = Path(cache_dir).expanduser()
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def normalize_domain(value: str) -> str | None:
@@ -155,7 +163,7 @@ class PhishingFeedService:
         url_checksum_url: str | None = DEFAULT_URL_SHA256_URL,
         timeout_seconds: int = 20,
     ):
-        self.cache_dir = Path(cache_dir)
+        self.cache_dir = resolve_cache_dir(cache_dir)
         self.max_stale_hours = max(1, int(max_stale_hours))
         self.domain_feed_url = domain_feed_url
         self.url_feed_url = url_feed_url

@@ -3,6 +3,7 @@ import hashlib
 import importlib.resources as pkg_resources
 import json
 import logging
+import re
 from typing import Any, Optional, TypedDict
 
 from openai import (
@@ -26,6 +27,22 @@ from bulmaai.utils import tools_registry
 
 client = AsyncOpenAI(api_key=load_settings().openai_key)
 log = logging.getLogger(__name__)
+MINECRAFT_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
+NICKNAME_HINT_RE = re.compile(
+    r"(?i)\b(?:ign|in[- ]?game name|minecraft(?: username| name)?|mc(?: username| name)?|nickname|username|name)"
+    r"\s*(?:is|:|=)?\s*([A-Za-z0-9_]{3,16})\b"
+)
+PATREON_WHITELIST_KEYWORDS = (
+    "patreon whitelist",
+    "patreon allowlist",
+    "patreon beta",
+    "patreon access",
+    "patreon-only",
+    "whitelist access",
+    "allowlist access",
+    "beta whitelist",
+    "beta access",
+)
 
 
 class ConversationMessage(TypedDict, total=False):
@@ -158,6 +175,29 @@ def _build_docs_search_query(
     return (query[:1500] or (latest_user.get("content") or "").strip() or "support")
 
 
+def _latest_non_staff_user_text(messages: list[ConversationMessage]) -> str:
+    latest = _latest_user_message(messages)
+    return (latest.get("content") if latest else "") or ""
+
+
+def _looks_like_patreon_whitelist_request(messages: list[ConversationMessage]) -> bool:
+    text = _latest_non_staff_user_text(messages).lower()
+    if not text:
+        return False
+    if any(keyword in text for keyword in PATREON_WHITELIST_KEYWORDS):
+        return True
+    return ("whitelist" in text or "allowlist" in text) and ("patreon" in text or "beta" in text)
+
+
+def _extract_minecraft_nickname_guess(messages: list[ConversationMessage]) -> str | None:
+    text = _latest_non_staff_user_text(messages)
+    match = NICKNAME_HINT_RE.search(text)
+    if not match:
+        return None
+    nickname = match.group(1).strip()
+    return nickname if MINECRAFT_NAME_RE.match(nickname) else None
+
+
 def _load_system_prompt(lang: str) -> str:
     lang_code = lang if lang in {"en", "es", "pt"} else "en"
     filename = f"support_system_{lang_code}.txt"
@@ -220,6 +260,55 @@ def _hydrate_tool_args(
     return hydrated
 
 
+def _select_reasoning_effort(settings: Any, docs_output: dict[str, Any] | None = None) -> str:
+    default_effort = getattr(settings, "openai_support_reasoning_effort", "medium")
+    fast_effort = getattr(settings, "openai_support_fast_reasoning_effort", default_effort)
+    try:
+        fast_threshold = float(getattr(settings, "openai_support_fast_confidence_score", 1.01))
+    except (TypeError, ValueError):
+        fast_threshold = 1.01
+    try:
+        best_score = float((docs_output or {}).get("best_score", 0.0))
+    except (TypeError, ValueError):
+        best_score = 0.0
+    if best_score >= fast_threshold:
+        return fast_effort
+    return default_effort
+
+
+async def _run_direct_patreon_whitelist_flow(
+    *,
+    messages: list[ConversationMessage],
+    language: str,
+    user_id: int,
+    channel_id: int,
+    bot: Any,
+) -> AgentResult:
+    args = {
+        "discord_user_id": str(user_id),
+        "ticket_channel_id": str(channel_id),
+        "nickname": _extract_minecraft_nickname_guess(messages),
+    }
+    func = tools_registry.get_func("start_patreon_whitelist_flow", bot_context=bot)
+    output = await func(**args)
+    tool_results = [
+        ToolCallResult(
+            name="start_patreon_whitelist_flow",
+            arguments=args,
+            output=output,
+        )
+    ]
+    reply = "(no reply)"
+    if not (isinstance(output, dict) and output.get("suppress_ai_reply") is True):
+        reply = str(output.get("message") if isinstance(output, dict) else output)
+    return AgentResult(
+        reply=reply,
+        language=language,
+        tool_results=tool_results,
+        suggested_close=False,
+    )
+
+
 async def _create_response(*, timeout_seconds: int, **kwargs: Any) -> Any:
     return await asyncio.wait_for(
         client.responses.create(**kwargs),
@@ -261,6 +350,18 @@ async def run_support_agent(
     else:
         language = "en"
 
+    if (
+        "start_patreon_whitelist_flow" in enabled_tools
+        and _looks_like_patreon_whitelist_request(messages)
+    ):
+        return await _run_direct_patreon_whitelist_flow(
+            messages=messages,
+            language=language,
+            user_id=user_id,
+            channel_id=channel_id,
+            bot=bot,
+        )
+
     docs_version = None
     cache_key: str | None = None
     if use_cache:
@@ -280,10 +381,12 @@ async def run_support_agent(
     response_input = _build_response_input(messages, user_id=user_id, channel_id=channel_id)
     tool_results: list[ToolCallResult] = []
     remaining_tools = list(enabled_tools)
+    docs_output_for_reasoning: dict[str, Any] | None = None
 
     if "docs_search" in remaining_tools:
         docs_query = _build_docs_search_query(messages, target_speaker_id=target_speaker_id)
         docs_output = await tools_registry.get_func("docs_search")(query=docs_query, language=language)
+        docs_output_for_reasoning = docs_output if isinstance(docs_output, dict) else None
         tool_results.append(
             ToolCallResult(
                 name="docs_search",
@@ -310,7 +413,7 @@ async def run_support_agent(
         request_kwargs["tool_choice"] = "auto"
     if model.startswith("gpt-5"):
         request_kwargs["reasoning"] = {
-            "effort": runtime_settings.openai_support_reasoning_effort,
+            "effort": _select_reasoning_effort(runtime_settings, docs_output_for_reasoning),
             "summary": "auto",
         }
 
@@ -375,6 +478,18 @@ async def _handle_tools_and_final_reply(
             output = await func(**args)
             tool_results.append(ToolCallResult(name=name, arguments=args, output=output))
             _append_tool_output(followup_input, name=name, output=output)
+
+        if any(
+            isinstance(result.get("output"), dict)
+            and result["output"].get("suppress_ai_reply") is True
+            for result in tool_results
+        ):
+            return AgentResult(
+                reply="(no reply)",
+                language=lang,
+                tool_results=tool_results,
+                suggested_close=False,
+            )
 
         followup_kwargs: dict[str, Any] = {
             "model": model,

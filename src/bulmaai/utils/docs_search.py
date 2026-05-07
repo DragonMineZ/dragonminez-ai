@@ -177,9 +177,11 @@ async def run_docs_search(
     _bot_context: Any = None,
 ) -> dict[str, Any]:
     doc_languages = _pick_doc_languages(language)
-    query_embedding = await _get_query_embedding(query)
     query_tokens = _tokenize(query)
-    candidates = await _fetch_candidate_docs(query=query, doc_languages=doc_languages)
+    query_embedding, candidates = await asyncio.gather(
+        _get_query_embedding(query),
+        _fetch_candidate_docs(query=query, doc_languages=doc_languages),
+    )
 
     if not candidates:
         return {

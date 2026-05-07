@@ -114,6 +114,14 @@ def _extract_docs_output(tool_results: list[Any]) -> dict[str, Any] | None:
     return None
 
 
+def _has_user_visible_tool_result(tool_results: list[Any]) -> bool:
+    for entry in tool_results:
+        output = entry.get("output")
+        if isinstance(output, dict) and output.get("suppress_ai_reply") is True:
+            return True
+    return False
+
+
 def _build_suggestion_reply(language: str, docs_output: dict[str, Any]) -> str | None:
     suggestions = docs_output.get("suggested_answers") or []
     if not suggestions:
@@ -132,6 +140,34 @@ def _build_suggestion_reply(language: str, docs_output: dict[str, Any]) -> str |
     return "\n".join(lines)
 
 
+def _pending_key(message: discord.Message, *, in_ticket: bool) -> tuple[int, int]:
+    return message.channel.id, 0 if in_ticket else message.author.id
+
+
+def _support_debounce_seconds(settings: Any) -> float:
+    return max(float(getattr(settings, "ai_support_debounce_seconds", 0) or 0), 0.0)
+
+
+def _is_staff_ticket_message(
+    message: discord.Message,
+    *,
+    in_ticket: bool,
+    settings: Any,
+) -> bool:
+    return in_ticket and not getattr(message.author, "bot", False) and is_staff(
+        message.author, settings=settings
+    )
+
+
+def _message_content(message: discord.Message) -> str:
+    content = message.clean_content.strip()
+    attachment_lines = [f"[Attachment] {attachment.filename}" for attachment in message.attachments]
+    if attachment_lines:
+        content = f"{content}\n" if content else ""
+        content += "\n".join(attachment_lines)
+    return content.strip()
+
+
 class AITicketsCog(commands.Cog):
     """AI triage / support for ticket channels and role-authorized support requests."""
 
@@ -148,9 +184,6 @@ class AITicketsCog(commands.Cog):
         if self._ticket_knowledge_task is not None and not self._ticket_knowledge_task.done():
             self._ticket_knowledge_task.cancel()
 
-    def _pending_key(self, message: discord.Message, *, in_ticket: bool) -> tuple[int, int]:
-        return (message.channel.id, 0 if in_ticket else message.author.id)
-
     def _cancel_pending_task(self, pending_key: tuple[int, int]) -> None:
         task = self._pending_tasks.pop(pending_key, None)
         if task is None:
@@ -164,11 +197,34 @@ class AITicketsCog(commands.Cog):
         *,
         in_ticket: bool,
     ) -> None:
-        self._cancel_pending_task(self._pending_key(message, in_ticket=in_ticket))
+        self._cancel_pending_task(_pending_key(message, in_ticket=in_ticket))
 
     def _mark_ticket_escalated(self, channel_id: int) -> None:
         self._escalated_ticket_channels.add(channel_id)
         self._cancel_pending_task((channel_id, 0))
+
+    async def _resolve_member_for_user(self, user: discord.abc.User) -> discord.Member | None:
+        for guild in self.bot.guilds:
+            member = guild.get_member(user.id)
+            if member is not None:
+                return member
+        for guild in self.bot.guilds:
+            try:
+                return await guild.fetch_member(user.id)
+            except discord.NotFound:
+                continue
+            except discord.HTTPException:
+                log.exception(
+                    "Failed to fetch DM support member",
+                    extra={"event": "dm_support_member_fetch_failed", "guild_id": guild.id, "user_id": user.id},
+                )
+        return None
+
+    async def _can_use_support_from_message(self, message: discord.Message, *, settings) -> bool:
+        if isinstance(message.author, discord.Member):
+            return can_use_ai_support(message.author, settings=settings)
+        member = await self._resolve_member_for_user(message.author)
+        return member is not None and can_use_ai_support(member, settings=settings)
 
     async def _closed_ticket_sync_loop(self) -> None:
         await self.bot.wait_until_ready()
@@ -231,14 +287,6 @@ class AITicketsCog(commands.Cog):
             )
             return False
 
-    def _message_content(self, message: discord.Message) -> str:
-        content = message.clean_content.strip()
-        attachment_lines = [f"[Attachment] {attachment.filename}" for attachment in message.attachments]
-        if attachment_lines:
-            content = f"{content}\n" if content else ""
-            content += "\n".join(attachment_lines)
-        return content.strip()
-
     def _serialize_message(
         self,
         message: discord.Message,
@@ -248,7 +296,7 @@ class AITicketsCog(commands.Cog):
         if message.author.bot and message.author != self.bot.user:
             return None
 
-        content = self._message_content(message)
+        content = _message_content(message)
         if not content:
             return None
 
@@ -297,7 +345,7 @@ class AITicketsCog(commands.Cog):
 
     async def _build_general_history(self, message: discord.Message) -> list[ConversationMessage]:
         channel = message.channel
-        if not isinstance(channel, discord.TextChannel):
+        if not hasattr(channel, "history"):
             return []
 
         relevant_messages: list[discord.Message] = []
@@ -326,64 +374,66 @@ class AITicketsCog(commands.Cog):
         return await self._build_general_history(message)
 
     async def _extract_image_context(self, message: discord.Message) -> str:
-        settings = self.bot.settings
         image_urls = [attachment.url for attachment in message.attachments if _is_image_attachment(attachment)]
         if not image_urls:
             return ""
 
-        snippets: list[str] = []
-        for url in image_urls[:2]:
-            try:
-                payload: Any = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    "Read this support screenshot and extract only actionable "
-                                    "details relevant to support: errors, warnings, version hints, "
-                                    "symptoms, access or whitelist requests, visible roles or status, "
-                                    "buttons clicked, and any text that changes the recommended next step."
-                                ),
-                            },
-                            {"type": "input_image", "image_url": url},
-                        ],
-                    }
-                ]
-                response = await asyncio.wait_for(
-                    vision_client.responses.create(
-                        model=settings.openai_vision_model,
-                        input=payload,
-                        max_output_tokens=settings.openai_support_max_output_tokens,
-                        text={"verbosity": "medium"},
-                    ),
-                    timeout=settings.ai_support_timeout_seconds,
-                )
-                if response.output_text:
-                    snippets.append(response.output_text.strip())
-            except Exception:
-                log.exception("Failed to extract image context from %s", url)
+        snippets = await asyncio.gather(
+            *(self._extract_single_image_context(url) for url in image_urls[:2])
+        )
+        return "\n".join(snippet for snippet in snippets if snippet)[:2000]
 
-        return "\n".join(snippets)[:2000]
+    async def _extract_single_image_context(self, url: str) -> str:
+        settings = self.bot.settings
+        try:
+            payload: Any = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Read this support screenshot and extract only actionable "
+                                "details relevant to support: errors, warnings, version hints, "
+                                "symptoms, access or whitelist requests, visible roles or status, "
+                                "buttons clicked, and any text that changes the recommended next step."
+                            ),
+                        },
+                        {"type": "input_image", "image_url": url},
+                    ],
+                }
+            ]
+            response = await asyncio.wait_for(
+                vision_client.responses.create(
+                    model=settings.openai_vision_model,
+                    input=payload,
+                    max_output_tokens=settings.openai_support_max_output_tokens,
+                    text={"verbosity": "medium"},
+                ),
+                timeout=settings.ai_support_timeout_seconds,
+            )
+            if response.output_text:
+                return response.output_text.strip()
+        except Exception:
+            log.exception("Failed to extract image context from %s", url)
+        return ""
 
     async def _process_support_message(self, message: discord.Message) -> None:
         channel = message.channel
-        if not isinstance(channel, discord.TextChannel):
+        if not hasattr(channel, "send"):
             return
 
         settings = self.bot.settings
-        in_ticket = _is_ticket_channel(channel, settings=settings)
+        in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
+        in_dm = isinstance(channel, discord.DMChannel)
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
-        author_has_support_access = (
-            isinstance(message.author, discord.Member)
-            and can_use_ai_support(message.author, settings=settings)
-        )
+        dm_request = in_dm and _has_support_request_content(message, self.bot.user)
+        author_has_support_access = await self._can_use_support_from_message(message, settings=settings)
 
-        if not in_ticket and not mention_request:
+        if not in_ticket and not mention_request and not dm_request:
             return
-        if mention_request and not in_ticket and not author_has_support_access:
+        if (mention_request or dm_request) and not in_ticket and not author_has_support_access:
             return
 
         if in_ticket and channel.id in self._escalated_ticket_channels:
@@ -440,7 +490,7 @@ class AITicketsCog(commands.Cog):
                         await self._send_messages_with_typing(
                             channel,
                             [
-                                "I ran into a temporary AI service issue while processing this. "
+                                "I ran into a temporary AI service issue while processing this. (A.I. API Outage) "
                                 "Please try again in a moment."
                             ],
                         )
@@ -457,6 +507,9 @@ class AITicketsCog(commands.Cog):
                             "Please try again or open a support ticket."
                         ],
                     )
+                return
+
+            if _has_user_visible_tool_result(result["tool_results"]):
                 return
 
             docs_output = _extract_docs_output(result["tool_results"])
@@ -515,7 +568,7 @@ class AITicketsCog(commands.Cog):
             return
 
         try:
-            debounce_seconds = 8
+            debounce_seconds = _support_debounce_seconds(self.bot.settings)
             if debounce_seconds:
                 await asyncio.sleep(debounce_seconds)
             await self._process_support_message(message)
@@ -527,7 +580,7 @@ class AITicketsCog(commands.Cog):
                 self._pending_tasks.pop(pending_key, None)
 
     def _schedule_support_response(self, message: discord.Message, *, in_ticket: bool) -> None:
-        pending_key = self._pending_key(message, in_ticket=in_ticket)
+        pending_key = _pending_key(message, in_ticket=in_ticket)
         self._cancel_pending_task(pending_key)
         task = asyncio.create_task(
             self._process_message_after_debounce(message, pending_key=pending_key)
@@ -545,20 +598,29 @@ class AITicketsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         settings = self.bot.settings
-        if not settings.ai_support_enabled or not message.guild:
+        if not settings.ai_support_enabled:
             return
 
         channel = message.channel
-        if not isinstance(channel, discord.TextChannel):
+        if isinstance(channel, discord.DMChannel):
+            if message.author.bot:
+                return
+            if message.content.startswith(("!", "/", ".")):
+                return
+            if _contains_log_attachment(message):
+                return
+            if not await self._can_use_support_from_message(message, settings=settings):
+                return
+            self._schedule_support_response(message, in_ticket=False)
+            return
+
+        if not message.guild or not isinstance(channel, discord.TextChannel):
             return
 
         in_ticket = _is_ticket_channel(channel, settings=settings)
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
-        author_has_support_access = (
-            isinstance(message.author, discord.Member)
-            and can_use_ai_support(message.author, settings=settings)
-        )
+        author_has_support_access = await self._can_use_support_from_message(message, settings=settings)
         if not in_ticket and not mention_request:
             return
         if mention_request and not in_ticket and not author_has_support_access:
@@ -568,6 +630,8 @@ class AITicketsCog(commands.Cog):
             self._cancel_pending_task_for_message(message, in_ticket=in_ticket)
 
         if message.author.bot or not isinstance(message.author, discord.Member):
+            return
+        if _is_staff_ticket_message(message, in_ticket=in_ticket, settings=settings):
             return
         if in_ticket and channel.id in self._escalated_ticket_channels:
             return

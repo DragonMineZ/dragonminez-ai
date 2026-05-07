@@ -1,10 +1,13 @@
+import asyncio
 import logging
 import time
+from pathlib import Path
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from bulmaai.config import Settings
+from bulmaai.services.phishing_feed import PhishingFeedService
 from bulmaai.services.moderation import (
     AttachmentInfo,
     MessageSignal,
@@ -26,6 +29,19 @@ class ModerationCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self._state = ModerationState()
+        settings = self._settings()
+        self._phishing_feed: PhishingFeedService | None = None
+        self._phishing_feed_started = False
+        if settings.moderation_phishing_feed_enabled:
+            self._phishing_feed = PhishingFeedService(
+                cache_dir=Path(settings.moderation_phishing_feed_cache_dir),
+                max_stale_hours=settings.moderation_phishing_feed_max_stale_hours,
+                domain_feed_url=settings.moderation_phishing_domain_feed_url,
+                url_feed_url=settings.moderation_phishing_url_feed_url,
+                domain_checksum_url=settings.moderation_phishing_domain_sha256_url,
+                url_checksum_url=settings.moderation_phishing_url_sha256_url,
+            )
+            self._phishing_feed.load_cache()
 
     def _settings(self) -> Settings:
         return self.bot.settings
@@ -40,7 +56,16 @@ class ModerationCog(commands.Cog):
             image_burst_window_seconds=settings.moderation_image_burst_window_seconds,
             link_burst_count=settings.moderation_link_burst_count,
             link_burst_window_seconds=settings.moderation_link_burst_window_seconds,
+            phishing_feed_action=self._phishing_feed_action(),
+            phishing_feed_allowed_domains=tuple(settings.moderation_phishing_feed_allowed_domains),
+            phishing_feed_allowed_urls=tuple(settings.moderation_phishing_feed_allowed_urls),
         )
+
+    def _phishing_feed_action(self) -> ModerationAction:
+        value = self._settings().moderation_phishing_feed_action.lower().strip()
+        if value == ModerationAction.DELETE.value:
+            return ModerationAction.DELETE
+        return ModerationAction.ALERT
 
     def _is_exempt(self, member: discord.Member, channel_id: int) -> bool:
         settings = self._settings()
@@ -109,6 +134,8 @@ class ModerationCog(commands.Cog):
         embed.add_field(name="Action", value=decision.action.value, inline=True)
         embed.add_field(name="Reason", value=decision.reason, inline=True)
         embed.add_field(name="Deleted", value=str(deleted), inline=True)
+        if decision.source:
+            embed.add_field(name="Source", value=decision.source, inline=True)
         embed.add_field(name="User", value=f"{message.author} (`{message.author.id}`)", inline=False)
         embed.add_field(name="Channel", value=f"<#{message.channel.id}> (`{message.channel.id}`)", inline=False)
         embed.add_field(name="Message", value=f"[Jump to message]({message.jump_url})", inline=False)
@@ -206,12 +233,41 @@ class ModerationCog(commands.Cog):
             self._decision_config(),
             self._state,
             now=time.monotonic(),
+            phishing_feed_snapshot=self._phishing_feed.snapshot if self._phishing_feed else None,
         )
         await self._apply_decision(message, decision)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         await self._inspect_message(message)
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if self._phishing_feed is None or self._phishing_feed_started or self.refresh_phishing_feed.is_running():
+            return
+        self.refresh_phishing_feed.change_interval(
+            hours=max(1, self._settings().moderation_phishing_feed_max_stale_hours // 2),
+        )
+        self.refresh_phishing_feed.start()
+        self._phishing_feed_started = True
+
+    def cog_unload(self) -> None:
+        self.refresh_phishing_feed.cancel()
+
+    @tasks.loop(hours=12)
+    async def refresh_phishing_feed(self) -> None:
+        if self._phishing_feed is None:
+            return
+        try:
+            await self._phishing_feed.refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Phishing feed refresh loop failed")
+
+    @refresh_phishing_feed.before_loop
+    async def _before_refresh_phishing_feed(self) -> None:
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:

@@ -21,6 +21,18 @@ def _get_env_int(name: str, default: int | None = None) -> int | None:
     return int(value)
 
 
+def _get_env_float(name: str, default: float | None = None) -> float | None:
+    value = _get_env(name)
+    if value is None:
+        return default
+    return float(value)
+
+
+def _get_env_float_default(name: str, default: float) -> float:
+    value = _get_env_float(name)
+    return default if value is None else value
+
+
 def _get_env_bool(name: str, default: bool) -> bool:
     value = _get_env(name)
     if value is None:
@@ -66,6 +78,8 @@ DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 # so default to the higher-capability model there.
 DEFAULT_OPENAI_SUPPORT_MODEL = "gpt-5.4"
 DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT = "medium"
+DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT = "low"
+DEFAULT_OPENAI_SUPPORT_FAST_CONFIDENCE_SCORE = 0.78
 DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS = 1500
 # Pin helper models to incentive-eligible IDs where possible.
 DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
@@ -107,7 +121,8 @@ DEFAULT_AI_SUPPORT_ALLOWED_ROLE_IDS: Sequence[int] = (
 )
 DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 12
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 70
-DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 3
+DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 0
+DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS = 1.5
 DEFAULT_AI_CLOSED_TICKET_CATEGORY_IDS: Sequence[int] = (1303543643377893466,)
 DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED = True
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
@@ -148,6 +163,16 @@ DEFAULT_MODERATION_IMAGE_BURST_COUNT = 3
 DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS = 20
 DEFAULT_MODERATION_LINK_BURST_COUNT = 5
 DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS = 60
+DEFAULT_MODERATION_PHISHING_FEED_ENABLED = True
+DEFAULT_MODERATION_PHISHING_FEED_ACTION = "alert"
+DEFAULT_MODERATION_PHISHING_FEED_CACHE_DIR = "data/cache/moderation/phishing_database"
+DEFAULT_MODERATION_PHISHING_FEED_MAX_STALE_HOURS = 72
+DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_DOMAINS: Sequence[str] = ()
+DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_URLS: Sequence[str] = ()
+DEFAULT_MODERATION_PHISHING_DOMAIN_FEED_URL = "https://phish.co.za/latest/phishing-domains-ACTIVE.txt"
+DEFAULT_MODERATION_PHISHING_URL_FEED_URL = "https://phish.co.za/latest/phishing-links-ACTIVE.txt"
+DEFAULT_MODERATION_PHISHING_DOMAIN_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-domains-ACTIVE.txt.sha256"
+DEFAULT_MODERATION_PHISHING_URL_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-links-ACTIVE.txt.sha256"
 DEFAULT_SETTINGS_OVERRIDES_PATH = "data/settings_overrides.json"
 
 NON_OVERRIDABLE_SETTINGS = {
@@ -176,6 +201,8 @@ class Settings:
     openai_model: str
     openai_support_model: str
     openai_support_reasoning_effort: str
+    openai_support_fast_reasoning_effort: str
+    openai_support_fast_confidence_score: float
     openai_support_max_output_tokens: int
     openai_vision_model: str
     openai_translation_model: str
@@ -211,6 +238,7 @@ class Settings:
     ai_support_history_limit: int
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
+    ai_support_debounce_seconds: float
     ai_closed_ticket_category_ids: Sequence[int]
     support_response_cache_enabled: bool
     message_presets_path: str
@@ -242,6 +270,16 @@ class Settings:
     moderation_image_burst_window_seconds: int
     moderation_link_burst_count: int
     moderation_link_burst_window_seconds: int
+    moderation_phishing_feed_enabled: bool
+    moderation_phishing_feed_action: str
+    moderation_phishing_feed_cache_dir: str
+    moderation_phishing_feed_max_stale_hours: int
+    moderation_phishing_feed_allowed_domains: Sequence[str]
+    moderation_phishing_feed_allowed_urls: Sequence[str]
+    moderation_phishing_domain_feed_url: str
+    moderation_phishing_url_feed_url: str
+    moderation_phishing_domain_sha256_url: str | None
+    moderation_phishing_url_sha256_url: str | None
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
@@ -294,6 +332,19 @@ def _build_settings_from_env() -> Settings:
                 DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT,
             )
             or DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT
+        ),
+        openai_support_fast_reasoning_effort=(
+            _get_env(
+                "OPENAI_SUPPORT_FAST_REASONING_EFFORT",
+                DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT,
+            )
+            or DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT
+        ),
+        openai_support_fast_confidence_score=(
+            _get_env_float_default(
+                "OPENAI_SUPPORT_FAST_CONFIDENCE_SCORE",
+                DEFAULT_OPENAI_SUPPORT_FAST_CONFIDENCE_SCORE,
+            )
         ),
         openai_support_max_output_tokens=(
             _get_env_int(
@@ -363,6 +414,10 @@ def _build_settings_from_env() -> Settings:
         ai_support_history_limit=_get_env_int("AI_SUPPORT_HISTORY_LIMIT", DEFAULT_AI_SUPPORT_HISTORY_LIMIT) or DEFAULT_AI_SUPPORT_HISTORY_LIMIT,
         ai_support_timeout_seconds=_get_env_int("AI_SUPPORT_TIMEOUT_SECONDS", DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS) or DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS,
         ai_support_typing_lead_seconds=_get_env_int("AI_SUPPORT_TYPING_LEAD_SECONDS", DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS) or DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS,
+        ai_support_debounce_seconds=_get_env_float_default(
+            "AI_SUPPORT_DEBOUNCE_SECONDS",
+            DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS,
+        ),
         ai_closed_ticket_category_ids=_get_env_int_list("AI_CLOSED_TICKET_CATEGORY_IDS", DEFAULT_AI_CLOSED_TICKET_CATEGORY_IDS),
         support_response_cache_enabled=_get_env_bool(
             "SUPPORT_RESPONSE_CACHE_ENABLED",
@@ -483,6 +538,61 @@ def _build_settings_from_env() -> Settings:
                 DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS,
             )
             or DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS
+        ),
+        moderation_phishing_feed_enabled=_get_env_bool(
+            "MODERATION_PHISHING_FEED_ENABLED",
+            DEFAULT_MODERATION_PHISHING_FEED_ENABLED,
+        ),
+        moderation_phishing_feed_action=(
+            _get_env(
+                "MODERATION_PHISHING_FEED_ACTION",
+                DEFAULT_MODERATION_PHISHING_FEED_ACTION,
+            )
+            or DEFAULT_MODERATION_PHISHING_FEED_ACTION
+        ),
+        moderation_phishing_feed_cache_dir=(
+            _get_env(
+                "MODERATION_PHISHING_FEED_CACHE_DIR",
+                DEFAULT_MODERATION_PHISHING_FEED_CACHE_DIR,
+            )
+            or DEFAULT_MODERATION_PHISHING_FEED_CACHE_DIR
+        ),
+        moderation_phishing_feed_max_stale_hours=(
+            _get_env_int(
+                "MODERATION_PHISHING_FEED_MAX_STALE_HOURS",
+                DEFAULT_MODERATION_PHISHING_FEED_MAX_STALE_HOURS,
+            )
+            or DEFAULT_MODERATION_PHISHING_FEED_MAX_STALE_HOURS
+        ),
+        moderation_phishing_feed_allowed_domains=_get_env_str_list(
+            "MODERATION_PHISHING_FEED_ALLOWED_DOMAINS",
+            DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_DOMAINS,
+        ),
+        moderation_phishing_feed_allowed_urls=_get_env_str_list(
+            "MODERATION_PHISHING_FEED_ALLOWED_URLS",
+            DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_URLS,
+        ),
+        moderation_phishing_domain_feed_url=(
+            _get_env(
+                "MODERATION_PHISHING_DOMAIN_FEED_URL",
+                DEFAULT_MODERATION_PHISHING_DOMAIN_FEED_URL,
+            )
+            or DEFAULT_MODERATION_PHISHING_DOMAIN_FEED_URL
+        ),
+        moderation_phishing_url_feed_url=(
+            _get_env(
+                "MODERATION_PHISHING_URL_FEED_URL",
+                DEFAULT_MODERATION_PHISHING_URL_FEED_URL,
+            )
+            or DEFAULT_MODERATION_PHISHING_URL_FEED_URL
+        ),
+        moderation_phishing_domain_sha256_url=_get_env(
+            "MODERATION_PHISHING_DOMAIN_SHA256_URL",
+            DEFAULT_MODERATION_PHISHING_DOMAIN_SHA256_URL,
+        ),
+        moderation_phishing_url_sha256_url=_get_env(
+            "MODERATION_PHISHING_URL_SHA256_URL",
+            DEFAULT_MODERATION_PHISHING_URL_SHA256_URL,
         ),
     )
 

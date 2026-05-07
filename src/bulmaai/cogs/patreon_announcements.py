@@ -28,20 +28,21 @@ PUBLIC_POST_DESCRIPTION_LIMIT = 3500
 
 PATREON_WELCOME_AUDIT_WINDOW_SECONDS = 30
 PATREON_WELCOME_CACHE_SECONDS = 120
-# Edit the Patreon welcome copy here.
-PATREON_WELCOME_CHANNEL_TITLE = "New Patreon!"
+
+PATREON_WELCOME_CHANNEL_TITLE = "A new Patreon has joined!"
 PATREON_WELCOME_CHANNEL_DESCRIPTION = (
     "{member} just received {role}. Welcome, and thank you for supporting DragonMineZ!"
 )
 PATREON_WELCOME_CHANNEL_ROLE_LABEL = "Role"
 PATREON_WELCOME_CHANNEL_FOOTER = "DragonMineZ"
+
 PATREON_WELCOME_DM_TITLE = "Welcome to DragonMineZ - Patreon"
 PATREON_WELCOME_DM_DESCRIPTION = (
     "Hi {member_name}, thanks for joining the DragonMineZ Patreon! "
     "You now have {role} ({role_name}) in the server, we're glad to have you here! "
-    "If your perk is Supporter, it does not include beta access. "
-    "To play the beta, you need the Contributor role/perk, which is USD $9.99. "
-    "If your perk is Contributor or Benefactor, you can ask for beta access in any channel on the DMZ server; "
+    "If your perk is Supporter, it does NOT include alpha/beta access. "
+    "To play the beta, you need at least the Contributor role/perk, which is USD $9.99. "
+    "If your perk is Contributor or Benefactor, you can ask for beta access in any channel on the DMZ server or DM/reply to me; "
     "just ask however you want, and the bot can recognize beta access requests from messages or images. "
     "Your support is invaluable, thank you again!"
 )
@@ -151,10 +152,10 @@ def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
             description_source = f"{content_text}\n\n{embed_description}"
         description = description_source
         description = _truncate(description, PUBLIC_POST_DESCRIPTION_LIMIT)
-        visibility = "Public"
+        visibility = "Public - Everyone!"
     else:
         description = (
-            "A new Patreon post is live. The Patreon link below is included so Discord can show only the public-safe preview Patreon exposes."
+            "A new Patreon post is live! Click the link to view information about it or join the Patreon to see the whole post!"
         )
         visibility = "Patrons Only"
 
@@ -234,11 +235,6 @@ def _build_channel_welcome_embed(*, member: discord.Member, role: discord.Role) 
         timestamp=datetime.now(timezone.utc),
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(
-        name=_render_welcome_text(PATREON_WELCOME_CHANNEL_ROLE_LABEL, member=member, role=role) or "Role",
-        value=role.mention,
-        inline=False,
-    )
     footer = _render_welcome_text(PATREON_WELCOME_CHANNEL_FOOTER, member=member, role=role)
     if footer:
         embed.set_footer(text=footer)

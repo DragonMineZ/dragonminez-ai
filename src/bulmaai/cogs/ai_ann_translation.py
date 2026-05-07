@@ -5,6 +5,8 @@ import discord
 from discord.ext import commands
 from openai import AsyncOpenAI
 
+from utils.permissions import is_admin
+
 log = logging.getLogger(__name__)
 
 TRANSLATION_INSTRUCTIONS = """
@@ -58,7 +60,7 @@ class AiAnnTranslation(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.author.guild_permissions.administrator:
+        if message.author.bot or not is_admin(message.author):
             return
 
         if message.channel.id != self.settings.announcement_source_channel_id:

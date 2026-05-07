@@ -54,6 +54,91 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_docs_source_lang_hash
 CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_embeddings_doc_id
     ON doc_embeddings (doc_id);
 
+-- ============================================================
+-- FAQ knowledge schema (separate from docs RAG tables)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS faq_entries (
+    id                          SERIAL PRIMARY KEY,
+    status                      TEXT NOT NULL DEFAULT 'approved',
+    lang                        VARCHAR(5) NOT NULL,
+    canonical_question          TEXT NOT NULL,
+    answer                      TEXT NOT NULL,
+    tags                        TEXT[] NOT NULL DEFAULT '{}',
+    source_ticket_channel_id    BIGINT,
+    source_question_message_ids BIGINT[] NOT NULL DEFAULT '{}',
+    source_answer_message_ids   BIGINT[] NOT NULL DEFAULT '{}',
+    approved_by                 BIGINT,
+    approved_at                 TIMESTAMPTZ,
+    rejected_by                 BIGINT,
+    rejected_reason             TEXT,
+    duplicate_of                INTEGER REFERENCES faq_entries(id),
+    version                     INTEGER NOT NULL DEFAULT 1,
+    content_hash                TEXT NOT NULL,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS faq_embeddings (
+    faq_id      INTEGER PRIMARY KEY REFERENCES faq_entries(id) ON DELETE CASCADE,
+    embedding   FLOAT8[] NOT NULL,
+    model       TEXT NOT NULL,
+    dimensions  INTEGER NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS faq_events (
+    id           SERIAL PRIMARY KEY,
+    faq_id       INTEGER REFERENCES faq_entries(id) ON DELETE SET NULL,
+    event_type   TEXT NOT NULL,
+    actor_id     BIGINT,
+    payload_json JSONB NOT NULL DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_base_version (
+    name       TEXT PRIMARY KEY,
+    version    BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'approved';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS lang VARCHAR(5) NOT NULL DEFAULT 'en';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS canonical_question TEXT NOT NULL DEFAULT '';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS answer TEXT NOT NULL DEFAULT '';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS source_ticket_channel_id BIGINT;
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS source_question_message_ids BIGINT[] NOT NULL DEFAULT '{}';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS source_answer_message_ids BIGINT[] NOT NULL DEFAULT '{}';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS approved_by BIGINT;
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS rejected_by BIGINT;
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS duplicate_of INTEGER REFERENCES faq_entries(id);
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS content_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE faq_entries ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+ALTER TABLE faq_embeddings ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'text-embedding-3-large';
+ALTER TABLE faq_embeddings ADD COLUMN IF NOT EXISTS dimensions INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE faq_embeddings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+ALTER TABLE faq_events ADD COLUMN IF NOT EXISTS actor_id BIGINT;
+ALTER TABLE faq_events ADD COLUMN IF NOT EXISTS payload_json JSONB NOT NULL DEFAULT '{}';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_faq_entries_lang_content_hash
+    ON faq_entries (lang, content_hash);
+
+CREATE INDEX IF NOT EXISTS idx_faq_entries_status_lang
+    ON faq_entries (status, lang);
+
+CREATE INDEX IF NOT EXISTS idx_faq_entries_tags
+    ON faq_entries USING GIN (tags);
+
+CREATE INDEX IF NOT EXISTS idx_faq_events_faq_id_created_at
+    ON faq_events (faq_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS support_response_cache (
     cache_key   TEXT PRIMARY KEY,
     docs_version TIMESTAMPTZ,

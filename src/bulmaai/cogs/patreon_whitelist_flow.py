@@ -11,16 +11,28 @@ from bulmaai.utils.permissions import has_patreon_access_role, is_admin
 log = logging.getLogger(__name__)
 
 ADMIN_PING_ROLE_ID = 1309022450671161476
-STAFF_CHANNEL_ID = 1470178423862460510
+STAFF_CHANNEL_ID = 1493390527004147876
 
 
-def _pick_staff_channel(ctx_or_inter: discord.Interaction | discord.ApplicationContext) -> discord.abc.Messageable:
-    guild = ctx_or_inter.guild
-    if STAFF_CHANNEL_ID and guild:
-        ch = guild.get_channel(STAFF_CHANNEL_ID)
-        if ch is not None:
-            return ch
-    return ctx_or_inter.channel
+async def _pick_staff_channel(
+    bot: discord.Bot,
+    ctx_or_inter: discord.Interaction | discord.ApplicationContext | None = None,
+) -> discord.abc.Messageable | None:
+    if STAFF_CHANNEL_ID:
+        channel = bot.get_channel(STAFF_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(STAFF_CHANNEL_ID)
+            except Exception:
+                log.exception("Failed to fetch Patreon staff log channel %s", STAFF_CHANNEL_ID)
+                channel = None
+        if channel is not None and hasattr(channel, "send"):
+            return channel
+
+    if ctx_or_inter is not None and not isinstance(ctx_or_inter.channel, discord.DMChannel):
+        return ctx_or_inter.channel
+
+    return None
 
 
 class PatreonWhitelistFlowCog(commands.Cog):
@@ -93,7 +105,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 if state["nick"] in base_lines:
                     await interaction.followup.send(
                         f"`{state['nick']}` is already whitelisted. Nothing to do.",
-                        ephemeral=False,
+                        ephemeral=True,
                     )
                     return
 
@@ -113,9 +125,25 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 pr_number = pr_data["number"]
                 pr_url = pr_data["html_url"]
 
-                admin_role = interaction.guild.get_role(ADMIN_PING_ROLE_ID)
+                staff_channel = await _pick_staff_channel(self.bot, interaction)
+                if staff_channel is None:
+                    await interaction.followup.send(
+                        "I created the whitelist PR, but I could not notify staff. "
+                        "Please ask staff to check the bot logs.",
+                        ephemeral=True,
+                    )
+                    log.error(
+                        "Patreon whitelist PR created but staff channel unavailable",
+                        extra={
+                            "event": "patreon_whitelist_staff_channel_missing",
+                            "user_id": interaction.user.id,
+                            "pr_number": pr_number,
+                        },
+                    )
+                    return
+                staff_guild = getattr(staff_channel, "guild", None)
+                admin_role = staff_guild.get_role(ADMIN_PING_ROLE_ID) if staff_guild else None
                 mention = admin_role.mention if admin_role else f"<@&{ADMIN_PING_ROLE_ID}>"
-                staff_channel = _pick_staff_channel(interaction)
 
                 admin_view: AdminPRView | None = None
 
@@ -182,6 +210,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
                     f"Please wait for an administrator to approve the change.\n"
                     f"PR: {pr_url}",
                     view=admin_view,
+                    allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
                 )
 
                 await interaction.followup.send(

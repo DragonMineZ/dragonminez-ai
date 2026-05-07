@@ -15,14 +15,15 @@ from bulmaai.services import http
 
 log = logging.getLogger(__name__)
 
-DEFAULT_DOMAIN_FEED_URL = "https://phish.co.za/latest/phishing-domains-ACTIVE.txt"
-DEFAULT_URL_FEED_URL = "https://phish.co.za/latest/phishing-links-ACTIVE.txt"
+DEFAULT_DOMAIN_FEED_URL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt"
+DEFAULT_URL_FEED_URL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt"
 DEFAULT_DOMAIN_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-domains-ACTIVE.txt.sha256"
 DEFAULT_URL_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-links-ACTIVE.txt.sha256"
 DOMAINS_CACHE_FILE = "phishing-domains-ACTIVE.txt"
 URLS_CACHE_FILE = "phishing-links-ACTIVE.txt"
 METADATA_CACHE_FILE = "metadata.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+CACHE_APP_DIR = Path("bulmaai") / "moderation" / "phishing_database"
 
 
 def _now_utc() -> datetime:
@@ -46,6 +47,78 @@ def resolve_cache_dir(cache_dir: str | Path) -> Path:
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def default_user_cache_dir() -> Path:
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA")
+        if base:
+            return Path(base) / CACHE_APP_DIR
+    base = os.getenv("XDG_CACHE_HOME")
+    if base:
+        return Path(base).expanduser() / CACHE_APP_DIR
+    return Path.home() / ".cache" / CACHE_APP_DIR
+
+
+def _verify_writable_cache_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    probe = path / f".write-test-{os.getpid()}"
+    try:
+        probe.write_text("", encoding="utf-8")
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _select_cache_dir(preferred: Path) -> Path:
+    try:
+        _verify_writable_cache_dir(preferred)
+        return preferred
+    except OSError as error:
+        fallback = default_user_cache_dir()
+        if fallback == preferred:
+            log.warning(
+                "Phishing feed cache dir is not writable: %s",
+                preferred,
+                extra={
+                    "discord_forward": True,
+                    "event": "phishing_feed_cache_unwritable",
+                    "cache_dir": str(preferred),
+                    "exception_type": type(error).__name__,
+                },
+            )
+            return preferred
+        try:
+            _verify_writable_cache_dir(fallback)
+        except OSError as fallback_error:
+            log.warning(
+                "Phishing feed cache dirs are not writable: preferred=%s fallback=%s",
+                preferred,
+                fallback,
+                extra={
+                    "discord_forward": True,
+                    "event": "phishing_feed_cache_unwritable",
+                    "cache_dir": str(preferred),
+                    "fallback_cache_dir": str(fallback),
+                    "exception_type": type(fallback_error).__name__,
+                },
+            )
+            return preferred
+        log.warning(
+            "Phishing feed cache dir %s is not writable; using %s",
+            preferred,
+            fallback,
+            extra={
+                "discord_forward": True,
+                "event": "phishing_feed_cache_fallback",
+                "cache_dir": str(preferred),
+                "fallback_cache_dir": str(fallback),
+                "exception_type": type(error).__name__,
+            },
+        )
+        return fallback
 
 
 def normalize_domain(value: str) -> str | None:
@@ -163,7 +236,7 @@ class PhishingFeedService:
         url_checksum_url: str | None = DEFAULT_URL_SHA256_URL,
         timeout_seconds: int = 20,
     ):
-        self.cache_dir = resolve_cache_dir(cache_dir)
+        self.cache_dir = _select_cache_dir(resolve_cache_dir(cache_dir))
         self.max_stale_hours = max(1, int(max_stale_hours))
         self.domain_feed_url = domain_feed_url
         self.url_feed_url = url_feed_url
@@ -307,4 +380,15 @@ class PhishingFeedService:
             return
         actual = _sha256_bytes(data)
         if actual != expected:
-            raise ValueError(f"{name} checksum mismatch")
+            log.warning(
+                "Phishing feed checksum mismatch for %s: expected=%s actual=%s",
+                name,
+                expected,
+                actual,
+                extra={
+                    "discord_forward": True,
+                    "event": "phishing_feed_checksum_mismatch",
+                    "feed": name,
+                    "checksum_url": checksum_url,
+                },
+            )

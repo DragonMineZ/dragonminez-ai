@@ -1,6 +1,7 @@
 import unittest
 import logging
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from bulmaai.services.moderation import (
@@ -79,6 +80,27 @@ class PhishingFeedRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(resolved, absolute_path)
 
+    def test_unwritable_cache_dir_falls_back_to_user_cache(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            fallback = Path(temp_dir) / "fallback-cache"
+
+            with self.assertLogs("bulmaai.services.phishing_feed", level="WARNING") as logs:
+                with (
+                    patch(
+                        "bulmaai.services.phishing_feed._verify_writable_cache_dir",
+                        side_effect=[PermissionError("no write"), None],
+                    ),
+                    patch("bulmaai.services.phishing_feed.default_user_cache_dir", return_value=fallback),
+                ):
+                    service = PhishingFeedService(
+                        cache_dir="data/cache/moderation/phishing_database",
+                        max_stale_hours=24,
+                    )
+
+        self.assertEqual(service.cache_dir, fallback)
+        self.assertEqual(logs.records[0].event, "phishing_feed_cache_fallback")
+        self.assertTrue(logs.records[0].discord_forward)
+
     async def test_checksum_verifies_raw_response_bytes_not_decoded_text(self) -> None:
         domains = b"Example.COM\n"
         urls = "https://bad.example/\n".encode("utf-16")
@@ -101,28 +123,62 @@ class PhishingFeedRefreshTests(unittest.IsolatedAsyncioTestCase):
                 return FakeResponse(content=b"", text=hashlib.sha256(urls).hexdigest())
             raise AssertionError(f"unexpected URL {url}")
 
-        service = PhishingFeedService(
-            cache_dir="data/test-cache",
-            max_stale_hours=24,
-            domain_feed_url="https://feeds.example/domains.txt",
-            url_feed_url="https://feeds.example/urls.txt",
-            domain_checksum_url="https://feeds.example/domains.sha256",
-            url_checksum_url="https://feeds.example/urls.sha256",
-        )
+        with TemporaryDirectory() as temp_dir:
+            service = PhishingFeedService(
+                cache_dir=Path(temp_dir) / "test-cache",
+                max_stale_hours=24,
+                domain_feed_url="https://feeds.example/domains.txt",
+                url_feed_url="https://feeds.example/urls.txt",
+                domain_checksum_url="https://feeds.example/domains.sha256",
+                url_checksum_url="https://feeds.example/urls.sha256",
+            )
 
-        with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
-            domains_text, urls_text, checksums = await service._download_feeds()
+            with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
+                domains_text, urls_text, checksums = await service._download_feeds()
 
         self.assertEqual(domains_text, "Example.COM\n")
         self.assertEqual(urls_text, "https://bad.example/\n")
         self.assertIn("domains_sha256", checksums)
         self.assertIn("exact_urls_sha256", checksums)
 
+    async def test_checksum_mismatch_warns_without_rejecting_feed(self) -> None:
+        async def fake_request(method: str, url: str, **kwargs):
+            if url == "https://feeds.example/domains.txt":
+                return FakeResponse(content=b"Example.COM\n")
+            if url == "https://feeds.example/urls.txt":
+                return FakeResponse(content=b"https://bad.example/\n")
+            if url.endswith(".sha256"):
+                return FakeResponse(content=b"", text="0" * 64)
+            raise AssertionError(f"unexpected URL {url}")
+
+        with TemporaryDirectory() as temp_dir:
+            service = PhishingFeedService(
+                cache_dir=Path(temp_dir) / "test-cache",
+                max_stale_hours=24,
+                domain_feed_url="https://feeds.example/domains.txt",
+                url_feed_url="https://feeds.example/urls.txt",
+                domain_checksum_url="https://feeds.example/domains.sha256",
+                url_checksum_url="https://feeds.example/urls.sha256",
+            )
+
+            with self.assertLogs("bulmaai.services.phishing_feed", level="WARNING") as logs:
+                with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
+                    domains_text, urls_text, checksums = await service._download_feeds()
+
+        self.assertEqual(domains_text, "Example.COM\n")
+        self.assertEqual(urls_text, "https://bad.example/\n")
+        self.assertIn("domains_sha256", checksums)
+        self.assertIn("exact_urls_sha256", checksums)
+        self.assertEqual(
+            [record.event for record in logs.records],
+            ["phishing_feed_checksum_mismatch", "phishing_feed_checksum_mismatch"],
+        )
+        self.assertTrue(all(record.discord_forward for record in logs.records))
+
     async def test_refresh_failure_log_is_marked_for_discord_forwarding(self) -> None:
         async def fake_request(method: str, url: str, **kwargs):
             raise RuntimeError("network down")
 
-        service = PhishingFeedService(cache_dir="data/test-cache", max_stale_hours=24)
         records: list[logging.LogRecord] = []
 
         class CaptureHandler(logging.Handler):
@@ -135,8 +191,10 @@ class PhishingFeedRefreshTests(unittest.IsolatedAsyncioTestCase):
         logger.setLevel(logging.WARNING)
         self.addCleanup(logger.removeHandler, handler)
 
-        with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
-            await service.refresh()
+        with TemporaryDirectory() as temp_dir:
+            service = PhishingFeedService(cache_dir=Path(temp_dir) / "test-cache", max_stale_hours=24)
+            with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
+                await service.refresh()
 
         self.assertEqual(len(records), 1)
         self.assertIn("Phishing feed refresh failed", records[0].getMessage())

@@ -207,7 +207,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
                     f"{mention}\n\n"
                     f"{interaction.user.mention} has set their Patreon Minecraft nickname as "
                     f"`{state['nick']}`.\n"
-                    f"Please wait for an administrator to approve the change.\n"
+                    f"\n"
                     f"PR: {pr_url}",
                     view=admin_view,
                     allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),

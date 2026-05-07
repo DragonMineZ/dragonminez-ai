@@ -96,6 +96,26 @@ CREATE TABLE IF NOT EXISTS faq_events (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS faq_review_candidates (
+    id                          SERIAL PRIMARY KEY,
+    status                      TEXT NOT NULL DEFAULT 'pending',
+    lang                        VARCHAR(5) NOT NULL DEFAULT 'en',
+    canonical_question          TEXT NOT NULL,
+    answer                      TEXT NOT NULL,
+    tags                        TEXT[] NOT NULL DEFAULT '{}',
+    source_ticket_channel_id    BIGINT,
+    source_question_message_ids BIGINT[] NOT NULL DEFAULT '{}',
+    source_answer_message_ids   BIGINT[] NOT NULL DEFAULT '{}',
+    proposed_by                 BIGINT,
+    reviewed_by                 BIGINT,
+    review_reason               TEXT,
+    approved_faq_id             INTEGER REFERENCES faq_entries(id) ON DELETE SET NULL,
+    review_channel_id           BIGINT,
+    review_message_id           BIGINT,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS knowledge_base_version (
     name       TEXT PRIMARY KEY,
     version    BIGINT NOT NULL DEFAULT 0,
@@ -127,6 +147,23 @@ ALTER TABLE faq_embeddings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT N
 ALTER TABLE faq_events ADD COLUMN IF NOT EXISTS actor_id BIGINT;
 ALTER TABLE faq_events ADD COLUMN IF NOT EXISTS payload_json JSONB NOT NULL DEFAULT '{}';
 
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS lang VARCHAR(5) NOT NULL DEFAULT 'en';
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS canonical_question TEXT NOT NULL DEFAULT '';
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS answer TEXT NOT NULL DEFAULT '';
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS source_ticket_channel_id BIGINT;
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS source_question_message_ids BIGINT[] NOT NULL DEFAULT '{}';
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS source_answer_message_ids BIGINT[] NOT NULL DEFAULT '{}';
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS proposed_by BIGINT;
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS reviewed_by BIGINT;
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT;
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS approved_faq_id INTEGER REFERENCES faq_entries(id) ON DELETE SET NULL;
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS review_channel_id BIGINT;
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS review_message_id BIGINT;
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE faq_review_candidates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_faq_entries_lang_content_hash
     ON faq_entries (lang, content_hash);
 
@@ -138,6 +175,12 @@ CREATE INDEX IF NOT EXISTS idx_faq_entries_tags
 
 CREATE INDEX IF NOT EXISTS idx_faq_events_faq_id_created_at
     ON faq_events (faq_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_faq_review_candidates_status_created_at
+    ON faq_review_candidates (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_faq_review_candidates_review_message
+    ON faq_review_candidates (review_channel_id, review_message_id);
 
 CREATE TABLE IF NOT EXISTS support_response_cache (
     cache_key   TEXT PRIMARY KEY,

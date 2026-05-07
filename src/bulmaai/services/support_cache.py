@@ -30,7 +30,19 @@ def build_support_cache_key(
 async def get_docs_version() -> datetime | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return await conn.fetchval("SELECT max(updated_at) FROM docs")
+        return await conn.fetchval(
+            """
+            SELECT max(version_time)
+            FROM (
+                SELECT max(updated_at) AS version_time
+                FROM docs
+                UNION ALL
+                SELECT updated_at AS version_time
+                FROM knowledge_base_version
+                WHERE name = 'faq'
+            ) AS knowledge_versions
+            """
+        )
 
 
 def _decode_cached_response(value: Any) -> dict[str, Any] | None:

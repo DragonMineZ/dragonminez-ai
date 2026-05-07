@@ -1,4 +1,6 @@
 import unittest
+import logging
+from unittest.mock import patch
 
 from bulmaai.services.moderation import (
     MessageSignal,
@@ -8,6 +10,7 @@ from bulmaai.services.moderation import (
     evaluate_message,
 )
 from bulmaai.services.phishing_feed import (
+    PhishingFeedService,
     PhishingFeedSnapshot,
     canonicalize_url,
     parse_domain_feed,
@@ -49,6 +52,81 @@ class PhishingFeedParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(urls, frozenset({"https://example.com/path?A=1"}))
+
+
+class FakeResponse:
+    def __init__(self, *, content: bytes, text: str | None = None):
+        self.content = content
+        self.text = text if text is not None else content.decode("utf-8")
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class PhishingFeedRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_checksum_verifies_raw_response_bytes_not_decoded_text(self) -> None:
+        domains = b"Example.COM\n"
+        urls = "https://bad.example/\n".encode("utf-16")
+
+        async def fake_request(method: str, url: str, **kwargs):
+            if url == "https://feeds.example/domains.txt":
+                return FakeResponse(content=domains)
+            if url == "https://feeds.example/urls.txt":
+                return FakeResponse(
+                    content=urls,
+                    text="https://bad.example/\n",
+                )
+            if url == "https://feeds.example/domains.sha256":
+                import hashlib
+
+                return FakeResponse(content=b"", text=hashlib.sha256(domains).hexdigest())
+            if url == "https://feeds.example/urls.sha256":
+                import hashlib
+
+                return FakeResponse(content=b"", text=hashlib.sha256(urls).hexdigest())
+            raise AssertionError(f"unexpected URL {url}")
+
+        service = PhishingFeedService(
+            cache_dir="data/test-cache",
+            max_stale_hours=24,
+            domain_feed_url="https://feeds.example/domains.txt",
+            url_feed_url="https://feeds.example/urls.txt",
+            domain_checksum_url="https://feeds.example/domains.sha256",
+            url_checksum_url="https://feeds.example/urls.sha256",
+        )
+
+        with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
+            domains_text, urls_text, checksums = await service._download_feeds()
+
+        self.assertEqual(domains_text, "Example.COM\n")
+        self.assertEqual(urls_text, "https://bad.example/\n")
+        self.assertIn("domains_sha256", checksums)
+        self.assertIn("exact_urls_sha256", checksums)
+
+    async def test_refresh_failure_log_is_marked_for_discord_forwarding(self) -> None:
+        async def fake_request(method: str, url: str, **kwargs):
+            raise RuntimeError("network down")
+
+        service = PhishingFeedService(cache_dir="data/test-cache", max_stale_hours=24)
+        records: list[logging.LogRecord] = []
+
+        class CaptureHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        logger = logging.getLogger("bulmaai.services.phishing_feed")
+        handler = CaptureHandler()
+        logger.addHandler(handler)
+        logger.setLevel(logging.WARNING)
+        self.addCleanup(logger.removeHandler, handler)
+
+        with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
+            await service.refresh()
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("Phishing feed refresh failed", records[0].getMessage())
+        self.assertTrue(records[0].discord_forward)
+        self.assertEqual(records[0].event, "phishing_feed_refresh_failed")
 
 
 class PhishingFeedModerationTests(unittest.TestCase):

@@ -43,6 +43,7 @@ PATREON_WHITELIST_KEYWORDS = (
     "beta whitelist",
     "beta access",
 )
+DIRECT_APPROVED_FAQ_SCORE_THRESHOLD = 0.88
 
 
 class ConversationMessage(TypedDict, total=False):
@@ -276,6 +277,37 @@ def _select_reasoning_effort(settings: Any, docs_output: dict[str, Any] | None =
     return default_effort
 
 
+def _build_direct_approved_faq_result(
+    *,
+    language: str,
+    tool_results: list[ToolCallResult],
+    docs_output: dict[str, Any] | None,
+) -> AgentResult | None:
+    matches = (docs_output or {}).get("matches") or []
+    if not matches:
+        return None
+    best_match = matches[0]
+    if best_match.get("source_type") != "approved_faq":
+        return None
+    try:
+        score = float(best_match.get("score", (docs_output or {}).get("best_score", 0.0)))
+    except (TypeError, ValueError):
+        return None
+    if score < DIRECT_APPROVED_FAQ_SCORE_THRESHOLD:
+        return None
+    if best_match.get("lang") != language:
+        return None
+    answer = str(best_match.get("answer") or best_match.get("content") or "").strip()
+    if not answer:
+        return None
+    return AgentResult(
+        reply=answer,
+        language=language,
+        tool_results=tool_results,
+        suggested_close=False,
+    )
+
+
 async def _run_direct_patreon_whitelist_flow(
     *,
     messages: list[ConversationMessage],
@@ -396,6 +428,20 @@ async def run_support_agent(
         )
         _append_tool_output(response_input, name="docs_search", output=docs_output)
         remaining_tools = [tool_name for tool_name in remaining_tools if tool_name != "docs_search"]
+
+        direct_faq_result = _build_direct_approved_faq_result(
+            language=language,
+            tool_results=tool_results,
+            docs_output=docs_output_for_reasoning,
+        )
+        if direct_faq_result is not None:
+            if use_cache and cache_key is not None:
+                await store_cached_support_response(
+                    cache_key,
+                    docs_version,
+                    dict(direct_faq_result),
+                )
+            return direct_faq_result
 
     tools = get_schemas(remaining_tools)
 

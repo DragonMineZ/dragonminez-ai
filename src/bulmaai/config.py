@@ -63,6 +63,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.meta",
     "bulmaai.cogs.patreon_whitelist_flow",
     "bulmaai.cogs.ai_tickets",
+    "bulmaai.cogs.faq_review",
     "bulmaai.cogs.github_cmds",
     "bulmaai.cogs.ai_ann_translation",
     "bulmaai.cogs.rules",
@@ -144,6 +145,7 @@ DEFAULT_CURSEFORGE_POLL_MINUTES = 15
 DEFAULT_DISCORD_LOG_FORWARDING_ENABLED = True
 DEFAULT_DISCORD_LOG_CHANNEL_ID = 1493390527004147876
 DEFAULT_DISCORD_LOG_MIN_LEVEL = "WARNING"
+DEFAULT_FAQ_REVIEW_CHANNEL_ID = DEFAULT_DISCORD_LOG_CHANNEL_ID
 DEFAULT_MODERATION_ENABLED = True
 DEFAULT_MODERATION_LOG_CHANNEL_ID = 1501735528356118528
 DEFAULT_MODERATION_EXEMPT_ROLE_IDS: Sequence[int] = ()
@@ -259,6 +261,7 @@ class Settings:
     discord_log_forwarding_enabled: bool
     discord_log_channel_id: int | None
     discord_log_min_level: str
+    faq_review_channel_id: int | None
     moderation_enabled: bool
     moderation_log_channel_id: int | None
     moderation_exempt_role_ids: Sequence[int]
@@ -485,6 +488,10 @@ def _build_settings_from_env() -> Settings:
         discord_log_min_level=(
             _get_env("DISCORD_LOG_MIN_LEVEL", DEFAULT_DISCORD_LOG_MIN_LEVEL)
             or DEFAULT_DISCORD_LOG_MIN_LEVEL
+        ),
+        faq_review_channel_id=_get_env_int(
+            "FAQ_REVIEW_CHANNEL_ID",
+            DEFAULT_FAQ_REVIEW_CHANNEL_ID,
         ),
         moderation_enabled=_get_env_bool("MODERATION_ENABLED", DEFAULT_MODERATION_ENABLED),
         moderation_log_channel_id=_get_env_int(

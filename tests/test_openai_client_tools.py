@@ -110,7 +110,11 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("bulmaai.services.openai_client.tools_registry.get_func", side_effect=fake_get_func),
-            patch("bulmaai.services.openai_client._create_response", new_callable=AsyncMock) as create_response,
+            patch(
+                "bulmaai.services.openai_client._create_response",
+                new_callable=AsyncMock,
+                return_value=types.SimpleNamespace(output=[], output_text="model fallback"),
+            ) as create_response,
         ):
             result = await run_support_agent(
                 messages=[
@@ -138,6 +142,124 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["tool_results"][0]["name"], "start_patreon_whitelist_flow")
         self.assertEqual(result["tool_results"][0]["arguments"]["nickname"], "Test_User")
         create_response.assert_not_awaited()
+
+    async def test_high_confidence_approved_faq_skips_model_call(self) -> None:
+        async def fake_docs_search(**kwargs):
+            return {
+                "matches": [
+                    {
+                        "source_type": "approved_faq",
+                        "faq_id": 7,
+                        "title": "How do I transform?",
+                        "answer": "Use the configured form key.",
+                        "content": "Use the configured form key.",
+                        "lang": "en",
+                        "score": 0.92,
+                    }
+                ],
+                "suggested_answers": [],
+                "best_score": 0.92,
+                "best_source_type": "approved_faq",
+                "confidence": "high",
+            }
+
+        def fake_get_func(name, bot_context=None):
+            if name == "docs_search":
+                return fake_docs_search
+            raise AssertionError(f"unexpected tool call: {name}")
+
+        with (
+            patch("bulmaai.services.openai_client.tools_registry.get_func", side_effect=fake_get_func),
+            patch("bulmaai.services.openai_client._create_response", new_callable=AsyncMock) as create_response,
+        ):
+            result = await run_support_agent(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "How do I transform?",
+                        "speaker_id": "123",
+                    }
+                ],
+                enabled_tools=["docs_search"],
+                language_hint="en",
+                use_cache=False,
+                user_id=123,
+                channel_id=456,
+                settings=types.SimpleNamespace(
+                    openai_support_model="gpt-5-mini",
+                    openai_model="gpt-5-mini",
+                    openai_support_max_output_tokens=100,
+                    ai_support_timeout_seconds=1,
+                    openai_support_reasoning_effort="medium",
+                    support_response_cache_enabled=False,
+                ),
+            )
+
+        self.assertEqual(result["reply"], "Use the configured form key.")
+        self.assertEqual(result["tool_results"][0]["name"], "docs_search")
+        self.assertFalse(result["suggested_close"])
+        create_response.assert_not_awaited()
+
+    async def test_high_confidence_fallback_language_faq_still_uses_model(self) -> None:
+        async def fake_docs_search(**kwargs):
+            return {
+                "matches": [
+                    {
+                        "source_type": "approved_faq",
+                        "faq_id": 7,
+                        "title": "How do I transform?",
+                        "answer": "Use the configured form key.",
+                        "content": "Use the configured form key.",
+                        "lang": "en",
+                        "score": 0.92,
+                    }
+                ],
+                "suggested_answers": [],
+                "best_score": 0.92,
+                "best_source_type": "approved_faq",
+                "confidence": "high",
+            }
+
+        def fake_get_func(name, bot_context=None):
+            if name == "docs_search":
+                return fake_docs_search
+            raise AssertionError(f"unexpected tool call: {name}")
+
+        with (
+            patch("bulmaai.services.openai_client.tools_registry.get_func", side_effect=fake_get_func),
+            patch(
+                "bulmaai.services.openai_client._create_response",
+                new_callable=AsyncMock,
+                return_value=types.SimpleNamespace(output=[], output_text="Usa la tecla configurada."),
+            ) as create_response,
+        ):
+            result = await run_support_agent(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Como me transformo?",
+                        "speaker_id": "123",
+                    }
+                ],
+                enabled_tools=["docs_search"],
+                language_hint="es",
+                use_cache=False,
+                user_id=123,
+                channel_id=456,
+                settings=types.SimpleNamespace(
+                    openai_support_model="gpt-5-mini",
+                    openai_model="gpt-5-mini",
+                    openai_support_max_output_tokens=100,
+                    ai_support_timeout_seconds=1,
+                    openai_support_reasoning_effort="medium",
+                    openai_support_fast_reasoning_effort="low",
+                    openai_support_fast_confidence_score=0.78,
+                    support_response_cache_enabled=False,
+                ),
+            )
+
+        self.assertEqual(result["reply"], "Usa la tecla configurada.")
+        create_response.assert_awaited_once()
 
 
 if __name__ == "__main__":

@@ -93,8 +93,8 @@ def parse_url_feed(text: str) -> frozenset[str]:
     return frozenset(urls)
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _expected_checksum(text: str) -> str | None:
@@ -214,7 +214,15 @@ class PhishingFeedService:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            log.warning("Phishing feed refresh failed: %s", error)
+            log.warning(
+                "Phishing feed refresh failed: %s",
+                error,
+                extra={
+                    "discord_forward": True,
+                    "event": "phishing_feed_refresh_failed",
+                    "exception_type": type(error).__name__,
+                },
+            )
             if previous.domains or previous.exact_urls:
                 snapshot = PhishingFeedSnapshot(
                     domains=previous.domains,
@@ -274,14 +282,14 @@ class PhishingFeedService:
         domains_text = domain_response.text
         urls_text = url_response.text
         checksums = {
-            "domains_sha256": _sha256(domains_text),
-            "exact_urls_sha256": _sha256(urls_text),
+            "domains_sha256": _sha256_bytes(domain_response.content),
+            "exact_urls_sha256": _sha256_bytes(url_response.content),
         }
-        await self._verify_checksum(self.domain_checksum_url, domains_text, "domains")
-        await self._verify_checksum(self.url_checksum_url, urls_text, "exact_urls")
+        await self._verify_checksum(self.domain_checksum_url, domain_response.content, "domains")
+        await self._verify_checksum(self.url_checksum_url, url_response.content, "exact_urls")
         return domains_text, urls_text, checksums
 
-    async def _verify_checksum(self, checksum_url: str | None, text: str, name: str) -> None:
+    async def _verify_checksum(self, checksum_url: str | None, data: bytes, name: str) -> None:
         if not checksum_url:
             return
         response = await http.request("GET", checksum_url, timeout=self.timeout_seconds)
@@ -289,6 +297,6 @@ class PhishingFeedService:
         expected = _expected_checksum(response.text)
         if expected is None:
             return
-        actual = _sha256(text)
+        actual = _sha256_bytes(data)
         if actual != expected:
             raise ValueError(f"{name} checksum mismatch")

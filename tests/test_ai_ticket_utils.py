@@ -11,6 +11,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs.ai_tickets import (
     AITicketsCog,
+    _build_faq_review_candidate_from_messages,
     _chunk_discord_message,
     _has_user_visible_tool_result,
     _is_staff_ticket_message,
@@ -70,6 +71,49 @@ class DiscordMessageChunkTests(unittest.TestCase):
 
         self.assertTrue(_is_staff_ticket_message(message, in_ticket=True, settings=settings))
         self.assertFalse(_is_staff_ticket_message(message, in_ticket=False, settings=settings))
+
+    def test_builds_faq_review_candidate_from_ticket_question_and_staff_answer(self) -> None:
+        question = types.SimpleNamespace(
+            id=101,
+            channel=types.SimpleNamespace(id=202),
+            clean_content="How do I transform into Super Saiyan?",
+            attachments=[],
+        )
+        answer = types.SimpleNamespace(
+            id=303,
+            channel=types.SimpleNamespace(id=202),
+            clean_content="Use the configured transform key after meeting the form requirements.",
+            attachments=[],
+            author=types.SimpleNamespace(id=404),
+        )
+
+        candidate = _build_faq_review_candidate_from_messages(question, answer)
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.lang, "en")
+        self.assertEqual(candidate.canonical_question, "How do I transform into Super Saiyan?")
+        self.assertEqual(candidate.answer, "Use the configured transform key after meeting the form requirements.")
+        self.assertEqual(candidate.source_ticket_channel_id, 202)
+        self.assertEqual(candidate.source_question_message_ids, [101])
+        self.assertEqual(candidate.source_answer_message_ids, [303])
+        self.assertEqual(candidate.proposed_by, 404)
+
+    def test_skips_faq_review_candidate_for_short_staff_answer(self) -> None:
+        question = types.SimpleNamespace(
+            id=101,
+            channel=types.SimpleNamespace(id=202),
+            clean_content="How do I transform?",
+            attachments=[],
+        )
+        answer = types.SimpleNamespace(
+            id=303,
+            channel=types.SimpleNamespace(id=202),
+            clean_content="yes",
+            attachments=[],
+            author=types.SimpleNamespace(id=404),
+        )
+
+        self.assertIsNone(_build_faq_review_candidate_from_messages(question, answer))
 
 
 class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):

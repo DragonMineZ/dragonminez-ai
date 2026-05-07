@@ -21,10 +21,13 @@ MIN_SIMILARITY = 0.42
 MIN_RESULT_SCORE = 0.58
 MAX_LEXICAL_CANDIDATES = 36
 MAX_RECENT_CANDIDATES = 18
+MAX_FAQ_LEXICAL_CANDIDATES = 24
+MAX_FAQ_RECENT_CANDIDATES = 12
 EMBED_CACHE_SIZE = 256
 EMBED_CACHE: OrderedDict[str, Embedding] = OrderedDict()
 SOURCE_TYPE_SCORE_BONUS = {
     "ticket_solution": 0.03,
+    "approved_faq": 0.08,
 }
 RECENT_ONLY_PENALTY = 0.06
 
@@ -162,6 +165,96 @@ async def _fetch_candidate_docs(
     return list(candidates.values())
 
 
+async def _fetch_candidate_faqs(
+    *,
+    query: str,
+    doc_languages: tuple[str, ...],
+    lexical_limit: int = MAX_FAQ_LEXICAL_CANDIDATES,
+    recent_limit: int = MAX_FAQ_RECENT_CANDIDATES,
+) -> list[dict[str, Any]]:
+    pool = await get_pool()
+    query_text = re.sub(r"\s+", " ", query).strip() or "support"
+    candidates: OrderedDict[int, dict[str, Any]] = OrderedDict()
+
+    async with pool.acquire() as conn:
+        lexical_rows = await conn.fetch(
+            """
+            WITH search_query AS (
+                SELECT websearch_to_tsquery('simple', $1) AS q
+            )
+            SELECT f.id,
+                   f.id AS faq_id,
+                   ('faq:' || f.id::text) AS source,
+                   'approved_faq' AS source_type,
+                   'FAQ' AS section,
+                   f.canonical_question AS title,
+                   f.answer AS content,
+                   f.lang,
+                   f.tags,
+                   f.updated_at,
+                   e.embedding,
+                   ts_rank_cd(
+                       to_tsvector(
+                           'simple',
+                           coalesce(f.canonical_question, '') || ' ' ||
+                           coalesce(f.answer, '') || ' ' ||
+                           array_to_string(f.tags, ' ')
+                       ),
+                       search_query.q
+                   ) AS lexical_rank
+            FROM faq_entries AS f
+            JOIN faq_embeddings AS e ON e.faq_id = f.id
+            CROSS JOIN search_query
+            WHERE f.status = 'approved'
+              AND f.lang = ANY($2::text[])
+              AND f.duplicate_of IS NULL
+              AND to_tsvector(
+                    'simple',
+                    coalesce(f.canonical_question, '') || ' ' ||
+                    coalesce(f.answer, '') || ' ' ||
+                    array_to_string(f.tags, ' ')
+                  ) @@ search_query.q
+            ORDER BY lexical_rank DESC, f.updated_at DESC
+            LIMIT $3
+            """,
+            query_text,
+            list(doc_languages),
+            lexical_limit,
+        )
+
+        recent_rows = await conn.fetch(
+            """
+            SELECT f.id,
+                   f.id AS faq_id,
+                   ('faq:' || f.id::text) AS source,
+                   'approved_faq' AS source_type,
+                   'FAQ' AS section,
+                   f.canonical_question AS title,
+                   f.answer AS content,
+                   f.lang,
+                   f.tags,
+                   f.updated_at,
+                   e.embedding,
+                   0.0::float8 AS lexical_rank
+            FROM faq_entries AS f
+            JOIN faq_embeddings AS e ON e.faq_id = f.id
+            WHERE f.status = 'approved'
+              AND f.lang = ANY($1::text[])
+              AND f.duplicate_of IS NULL
+            ORDER BY f.updated_at DESC, f.id DESC
+            LIMIT $2
+            """,
+            list(doc_languages),
+            recent_limit,
+        )
+
+    for row in [*lexical_rows, *recent_rows]:
+        row_dict = dict(row)
+        candidates.setdefault(row_dict["id"], row_dict)
+
+    return list(candidates.values())
+
+
 def _confidence_label(best_score: float) -> str:
     if best_score >= 0.8:
         return "high"
@@ -178,10 +271,12 @@ async def run_docs_search(
 ) -> dict[str, Any]:
     doc_languages = _pick_doc_languages(language)
     query_tokens = _tokenize(query)
-    query_embedding, candidates = await asyncio.gather(
+    query_embedding, doc_candidates, faq_candidates = await asyncio.gather(
         _get_query_embedding(query),
         _fetch_candidate_docs(query=query, doc_languages=doc_languages),
+        _fetch_candidate_faqs(query=query, doc_languages=doc_languages),
     )
+    candidates = [*doc_candidates, *faq_candidates]
 
     if not candidates:
         return {
@@ -193,6 +288,7 @@ async def run_docs_search(
             "used_languages": list(doc_languages),
             "query": query,
             "confidence": "low",
+            "best_source_type": None,
         }
 
     lexical_max = max((float(candidate["lexical_rank"] or 0.0) for candidate in candidates), default=0.0)
@@ -220,6 +316,8 @@ async def run_docs_search(
                 "keyword_score": keyword_score,
                 "score": hybrid_score,
                 "lang": candidate["lang"],
+                "faq_id": candidate.get("faq_id"),
+                "tags": list(candidate.get("tags") or []),
             }
         )
 
@@ -229,24 +327,28 @@ async def run_docs_search(
     for item in scored:
         if item["similarity"] < MIN_SIMILARITY and item["score"] < MIN_RESULT_SCORE:
             continue
-        matches.append(
-            {
-                "title": item["title"],
-                "content": _trim_content(item["content"]),
-                "source": item["source"],
-                "section": item["section"],
-                "lang": item["lang"],
-                "source_type": item["source_type"],
-                "similarity": item["similarity"],
-                "score": item["score"],
-                "keyword_score": item["keyword_score"],
-            }
-        )
+        match = {
+            "title": item["title"],
+            "content": _trim_content(item["content"]),
+            "source": item["source"],
+            "section": item["section"],
+            "lang": item["lang"],
+            "source_type": item["source_type"],
+            "similarity": item["similarity"],
+            "score": item["score"],
+            "keyword_score": item["keyword_score"],
+        }
+        if item["source_type"] == "approved_faq":
+            match["faq_id"] = item["faq_id"]
+            match["answer"] = item["content"]
+            match["tags"] = item["tags"]
+        matches.append(match)
         if len(matches) >= max_results:
             break
 
     best_similarity = float(scored[0]["similarity"])
     best_score = float(scored[0]["score"])
+    best_source_type = scored[0]["source_type"]
     confidence = _confidence_label(best_score)
 
     suggested_answers = [
@@ -256,6 +358,7 @@ async def run_docs_search(
             "source": match["source"],
             "section": match["section"],
             "score": match["score"],
+            "source_type": match["source_type"],
         }
         for match in matches[:3]
     ]
@@ -278,4 +381,5 @@ async def run_docs_search(
         "used_languages": list(doc_languages),
         "query": query,
         "confidence": confidence,
+        "best_source_type": best_source_type,
     }

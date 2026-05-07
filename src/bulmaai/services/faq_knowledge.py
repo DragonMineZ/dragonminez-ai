@@ -8,6 +8,7 @@ from typing import Any
 from bulmaai.database.db import get_pool
 
 ALLOWED_FAQ_STATUSES = {"approved", "rejected"}
+ALLOWED_FAQ_REVIEW_STATUSES = {"pending", "approved", "rejected"}
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 EmbeddingProvider = Callable[[list[str], str], Awaitable[list[list[float]]]]
 
@@ -39,6 +40,39 @@ class FAQUpsertResult:
     knowledge_base_version: int | None = None
 
 
+@dataclass(slots=True)
+class FAQReviewCandidateInput:
+    lang: str
+    canonical_question: str
+    answer: str
+    tags: list[str] | None = None
+    source_ticket_channel_id: int | None = None
+    source_question_message_ids: list[int] | None = None
+    source_answer_message_ids: list[int] | None = None
+    proposed_by: int | None = None
+
+
+@dataclass(slots=True)
+class FAQReviewCandidate:
+    id: int
+    status: str
+    lang: str
+    canonical_question: str
+    answer: str
+    tags: list[str]
+    source_ticket_channel_id: int | None
+    source_question_message_ids: list[int]
+    source_answer_message_ids: list[int]
+    proposed_by: int | None
+    reviewed_by: int | None
+    review_reason: str | None
+    approved_faq_id: int | None
+    review_channel_id: int | None
+    review_message_id: int | None
+    created_at: Any | None
+    updated_at: Any | None
+
+
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -62,6 +96,13 @@ def validate_status(status: str) -> str:
     normalized = status.strip().lower()
     if normalized not in ALLOWED_FAQ_STATUSES:
         raise ValueError(f"Unsupported FAQ status: {status}")
+    return normalized
+
+
+def validate_review_status(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized not in ALLOWED_FAQ_REVIEW_STATUSES:
+        raise ValueError(f"Unsupported FAQ review status: {status}")
     return normalized
 
 
@@ -108,6 +149,237 @@ def content_hash(
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _candidate_from_row(row: Any) -> FAQReviewCandidate:
+    return FAQReviewCandidate(
+        id=int(row["id"]),
+        status=str(row["status"]),
+        lang=str(row["lang"]),
+        canonical_question=str(row["canonical_question"]),
+        answer=str(row["answer"]),
+        tags=list(row["tags"] or []),
+        source_ticket_channel_id=(
+            int(row["source_ticket_channel_id"])
+            if row["source_ticket_channel_id"] is not None
+            else None
+        ),
+        source_question_message_ids=[int(value) for value in row["source_question_message_ids"] or []],
+        source_answer_message_ids=[int(value) for value in row["source_answer_message_ids"] or []],
+        proposed_by=int(row["proposed_by"]) if row["proposed_by"] is not None else None,
+        reviewed_by=int(row["reviewed_by"]) if row["reviewed_by"] is not None else None,
+        review_reason=row["review_reason"],
+        approved_faq_id=int(row["approved_faq_id"]) if row["approved_faq_id"] is not None else None,
+        review_channel_id=int(row["review_channel_id"]) if row["review_channel_id"] is not None else None,
+        review_message_id=int(row["review_message_id"]) if row["review_message_id"] is not None else None,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def create_faq_review_candidate(
+    candidate: FAQReviewCandidateInput,
+    *,
+    pool: Any | None = None,
+) -> int:
+    lang = validate_lang(candidate.lang)
+    question = _normalize_text(candidate.canonical_question)
+    answer = _normalize_text(candidate.answer)
+    tags = _normalize_tags(candidate.tags, sort=False)
+    if not question:
+        raise ValueError("FAQ review candidate question is required")
+    if not answer:
+        raise ValueError("FAQ review candidate answer is required")
+
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        candidate_id = await conn.fetchval(
+            """
+            INSERT INTO faq_review_candidates (
+                status,
+                lang,
+                canonical_question,
+                answer,
+                tags,
+                source_ticket_channel_id,
+                source_question_message_ids,
+                source_answer_message_ids,
+                proposed_by,
+                created_at,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
+            RETURNING id
+            """,
+            "pending",
+            lang,
+            question,
+            answer,
+            tags,
+            candidate.source_ticket_channel_id,
+            candidate.source_question_message_ids or [],
+            candidate.source_answer_message_ids or [],
+            candidate.proposed_by,
+        )
+    return int(candidate_id)
+
+
+async def get_faq_review_candidate(
+    candidate_id: int,
+    *,
+    pool: Any | None = None,
+) -> FAQReviewCandidate | None:
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, status, lang, canonical_question, answer, tags,
+                   source_ticket_channel_id, source_question_message_ids,
+                   source_answer_message_ids, proposed_by, reviewed_by,
+                   review_reason, approved_faq_id, review_channel_id,
+                   review_message_id, created_at, updated_at
+            FROM faq_review_candidates
+            WHERE id = $1
+            """,
+            candidate_id,
+        )
+    return _candidate_from_row(row) if row else None
+
+
+async def list_pending_faq_review_candidates(
+    *,
+    limit: int = 10,
+    pool: Any | None = None,
+) -> list[FAQReviewCandidate]:
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, status, lang, canonical_question, answer, tags,
+                   source_ticket_channel_id, source_question_message_ids,
+                   source_answer_message_ids, proposed_by, reviewed_by,
+                   review_reason, approved_faq_id, review_channel_id,
+                   review_message_id, created_at, updated_at
+            FROM faq_review_candidates
+            WHERE status = 'pending'
+            ORDER BY created_at DESC, id DESC
+            LIMIT $1
+            """,
+            max(1, min(int(limit), 25)),
+        )
+    return [_candidate_from_row(row) for row in rows]
+
+
+async def update_faq_review_message(
+    candidate_id: int,
+    *,
+    channel_id: int,
+    message_id: int,
+    pool: Any | None = None,
+) -> None:
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE faq_review_candidates
+            SET review_channel_id = $1,
+                review_message_id = $2,
+                updated_at = now()
+            WHERE id = $3
+            """,
+            channel_id,
+            message_id,
+            candidate_id,
+        )
+
+
+async def reject_faq_candidate(
+    candidate_id: int,
+    *,
+    actor_id: int,
+    reason: str,
+    pool: Any | None = None,
+) -> None:
+    cleaned_reason = _normalize_text(reason)
+    if not cleaned_reason:
+        raise ValueError("FAQ rejection reason is required")
+
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE faq_review_candidates
+            SET status = $1,
+                reviewed_by = $2,
+                review_reason = $3,
+                updated_at = now()
+            WHERE id = $4
+            """,
+            "rejected",
+            actor_id,
+            cleaned_reason,
+            candidate_id,
+        )
+
+
+async def approve_faq_candidate(
+    candidate_id: int,
+    *,
+    actor_id: int,
+    embedding_provider: EmbeddingProvider,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    overrides: FAQReviewCandidateInput | None = None,
+    pool: Any | None = None,
+) -> FAQUpsertResult:
+    candidate = await get_faq_review_candidate(candidate_id, pool=pool)
+    if candidate is None:
+        raise ValueError(f"FAQ review candidate not found: {candidate_id}")
+    if candidate.status != "pending":
+        raise ValueError(f"FAQ review candidate is already {candidate.status}")
+
+    source = overrides or FAQReviewCandidateInput(
+        lang=candidate.lang,
+        canonical_question=candidate.canonical_question,
+        answer=candidate.answer,
+        tags=candidate.tags,
+        source_ticket_channel_id=candidate.source_ticket_channel_id,
+        source_question_message_ids=candidate.source_question_message_ids,
+        source_answer_message_ids=candidate.source_answer_message_ids,
+        proposed_by=candidate.proposed_by,
+    )
+    result = await upsert_approved_faq(
+        entry=FAQEntryInput(
+            lang=source.lang,
+            canonical_question=source.canonical_question,
+            answer=source.answer,
+            tags=source.tags,
+            source_ticket_channel_id=source.source_ticket_channel_id,
+            source_question_message_ids=source.source_question_message_ids,
+            source_answer_message_ids=source.source_answer_message_ids,
+            approved_by=actor_id,
+        ),
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        pool=pool,
+    )
+
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE faq_review_candidates
+            SET status = $1,
+                reviewed_by = $2,
+                approved_faq_id = $3,
+                updated_at = now()
+            WHERE id = $4
+            """,
+            "approved",
+            actor_id,
+            result.faq_id,
+            candidate_id,
+        )
+    return result
 
 
 async def bump_knowledge_base_version(

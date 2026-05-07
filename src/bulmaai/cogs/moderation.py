@@ -1,21 +1,24 @@
 import asyncio
 import logging
 import time
-from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
 
 from bulmaai.config import Settings
-from bulmaai.services.phishing_feed import PhishingFeedService
+from bulmaai.services.phishdestroy import PhishDestroyClient, PhishDestroyUnavailable, PhishDestroyVerdict
 from bulmaai.services.moderation import (
     AttachmentInfo,
+    DomainClassification,
     MessageSignal,
     ModerationAction,
     ModerationConfig,
     ModerationDecision,
     ModerationState,
+    classify_domain,
+    defang_domain,
     evaluate_message,
+    extract_urls,
 )
 from bulmaai.utils.permissions import is_admin, is_staff
 
@@ -30,18 +33,15 @@ class ModerationCog(commands.Cog):
         self.bot = bot
         self._state = ModerationState()
         settings = self._settings()
-        self._phishing_feed: PhishingFeedService | None = None
-        self._phishing_feed_started = False
-        if settings.moderation_phishing_feed_enabled:
-            self._phishing_feed = PhishingFeedService(
-                cache_dir=Path(settings.moderation_phishing_feed_cache_dir),
-                max_stale_hours=settings.moderation_phishing_feed_max_stale_hours,
-                domain_feed_url=settings.moderation_phishing_domain_feed_url,
-                url_feed_url=settings.moderation_phishing_url_feed_url,
-                domain_checksum_url=settings.moderation_phishing_domain_sha256_url,
-                url_checksum_url=settings.moderation_phishing_url_sha256_url,
+        self._phishdestroy: PhishDestroyClient | None = None
+        self._phishdestroy_down = False
+        if settings.phishdestroy_enabled:
+            self._phishdestroy = PhishDestroyClient(
+                base_url=settings.phishdestroy_api_base_url,
+                timeout_seconds=settings.phishdestroy_timeout_seconds,
+                safe_ttl_seconds=settings.phishdestroy_safe_ttl_seconds,
+                threat_ttl_seconds=settings.phishdestroy_threat_ttl_seconds,
             )
-            self._phishing_feed.load_cache()
 
     def _settings(self) -> Settings:
         return self.bot.settings
@@ -56,13 +56,10 @@ class ModerationCog(commands.Cog):
             image_burst_window_seconds=settings.moderation_image_burst_window_seconds,
             link_burst_count=settings.moderation_link_burst_count,
             link_burst_window_seconds=settings.moderation_link_burst_window_seconds,
-            phishing_feed_action=self._phishing_feed_action(),
-            phishing_feed_allowed_domains=tuple(settings.moderation_phishing_feed_allowed_domains),
-            phishing_feed_allowed_urls=tuple(settings.moderation_phishing_feed_allowed_urls),
         )
 
-    def _phishing_feed_action(self) -> ModerationAction:
-        value = self._settings().moderation_phishing_feed_action.lower().strip()
+    def _phishdestroy_action(self) -> ModerationAction:
+        value = self._settings().phishdestroy_action.lower().strip()
         if value == ModerationAction.DELETE.value:
             return ModerationAction.DELETE
         return ModerationAction.ALERT
@@ -233,40 +230,102 @@ class ModerationCog(commands.Cog):
             self._decision_config(),
             self._state,
             now=time.monotonic(),
-            phishing_feed_snapshot=self._phishing_feed.snapshot if self._phishing_feed else None,
         )
+        if decision.action is ModerationAction.ALLOW:
+            phishdestroy_decision = await self._evaluate_phishdestroy(signal)
+            if phishdestroy_decision is not None:
+                decision = phishdestroy_decision
         await self._apply_decision(message, decision)
+
+    async def _evaluate_phishdestroy(self, signal: MessageSignal) -> ModerationDecision | None:
+        if self._phishdestroy is None or self._phishdestroy_down:
+            return None
+        domains = tuple(sorted({url.domain for url in extract_urls(signal.content)}))
+        for domain in domains:
+            if (
+                classify_domain(domain, allowed_domains=tuple(self._settings().moderation_allowed_domains))
+                is DomainClassification.ALLOWED
+            ):
+                continue
+            try:
+                verdict = await self._phishdestroy.check_domain(domain)
+            except PhishDestroyUnavailable as error:
+                self._mark_phishdestroy_down(error)
+                return None
+            if verdict.threat:
+                return self._phishdestroy_decision(domain, verdict)
+        return None
+
+    def _phishdestroy_decision(self, domain: str, verdict: PhishDestroyVerdict) -> ModerationDecision:
+        defanged = defang_domain(domain)
+        details = f"PhishDestroy threat match for {defanged}"
+        if verdict.risk_score:
+            details = f"{details} (risk {verdict.risk_score})"
+        return ModerationDecision(
+            action=self._phishdestroy_action(),
+            reason="phishdestroy_domain",
+            details=details,
+            source="phishdestroy",
+            domains=(domain,),
+            defanged_domains=(defanged,),
+        )
+
+    def _mark_phishdestroy_down(self, error: Exception) -> None:
+        if self._phishdestroy_down:
+            return
+        self._phishdestroy_down = True
+        log.warning(
+            "PhishDestroy API is unavailable; phishing API checks are paused",
+            extra={
+                "discord_forward": True,
+                "event": "phishdestroy_api_down",
+                "exception_type": type(error).__name__,
+            },
+        )
+        self.recover_phishdestroy.change_interval(
+            seconds=max(60, self._settings().phishdestroy_recovery_interval_seconds),
+        )
+        if not self.recover_phishdestroy.is_running():
+            self.recover_phishdestroy.start()
+
+    def _mark_phishdestroy_up(self) -> None:
+        if not self._phishdestroy_down:
+            return
+        self._phishdestroy_down = False
+        log.warning(
+            "PhishDestroy API recovered; phishing API checks are active again",
+            extra={
+                "discord_forward": True,
+                "event": "phishdestroy_api_recovered",
+            },
+        )
+        if self.recover_phishdestroy.is_running():
+            self.recover_phishdestroy.stop()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         await self._inspect_message(message)
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if self._phishing_feed is None or self._phishing_feed_started or self.refresh_phishing_feed.is_running():
-            return
-        self.refresh_phishing_feed.change_interval(
-            hours=max(1, self._settings().moderation_phishing_feed_max_stale_hours // 2),
-        )
-        self.refresh_phishing_feed.start()
-        self._phishing_feed_started = True
-
     def cog_unload(self) -> None:
-        self.refresh_phishing_feed.cancel()
+        self.recover_phishdestroy.cancel()
 
-    @tasks.loop(hours=12)
-    async def refresh_phishing_feed(self) -> None:
-        if self._phishing_feed is None:
+    @tasks.loop(minutes=5)
+    async def recover_phishdestroy(self) -> None:
+        if self._phishdestroy is None or not self._phishdestroy_down:
             return
         try:
-            await self._phishing_feed.refresh()
+            await self._phishdestroy.healthcheck()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            log.exception("Phishing feed refresh loop failed")
+        except PhishDestroyUnavailable:
+            return
+        except Exception as error:
+            log.debug("PhishDestroy recovery check failed: %s", error)
+            return
+        self._mark_phishdestroy_up()
 
-    @refresh_phishing_feed.before_loop
-    async def _before_refresh_phishing_feed(self) -> None:
+    @recover_phishdestroy.before_loop
+    async def _before_recover_phishdestroy(self) -> None:
         await self.bot.wait_until_ready()
 
     @commands.Cog.listener()

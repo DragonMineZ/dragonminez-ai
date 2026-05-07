@@ -5,8 +5,6 @@ from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
 
-from bulmaai.services.phishing_feed import PhishingFeedSnapshot, canonicalize_url, normalize_domain
-
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ZERO_WIDTH_CHARS = "\u200b\u200c\u200d\ufeff"
@@ -100,9 +98,6 @@ class ModerationConfig:
     image_burst_window_seconds: int = 20
     link_burst_count: int = 5
     link_burst_window_seconds: int = 60
-    phishing_feed_action: ModerationAction = ModerationAction.ALERT
-    phishing_feed_allowed_domains: tuple[str, ...] = ()
-    phishing_feed_allowed_urls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -207,76 +202,6 @@ def defang_domain(domain: str) -> str:
     return domain.lower().strip(".").replace(".", "[.]")
 
 
-def _feed_domain_matches(domain: str, feed_domains: frozenset[str]) -> bool:
-    normalized = normalize_domain(domain)
-    if normalized is None:
-        return False
-    candidate = normalized
-    while candidate:
-        if candidate in feed_domains:
-            return True
-        if "." not in candidate:
-            return False
-        candidate = candidate.split(".", 1)[1]
-    return False
-
-
-def _feed_domain_allowed(domain: str, config: ModerationConfig) -> bool:
-    if any(_domain_matches(domain, allowed) for allowed in config.allowed_domains):
-        return True
-    return any(_domain_matches(domain, allowed) for allowed in config.phishing_feed_allowed_domains)
-
-
-def _feed_url_allowed(normalized_url: str, config: ModerationConfig) -> bool:
-    allowed_urls = {
-        canonical
-        for allowed in config.phishing_feed_allowed_urls
-        if (canonical := canonicalize_url(allowed))
-    }
-    if normalized_url in allowed_urls:
-        return True
-    parsed = urlsplit(normalized_url)
-    domain = parsed.hostname or ""
-    return any(_domain_matches(domain, allowed) for allowed in config.phishing_feed_allowed_domains)
-
-
-def _evaluate_phishing_feed(
-    urls: tuple[UrlMatch, ...],
-    config: ModerationConfig,
-    snapshot: PhishingFeedSnapshot | None,
-) -> ModerationDecision | None:
-    if snapshot is None or snapshot.stale or not (snapshot.domains or snapshot.exact_urls):
-        return None
-
-    for url in urls:
-        canonical = canonicalize_url(url.normalized if "://" in url.normalized else f"https://{url.normalized}")
-        if canonical is None or _feed_url_allowed(canonical, config):
-            continue
-        if canonical in snapshot.exact_urls:
-            return ModerationDecision(
-                action=config.phishing_feed_action,
-                reason="phishing_feed_url",
-                details=f"Phishing.Database exact URL match for {defang_domain(url.domain)}",
-                source="phishing_database",
-                domains=(url.domain,),
-                defanged_domains=(defang_domain(url.domain),),
-            )
-
-    for domain in sorted({url.domain for url in urls}):
-        if _feed_domain_allowed(domain, config):
-            continue
-        if _feed_domain_matches(domain, snapshot.domains):
-            return ModerationDecision(
-                action=config.phishing_feed_action,
-                reason="phishing_feed_domain",
-                details=f"Phishing.Database domain match for {defang_domain(domain)}",
-                source="phishing_database",
-                domains=(domain,),
-                defanged_domains=(defang_domain(domain),),
-            )
-    return None
-
-
 def detect_discord_invites(text: str) -> tuple[DiscordInvite, ...]:
     invites: list[DiscordInvite] = []
     for url in extract_urls(text):
@@ -360,7 +285,6 @@ def evaluate_message(
     state: ModerationState,
     *,
     now: float,
-    phishing_feed_snapshot: PhishingFeedSnapshot | None = None,
 ) -> ModerationDecision:
     urls = extract_urls(signal.content)
     domains = tuple(sorted({url.domain for url in urls}))
@@ -382,10 +306,6 @@ def evaluate_message(
             domains=blocked_domains,
             defanged_domains=tuple(defang_domain(domain) for domain in blocked_domains),
         )
-
-    phishing_decision = _evaluate_phishing_feed(urls, config, phishing_feed_snapshot)
-    if phishing_decision is not None:
-        return phishing_decision
 
     invites = detect_discord_invites(signal.content)
     if invites and config.block_discord_invites:

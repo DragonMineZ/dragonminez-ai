@@ -165,16 +165,13 @@ DEFAULT_MODERATION_IMAGE_BURST_COUNT = 3
 DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS = 20
 DEFAULT_MODERATION_LINK_BURST_COUNT = 5
 DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS = 60
-DEFAULT_MODERATION_PHISHING_FEED_ENABLED = True
-DEFAULT_MODERATION_PHISHING_FEED_ACTION = "alert"
-DEFAULT_MODERATION_PHISHING_FEED_CACHE_DIR = "data/cache/moderation/phishing_database"
-DEFAULT_MODERATION_PHISHING_FEED_MAX_STALE_HOURS = 72
-DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_DOMAINS: Sequence[str] = ()
-DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_URLS: Sequence[str] = ()
-DEFAULT_MODERATION_PHISHING_DOMAIN_FEED_URL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt"
-DEFAULT_MODERATION_PHISHING_URL_FEED_URL: str | None = None
-DEFAULT_MODERATION_PHISHING_DOMAIN_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-domains-ACTIVE.txt.sha256"
-DEFAULT_MODERATION_PHISHING_URL_SHA256_URL: str | None = None
+DEFAULT_PHISHDESTROY_ENABLED = True
+DEFAULT_PHISHDESTROY_API_BASE_URL = "https://api.destroy.tools"
+DEFAULT_PHISHDESTROY_ACTION = "alert"
+DEFAULT_PHISHDESTROY_TIMEOUT_SECONDS = 5
+DEFAULT_PHISHDESTROY_SAFE_TTL_SECONDS = 6 * 3600
+DEFAULT_PHISHDESTROY_THREAT_TTL_SECONDS = 24 * 3600
+DEFAULT_PHISHDESTROY_RECOVERY_INTERVAL_SECONDS = 300
 DEFAULT_SETTINGS_OVERRIDES_PATH = "data/settings_overrides.json"
 
 NON_OVERRIDABLE_SETTINGS = {
@@ -273,16 +270,13 @@ class Settings:
     moderation_image_burst_window_seconds: int
     moderation_link_burst_count: int
     moderation_link_burst_window_seconds: int
-    moderation_phishing_feed_enabled: bool
-    moderation_phishing_feed_action: str
-    moderation_phishing_feed_cache_dir: str
-    moderation_phishing_feed_max_stale_hours: int
-    moderation_phishing_feed_allowed_domains: Sequence[str]
-    moderation_phishing_feed_allowed_urls: Sequence[str]
-    moderation_phishing_domain_feed_url: str
-    moderation_phishing_url_feed_url: str | None
-    moderation_phishing_domain_sha256_url: str | None
-    moderation_phishing_url_sha256_url: str | None
+    phishdestroy_enabled: bool
+    phishdestroy_api_base_url: str
+    phishdestroy_action: str
+    phishdestroy_timeout_seconds: int
+    phishdestroy_safe_ttl_seconds: int
+    phishdestroy_threat_ttl_seconds: int
+    phishdestroy_recovery_interval_seconds: int
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
@@ -546,59 +540,36 @@ def _build_settings_from_env() -> Settings:
             )
             or DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS
         ),
-        moderation_phishing_feed_enabled=_get_env_bool(
-            "MODERATION_PHISHING_FEED_ENABLED",
-            DEFAULT_MODERATION_PHISHING_FEED_ENABLED,
+        phishdestroy_enabled=_get_env_bool(
+            "PHISHDESTROY_ENABLED",
+            DEFAULT_PHISHDESTROY_ENABLED,
         ),
-        moderation_phishing_feed_action=(
-            _get_env(
-                "MODERATION_PHISHING_FEED_ACTION",
-                DEFAULT_MODERATION_PHISHING_FEED_ACTION,
-            )
-            or DEFAULT_MODERATION_PHISHING_FEED_ACTION
+        phishdestroy_api_base_url=(
+            _get_env("PHISHDESTROY_API_BASE_URL", DEFAULT_PHISHDESTROY_API_BASE_URL)
+            or DEFAULT_PHISHDESTROY_API_BASE_URL
         ),
-        moderation_phishing_feed_cache_dir=(
-            _get_env(
-                "MODERATION_PHISHING_FEED_CACHE_DIR",
-                DEFAULT_MODERATION_PHISHING_FEED_CACHE_DIR,
-            )
-            or DEFAULT_MODERATION_PHISHING_FEED_CACHE_DIR
+        phishdestroy_action=(
+            _get_env("PHISHDESTROY_ACTION", DEFAULT_PHISHDESTROY_ACTION)
+            or DEFAULT_PHISHDESTROY_ACTION
         ),
-        moderation_phishing_feed_max_stale_hours=(
+        phishdestroy_timeout_seconds=(
+            _get_env_int("PHISHDESTROY_TIMEOUT_SECONDS", DEFAULT_PHISHDESTROY_TIMEOUT_SECONDS)
+            or DEFAULT_PHISHDESTROY_TIMEOUT_SECONDS
+        ),
+        phishdestroy_safe_ttl_seconds=(
+            _get_env_int("PHISHDESTROY_SAFE_TTL_SECONDS", DEFAULT_PHISHDESTROY_SAFE_TTL_SECONDS)
+            or DEFAULT_PHISHDESTROY_SAFE_TTL_SECONDS
+        ),
+        phishdestroy_threat_ttl_seconds=(
+            _get_env_int("PHISHDESTROY_THREAT_TTL_SECONDS", DEFAULT_PHISHDESTROY_THREAT_TTL_SECONDS)
+            or DEFAULT_PHISHDESTROY_THREAT_TTL_SECONDS
+        ),
+        phishdestroy_recovery_interval_seconds=(
             _get_env_int(
-                "MODERATION_PHISHING_FEED_MAX_STALE_HOURS",
-                DEFAULT_MODERATION_PHISHING_FEED_MAX_STALE_HOURS,
+                "PHISHDESTROY_RECOVERY_INTERVAL_SECONDS",
+                DEFAULT_PHISHDESTROY_RECOVERY_INTERVAL_SECONDS,
             )
-            or DEFAULT_MODERATION_PHISHING_FEED_MAX_STALE_HOURS
-        ),
-        moderation_phishing_feed_allowed_domains=_get_env_str_list(
-            "MODERATION_PHISHING_FEED_ALLOWED_DOMAINS",
-            DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_DOMAINS,
-        ),
-        moderation_phishing_feed_allowed_urls=_get_env_str_list(
-            "MODERATION_PHISHING_FEED_ALLOWED_URLS",
-            DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_URLS,
-        ),
-        moderation_phishing_domain_feed_url=(
-            _get_env(
-                "MODERATION_PHISHING_DOMAIN_FEED_URL",
-                DEFAULT_MODERATION_PHISHING_DOMAIN_FEED_URL,
-            )
-            or DEFAULT_MODERATION_PHISHING_DOMAIN_FEED_URL
-        ),
-        moderation_phishing_url_feed_url=(
-            _get_env(
-                "MODERATION_PHISHING_URL_FEED_URL",
-                DEFAULT_MODERATION_PHISHING_URL_FEED_URL,
-            )
-        ),
-        moderation_phishing_domain_sha256_url=_get_env(
-            "MODERATION_PHISHING_DOMAIN_SHA256_URL",
-            DEFAULT_MODERATION_PHISHING_DOMAIN_SHA256_URL,
-        ),
-        moderation_phishing_url_sha256_url=_get_env(
-            "MODERATION_PHISHING_URL_SHA256_URL",
-            DEFAULT_MODERATION_PHISHING_URL_SHA256_URL,
+            or DEFAULT_PHISHDESTROY_RECOVERY_INTERVAL_SECONDS
         ),
     )
 

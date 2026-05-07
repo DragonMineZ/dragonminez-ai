@@ -27,25 +27,27 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.openai_support_fast_reasoning_effort, "low")
         self.assertEqual(settings.openai_support_fast_confidence_score, 0.83)
 
-    def test_phishing_feed_source_urls_are_environment_configurable(self) -> None:
+    def test_phishdestroy_settings_are_environment_configurable(self) -> None:
         with patch.dict(
             os.environ,
             {
-                "MODERATION_PHISHING_DOMAIN_FEED_URL": "https://example.test/domains.txt",
-                "MODERATION_PHISHING_URL_FEED_URL": "https://example.test/urls.txt",
-                "MODERATION_PHISHING_DOMAIN_SHA256_URL": "https://example.test/domains.sha256",
-                "MODERATION_PHISHING_URL_SHA256_URL": "https://example.test/urls.sha256",
+                "PHISHDESTROY_ENABLED": "false",
+                "PHISHDESTROY_API_BASE_URL": "https://api.example.test",
+                "PHISHDESTROY_ACTION": "delete",
+                "PHISHDESTROY_TIMEOUT_SECONDS": "4",
+                "PHISHDESTROY_RECOVERY_INTERVAL_SECONDS": "120",
             },
             clear=False,
         ):
             settings = load_settings(include_overrides=False)
 
-        self.assertEqual(settings.moderation_phishing_domain_feed_url, "https://example.test/domains.txt")
-        self.assertEqual(settings.moderation_phishing_url_feed_url, "https://example.test/urls.txt")
-        self.assertEqual(settings.moderation_phishing_domain_sha256_url, "https://example.test/domains.sha256")
-        self.assertEqual(settings.moderation_phishing_url_sha256_url, "https://example.test/urls.sha256")
+        self.assertFalse(settings.phishdestroy_enabled)
+        self.assertEqual(settings.phishdestroy_api_base_url, "https://api.example.test")
+        self.assertEqual(settings.phishdestroy_action, "delete")
+        self.assertEqual(settings.phishdestroy_timeout_seconds, 4)
+        self.assertEqual(settings.phishdestroy_recovery_interval_seconds, 120)
 
-    def test_phishing_feed_defaults_use_domain_database_source_only(self) -> None:
+    def test_phishdestroy_defaults_are_lightweight_api_checks(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -57,12 +59,11 @@ class ConfigSettingsTests(unittest.TestCase):
         ):
             settings = load_settings(include_overrides=False)
 
-        self.assertEqual(
-            settings.moderation_phishing_domain_feed_url,
-            "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt",
-        )
-        self.assertIsNone(settings.moderation_phishing_url_feed_url)
-        self.assertIsNone(settings.moderation_phishing_url_sha256_url)
+        self.assertTrue(settings.phishdestroy_enabled)
+        self.assertEqual(settings.phishdestroy_api_base_url, "https://api.destroy.tools")
+        self.assertEqual(settings.phishdestroy_action, "alert")
+        self.assertEqual(settings.phishdestroy_timeout_seconds, 5)
+        self.assertEqual(settings.phishdestroy_recovery_interval_seconds, 300)
 
 
 if __name__ == "__main__":

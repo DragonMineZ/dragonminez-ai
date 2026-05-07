@@ -45,7 +45,7 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.moderation_phishing_domain_sha256_url, "https://example.test/domains.sha256")
         self.assertEqual(settings.moderation_phishing_url_sha256_url, "https://example.test/urls.sha256")
 
-    def test_phishing_feed_defaults_use_github_database_source(self) -> None:
+    def test_phishing_feed_defaults_use_domain_database_source_only(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -61,10 +61,8 @@ class ConfigSettingsTests(unittest.TestCase):
             settings.moderation_phishing_domain_feed_url,
             "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt",
         )
-        self.assertEqual(
-            settings.moderation_phishing_url_feed_url,
-            "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt",
-        )
+        self.assertIsNone(settings.moderation_phishing_url_feed_url)
+        self.assertIsNone(settings.moderation_phishing_url_sha256_url)
 
 
 if __name__ == "__main__":

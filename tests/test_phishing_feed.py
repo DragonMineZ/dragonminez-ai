@@ -12,6 +12,7 @@ from bulmaai.services.moderation import (
     evaluate_message,
 )
 from bulmaai.services.phishing_feed import (
+    DOMAINS_CACHE_FILE,
     PhishingFeedService,
     PhishingFeedSnapshot,
     canonicalize_url,
@@ -140,6 +141,58 @@ class PhishingFeedRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(urls_text, "https://bad.example/\n")
         self.assertIn("domains_sha256", checksums)
         self.assertIn("exact_urls_sha256", checksums)
+
+    async def test_download_skips_exact_url_feed_when_disabled(self) -> None:
+        requested_urls: list[str] = []
+
+        async def fake_request(method: str, url: str, **kwargs):
+            requested_urls.append(url)
+            if url == "https://feeds.example/domains.txt":
+                return FakeResponse(content=b"Example.COM\n")
+            if url == "https://feeds.example/domains.sha256":
+                import hashlib
+
+                return FakeResponse(content=b"", text=hashlib.sha256(b"Example.COM\n").hexdigest())
+            raise AssertionError(f"unexpected URL {url}")
+
+        with TemporaryDirectory() as temp_dir:
+            service = PhishingFeedService(
+                cache_dir=Path(temp_dir) / "test-cache",
+                max_stale_hours=24,
+                domain_feed_url="https://feeds.example/domains.txt",
+                url_feed_url=None,
+                domain_checksum_url="https://feeds.example/domains.sha256",
+                url_checksum_url=None,
+            )
+
+            with patch("bulmaai.services.phishing_feed.http.request", side_effect=fake_request):
+                domains_text, urls_text, checksums = await service._download_feeds()
+
+        self.assertEqual(
+            requested_urls,
+            ["https://feeds.example/domains.txt", "https://feeds.example/domains.sha256"],
+        )
+        self.assertEqual(domains_text, "Example.COM\n")
+        self.assertEqual(urls_text, "")
+        self.assertIn("domains_sha256", checksums)
+        self.assertNotIn("exact_urls_sha256", checksums)
+
+    def test_load_cache_skips_exact_url_cache_when_disabled(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir) / "test-cache"
+            cache_dir.mkdir()
+            (cache_dir / DOMAINS_CACHE_FILE).write_text("Example.COM\n", encoding="utf-8")
+            service = PhishingFeedService(
+                cache_dir=cache_dir,
+                max_stale_hours=24,
+                url_feed_url=None,
+                url_checksum_url=None,
+            )
+
+            snapshot = service.load_cache()
+
+        self.assertEqual(snapshot.domains, frozenset({"example.com"}))
+        self.assertEqual(snapshot.exact_urls, frozenset())
 
     async def test_checksum_mismatch_warns_without_rejecting_feed(self) -> None:
         async def fake_request(method: str, url: str, **kwargs):

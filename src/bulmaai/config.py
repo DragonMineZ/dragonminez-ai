@@ -172,9 +172,9 @@ DEFAULT_MODERATION_PHISHING_FEED_MAX_STALE_HOURS = 72
 DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_DOMAINS: Sequence[str] = ()
 DEFAULT_MODERATION_PHISHING_FEED_ALLOWED_URLS: Sequence[str] = ()
 DEFAULT_MODERATION_PHISHING_DOMAIN_FEED_URL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt"
-DEFAULT_MODERATION_PHISHING_URL_FEED_URL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt"
+DEFAULT_MODERATION_PHISHING_URL_FEED_URL: str | None = None
 DEFAULT_MODERATION_PHISHING_DOMAIN_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-domains-ACTIVE.txt.sha256"
-DEFAULT_MODERATION_PHISHING_URL_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-links-ACTIVE.txt.sha256"
+DEFAULT_MODERATION_PHISHING_URL_SHA256_URL: str | None = None
 DEFAULT_SETTINGS_OVERRIDES_PATH = "data/settings_overrides.json"
 
 NON_OVERRIDABLE_SETTINGS = {
@@ -280,7 +280,7 @@ class Settings:
     moderation_phishing_feed_allowed_domains: Sequence[str]
     moderation_phishing_feed_allowed_urls: Sequence[str]
     moderation_phishing_domain_feed_url: str
-    moderation_phishing_url_feed_url: str
+    moderation_phishing_url_feed_url: str | None
     moderation_phishing_domain_sha256_url: str | None
     moderation_phishing_url_sha256_url: str | None
 
@@ -591,7 +591,6 @@ def _build_settings_from_env() -> Settings:
                 "MODERATION_PHISHING_URL_FEED_URL",
                 DEFAULT_MODERATION_PHISHING_URL_FEED_URL,
             )
-            or DEFAULT_MODERATION_PHISHING_URL_FEED_URL
         ),
         moderation_phishing_domain_sha256_url=_get_env(
             "MODERATION_PHISHING_DOMAIN_SHA256_URL",

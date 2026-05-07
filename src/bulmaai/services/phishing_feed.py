@@ -16,9 +16,9 @@ from bulmaai.services import http
 log = logging.getLogger(__name__)
 
 DEFAULT_DOMAIN_FEED_URL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt"
-DEFAULT_URL_FEED_URL = "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-links-ACTIVE.txt"
+DEFAULT_URL_FEED_URL: str | None = None
 DEFAULT_DOMAIN_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-domains-ACTIVE.txt.sha256"
-DEFAULT_URL_SHA256_URL = "https://raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-links-ACTIVE.txt.sha256"
+DEFAULT_URL_SHA256_URL: str | None = None
 DOMAINS_CACHE_FILE = "phishing-domains-ACTIVE.txt"
 URLS_CACHE_FILE = "phishing-links-ACTIVE.txt"
 METADATA_CACHE_FILE = "metadata.json"
@@ -231,7 +231,7 @@ class PhishingFeedService:
         cache_dir: str | Path,
         max_stale_hours: int,
         domain_feed_url: str = DEFAULT_DOMAIN_FEED_URL,
-        url_feed_url: str = DEFAULT_URL_FEED_URL,
+        url_feed_url: str | None = DEFAULT_URL_FEED_URL,
         domain_checksum_url: str | None = DEFAULT_DOMAIN_SHA256_URL,
         url_checksum_url: str | None = DEFAULT_URL_SHA256_URL,
         timeout_seconds: int = 20,
@@ -252,7 +252,11 @@ class PhishingFeedService:
     def load_cache(self) -> PhishingFeedSnapshot:
         try:
             domains_text = (self.cache_dir / DOMAINS_CACHE_FILE).read_text(encoding="utf-8")
-            urls_text = (self.cache_dir / URLS_CACHE_FILE).read_text(encoding="utf-8")
+            urls_text = (
+                (self.cache_dir / URLS_CACHE_FILE).read_text(encoding="utf-8")
+                if self.url_feed_url
+                else ""
+            )
             metadata = self._load_metadata()
             snapshot = self._snapshot_from_text(
                 domains_text,
@@ -270,16 +274,23 @@ class PhishingFeedService:
         previous = self._snapshot
         try:
             domains_text, urls_text, checksums = await self._download_feeds()
-            snapshot = self._snapshot_from_text(
+            snapshot = await asyncio.to_thread(
+                self._snapshot_from_text,
                 domains_text,
                 urls_text,
                 loaded_at=_now_utc(),
                 last_success_at=_now_utc(),
                 checksums=checksums,
             )
-            _atomic_write(self.cache_dir / DOMAINS_CACHE_FILE, domains_text)
-            _atomic_write(self.cache_dir / URLS_CACHE_FILE, urls_text)
-            _atomic_write(
+            await asyncio.to_thread(
+                _atomic_write,
+                self.cache_dir / DOMAINS_CACHE_FILE,
+                domains_text,
+            )
+            if self.url_feed_url:
+                await asyncio.to_thread(_atomic_write, self.cache_dir / URLS_CACHE_FILE, urls_text)
+            await asyncio.to_thread(
+                _atomic_write,
                 self.cache_dir / METADATA_CACHE_FILE,
                 json.dumps(
                     {
@@ -355,19 +366,21 @@ class PhishingFeedService:
         )
 
     async def _download_feeds(self) -> tuple[str, str, dict[str, str]]:
-        domain_task = http.request("GET", self.domain_feed_url, timeout=self.timeout_seconds)
-        url_task = http.request("GET", self.url_feed_url, timeout=self.timeout_seconds)
-        domain_response, url_response = await asyncio.gather(domain_task, url_task)
+        domain_response = await http.request("GET", self.domain_feed_url, timeout=self.timeout_seconds)
         domain_response.raise_for_status()
-        url_response.raise_for_status()
         domains_text = domain_response.text
-        urls_text = url_response.text
         checksums = {
             "domains_sha256": _sha256_bytes(domain_response.content),
-            "exact_urls_sha256": _sha256_bytes(url_response.content),
         }
         await self._verify_checksum(self.domain_checksum_url, domain_response.content, "domains")
-        await self._verify_checksum(self.url_checksum_url, url_response.content, "exact_urls")
+
+        urls_text = ""
+        if self.url_feed_url:
+            url_response = await http.request("GET", self.url_feed_url, timeout=self.timeout_seconds)
+            url_response.raise_for_status()
+            urls_text = url_response.text
+            checksums["exact_urls_sha256"] = _sha256_bytes(url_response.content)
+            await self._verify_checksum(self.url_checksum_url, url_response.content, "exact_urls")
         return domains_text, urls_text, checksums
 
     async def _verify_checksum(self, checksum_url: str | None, data: bytes, name: str) -> None:

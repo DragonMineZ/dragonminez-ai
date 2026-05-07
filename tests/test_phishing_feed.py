@@ -1,5 +1,6 @@
 import unittest
 import logging
+from pathlib import Path
 from unittest.mock import patch
 
 from bulmaai.services.moderation import (
@@ -66,15 +67,17 @@ class FakeResponse:
 
 class PhishingFeedRefreshTests(unittest.IsolatedAsyncioTestCase):
     def test_relative_cache_dir_resolves_under_project_root(self) -> None:
-        resolved = resolve_cache_dir("data/cache/moderation/phishing_database")
+        relative = Path("data/cache/moderation/phishing_database")
+        resolved = resolve_cache_dir(relative)
 
         self.assertTrue(resolved.is_absolute())
-        self.assertTrue(str(resolved).endswith("dragonminez-ai\\data\\cache\\moderation\\phishing_database"))
+        self.assertEqual(resolved.parts[-4:], relative.parts)
 
     def test_absolute_cache_dir_is_preserved(self) -> None:
-        absolute = resolve_cache_dir("C:/tmp/bulmaai-cache")
+        absolute_path = Path.cwd() / "bulmaai-cache"
+        resolved = resolve_cache_dir(absolute_path)
 
-        self.assertEqual(str(absolute), "C:\\tmp\\bulmaai-cache")
+        self.assertEqual(resolved, absolute_path)
 
     async def test_checksum_verifies_raw_response_bytes_not_decoded_text(self) -> None:
         domains = b"Example.COM\n"

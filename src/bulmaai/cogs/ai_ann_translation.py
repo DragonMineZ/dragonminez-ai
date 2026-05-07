@@ -5,7 +5,7 @@ import discord
 from discord.ext import commands
 from openai import AsyncOpenAI
 
-from utils.permissions import is_admin
+from bulmaai.utils.permissions import is_admin
 
 log = logging.getLogger(__name__)
 

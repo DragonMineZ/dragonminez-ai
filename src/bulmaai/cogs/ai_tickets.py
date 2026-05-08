@@ -13,6 +13,11 @@ from bulmaai.services.openai_client import (
     is_transient_ai_error,
     run_support_agent,
 )
+from bulmaai.services.support_intent import (
+    SUPPORT_INTENT_UNCLEAR,
+    SupportIntent,
+    classify_support_intent,
+)
 from bulmaai.services.faq_knowledge import (
     FAQReviewCandidateInput,
     create_faq_review_candidate,
@@ -93,6 +98,17 @@ def _has_support_request_content(
     if len(text.strip()) >= 3:
         return True
     return any(_is_image_attachment(attachment) for attachment in message.attachments)
+
+
+def _message_support_intent(
+    message: discord.Message,
+    bot_user: discord.ClientUser | None,
+) -> SupportIntent:
+    text = _strip_bot_mentions(message.content, bot_user)
+    return classify_support_intent(
+        text,
+        has_image=any(_is_image_attachment(attachment) for attachment in message.attachments),
+    )
 
 
 def _contains_log_attachment(message: discord.Message) -> bool:
@@ -461,6 +477,9 @@ class AITicketsCog(commands.Cog):
             return
 
         if in_ticket and channel.id in self._escalated_ticket_channels:
+            return
+        intent = _message_support_intent(message, self.bot.user)
+        if intent == SUPPORT_INTENT_UNCLEAR:
             return
 
         async with self._channel_locks[channel.id]:

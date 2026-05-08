@@ -14,8 +14,14 @@ from bulmaai.cogs.ai_tickets import (
     _build_faq_review_candidate_from_messages,
     _chunk_discord_message,
     _has_user_visible_tool_result,
+    _message_support_intent,
     _is_staff_ticket_message,
     _support_debounce_seconds,
+)
+from bulmaai.services.support_intent import (
+    SUPPORT_INTENT_PATREON_WHITELIST,
+    SUPPORT_INTENT_SUPPORT_QUESTION,
+    SUPPORT_INTENT_UNCLEAR,
 )
 
 
@@ -70,6 +76,21 @@ class DiscordMessageChunkTests(unittest.TestCase):
 
         self.assertTrue(_is_staff_ticket_message(message, in_ticket=True, settings=settings))
         self.assertFalse(_is_staff_ticket_message(message, in_ticket=False, settings=settings))
+
+    def test_message_support_intent_strips_bot_mentions(self) -> None:
+        bot_user = types.SimpleNamespace(id=999, mention="<@999>")
+        message = types.SimpleNamespace(
+            content="<@999> 20 + 20 + 20 + 7",
+            attachments=[],
+        )
+
+        self.assertEqual(_message_support_intent(message, bot_user), SUPPORT_INTENT_UNCLEAR)
+
+        message.content = "<@999> me das acceso patreon para la beta please"
+        self.assertEqual(_message_support_intent(message, bot_user), SUPPORT_INTENT_PATREON_WHITELIST)
+
+        message.content = "<@999> how do I configure dragon blocks?"
+        self.assertEqual(_message_support_intent(message, bot_user), SUPPORT_INTENT_SUPPORT_QUESTION)
 
     def test_builds_faq_review_candidate_from_ticket_question_and_staff_answer(self) -> None:
         question = types.SimpleNamespace(

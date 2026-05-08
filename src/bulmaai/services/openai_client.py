@@ -23,6 +23,10 @@ from bulmaai.services.support_traces import (
     record_support_ai_trace,
     upsert_support_session,
 )
+from bulmaai.services.support_intent import (
+    SUPPORT_INTENT_PATREON_WHITELIST,
+    classify_support_intent,
+)
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils import tools_registry
 
@@ -33,18 +37,6 @@ NICKNAME_HINT_RE = re.compile(
     r"(?i)\b(?:ign|in[- ]?game name|minecraft(?: username| name)?|mc(?: username| name)?|nickname|username|name)"
     r"\s*(?:is|:|=)?\s*([A-Za-z0-9_]{3,16})\b"
 )
-PATREON_WHITELIST_KEYWORDS = (
-    "patreon whitelist",
-    "patreon allowlist",
-    "patreon beta",
-    "patreon access",
-    "patreon-only",
-    "whitelist access",
-    "allowlist access",
-    "beta whitelist",
-    "beta access",
-)
-
 class ConversationMessage(TypedDict, total=False):
     role: str
     content: str
@@ -152,12 +144,7 @@ def _latest_non_staff_user_text(messages: list[ConversationMessage]) -> str:
 
 
 def _looks_like_patreon_whitelist_request(messages: list[ConversationMessage]) -> bool:
-    text = _latest_non_staff_user_text(messages).lower()
-    if not text:
-        return False
-    if any(keyword in text for keyword in PATREON_WHITELIST_KEYWORDS):
-        return True
-    return ("whitelist" in text or "allowlist" in text) and ("patreon" in text or "beta" in text)
+    return classify_support_intent(_latest_non_staff_user_text(messages)) == SUPPORT_INTENT_PATREON_WHITELIST
 
 
 def _extract_minecraft_nickname_guess(messages: list[ConversationMessage]) -> str | None:
@@ -170,8 +157,7 @@ def _extract_minecraft_nickname_guess(messages: list[ConversationMessage]) -> st
 
 
 def _load_system_prompt(lang: str) -> str:
-    lang_code = lang if lang in {"en", "es", "pt"} else "en"
-    filename = f"support_system_{lang_code}.txt"
+    filename = "support_system_en.txt"
     try:
         with pkg_resources.files("bulmaai.configs.prompts").joinpath(filename).open(
             "r", encoding="utf-8"
@@ -258,11 +244,11 @@ def _build_file_search_tool(settings: Any) -> dict[str, Any] | None:
     return tool
 
 
-def _build_prompt_cache_key(*, model: str, language: str, tools: list[dict[str, Any]]) -> str:
+def _build_prompt_cache_key(*, model: str, tools: list[dict[str, Any]]) -> str:
     tool_signature = hashlib.sha256(
         json.dumps(tools, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:16]
-    return f"support:{model}:{language}:{tool_signature}"
+    return f"support:{model}:{tool_signature}"
 
 
 async def _run_direct_patreon_whitelist_flow(
@@ -458,7 +444,7 @@ async def run_support_agent(
         tools.append(file_search_tool)
     file_search_enabled = file_search_tool is not None
     vector_store_ids = list(file_search_tool.get("vector_store_ids", [])) if file_search_tool else []
-    prompt_cache_key = _build_prompt_cache_key(model=model, language=language, tools=tools)
+    prompt_cache_key = _build_prompt_cache_key(model=model, tools=tools)
     request_metadata = _build_openai_metadata(
         workflow="support_question",
         language=language,
@@ -609,7 +595,7 @@ async def _handle_tools_and_final_reply(
                 file_search_enabled=bool((trace_context or {}).get("file_search_enabled")),
                 ticket_conversation=bool((trace_context or {}).get("openai_conversation_id")),
             ),
-            "prompt_cache_key": f"support:{model}:{lang}:post-tool",
+            "prompt_cache_key": f"support:{model}:post-tool",
             "safety_identifier": _build_safety_identifier(user_id),
             "store": bool(getattr(settings, "openai_support_store_responses", True)),
             "text": {"verbosity": "medium"},

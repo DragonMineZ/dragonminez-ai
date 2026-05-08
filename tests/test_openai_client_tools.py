@@ -11,6 +11,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 from bulmaai.services.openai_client import (
     _build_file_search_tool,
     _handle_tools_and_final_reply,
+    _build_openai_metadata,
     _looks_like_patreon_whitelist_request,
     _select_reasoning_effort,
     run_support_agent,
@@ -64,6 +65,29 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
                 "type": "file_search",
                 "vector_store_ids": ["vs_docs", "vs_tickets"],
                 "max_num_results": 6,
+            },
+        )
+
+    def test_builds_openai_dashboard_metadata_as_strings(self) -> None:
+        metadata = _build_openai_metadata(
+            workflow="support_question",
+            language="es",
+            channel_id=456,
+            user_id=123,
+            file_search_enabled=True,
+            ticket_conversation=True,
+        )
+
+        self.assertEqual(
+            metadata,
+            {
+                "app": "dragonminez-ai",
+                "workflow": "support_question",
+                "language": "es",
+                "discord_channel_id": "456",
+                "discord_user": "discord-user-a665a45920422f9d",
+                "file_search": "true",
+                "ticket_conversation": "true",
             },
         )
 
@@ -161,8 +185,20 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "bulmaai.services.openai_client._create_response",
                 new_callable=AsyncMock,
-                return_value=types.SimpleNamespace(output=[], output_text="Use the configured form key."),
+                return_value=types.SimpleNamespace(
+                    id="resp_123",
+                    output=[],
+                    output_text="Use the configured form key.",
+                    usage=types.SimpleNamespace(
+                        input_tokens=1200,
+                        output_tokens=40,
+                        total_tokens=1240,
+                        input_tokens_details=types.SimpleNamespace(cached_tokens=900),
+                        output_tokens_details=types.SimpleNamespace(reasoning_tokens=12),
+                    ),
+                ),
             ) as create_response,
+            patch("bulmaai.services.openai_client.record_support_ai_trace", new_callable=AsyncMock) as record_trace,
         ):
             result = await run_support_agent(
                 messages=[
@@ -201,6 +237,136 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
             request_kwargs["tools"],
         )
         self.assertTrue(request_kwargs["store"])
+        self.assertEqual(request_kwargs["metadata"]["workflow"], "support_question")
+        self.assertEqual(request_kwargs["metadata"]["file_search"], "true")
+        record_trace.assert_awaited_once()
+        trace = record_trace.await_args.args[0]
+        self.assertEqual(trace.response_id, "resp_123")
+        self.assertEqual(trace.model, "gpt-5-mini")
+        self.assertEqual(trace.input_tokens, 1200)
+        self.assertEqual(trace.cached_tokens, 900)
+        self.assertEqual(trace.reasoning_tokens, 12)
+        self.assertEqual(trace.reply_text, "Use the configured form key.")
+
+    async def test_ticket_support_agent_uses_openai_conversation_state(self) -> None:
+        with (
+            patch(
+                "bulmaai.services.openai_client.get_support_session",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as get_session,
+            patch(
+                "bulmaai.services.openai_client._create_conversation",
+                new_callable=AsyncMock,
+                return_value=types.SimpleNamespace(id="conv_ticket"),
+            ) as create_conversation,
+            patch(
+                "bulmaai.services.openai_client.upsert_support_session",
+                new_callable=AsyncMock,
+            ) as upsert_session,
+            patch(
+                "bulmaai.services.openai_client._create_response",
+                new_callable=AsyncMock,
+                return_value=types.SimpleNamespace(id="resp_ticket", output=[], output_text="Install Forge 1.20.1."),
+            ) as create_response,
+            patch("bulmaai.services.openai_client.record_support_ai_trace", new_callable=AsyncMock),
+        ):
+            await run_support_agent(
+                messages=[
+                    {"role": "user", "content": "How do I install the mod?", "speaker_id": "123"},
+                ],
+                enabled_tools=["start_patreon_whitelist_flow"],
+                language_hint="en",
+                user_id=123,
+                channel_id=456,
+                ticket_conversation=True,
+                settings=types.SimpleNamespace(
+                    openai_support_model="gpt-5-mini",
+                    openai_model="gpt-5-mini",
+                    openai_support_max_output_tokens=100,
+                    ai_support_timeout_seconds=1,
+                    openai_support_reasoning_effort="medium",
+                    openai_support_fast_reasoning_effort="low",
+                    openai_support_vector_store_ids=("vs_docs",),
+                    openai_support_file_search_max_results=5,
+                    openai_support_store_responses=True,
+                ),
+            )
+
+        get_session.assert_awaited_once_with(456)
+        create_conversation.assert_awaited_once()
+        request_kwargs = create_response.await_args.kwargs
+        self.assertEqual(request_kwargs["conversation"], "conv_ticket")
+        self.assertEqual(request_kwargs["metadata"]["ticket_conversation"], "true")
+        upsert_session.assert_awaited_once_with(
+            channel_id=456,
+            openai_conversation_id="conv_ticket",
+            last_response_id="resp_ticket",
+        )
+
+    async def test_existing_ticket_conversation_sends_only_latest_user_turn(self) -> None:
+        session = types.SimpleNamespace(
+            channel_id=456,
+            openai_conversation_id="conv_existing",
+            last_response_id="resp_previous",
+        )
+        with (
+            patch(
+                "bulmaai.services.openai_client.get_support_session",
+                new_callable=AsyncMock,
+                return_value=session,
+            ),
+            patch("bulmaai.services.openai_client._create_conversation", new_callable=AsyncMock) as create_conversation,
+            patch("bulmaai.services.openai_client.upsert_support_session", new_callable=AsyncMock),
+            patch(
+                "bulmaai.services.openai_client._create_response",
+                new_callable=AsyncMock,
+                return_value=types.SimpleNamespace(id="resp_new", output=[], output_text="Use the config menu."),
+            ) as create_response,
+            patch("bulmaai.services.openai_client.record_support_ai_trace", new_callable=AsyncMock),
+        ):
+            await run_support_agent(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Old unrelated ticket context",
+                        "speaker_id": "123",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Old answer",
+                        "speaker_id": "999",
+                    },
+                    {
+                        "role": "user",
+                        "content": "How do I change forms?",
+                        "speaker_id": "123",
+                    },
+                ],
+                enabled_tools=["start_patreon_whitelist_flow"],
+                language_hint="en",
+                user_id=123,
+                channel_id=456,
+                ticket_conversation=True,
+                settings=types.SimpleNamespace(
+                    openai_support_model="gpt-5-mini",
+                    openai_model="gpt-5-mini",
+                    openai_support_max_output_tokens=100,
+                    ai_support_timeout_seconds=1,
+                    openai_support_reasoning_effort="medium",
+                    openai_support_fast_reasoning_effort="low",
+                    openai_support_vector_store_ids=("vs_docs",),
+                    openai_support_file_search_max_results=5,
+                    openai_support_store_responses=True,
+                ),
+            )
+
+        create_conversation.assert_not_awaited()
+        request_input = create_response.await_args.kwargs["input"]
+        rendered_input = "\n".join(item["content"] for item in request_input)
+        self.assertIn("How do I change forms?", rendered_input)
+        self.assertNotIn("Old unrelated ticket context", rendered_input)
+        self.assertEqual(create_response.await_args.kwargs["conversation"], "conv_existing")
 
 
 if __name__ == "__main__":

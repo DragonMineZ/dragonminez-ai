@@ -488,6 +488,7 @@ class AITicketsCog(commands.Cog):
                     ),
                     user_id=message.author.id,
                     channel_id=channel.id,
+                    ticket_conversation=in_ticket,
                     bot=self.bot,
                     settings=settings,
                 )

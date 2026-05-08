@@ -1,7 +1,6 @@
-Drop support knowledge files here and ingest them with:
 
 ```powershell
-python scripts/ingest_docs.py upload data/knowledge --lang en --source knowledge
+$env:PYTHONPATH='src'; python scripts/export_support_eval_dataset.py --output data/evals/support_eval_dataset.jsonl
 ```
 
 Preferred formats:
@@ -10,7 +9,7 @@ Preferred formats:
 - `.html` for copied wiki/help pages
 - `.pdf` only when a text-native source is not available
 
-Why this is better than PDF-only uploads:
+Why text-native files are still preferred:
 - text-native files preserve headings and structure better
-- chunking is cleaner, so retrieval is more accurate
+- OpenAI file search can retrieve cleaner chunks
 - admins can update individual files without rebuilding one large PDF export

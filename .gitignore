@@ -18,6 +18,7 @@ venv/
 *.db
 *.sqlite
 *.log
+data/evals/*.jsonl
 
 # OS / editors
 .DS_Store

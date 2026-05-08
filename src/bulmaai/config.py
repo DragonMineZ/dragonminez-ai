@@ -72,6 +72,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.moderation",
     "bulmaai.cogs.patreon_announcements",
     "bulmaai.cogs.curseforge_updates",
+    "bulmaai.cogs.release_approval",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -129,10 +130,14 @@ DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
 DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
 DEFAULT_ANNOUNCEMENT_PORTUGUESE_CHANNEL_ID = 1472964446866636892
-DEFAULT_RELEASES_CHANNEL_ID = 1260409841424535624
+DEFAULT_RELEASES_CHANNEL_ID = 1216430625431748771
 DEFAULT_SNEAK_PEEKS_CHANNEL_ID = 1280350775989637130
 DEFAULT_PATREON_ANNOUNCEMENT_CHANNEL_ID = 1490060558110822542
 DEFAULT_BOT_RESTART_CHANNEL_ID = 1223439164121419838
+DEFAULT_RELEASE_WEBHOOK_ENABLED = True
+DEFAULT_RELEASE_WEBHOOK_HOST = "0.0.0.0"
+DEFAULT_RELEASE_WEBHOOK_PORT = 8088
+DEFAULT_RELEASE_WEBHOOK_PATH = "/dmz-release"
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
 DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
@@ -181,6 +186,7 @@ NON_OVERRIDABLE_SETTINGS = {
     "GH_APP_PRIVATE_KEY_PEM",
     "PATREON_CREATOR_TOKEN",
     "curseforge_api_key",
+    "release_webhook_secret",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -231,6 +237,11 @@ class Settings:
     patreon_announcement_channel_id: int | None
     patreon_access_role_ids: Sequence[int]
     bot_restart_channel_id: int | None
+    release_webhook_enabled: bool
+    release_webhook_host: str
+    release_webhook_port: int
+    release_webhook_path: str
+    release_webhook_secret: str | None
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_support_allowed_role_ids: Sequence[int]
@@ -405,6 +416,23 @@ def _build_settings_from_env() -> Settings:
             "BOT_RESTART_CHANNEL_ID",
             DEFAULT_BOT_RESTART_CHANNEL_ID,
         ),
+        release_webhook_enabled=_get_env_bool(
+            "RELEASE_WEBHOOK_ENABLED",
+            DEFAULT_RELEASE_WEBHOOK_ENABLED,
+        ),
+        release_webhook_host=(
+            _get_env("RELEASE_WEBHOOK_HOST", DEFAULT_RELEASE_WEBHOOK_HOST)
+            or DEFAULT_RELEASE_WEBHOOK_HOST
+        ),
+        release_webhook_port=(
+            _get_env_int("RELEASE_WEBHOOK_PORT", DEFAULT_RELEASE_WEBHOOK_PORT)
+            or DEFAULT_RELEASE_WEBHOOK_PORT
+        ),
+        release_webhook_path=(
+            _get_env("RELEASE_WEBHOOK_PATH", DEFAULT_RELEASE_WEBHOOK_PATH)
+            or DEFAULT_RELEASE_WEBHOOK_PATH
+        ),
+        release_webhook_secret=_get_env("DMZ_RELEASE_BOT_WEBHOOK_SECRET"),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),
         ai_support_allowed_role_ids=_get_env_int_list(

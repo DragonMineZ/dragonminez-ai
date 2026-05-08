@@ -20,6 +20,14 @@ class GitHubService:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+    async def dispatch_repository_event(self, *, event_type: str, client_payload: dict) -> None:
+        payload = {
+            "event_type": event_type,
+            "client_payload": client_payload,
+        }
+        r = await request("POST", f"{self.api}/dispatches", headers=await self._headers(), json=payload)
+        r.raise_for_status()
+
     # ==================== ISSUES ====================
 
     async def get_labels(self) -> list[dict]:

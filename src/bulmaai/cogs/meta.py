@@ -72,7 +72,7 @@ class MetaCog(commands.Cog):
             description="BulmaAI helps the DragonMineZ server with support, announcements, logs, and staff tooling.",
             color=discord.Color.blue(),
         )
-        embed.add_field(name="Version", value="1.0.0", inline=False)
+        embed.add_field(name="Version", value="1.8.4", inline=False)
         embed.add_field(name="Author", value="DragonMineZ Team", inline=False)
         await ctx.respond(embed=embed)
 

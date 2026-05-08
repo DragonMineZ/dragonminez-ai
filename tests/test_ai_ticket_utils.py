@@ -11,10 +11,10 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs.ai_tickets import (
     AITicketsCog,
-    _build_faq_review_candidate_from_messages,
     _chunk_discord_message,
     _has_user_visible_tool_result,
     _message_support_intent,
+    _should_shadow_log_support_intent,
     _is_staff_ticket_message,
     _support_debounce_seconds,
 )
@@ -92,49 +92,89 @@ class DiscordMessageChunkTests(unittest.TestCase):
         message.content = "<@999> how do I configure dragon blocks?"
         self.assertEqual(_message_support_intent(message, bot_user), SUPPORT_INTENT_SUPPORT_QUESTION)
 
-    def test_builds_faq_review_candidate_from_ticket_question_and_staff_answer(self) -> None:
-        question = types.SimpleNamespace(
-            id=101,
-            channel=types.SimpleNamespace(id=202),
-            clean_content="How do I transform into Super Saiyan?",
+    def test_shadow_logging_covers_ambient_guild_messages_but_skips_live_routes(self) -> None:
+        settings = types.SimpleNamespace(ai_support_ambient_shadow_enabled=True)
+        message = types.SimpleNamespace(
+            author=types.SimpleNamespace(bot=False),
+            content="How do I install DragonMineZ?",
             attachments=[],
         )
-        answer = types.SimpleNamespace(
-            id=303,
-            channel=types.SimpleNamespace(id=202),
-            clean_content="Use the configured transform key after meeting the form requirements.",
-            attachments=[],
-            author=types.SimpleNamespace(id=404),
+
+        self.assertTrue(
+            _should_shadow_log_support_intent(
+                message,
+                settings=settings,
+                in_ticket=False,
+                mention_request=False,
+            )
+        )
+        self.assertFalse(
+            _should_shadow_log_support_intent(
+                message,
+                settings=settings,
+                in_ticket=True,
+                mention_request=False,
+            )
+        )
+        self.assertFalse(
+            _should_shadow_log_support_intent(
+                message,
+                settings=settings,
+                in_ticket=False,
+                mention_request=True,
+            )
         )
 
-        candidate = _build_faq_review_candidate_from_messages(question, answer)
-
-        self.assertIsNotNone(candidate)
-        self.assertEqual(candidate.lang, "en")
-        self.assertEqual(candidate.canonical_question, "How do I transform into Super Saiyan?")
-        self.assertEqual(candidate.answer, "Use the configured transform key after meeting the form requirements.")
-        self.assertEqual(candidate.source_ticket_channel_id, 202)
-        self.assertEqual(candidate.source_question_message_ids, [101])
-        self.assertEqual(candidate.source_answer_message_ids, [303])
-        self.assertEqual(candidate.proposed_by, 404)
-
-    def test_skips_faq_review_candidate_for_short_staff_answer(self) -> None:
-        question = types.SimpleNamespace(
-            id=101,
-            channel=types.SimpleNamespace(id=202),
-            clean_content="How do I transform?",
+    def test_shadow_logging_skips_disabled_bots_commands_and_log_attachments(self) -> None:
+        enabled = types.SimpleNamespace(ai_support_ambient_shadow_enabled=True)
+        disabled = types.SimpleNamespace(ai_support_ambient_shadow_enabled=False)
+        attachment = types.SimpleNamespace(filename="latest.log", content_type="text/plain")
+        message = types.SimpleNamespace(
+            author=types.SimpleNamespace(bot=False),
+            content="How do I install DragonMineZ?",
             attachments=[],
         )
-        answer = types.SimpleNamespace(
-            id=303,
-            channel=types.SimpleNamespace(id=202),
-            clean_content="yes",
-            attachments=[],
-            author=types.SimpleNamespace(id=404),
+
+        self.assertFalse(
+            _should_shadow_log_support_intent(
+                message,
+                settings=disabled,
+                in_ticket=False,
+                mention_request=False,
+            )
         )
 
-        self.assertIsNone(_build_faq_review_candidate_from_messages(question, answer))
+        message.author.bot = True
+        self.assertFalse(
+            _should_shadow_log_support_intent(
+                message,
+                settings=enabled,
+                in_ticket=False,
+                mention_request=False,
+            )
+        )
 
+        message.author.bot = False
+        message.content = "/faq pending"
+        self.assertFalse(
+            _should_shadow_log_support_intent(
+                message,
+                settings=enabled,
+                in_ticket=False,
+                mention_request=False,
+            )
+        )
+
+        message.content = "please check this"
+        message.attachments = [attachment]
+        self.assertFalse(
+            _should_shadow_log_support_intent(
+                message,
+                settings=enabled,
+                in_ticket=False,
+                mention_request=False,
+            )
+        )
 
 class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_extracts_multiple_image_contexts_concurrently(self) -> None:

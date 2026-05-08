@@ -48,6 +48,7 @@ _SUPPORT_KEYWORDS = (
     "problem",
     "doesn't work",
     "doesnt work",
+    "does not work",
     "not working",
     "log",
     "launcher",

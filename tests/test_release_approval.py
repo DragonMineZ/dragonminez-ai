@@ -14,9 +14,11 @@ from bulmaai.services.release_approval import (
     APPROVED_EVENT_TYPE,
     ReleaseCandidate,
     ReleaseCandidateError,
+    ReleasePublishMetadataError,
     ReleaseApprovalService,
     build_approval_dispatch_payload,
     parse_release_candidate_payload,
+    validate_publish_metadata,
 )
 from bulmaai.ui.release_views import (
     build_release_candidate_embed,
@@ -54,7 +56,7 @@ class ReleaseApprovalTests(unittest.TestCase):
             settings = load_settings(include_overrides=False)
 
         self.assertEqual(settings.releases_channel_id, 1216430625431748771)
-        self.assertFalse(settings.release_webhook_enabled)
+        self.assertTrue(settings.release_webhook_enabled)
         self.assertEqual(settings.release_webhook_host, "0.0.0.0")
         self.assertEqual(settings.release_webhook_port, 8088)
         self.assertEqual(settings.release_webhook_path, "/dmz-release")
@@ -92,7 +94,7 @@ class ReleaseApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseCandidateError, "artifact_sha256"):
             parse_release_candidate_payload(payload)
 
-    def test_build_approval_dispatch_payload_includes_optional_publish_args(self) -> None:
+    def test_build_approval_dispatch_payload_includes_required_publish_args(self) -> None:
         candidate = ReleaseCandidate(
             version="2.1.2",
             release_type="release",
@@ -125,18 +127,33 @@ class ReleaseApprovalTests(unittest.TestCase):
             },
         )
 
-    def test_build_approval_dispatch_payload_omits_blank_optional_args(self) -> None:
+    def test_publish_metadata_requires_changelog_and_update_description(self) -> None:
         candidate = parse_release_candidate_payload(VALID_PAYLOAD)
 
-        payload = build_approval_dispatch_payload(
-            candidate,
-            approved_by="348174141121101824",
-            changelog=" ",
-            update_description="",
-        )
+        with self.assertRaisesRegex(ReleasePublishMetadataError, "changelog"):
+            validate_publish_metadata(candidate)
 
-        self.assertNotIn("changelog", payload["client_payload"])
-        self.assertNotIn("update_description", payload["client_payload"])
+        with self.assertRaisesRegex(ReleasePublishMetadataError, "update_description"):
+            validate_publish_metadata(
+                ReleaseCandidate(
+                    **{
+                        **candidate.__dict__,
+                        "changelog": "Release notes",
+                        "update_description": " ",
+                    }
+                )
+            )
+
+    def test_build_approval_dispatch_payload_rejects_blank_publish_args(self) -> None:
+        candidate = parse_release_candidate_payload(VALID_PAYLOAD)
+
+        with self.assertRaises(ReleasePublishMetadataError):
+            build_approval_dispatch_payload(
+                candidate,
+                approved_by="348174141121101824",
+                changelog=" ",
+                update_description="",
+            )
 
     def test_release_controls_are_admin_only(self) -> None:
         admin = type(
@@ -171,7 +188,13 @@ class ReleaseApprovalTests(unittest.TestCase):
 
 class GitHubDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_release_approval_service_dispatches_approved_candidate(self) -> None:
-        candidate = parse_release_candidate_payload(VALID_PAYLOAD)
+        candidate = ReleaseCandidate(
+            **{
+                **parse_release_candidate_payload(VALID_PAYLOAD).__dict__,
+                "changelog": "Release notes",
+                "update_description": "Update text",
+            }
+        )
         github_service = type(
             "GitHubService",
             (),
@@ -182,8 +205,6 @@ class GitHubDispatchTests(unittest.IsolatedAsyncioTestCase):
         await service.approve_candidate(
             candidate,
             approved_by="AdminUser",
-            changelog="Release notes",
-            update_description="Update text",
         )
 
         github_service.dispatch_repository_event.assert_awaited_once_with(

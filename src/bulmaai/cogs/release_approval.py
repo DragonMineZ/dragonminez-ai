@@ -9,6 +9,7 @@ from bulmaai.github.github_service import GitHubService
 from bulmaai.services.release_approval import (
     ReleaseApprovalService,
     ReleaseCandidate,
+    ReleasePublishMetadataError,
     parse_release_candidate_payload,
 )
 from bulmaai.services.release_webhook import ReleaseWebhookServer
@@ -82,8 +83,8 @@ class ReleaseApprovalCog(commands.Cog):
     @discord.option("commit_sha", description="Approved main commit SHA", required=True)
     @discord.option("artifact_sha256", description="Candidate artifact SHA-256", required=True)
     @discord.option("artifact_name", description="Candidate jar artifact name", required=True)
-    @discord.option("changelog", description="Optional Markdown changelog", required=False)
-    @discord.option("update_description", description="Optional Forge update.json description", required=False)
+    @discord.option("changelog", description="Markdown changelog for Modrinth and CurseForge", required=True)
+    @discord.option("update_description", description="Forge update.json description", required=True)
     @discord.option("targets", description="Comma-separated publish targets", required=False)
     @discord.option("release_type", description="Release type", required=False)
     @discord.option("minecraft_version", description="Minecraft version", required=False)
@@ -160,12 +161,19 @@ class ReleaseApprovalCog(commands.Cog):
         candidate: ReleaseCandidate,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
-        await self.approval_service.approve_candidate(
-            candidate,
-            approved_by=str(interaction.user),
-            changelog=candidate.changelog,
-            update_description=candidate.update_description,
-        )
+        try:
+            await self.approval_service.approve_candidate(
+                candidate,
+                approved_by=str(interaction.user),
+                changelog=candidate.changelog,
+                update_description=candidate.update_description,
+            )
+        except ReleasePublishMetadataError as error:
+            await interaction.followup.send(
+                f"{error}. Use Modify to add release notes before approval.",
+                ephemeral=True,
+            )
+            return
         if interaction.message is not None:
             await interaction.message.edit(
                 embed=build_release_candidate_embed(

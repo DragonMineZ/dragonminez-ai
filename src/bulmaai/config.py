@@ -63,7 +63,6 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.meta",
     "bulmaai.cogs.patreon_whitelist_flow",
     "bulmaai.cogs.ai_tickets",
-    "bulmaai.cogs.faq_review",
     "bulmaai.cogs.github_cmds",
     "bulmaai.cogs.ai_ann_translation",
     "bulmaai.cogs.rules",
@@ -85,6 +84,9 @@ DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS = 1500
 DEFAULT_OPENAI_SUPPORT_VECTOR_STORE_IDS: Sequence[str] = ()
 DEFAULT_OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS = 5
 DEFAULT_OPENAI_SUPPORT_STORE_RESPONSES = True
+DEFAULT_OPENAI_FAQ_SUGGESTION_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENAI_FAQ_VECTOR_STORE_ID: str | None = None
+DEFAULT_OPENAI_FAQ_GENERATED_PATH = "data/knowledge/generated/dragonminez-faq.md"
 # Pin helper models to incentive-eligible IDs where possible.
 DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
 DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini-2025-04-14"
@@ -126,6 +128,7 @@ DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 12
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 70
 DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 0
 DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS = 1.5
+DEFAULT_AI_SUPPORT_AMBIENT_SHADOW_ENABLED = True
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
 DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
@@ -149,7 +152,6 @@ DEFAULT_CURSEFORGE_POLL_MINUTES = 15
 DEFAULT_DISCORD_LOG_FORWARDING_ENABLED = True
 DEFAULT_DISCORD_LOG_CHANNEL_ID = 1493390527004147876
 DEFAULT_DISCORD_LOG_MIN_LEVEL = "WARNING"
-DEFAULT_FAQ_REVIEW_CHANNEL_ID = DEFAULT_DISCORD_LOG_CHANNEL_ID
 DEFAULT_MODERATION_ENABLED = True
 DEFAULT_MODERATION_LOG_CHANNEL_ID = 1501735528356118528
 DEFAULT_MODERATION_EXEMPT_ROLE_IDS: Sequence[int] = ()
@@ -210,6 +212,9 @@ class Settings:
     openai_support_vector_store_ids: Sequence[str]
     openai_support_file_search_max_results: int
     openai_support_store_responses: bool
+    openai_faq_suggestion_model: str
+    openai_faq_vector_store_id: str | None
+    openai_faq_generated_path: str
     openai_vision_model: str
     openai_translation_model: str
 
@@ -249,6 +254,7 @@ class Settings:
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
     ai_support_debounce_seconds: float
+    ai_support_ambient_shadow_enabled: bool
     message_presets_path: str
     announcement_source_channel_id: int | None
     announcement_spanish_channel_id: int | None
@@ -267,7 +273,6 @@ class Settings:
     discord_log_forwarding_enabled: bool
     discord_log_channel_id: int | None
     discord_log_min_level: str
-    faq_review_channel_id: int | None
     moderation_enabled: bool
     moderation_log_channel_id: int | None
     moderation_exempt_role_ids: Sequence[int]
@@ -368,6 +373,18 @@ def _build_settings_from_env() -> Settings:
             "OPENAI_SUPPORT_STORE_RESPONSES",
             DEFAULT_OPENAI_SUPPORT_STORE_RESPONSES,
         ),
+        openai_faq_suggestion_model=(
+            _get_env("OPENAI_FAQ_SUGGESTION_MODEL", DEFAULT_OPENAI_FAQ_SUGGESTION_MODEL)
+            or DEFAULT_OPENAI_FAQ_SUGGESTION_MODEL
+        ),
+        openai_faq_vector_store_id=_get_env(
+            "OPENAI_FAQ_VECTOR_STORE_ID",
+            DEFAULT_OPENAI_FAQ_VECTOR_STORE_ID,
+        ),
+        openai_faq_generated_path=(
+            _get_env("OPENAI_FAQ_GENERATED_PATH", DEFAULT_OPENAI_FAQ_GENERATED_PATH)
+            or DEFAULT_OPENAI_FAQ_GENERATED_PATH
+        ),
         openai_vision_model=(
             _get_env("OPENAI_VISION_MODEL", DEFAULT_OPENAI_VISION_MODEL)
             or DEFAULT_OPENAI_VISION_MODEL
@@ -446,6 +463,10 @@ def _build_settings_from_env() -> Settings:
             "AI_SUPPORT_DEBOUNCE_SECONDS",
             DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS,
         ),
+        ai_support_ambient_shadow_enabled=_get_env_bool(
+            "AI_SUPPORT_AMBIENT_SHADOW_ENABLED",
+            DEFAULT_AI_SUPPORT_AMBIENT_SHADOW_ENABLED,
+        ),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
         announcement_source_channel_id=_get_env_int(
             "ANNOUNCEMENT_SOURCE_CHANNEL_ID",
@@ -508,10 +529,6 @@ def _build_settings_from_env() -> Settings:
         discord_log_min_level=(
             _get_env("DISCORD_LOG_MIN_LEVEL", DEFAULT_DISCORD_LOG_MIN_LEVEL)
             or DEFAULT_DISCORD_LOG_MIN_LEVEL
-        ),
-        faq_review_channel_id=_get_env_int(
-            "FAQ_REVIEW_CHANNEL_ID",
-            DEFAULT_FAQ_REVIEW_CHANNEL_ID,
         ),
         moderation_enabled=_get_env_bool("MODERATION_ENABLED", DEFAULT_MODERATION_ENABLED),
         moderation_log_channel_id=_get_env_int(

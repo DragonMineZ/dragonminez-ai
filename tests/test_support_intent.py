@@ -32,6 +32,10 @@ class SupportIntentTests(unittest.TestCase):
             classify_support_intent("It still doesn't work"),
             SUPPORT_INTENT_SUPPORT_QUESTION,
         )
+        self.assertEqual(
+            classify_support_intent("It still does not work"),
+            SUPPORT_INTENT_SUPPORT_QUESTION,
+        )
 
     def test_classifies_images_as_support_questions(self) -> None:
         self.assertEqual(

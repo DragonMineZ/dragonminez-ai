@@ -10,6 +10,10 @@ class ReleaseCandidateError(ValueError):
     pass
 
 
+class ReleasePublishMetadataError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class ReleaseCandidate:
     version: str
@@ -25,6 +29,20 @@ class ReleaseCandidate:
     update_description: str | None = None
 
 
+def _optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def validate_publish_metadata(candidate: ReleaseCandidate) -> None:
+    if _optional_string(candidate.changelog) is None:
+        raise ReleasePublishMetadataError("changelog is required before approval")
+    if _optional_string(candidate.update_description) is None:
+        raise ReleasePublishMetadataError("update_description is required before approval")
+
+
 class ReleaseApprovalService:
     def __init__(self, *, github_service: Any):
         self.github_service = github_service
@@ -37,11 +55,21 @@ class ReleaseApprovalService:
         changelog: str | None = None,
         update_description: str | None = None,
     ) -> None:
+        candidate = ReleaseCandidate(
+            **{
+                **candidate.__dict__,
+                "changelog": changelog if changelog is not None else candidate.changelog,
+                "update_description": (
+                    update_description
+                    if update_description is not None
+                    else candidate.update_description
+                ),
+            }
+        )
+        validate_publish_metadata(candidate)
         dispatch_payload = build_approval_dispatch_payload(
             candidate,
             approved_by=approved_by,
-            changelog=changelog,
-            update_description=update_description,
         )
         await self.github_service.dispatch_repository_event(
             event_type=dispatch_payload["event_type"],
@@ -91,13 +119,6 @@ def parse_release_candidate_payload(payload: dict[str, Any]) -> ReleaseCandidate
     )
 
 
-def _optional_string(value: str | None) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
-
-
 def build_approval_dispatch_payload(
     candidate: ReleaseCandidate,
     *,
@@ -105,6 +126,19 @@ def build_approval_dispatch_payload(
     changelog: str | None = None,
     update_description: str | None = None,
 ) -> dict[str, Any]:
+    candidate = ReleaseCandidate(
+        **{
+            **candidate.__dict__,
+            "changelog": changelog if changelog is not None else candidate.changelog,
+            "update_description": (
+                update_description
+                if update_description is not None
+                else candidate.update_description
+            ),
+        }
+    )
+    validate_publish_metadata(candidate)
+
     client_payload: dict[str, Any] = {
         "version": candidate.version,
         "commit_sha": candidate.commit_sha,
@@ -112,17 +146,8 @@ def build_approval_dispatch_payload(
         "approved_by": approved_by,
     }
 
-    changelog_value = _optional_string(changelog if changelog is not None else candidate.changelog)
-    if changelog_value is not None:
-        client_payload["changelog"] = changelog_value
-
-    update_description_value = _optional_string(
-        update_description
-        if update_description is not None
-        else candidate.update_description
-    )
-    if update_description_value is not None:
-        client_payload["update_description"] = update_description_value
+    client_payload["changelog"] = _optional_string(candidate.changelog)
+    client_payload["update_description"] = _optional_string(candidate.update_description)
 
     return {
         "event_type": APPROVED_EVENT_TYPE,

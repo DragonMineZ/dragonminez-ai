@@ -18,18 +18,11 @@ from bulmaai.services.support_intent import (
     SupportIntent,
     classify_support_intent,
 )
-from bulmaai.services.faq_knowledge import (
-    FAQReviewCandidateInput,
-    create_faq_review_candidate,
-)
-from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.permissions import can_use_ai_support, is_staff
 
 log = logging.getLogger(__name__)
 vision_client = AsyncOpenAI(api_key=load_settings().openai_key)
 
-FAQ_REVIEW_MIN_QUESTION_CHARS = 8
-FAQ_REVIEW_MIN_ANSWER_CHARS = 20
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 DISCORD_MESSAGE_LIMIT = 1900
@@ -132,6 +125,57 @@ def _has_user_visible_tool_result(tool_results: list[Any]) -> bool:
             return True
     return False
 
+
+def _should_shadow_log_support_intent(
+    message: discord.Message,
+    *,
+    settings: Any,
+    in_ticket: bool,
+    mention_request: bool,
+) -> bool:
+    if not getattr(settings, "ai_support_ambient_shadow_enabled", False):
+        return False
+    if in_ticket or mention_request:
+        return False
+    if getattr(message.author, "bot", False):
+        return False
+    if message.content.startswith(("!", "/", ".")):
+        return False
+    if _contains_log_attachment(message):
+        return False
+    return True
+
+
+def _log_support_intent_shadow(
+    message: discord.Message,
+    *,
+    bot_user: discord.ClientUser | None,
+    in_ticket: bool,
+    mention_request: bool,
+) -> None:
+    intent = _message_support_intent(message, bot_user)
+    content = _strip_bot_mentions(message.content, bot_user)
+    preview = " ".join(content.split())[:160]
+    log.info(
+        "AI support ambient shadow intent=%s guild_id=%s channel_id=%s message_id=%s user_id=%s has_image=%s preview=%r",
+        intent,
+        getattr(getattr(message, "guild", None), "id", None),
+        getattr(getattr(message, "channel", None), "id", None),
+        getattr(message, "id", None),
+        getattr(getattr(message, "author", None), "id", None),
+        any(_is_image_attachment(attachment) for attachment in message.attachments),
+        preview,
+        extra={
+            "event": "ai_support_ambient_shadow",
+            "intent": intent,
+            "guild_id": getattr(getattr(message, "guild", None), "id", None),
+            "channel_id": getattr(getattr(message, "channel", None), "id", None),
+            "message_id": getattr(message, "id", None),
+            "user_id": getattr(getattr(message, "author", None), "id", None),
+        },
+    )
+
+
 def _pending_key(message: discord.Message, *, in_ticket: bool) -> tuple[int, int]:
     return message.channel.id, 0 if in_ticket else message.author.id
 
@@ -158,28 +202,6 @@ def _message_content(message: discord.Message) -> str:
         content = f"{content}\n" if content else ""
         content += "\n".join(attachment_lines)
     return content.strip()
-
-
-def _build_faq_review_candidate_from_messages(
-    question_message: discord.Message,
-    answer_message: discord.Message,
-) -> FAQReviewCandidateInput | None:
-    question = _message_content(question_message)
-    answer = _message_content(answer_message)
-    if len(question) < FAQ_REVIEW_MIN_QUESTION_CHARS:
-        return None
-    if len(answer) < FAQ_REVIEW_MIN_ANSWER_CHARS:
-        return None
-    return FAQReviewCandidateInput(
-        lang=detect_language_from_text(f"{question}\n{answer}"),
-        canonical_question=question,
-        answer=answer,
-        tags=["ticket-answer"],
-        source_ticket_channel_id=getattr(question_message.channel, "id", None),
-        source_question_message_ids=[question_message.id],
-        source_answer_message_ids=[answer_message.id],
-        proposed_by=getattr(answer_message.author, "id", None),
-    )
 
 
 class AITicketsCog(commands.Cog):
@@ -362,54 +384,6 @@ class AITicketsCog(commands.Cog):
         if in_ticket:
             return await self._build_ticket_history(message)
         return await self._build_general_history(message)
-
-    async def _latest_non_staff_message_before(
-        self,
-        message: discord.Message,
-    ) -> discord.Message | None:
-        channel = message.channel
-        if not isinstance(channel, discord.TextChannel):
-            return None
-        async for entry in channel.history(limit=20, before=message):
-            if entry.author.bot:
-                continue
-            if isinstance(entry.author, discord.Member) and is_staff(
-                entry.author,
-                settings=self.bot.settings,
-            ):
-                continue
-            if len(_message_content(entry)) >= FAQ_REVIEW_MIN_QUESTION_CHARS:
-                return entry
-        return None
-
-    async def _maybe_create_faq_review_from_staff_answer(
-        self,
-        message: discord.Message,
-    ) -> None:
-        if message.content.startswith(("!", "/", ".")):
-            return
-        if _contains_log_attachment(message):
-            return
-        question_message = await self._latest_non_staff_message_before(message)
-        if question_message is None:
-            return
-        candidate = _build_faq_review_candidate_from_messages(question_message, message)
-        if candidate is None:
-            return
-        try:
-            candidate_id = await create_faq_review_candidate(candidate)
-            review_cog = self.bot.get_cog("FAQReviewCog")
-            if review_cog is not None and hasattr(review_cog, "_send_review_message"):
-                await review_cog._send_review_message(candidate_id)
-        except Exception:
-            log.exception(
-                "Failed to create FAQ review candidate from staff ticket answer",
-                extra={
-                    "event": "faq_review_candidate_create_failed",
-                    "channel_id": getattr(message.channel, "id", None),
-                    "message_id": getattr(message, "id", None),
-                },
-            )
 
     async def _extract_image_context(self, message: discord.Message) -> str:
         image_urls = [attachment.url for attachment in message.attachments if _is_image_attachment(attachment)]
@@ -636,6 +610,18 @@ class AITicketsCog(commands.Cog):
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
         author_has_support_access = await self._can_use_support_from_message(message, settings=settings)
+        if _should_shadow_log_support_intent(
+            message,
+            settings=settings,
+            in_ticket=in_ticket,
+            mention_request=mention_request,
+        ):
+            _log_support_intent_shadow(
+                message,
+                bot_user=self.bot.user,
+                in_ticket=in_ticket,
+                mention_request=mention_request,
+            )
         if not in_ticket and not mention_request:
             return
         if mention_request and not in_ticket and not author_has_support_access:
@@ -647,7 +633,6 @@ class AITicketsCog(commands.Cog):
         if message.author.bot or not isinstance(message.author, discord.Member):
             return
         if _is_staff_ticket_message(message, in_ticket=in_ticket, settings=settings):
-            await self._maybe_create_faq_review_from_staff_answer(message)
             return
         if in_ticket and channel.id in self._escalated_ticket_channels:
             return

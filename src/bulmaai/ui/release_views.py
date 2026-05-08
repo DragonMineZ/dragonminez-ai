@@ -68,7 +68,7 @@ class ReleaseMetadataModal(discord.ui.Modal):
             label="Changelog",
             placeholder="Markdown release notes for Modrinth and CurseForge",
             style=discord.InputTextStyle.long,
-            required=False,
+            required=True,
             max_length=4000,
             value=candidate.changelog or "",
         )
@@ -76,7 +76,7 @@ class ReleaseMetadataModal(discord.ui.Modal):
             label="Update Description",
             placeholder="Short text for Forge update.json",
             style=discord.InputTextStyle.long,
-            required=False,
+            required=True,
             max_length=1000,
             value=candidate.update_description or "",
         )

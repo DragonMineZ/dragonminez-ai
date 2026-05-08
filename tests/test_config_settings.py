@@ -20,6 +20,9 @@ class ConfigSettingsTests(unittest.TestCase):
                 "OPENAI_SUPPORT_VECTOR_STORE_IDS": "vs_docs, vs_tickets",
                 "OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS": "8",
                 "OPENAI_SUPPORT_STORE_RESPONSES": "true",
+                "OPENAI_FAQ_SUGGESTION_MODEL": "gpt-5.4-mini",
+                "OPENAI_FAQ_VECTOR_STORE_ID": "vs_faq",
+                "OPENAI_FAQ_GENERATED_PATH": "data/knowledge/generated/faq.md",
             },
             clear=False,
         ):
@@ -30,6 +33,9 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.openai_support_vector_store_ids, ("vs_docs", "vs_tickets"))
         self.assertEqual(settings.openai_support_file_search_max_results, 8)
         self.assertTrue(settings.openai_support_store_responses)
+        self.assertEqual(settings.openai_faq_suggestion_model, "gpt-5.4-mini")
+        self.assertEqual(settings.openai_faq_vector_store_id, "vs_faq")
+        self.assertEqual(settings.openai_faq_generated_path, "data/knowledge/generated/faq.md")
 
     def test_phishdestroy_settings_are_environment_configurable(self) -> None:
         with patch.dict(

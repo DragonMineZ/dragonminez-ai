@@ -9,6 +9,7 @@ os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services.openai_client import (
+    _build_file_search_tool,
     _handle_tools_and_final_reply,
     _looks_like_patreon_whitelist_request,
     _select_reasoning_effort,
@@ -33,11 +34,10 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
         settings = types.SimpleNamespace(
             openai_support_reasoning_effort="medium",
             openai_support_fast_reasoning_effort="low",
-            openai_support_fast_confidence_score=0.78,
         )
 
         self.assertEqual(
-            _select_reasoning_effort(settings, {"best_score": 0.8}),
+            _select_reasoning_effort(settings, high_confidence=True),
             "low",
         )
 
@@ -45,12 +45,26 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
         settings = types.SimpleNamespace(
             openai_support_reasoning_effort="medium",
             openai_support_fast_reasoning_effort="low",
-            openai_support_fast_confidence_score=0.78,
         )
 
         self.assertEqual(
-            _select_reasoning_effort(settings, {"best_score": 0.4}),
+            _select_reasoning_effort(settings, high_confidence=False),
             "medium",
+        )
+
+    def test_builds_openai_file_search_tool_from_vector_store_settings(self) -> None:
+        settings = types.SimpleNamespace(
+            openai_support_vector_store_ids=("vs_docs", "vs_tickets"),
+            openai_support_file_search_max_results=6,
+        )
+
+        self.assertEqual(
+            _build_file_search_tool(settings),
+            {
+                "type": "file_search",
+                "vector_store_ids": ["vs_docs", "vs_tickets"],
+                "max_num_results": 6,
+            },
         )
 
     async def test_suppress_ai_reply_tool_skips_followup_model_call(self) -> None:
@@ -124,7 +138,7 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
                         "speaker_id": "123",
                     }
                 ],
-                enabled_tools=["docs_search", "start_patreon_whitelist_flow"],
+                enabled_tools=["start_patreon_whitelist_flow"],
                 user_id=123,
                 channel_id=456,
                 bot=object(),
@@ -134,7 +148,6 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
                     openai_support_max_output_tokens=100,
                     ai_support_timeout_seconds=1,
                     openai_support_reasoning_effort="medium",
-                    support_response_cache_enabled=False,
                 ),
             )
 
@@ -143,34 +156,13 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["tool_results"][0]["arguments"]["nickname"], "Test_User")
         create_response.assert_not_awaited()
 
-    async def test_high_confidence_approved_faq_skips_model_call(self) -> None:
-        async def fake_docs_search(**kwargs):
-            return {
-                "matches": [
-                    {
-                        "source_type": "approved_faq",
-                        "faq_id": 7,
-                        "title": "How do I transform?",
-                        "answer": "Use the configured form key.",
-                        "content": "Use the configured form key.",
-                        "lang": "en",
-                        "score": 0.92,
-                    }
-                ],
-                "suggested_answers": [],
-                "best_score": 0.92,
-                "best_source_type": "approved_faq",
-                "confidence": "high",
-            }
-
-        def fake_get_func(name, bot_context=None):
-            if name == "docs_search":
-                return fake_docs_search
-            raise AssertionError(f"unexpected tool call: {name}")
-
+    async def test_support_agent_sends_file_search_tool_to_responses(self) -> None:
         with (
-            patch("bulmaai.services.openai_client.tools_registry.get_func", side_effect=fake_get_func),
-            patch("bulmaai.services.openai_client._create_response", new_callable=AsyncMock) as create_response,
+            patch(
+                "bulmaai.services.openai_client._create_response",
+                new_callable=AsyncMock,
+                return_value=types.SimpleNamespace(output=[], output_text="Use the configured form key."),
+            ) as create_response,
         ):
             result = await run_support_agent(
                 messages=[
@@ -180,70 +172,8 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
                         "speaker_id": "123",
                     }
                 ],
-                enabled_tools=["docs_search"],
+                enabled_tools=["start_patreon_whitelist_flow"],
                 language_hint="en",
-                use_cache=False,
-                user_id=123,
-                channel_id=456,
-                settings=types.SimpleNamespace(
-                    openai_support_model="gpt-5-mini",
-                    openai_model="gpt-5-mini",
-                    openai_support_max_output_tokens=100,
-                    ai_support_timeout_seconds=1,
-                    openai_support_reasoning_effort="medium",
-                    support_response_cache_enabled=False,
-                ),
-            )
-
-        self.assertEqual(result["reply"], "Use the configured form key.")
-        self.assertEqual(result["tool_results"][0]["name"], "docs_search")
-        self.assertFalse(result["suggested_close"])
-        create_response.assert_not_awaited()
-
-    async def test_high_confidence_fallback_language_faq_still_uses_model(self) -> None:
-        async def fake_docs_search(**kwargs):
-            return {
-                "matches": [
-                    {
-                        "source_type": "approved_faq",
-                        "faq_id": 7,
-                        "title": "How do I transform?",
-                        "answer": "Use the configured form key.",
-                        "content": "Use the configured form key.",
-                        "lang": "en",
-                        "score": 0.92,
-                    }
-                ],
-                "suggested_answers": [],
-                "best_score": 0.92,
-                "best_source_type": "approved_faq",
-                "confidence": "high",
-            }
-
-        def fake_get_func(name, bot_context=None):
-            if name == "docs_search":
-                return fake_docs_search
-            raise AssertionError(f"unexpected tool call: {name}")
-
-        with (
-            patch("bulmaai.services.openai_client.tools_registry.get_func", side_effect=fake_get_func),
-            patch(
-                "bulmaai.services.openai_client._create_response",
-                new_callable=AsyncMock,
-                return_value=types.SimpleNamespace(output=[], output_text="Usa la tecla configurada."),
-            ) as create_response,
-        ):
-            result = await run_support_agent(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": "Como me transformo?",
-                        "speaker_id": "123",
-                    }
-                ],
-                enabled_tools=["docs_search"],
-                language_hint="es",
-                use_cache=False,
                 user_id=123,
                 channel_id=456,
                 settings=types.SimpleNamespace(
@@ -253,13 +183,24 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
                     ai_support_timeout_seconds=1,
                     openai_support_reasoning_effort="medium",
                     openai_support_fast_reasoning_effort="low",
-                    openai_support_fast_confidence_score=0.78,
-                    support_response_cache_enabled=False,
+                    openai_support_vector_store_ids=("vs_docs",),
+                    openai_support_file_search_max_results=5,
+                    openai_support_store_responses=True,
                 ),
             )
 
-        self.assertEqual(result["reply"], "Usa la tecla configurada.")
+        self.assertEqual(result["reply"], "Use the configured form key.")
         create_response.assert_awaited_once()
+        request_kwargs = create_response.await_args.kwargs
+        self.assertIn(
+            {
+                "type": "file_search",
+                "vector_store_ids": ["vs_docs"],
+                "max_num_results": 5,
+            },
+            request_kwargs["tools"],
+        )
+        self.assertTrue(request_kwargs["store"])
 
 
 if __name__ == "__main__":

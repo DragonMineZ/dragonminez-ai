@@ -80,12 +80,13 @@ DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 DEFAULT_OPENAI_SUPPORT_MODEL = "gpt-5.4"
 DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT = "medium"
 DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT = "low"
-DEFAULT_OPENAI_SUPPORT_FAST_CONFIDENCE_SCORE = 0.78
 DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS = 1500
+DEFAULT_OPENAI_SUPPORT_VECTOR_STORE_IDS: Sequence[str] = ()
+DEFAULT_OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS = 5
+DEFAULT_OPENAI_SUPPORT_STORE_RESPONSES = True
 # Pin helper models to incentive-eligible IDs where possible.
 DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
 DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini-2025-04-14"
-DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
 DEFAULT_PGHOST = "localhost"
 DEFAULT_PGPORT = 5432
@@ -124,8 +125,6 @@ DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 12
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 70
 DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 0
 DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS = 1.5
-DEFAULT_AI_CLOSED_TICKET_CATEGORY_IDS: Sequence[int] = (1303543643377893466,)
-DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED = True
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
 DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
@@ -201,11 +200,12 @@ class Settings:
     openai_support_model: str
     openai_support_reasoning_effort: str
     openai_support_fast_reasoning_effort: str
-    openai_support_fast_confidence_score: float
     openai_support_max_output_tokens: int
+    openai_support_vector_store_ids: Sequence[str]
+    openai_support_file_search_max_results: int
+    openai_support_store_responses: bool
     openai_vision_model: str
     openai_translation_model: str
-    openai_embedding_model: str
 
     POSTGRES_DSN: str | None
     PGHOST: str
@@ -238,8 +238,6 @@ class Settings:
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
     ai_support_debounce_seconds: float
-    ai_closed_ticket_category_ids: Sequence[int]
-    support_response_cache_enabled: bool
     message_presets_path: str
     announcement_source_channel_id: int | None
     announcement_spanish_channel_id: int | None
@@ -337,18 +335,27 @@ def _build_settings_from_env() -> Settings:
             )
             or DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT
         ),
-        openai_support_fast_confidence_score=(
-            _get_env_float_default(
-                "OPENAI_SUPPORT_FAST_CONFIDENCE_SCORE",
-                DEFAULT_OPENAI_SUPPORT_FAST_CONFIDENCE_SCORE,
-            )
-        ),
         openai_support_max_output_tokens=(
             _get_env_int(
                 "OPENAI_SUPPORT_MAX_OUTPUT_TOKENS",
                 DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS,
             )
             or DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS
+        ),
+        openai_support_vector_store_ids=_get_env_str_list(
+            "OPENAI_SUPPORT_VECTOR_STORE_IDS",
+            DEFAULT_OPENAI_SUPPORT_VECTOR_STORE_IDS,
+        ),
+        openai_support_file_search_max_results=(
+            _get_env_int(
+                "OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS",
+                DEFAULT_OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS,
+            )
+            or DEFAULT_OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS
+        ),
+        openai_support_store_responses=_get_env_bool(
+            "OPENAI_SUPPORT_STORE_RESPONSES",
+            DEFAULT_OPENAI_SUPPORT_STORE_RESPONSES,
         ),
         openai_vision_model=(
             _get_env("OPENAI_VISION_MODEL", DEFAULT_OPENAI_VISION_MODEL)
@@ -357,10 +364,6 @@ def _build_settings_from_env() -> Settings:
         openai_translation_model=(
             _get_env("OPENAI_TRANSLATION_MODEL", DEFAULT_OPENAI_TRANSLATION_MODEL)
             or DEFAULT_OPENAI_TRANSLATION_MODEL
-        ),
-        openai_embedding_model=(
-            _get_env("OPENAI_EMBEDDING_MODEL", DEFAULT_OPENAI_EMBEDDING_MODEL)
-            or DEFAULT_OPENAI_EMBEDDING_MODEL
         ),
         POSTGRES_DSN=PGDSN,
         PGHOST=DEFAULT_PGHOST,
@@ -414,11 +417,6 @@ def _build_settings_from_env() -> Settings:
         ai_support_debounce_seconds=_get_env_float_default(
             "AI_SUPPORT_DEBOUNCE_SECONDS",
             DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS,
-        ),
-        ai_closed_ticket_category_ids=_get_env_int_list("AI_CLOSED_TICKET_CATEGORY_IDS", DEFAULT_AI_CLOSED_TICKET_CATEGORY_IDS),
-        support_response_cache_enabled=_get_env_bool(
-            "SUPPORT_RESPONSE_CACHE_ENABLED",
-            DEFAULT_SUPPORT_RESPONSE_CACHE_ENABLED,
         ),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
         announcement_source_channel_id=_get_env_int(

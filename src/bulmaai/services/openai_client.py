@@ -16,12 +16,6 @@ from openai import (
 )
 
 from bulmaai.config import Settings, load_settings
-from bulmaai.services.support_cache import (
-    build_support_cache_key,
-    fetch_cached_support_response,
-    get_docs_version,
-    store_cached_support_response,
-)
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils import tools_registry
 
@@ -43,8 +37,6 @@ PATREON_WHITELIST_KEYWORDS = (
     "beta whitelist",
     "beta access",
 )
-DIRECT_APPROVED_FAQ_SCORE_THRESHOLD = 0.88
-
 
 class ConversationMessage(TypedDict, total=False):
     role: str
@@ -147,35 +139,6 @@ def _latest_user_message(
     return None
 
 
-def _build_docs_search_query(
-    messages: list[ConversationMessage],
-    *,
-    target_speaker_id: str | None = None,
-) -> str:
-    latest_user = _latest_user_message(messages, target_speaker_id=target_speaker_id)
-    if latest_user is None:
-        return "support"
-
-    resolved_speaker_id = target_speaker_id or latest_user.get("speaker_id")
-    relevant_parts: list[str] = []
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        if message.get("speaker_kind") == "staff":
-            continue
-        if resolved_speaker_id and message.get("speaker_id") != resolved_speaker_id:
-            if relevant_parts:
-                break
-            continue
-        content = (message.get("content") or "").strip()
-        if content:
-            relevant_parts.append(content)
-
-    relevant_parts.reverse()
-    query = "\n".join(relevant_parts).strip()
-    return (query[:1500] or (latest_user.get("content") or "").strip() or "support")
-
-
 def _latest_non_staff_user_text(messages: list[ConversationMessage]) -> str:
     latest = _latest_user_message(messages)
     return (latest.get("content") if latest else "") or ""
@@ -252,60 +215,47 @@ def _hydrate_tool_args(
     channel_id: int,
 ) -> dict[str, Any]:
     hydrated = dict(args)
-    if name == "docs_search":
-        hydrated.setdefault("language", lang)
-    elif name == "start_patreon_whitelist_flow":
+    if name == "start_patreon_whitelist_flow":
         hydrated.setdefault("discord_user_id", str(user_id))
         hydrated.setdefault("ticket_channel_id", str(channel_id))
         hydrated.setdefault("nickname", None)
     return hydrated
 
 
-def _select_reasoning_effort(settings: Any, docs_output: dict[str, Any] | None = None) -> str:
+def _select_reasoning_effort(settings: Any, *, high_confidence: bool = False) -> str:
     default_effort = getattr(settings, "openai_support_reasoning_effort", "medium")
     fast_effort = getattr(settings, "openai_support_fast_reasoning_effort", default_effort)
-    try:
-        fast_threshold = float(getattr(settings, "openai_support_fast_confidence_score", 1.01))
-    except (TypeError, ValueError):
-        fast_threshold = 1.01
-    try:
-        best_score = float((docs_output or {}).get("best_score", 0.0))
-    except (TypeError, ValueError):
-        best_score = 0.0
-    if best_score >= fast_threshold:
+    if high_confidence:
         return fast_effort
     return default_effort
 
 
-def _build_direct_approved_faq_result(
-    *,
-    language: str,
-    tool_results: list[ToolCallResult],
-    docs_output: dict[str, Any] | None,
-) -> AgentResult | None:
-    matches = (docs_output or {}).get("matches") or []
-    if not matches:
+def _build_file_search_tool(settings: Any) -> dict[str, Any] | None:
+    vector_store_ids = [
+        str(value).strip()
+        for value in getattr(settings, "openai_support_vector_store_ids", ())
+        if str(value).strip()
+    ]
+    if not vector_store_ids:
         return None
-    best_match = matches[0]
-    if best_match.get("source_type") != "approved_faq":
-        return None
+    tool: dict[str, Any] = {
+        "type": "file_search",
+        "vector_store_ids": vector_store_ids,
+    }
     try:
-        score = float(best_match.get("score", (docs_output or {}).get("best_score", 0.0)))
+        max_results = int(getattr(settings, "openai_support_file_search_max_results", 0) or 0)
     except (TypeError, ValueError):
-        return None
-    if score < DIRECT_APPROVED_FAQ_SCORE_THRESHOLD:
-        return None
-    if best_match.get("lang") != language:
-        return None
-    answer = str(best_match.get("answer") or best_match.get("content") or "").strip()
-    if not answer:
-        return None
-    return AgentResult(
-        reply=answer,
-        language=language,
-        tool_results=tool_results,
-        suggested_close=False,
-    )
+        max_results = 0
+    if max_results > 0:
+        tool["max_num_results"] = max_results
+    return tool
+
+
+def _build_prompt_cache_key(*, model: str, language: str, tools: list[dict[str, Any]]) -> str:
+    tool_signature = hashlib.sha256(
+        json.dumps(tools, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"support:{model}:{language}:{tool_signature}"
 
 
 async def _run_direct_patreon_whitelist_flow(
@@ -365,7 +315,6 @@ async def run_support_agent(
     enabled_tools: list[str],
     language_hint: Optional[str] = None,
     model_override: Optional[str] = None,
-    use_cache: bool = True,
     user_id: int,
     channel_id: int,
     bot: Any = None,
@@ -394,64 +343,22 @@ async def run_support_agent(
             bot=bot,
         )
 
-    docs_version = None
-    cache_key: str | None = None
-    if use_cache:
-        docs_version = await get_docs_version()
-        cache_key = build_support_cache_key(
-            messages=messages,
-            enabled_tools=enabled_tools,
-            language=language,
-            channel_id=channel_id,
-        )
-        cached = await fetch_cached_support_response(cache_key, docs_version)
-        if cached is not None:
-            log.info("support_cache hit channel=%s language=%s", channel_id, language)
-            return AgentResult(**cached)
-
     system_prompt = _load_system_prompt(language)
     response_input = _build_response_input(messages, user_id=user_id, channel_id=channel_id)
     tool_results: list[ToolCallResult] = []
-    remaining_tools = list(enabled_tools)
-    docs_output_for_reasoning: dict[str, Any] | None = None
-
-    if "docs_search" in remaining_tools:
-        docs_query = _build_docs_search_query(messages, target_speaker_id=target_speaker_id)
-        docs_output = await tools_registry.get_func("docs_search")(query=docs_query, language=language)
-        docs_output_for_reasoning = docs_output if isinstance(docs_output, dict) else None
-        tool_results.append(
-            ToolCallResult(
-                name="docs_search",
-                arguments={"query": docs_query, "language": language},
-                output=docs_output,
-            )
-        )
-        _append_tool_output(response_input, name="docs_search", output=docs_output)
-        remaining_tools = [tool_name for tool_name in remaining_tools if tool_name != "docs_search"]
-
-        direct_faq_result = _build_direct_approved_faq_result(
-            language=language,
-            tool_results=tool_results,
-            docs_output=docs_output_for_reasoning,
-        )
-        if direct_faq_result is not None:
-            if use_cache and cache_key is not None:
-                await store_cached_support_response(
-                    cache_key,
-                    docs_version,
-                    dict(direct_faq_result),
-                )
-            return direct_faq_result
-
-    tools = get_schemas(remaining_tools)
+    tools = get_schemas(enabled_tools)
+    file_search_tool = _build_file_search_tool(runtime_settings)
+    if file_search_tool is not None:
+        tools.append(file_search_tool)
 
     request_kwargs: dict[str, Any] = {
         "model": model,
         "instructions": system_prompt,
         "input": response_input,
         "max_output_tokens": runtime_settings.openai_support_max_output_tokens,
-        "prompt_cache_key": f"support:{channel_id}:{language}",
+        "prompt_cache_key": _build_prompt_cache_key(model=model, language=language, tools=tools),
         "safety_identifier": _build_safety_identifier(user_id),
+        "store": bool(getattr(runtime_settings, "openai_support_store_responses", True)),
         "text": {"verbosity": "medium"},
     }
     if tools:
@@ -459,7 +366,10 @@ async def run_support_agent(
         request_kwargs["tool_choice"] = "auto"
     if model.startswith("gpt-5"):
         request_kwargs["reasoning"] = {
-            "effort": _select_reasoning_effort(runtime_settings, docs_output_for_reasoning),
+            "effort": _select_reasoning_effort(
+                runtime_settings,
+                high_confidence=file_search_tool is not None,
+            ),
             "summary": "auto",
         }
 
@@ -479,8 +389,6 @@ async def run_support_agent(
         user_id=user_id,
         channel_id=channel_id,
     )
-    if use_cache and cache_key is not None:
-        await store_cached_support_response(cache_key, docs_version, dict(result))
     return result
 
 
@@ -542,8 +450,9 @@ async def _handle_tools_and_final_reply(
             "instructions": system_prompt,
             "input": followup_input,
             "max_output_tokens": settings.openai_support_max_output_tokens,
-            "prompt_cache_key": f"support:{channel_id}:{lang}:post-tool",
+            "prompt_cache_key": f"support:{model}:{lang}:post-tool",
             "safety_identifier": _build_safety_identifier(user_id),
+            "store": bool(getattr(settings, "openai_support_store_responses", True)),
             "text": {"verbosity": "medium"},
         }
         if model.startswith("gpt-5"):

@@ -6,4 +6,3 @@ openai
 pyjwt
 colorlog
 asyncpg
-pymupdf

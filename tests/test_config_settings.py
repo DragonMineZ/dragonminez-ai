@@ -17,7 +17,9 @@ class ConfigSettingsTests(unittest.TestCase):
             {
                 "AI_SUPPORT_DEBOUNCE_SECONDS": "0",
                 "OPENAI_SUPPORT_FAST_REASONING_EFFORT": "low",
-                "OPENAI_SUPPORT_FAST_CONFIDENCE_SCORE": "0.83",
+                "OPENAI_SUPPORT_VECTOR_STORE_IDS": "vs_docs, vs_tickets",
+                "OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS": "8",
+                "OPENAI_SUPPORT_STORE_RESPONSES": "true",
             },
             clear=False,
         ):
@@ -25,7 +27,9 @@ class ConfigSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.ai_support_debounce_seconds, 0)
         self.assertEqual(settings.openai_support_fast_reasoning_effort, "low")
-        self.assertEqual(settings.openai_support_fast_confidence_score, 0.83)
+        self.assertEqual(settings.openai_support_vector_store_ids, ("vs_docs", "vs_tickets"))
+        self.assertEqual(settings.openai_support_file_search_max_results, 8)
+        self.assertTrue(settings.openai_support_store_responses)
 
     def test_phishdestroy_settings_are_environment_configurable(self) -> None:
         with patch.dict(

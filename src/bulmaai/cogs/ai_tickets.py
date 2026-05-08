@@ -17,14 +17,12 @@ from bulmaai.services.faq_knowledge import (
     FAQReviewCandidateInput,
     create_faq_review_candidate,
 )
-from bulmaai.services.ticket_knowledge import sync_closed_ticket_knowledge
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.permissions import can_use_ai_support, is_staff
 
 log = logging.getLogger(__name__)
 vision_client = AsyncOpenAI(api_key=load_settings().openai_key)
 
-TICKET_MIN_SCORE = 0.52
 FAQ_REVIEW_MIN_QUESTION_CHARS = 8
 FAQ_REVIEW_MIN_ANSWER_CHARS = 20
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
@@ -111,41 +109,12 @@ def _is_image_attachment(attachment: discord.Attachment) -> bool:
     return attachment.filename.lower().endswith(IMAGE_ATTACHMENT_EXTENSIONS)
 
 
-def _extract_docs_output(tool_results: list[Any]) -> dict[str, Any] | None:
-    for entry in tool_results:
-        if entry.get("name") != "docs_search":
-            continue
-        output = entry.get("output")
-        if isinstance(output, dict):
-            return output
-    return None
-
-
 def _has_user_visible_tool_result(tool_results: list[Any]) -> bool:
     for entry in tool_results:
         output = entry.get("output")
         if isinstance(output, dict) and output.get("suppress_ai_reply") is True:
             return True
     return False
-
-
-def _build_suggestion_reply(language: str, docs_output: dict[str, Any]) -> str | None:
-    suggestions = docs_output.get("suggested_answers") or []
-    if not suggestions:
-        return None
-
-    labels = {
-        "en": "Possible answers from the docs",
-        "es": "Posibles respuestas segun la documentacion",
-        "pt": "Possiveis respostas segundo a documentacao",
-    }
-    lines = [f"**{labels.get(language, labels['en'])}:**"]
-    for suggestion in suggestions[:3]:
-        title = suggestion.get("title") or "Doc match"
-        answer = suggestion.get("answer") or ""
-        lines.append(f"- **{title}**: {answer}")
-    return "\n".join(lines)
-
 
 def _pending_key(message: discord.Message, *, in_ticket: bool) -> tuple[int, int]:
     return message.channel.id, 0 if in_ticket else message.author.id
@@ -205,13 +174,10 @@ class AITicketsCog(commands.Cog):
         self._channel_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._pending_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
         self._escalated_ticket_channels: set[int] = set()
-        self._ticket_knowledge_task: asyncio.Task[None] | None = None
 
     def cog_unload(self) -> None:
         for pending_key in list(self._pending_tasks):
             self._cancel_pending_task(pending_key)
-        if self._ticket_knowledge_task is not None and not self._ticket_knowledge_task.done():
-            self._ticket_knowledge_task.cancel()
 
     def _cancel_pending_task(self, pending_key: tuple[int, int]) -> None:
         task = self._pending_tasks.pop(pending_key, None)
@@ -254,27 +220,6 @@ class AITicketsCog(commands.Cog):
             return can_use_ai_support(message.author, settings=settings)
         member = await self._resolve_member_for_user(message.author)
         return member is not None and can_use_ai_support(member, settings=settings)
-
-    async def _closed_ticket_sync_loop(self) -> None:
-        await self.bot.wait_until_ready()
-        interval_seconds = 1800
-
-        while True:
-            try:
-                summary = await sync_closed_ticket_knowledge(self.bot)
-                if summary["scanned"]:
-                    log.info(
-                        "ticket_knowledge sync scanned=%s indexed=%s skipped=%s",
-                        summary["scanned"],
-                        summary["indexed"],
-                        summary["skipped"],
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Closed ticket sync failed")
-
-            await asyncio.sleep(interval_seconds)
 
     async def _send_messages_with_typing(
         self,
@@ -533,7 +478,7 @@ class AITicketsCog(commands.Cog):
                         )
                     )
 
-                enabled_tools = ["docs_search", "start_patreon_whitelist_flow"]
+                enabled_tools = ["start_patreon_whitelist_flow"]
                 result = await run_support_agent(
                     messages=history,
                     enabled_tools=enabled_tools,
@@ -541,7 +486,6 @@ class AITicketsCog(commands.Cog):
                     model_override=(
                         settings.openai_support_model if in_ticket else settings.openai_model
                     ),
-                    use_cache=in_ticket,
                     user_id=message.author.id,
                     channel_id=channel.id,
                     bot=self.bot,
@@ -591,46 +535,26 @@ class AITicketsCog(commands.Cog):
             if _has_user_visible_tool_result(result["tool_results"]):
                 return
 
-            docs_output = _extract_docs_output(result["tool_results"])
-            docs_score = float(docs_output.get("best_score", 0.0)) if docs_output else None
             outgoing_messages: list[str] = []
-
-            if docs_score is not None and in_ticket and docs_score < TICKET_MIN_SCORE:
-                suggestion_reply = _build_suggestion_reply(result["language"], docs_output)
-                if suggestion_reply:
-                    outgoing_messages.append(suggestion_reply)
-                outgoing_messages.append(
-                    "I could not find a confident enough answer yet. A staff member should review this ticket."
-                )
-                if await self._send_messages_with_typing(channel, outgoing_messages):
-                    self._mark_ticket_escalated(channel.id)
-                return
+            should_mark_escalated = False
 
             reply_text = result["reply"].strip()
             if reply_text and reply_text != "(no reply)":
                 outgoing_messages.append(reply_text)
             else:
-                suggestion_reply = _build_suggestion_reply(result["language"], docs_output or {})
-                if suggestion_reply and (in_ticket or mention_request):
-                    outgoing_messages.append(suggestion_reply)
-                elif in_ticket:
+                if in_ticket:
                     outgoing_messages.append(
-                        "I could not confidently answer this from the docs. A staff member should review it."
+                        "I could not confidently answer this from the uploaded knowledge. A staff member should review it."
                     )
                     should_mark_escalated = True
                 elif mention_request:
                     outgoing_messages.append(
-                        "I couldn't find a confident docs-backed answer for that. Please open a ticket if it needs follow-up."
+                        "I couldn't find a confident knowledge-backed answer for that. Please open a ticket if it needs follow-up."
                     )
-                    should_mark_escalated = False
-            if reply_text and reply_text != "(no reply)":
-                should_mark_escalated = False
-            elif suggestion_reply and (in_ticket or mention_request):
-                should_mark_escalated = False
 
             if in_ticket and result["suggested_close"]:
                 outgoing_messages.append(
-                    "*(Support note: this looks solved based on the docs, but a staff member should confirm before closing.)*"
+                    "*(Support note: this looks solved based on the uploaded knowledge, but a staff member should confirm before closing.)*"
                 )
 
             if await self._send_messages_with_typing(channel, outgoing_messages) and should_mark_escalated:
@@ -665,14 +589,6 @@ class AITicketsCog(commands.Cog):
             self._process_message_after_debounce(message, pending_key=pending_key)
         )
         self._pending_tasks[pending_key] = task
-
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if not self.bot.settings.ai_closed_ticket_category_ids:
-            return
-        if self._ticket_knowledge_task is not None and not self._ticket_knowledge_task.done():
-            return
-        self._ticket_knowledge_task = asyncio.create_task(self._closed_ticket_sync_loop())
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

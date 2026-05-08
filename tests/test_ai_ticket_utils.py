@@ -36,7 +36,6 @@ class DiscordMessageChunkTests(unittest.TestCase):
         self.assertTrue(
             _has_user_visible_tool_result(
                 [
-                    {"name": "docs_search", "output": {"matches": []}},
                     {
                         "name": "start_patreon_whitelist_flow",
                         "output": {"status": "ok", "suppress_ai_reply": True},
@@ -48,7 +47,7 @@ class DiscordMessageChunkTests(unittest.TestCase):
     def test_ignores_non_visible_tool_result(self) -> None:
         self.assertFalse(
             _has_user_visible_tool_result(
-                [{"name": "docs_search", "output": {"matches": []}}]
+                [{"name": "start_patreon_whitelist_flow", "output": {"status": "needs_input"}}]
             )
         )
 

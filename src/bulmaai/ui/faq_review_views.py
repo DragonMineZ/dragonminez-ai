@@ -74,7 +74,7 @@ def build_faq_review_embed(candidate: FAQReviewCandidate) -> discord.Embed:
         embed.add_field(name="Review Reason", value=_truncate(candidate.review_reason, 500), inline=False)
     if candidate.approved_faq_id is not None:
         embed.add_field(name="Approved FAQ", value=f"`{candidate.approved_faq_id}`", inline=True)
-    embed.set_footer(text="Approve to add this answer to the searchable FAQ knowledge base.")
+    embed.set_footer(text="Approve to save this answer in the staff FAQ records.")
     return embed
 
 

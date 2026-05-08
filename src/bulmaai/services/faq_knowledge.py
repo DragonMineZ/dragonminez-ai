@@ -1,7 +1,7 @@
 import hashlib
 import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,8 +9,6 @@ from bulmaai.database.db import get_pool
 
 ALLOWED_FAQ_STATUSES = {"approved", "rejected"}
 ALLOWED_FAQ_REVIEW_STATUSES = {"pending", "approved", "rejected"}
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
-EmbeddingProvider = Callable[[list[str], str], Awaitable[list[list[float]]]]
 
 
 @dataclass(slots=True)
@@ -36,8 +34,6 @@ class FAQEntryInput:
 class FAQUpsertResult:
     faq_id: int
     content_hash: str
-    dimensions: int
-    knowledge_base_version: int | None = None
 
 
 @dataclass(slots=True)
@@ -326,8 +322,6 @@ async def approve_faq_candidate(
     candidate_id: int,
     *,
     actor_id: int,
-    embedding_provider: EmbeddingProvider,
-    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     overrides: FAQReviewCandidateInput | None = None,
     pool: Any | None = None,
 ) -> FAQUpsertResult:
@@ -358,8 +352,6 @@ async def approve_faq_candidate(
             source_answer_message_ids=source.source_answer_message_ids,
             approved_by=actor_id,
         ),
-        embedding_provider=embedding_provider,
-        embedding_model=embedding_model,
         pool=pool,
     )
 
@@ -382,48 +374,9 @@ async def approve_faq_candidate(
     return result
 
 
-async def bump_knowledge_base_version(
-    *,
-    name: str,
-    conn: Any,
-) -> None:
-    await conn.execute(
-        """
-        INSERT INTO knowledge_base_version (name, version, updated_at)
-        VALUES ($1, 1, now())
-        ON CONFLICT (name)
-        DO UPDATE SET
-            version = knowledge_base_version.version + 1,
-            updated_at = now()
-        RETURNING version
-        """,
-        name,
-    )
-
-
-async def get_knowledge_base_version(
-    name: str,
-    *,
-    pool: Any | None = None,
-) -> int:
-    resolved_pool = pool or await get_pool()
-    async with resolved_pool.acquire() as conn:
-        version = await conn.fetchval(
-            """
-            SELECT version
-            FROM knowledge_base_version
-            WHERE name = $1
-            """,
-            name,
-        )
-    return int(version or 0)
-
-
 async def upsert_approved_faq(
     entry: FAQEntryInput,
     *,
-    embedding_provider: EmbeddingProvider,
-    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     pool: Any | None = None,
 ) -> FAQUpsertResult:
     lang = validate_lang(entry.lang)
@@ -435,21 +388,12 @@ async def upsert_approved_faq(
     if not answer:
         raise ValueError("FAQ answer is required")
 
-    rendered = render_faq_text(
-        canonical_question=question,
-        answer=answer,
-        tags=tags,
-    )
     faq_hash = content_hash(
         lang=lang,
         canonical_question=question,
         answer=answer,
         tags=tags,
     )
-    embeddings = await embedding_provider([rendered], embedding_model)
-    if len(embeddings) != 1:
-        raise ValueError("Embedding provider must return exactly one FAQ embedding")
-    embedding = embeddings[0]
 
     resolved_pool = pool or await get_pool()
     async with resolved_pool.acquire() as conn:
@@ -500,23 +444,6 @@ async def upsert_approved_faq(
             )
             await conn.execute(
                 """
-                INSERT INTO faq_embeddings (faq_id, embedding, model, dimensions, updated_at)
-                VALUES ($1, $2, $3, $4, now())
-                ON CONFLICT (faq_id)
-                DO UPDATE SET
-                    embedding = EXCLUDED.embedding,
-                    model = EXCLUDED.model,
-                    dimensions = EXCLUDED.dimensions,
-                    updated_at = now()
-                """,
-                faq_id,
-                embedding,
-                embedding_model,
-                len(embedding),
-            )
-            await bump_knowledge_base_version(name="faq", conn=conn)
-            await conn.execute(
-                """
                 INSERT INTO faq_events (faq_id, event_type, actor_id, payload_json, created_at)
                 VALUES ($1, $2, $3, $4::jsonb, now())
                 """,
@@ -539,5 +466,4 @@ async def upsert_approved_faq(
     return FAQUpsertResult(
         faq_id=int(faq_id),
         content_hash=faq_hash,
-        dimensions=len(embedding),
     )

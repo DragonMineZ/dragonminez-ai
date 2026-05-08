@@ -11,26 +11,6 @@ ToolFunc = Callable[..., Any]
 
 # Responses API tools format (no nested "function" key)
 TOOLS_SCHEMAS: dict[str, dict] = {
-    "docs_search": {
-        "type": "function",
-        "name": "docs_search",
-        "description": (
-            "Search DragonMineZ documentation, approved FAQs, and indexed resolved tickets "
-            "for relevant information to answer the user's question."
-        ),
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "User query or question to search for.",
-                },
-            },
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-    },
     "start_patreon_whitelist_flow": {
         "type": "function",
         "name": "start_patreon_whitelist_flow",
@@ -67,10 +47,9 @@ def _init_tools_funcs() -> None:
         return
 
     # Lazy import to avoid circular imports
-    from bulmaai.utils import docs_search, patreon_whitelist
+    from bulmaai.utils import patreon_whitelist
 
     TOOLS_FUNCS = {
-        "docs_search": docs_search.run_docs_search,
         "start_patreon_whitelist_flow": patreon_whitelist.start_patreon_whitelist_flow,
     }
 

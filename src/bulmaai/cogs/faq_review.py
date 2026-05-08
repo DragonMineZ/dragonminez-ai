@@ -3,7 +3,6 @@ import logging
 import discord
 from discord.ext import commands
 
-from bulmaai.services.docs_ingestion import embed_texts
 from bulmaai.services.faq_knowledge import (
     FAQReviewCandidateInput,
     approve_faq_candidate,
@@ -204,8 +203,6 @@ class FAQReviewCog(commands.Cog):
             result = await approve_faq_candidate(
                 candidate_id,
                 actor_id=interaction.user.id,
-                embedding_provider=embed_texts,
-                embedding_model=self.bot.settings.openai_embedding_model,
             )
         except Exception as error:
             log.exception("Failed to approve FAQ candidate %s", candidate_id)
@@ -275,8 +272,6 @@ class FAQReviewCog(commands.Cog):
             result = await approve_faq_candidate(
                 candidate_id,
                 actor_id=interaction.user.id,
-                embedding_provider=embed_texts,
-                embedding_model=self.bot.settings.openai_embedding_model,
                 overrides=modal.result,
             )
         except Exception as error:

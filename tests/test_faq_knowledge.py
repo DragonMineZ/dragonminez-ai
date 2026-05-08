@@ -16,7 +16,6 @@ from bulmaai.services.faq_knowledge import (
     get_faq_review_candidate,
     reject_faq_candidate,
     render_faq_text,
-    upsert_approved_faq,
     validate_lang,
     validate_status,
 )
@@ -113,14 +112,9 @@ class FAQKnowledgeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             validate_lang("english")
 
-    async def test_upsert_approved_faq_writes_entry_embedding_version_and_event(self) -> None:
+    async def test_upsert_approved_faq_writes_entry_and_event_without_embeddings(self) -> None:
         conn = FakeConnection()
         pool = FakePool(conn)
-        embedded_texts = []
-
-        async def embedding_provider(texts, model):
-            embedded_texts.extend(texts)
-            return [[0.1, 0.2, 0.3]]
 
         entry = FAQEntryInput(
             lang="en",
@@ -133,34 +127,28 @@ class FAQKnowledgeTests(unittest.IsolatedAsyncioTestCase):
             approved_by=99,
         )
 
-        result = await upsert_approved_faq(
-            entry,
-            embedding_provider=embedding_provider,
-            embedding_model="test-embedding",
-            pool=pool,
-        )
+        from bulmaai.services.faq_knowledge import upsert_approved_faq
+
+        result = await upsert_approved_faq(entry, pool=pool)
 
         self.assertEqual(result.faq_id, 42)
-        self.assertEqual(result.dimensions, 3)
-        self.assertEqual(embedded_texts, [render_faq_text(**entry.render_kwargs())])
         self.assertEqual(len(conn.fetchval_calls), 1)
-        self.assertEqual(len(conn.execute_calls), 3)
+        self.assertEqual(len(conn.execute_calls), 1)
         self.assertIn("INSERT INTO faq_entries", conn.fetchval_calls[0][0])
         self.assertIn("ON CONFLICT (lang, content_hash)", conn.fetchval_calls[0][0])
-        self.assertIn("INSERT INTO faq_embeddings", conn.execute_calls[0][0])
-        self.assertIn("INSERT INTO knowledge_base_version", conn.execute_calls[1][0])
-        self.assertIn("INSERT INTO faq_events", conn.execute_calls[2][0])
+        self.assertIn("INSERT INTO faq_events", conn.execute_calls[0][0])
 
-    def test_schema_defines_separate_faq_tables(self) -> None:
+    def test_schema_defines_faq_tables_without_postgres_rag_tables(self) -> None:
         with open("scripts/schema.sql", encoding="utf-8") as handle:
             schema = handle.read()
 
         self.assertIn("CREATE TABLE IF NOT EXISTS faq_entries", schema)
-        self.assertIn("CREATE TABLE IF NOT EXISTS faq_embeddings", schema)
         self.assertIn("CREATE TABLE IF NOT EXISTS faq_events", schema)
         self.assertIn("CREATE TABLE IF NOT EXISTS faq_review_candidates", schema)
-        self.assertIn("CREATE TABLE IF NOT EXISTS knowledge_base_version", schema)
-        self.assertIn("REFERENCES faq_entries(id) ON DELETE CASCADE", schema)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS docs", schema)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS doc_embeddings", schema)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS faq_embeddings", schema)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS knowledge_base_version", schema)
 
     async def test_create_faq_review_candidate_normalizes_and_inserts_pending_candidate(self) -> None:
         conn = FakeConnection()
@@ -240,12 +228,6 @@ class FAQKnowledgeTests(unittest.IsolatedAsyncioTestCase):
             "updated_at": None,
         }
         pool = FakePool(conn)
-        embedded_texts = []
-
-        async def embedding_provider(texts, model):
-            embedded_texts.extend(texts)
-            return [[0.1, 0.2]]
-
         with patch(
             "bulmaai.services.faq_knowledge.upsert_approved_faq",
             new=AsyncMock(return_value=type("Result", (), {"faq_id": 55})()),
@@ -253,8 +235,6 @@ class FAQKnowledgeTests(unittest.IsolatedAsyncioTestCase):
             result = await approve_faq_candidate(
                 42,
                 actor_id=777,
-                embedding_provider=embedding_provider,
-                embedding_model="test-embedding",
                 pool=pool,
             )
 

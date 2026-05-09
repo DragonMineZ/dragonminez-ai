@@ -139,7 +139,7 @@ class AiAnnTranslation(commands.Cog):
         }
         publishable_channels.discard(None)
 
-        if message.channel.id in publishable_channels:
+        if message.channel.id in publishable_channels and message.channel.type == discord.ChannelType.news:
             try:
                 await message.publish()
                 log.info(f"Published announcement message from {message.author}")

@@ -25,10 +25,20 @@ class ReleaseWebhookResponse:
     body: str
 
 
+FORBIDDEN_RESPONSE = ReleaseWebhookResponse(status=403, body="Forbidden")
+
+
 def _get_header(headers: Any, name: str) -> str | None:
     if hasattr(headers, "get"):
         return headers.get(name)
     return None
+
+
+def _has_valid_secret(headers: Any, secret: str | None) -> bool:
+    if not secret:
+        return False
+    provided_secret = _get_header(headers, WEBHOOK_SECRET_HEADER)
+    return bool(provided_secret) and compare_digest(provided_secret, secret)
 
 
 def handle_release_webhook_post(
@@ -40,13 +50,11 @@ def handle_release_webhook_post(
     secret: str | None,
     submit_payload: Callable[[dict[str, Any]], None],
 ) -> ReleaseWebhookResponse:
+    if not _has_valid_secret(headers, secret):
+        return FORBIDDEN_RESPONSE
+
     if path != expected_path:
         return ReleaseWebhookResponse(status=404, body="Not found")
-
-    if secret:
-        provided_secret = _get_header(headers, WEBHOOK_SECRET_HEADER)
-        if not provided_secret or not compare_digest(provided_secret, secret):
-            return ReleaseWebhookResponse(status=401, body="Invalid webhook secret")
 
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -76,6 +84,8 @@ class ReleaseWebhookServer:
         loop: asyncio.AbstractEventLoop,
         on_payload: Callable[[dict[str, Any]], Awaitable[None]],
     ):
+        if not secret:
+            raise ValueError("Release webhook secret is required")
         self.host = host
         self.port = port
         self.path = path
@@ -92,6 +102,12 @@ class ReleaseWebhookServer:
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
+            def _send_release_response(self, response: ReleaseWebhookResponse) -> None:
+                self.send_response(response.status)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(response.body.encode("utf-8"))
+
             def do_POST(self) -> None:
                 content_length = int(self.headers.get("Content-Length", "0") or "0")
                 body = self.rfile.read(content_length)
@@ -103,10 +119,17 @@ class ReleaseWebhookServer:
                     secret=owner.secret,
                     submit_payload=owner._submit_payload,
                 )
-                self.send_response(response.status)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(response.body.encode("utf-8"))
+                self._send_release_response(response)
+
+            def _reject_unsupported_method(self) -> None:
+                self._send_release_response(FORBIDDEN_RESPONSE)
+
+            do_GET = _reject_unsupported_method
+            do_HEAD = _reject_unsupported_method
+            do_PUT = _reject_unsupported_method
+            do_PATCH = _reject_unsupported_method
+            do_DELETE = _reject_unsupported_method
+            do_OPTIONS = _reject_unsupported_method
 
             def log_message(self, format: str, *args: object) -> None:
                 log.info("Release webhook: " + format, *args)

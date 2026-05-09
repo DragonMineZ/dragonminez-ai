@@ -65,6 +65,12 @@ class ReleaseApprovalCog(commands.Cog):
             return
         if self.webhook_server is not None:
             return
+        if not self.settings.release_webhook_secret:
+            log.error(
+                "Release webhook is enabled but DMZ_RELEASE_BOT_WEBHOOK_SECRET is not set; "
+                "webhook listener will not start."
+            )
+            return
 
         self.webhook_server = ReleaseWebhookServer(
             host=self.settings.release_webhook_host,

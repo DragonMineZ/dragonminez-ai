@@ -8,6 +8,7 @@ os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.config import get_editable_setting_names, load_settings
+from bulmaai.cogs.release_approval import ReleaseApprovalCog
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
 from bulmaai.services.release_approval import (
@@ -184,6 +185,28 @@ class ReleaseApprovalTests(unittest.TestCase):
         self.assertEqual(field_values["Artifact SHA-256"], "`sha256-from-prepare-build`")
         self.assertIn("modrinth", field_values["Targets"])
         self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
+
+    def test_release_webhook_does_not_start_without_secret(self) -> None:
+        settings = type(
+            "Settings",
+            (),
+            {
+                "release_webhook_enabled": True,
+                "release_webhook_secret": None,
+                "release_webhook_host": "127.0.0.1",
+                "release_webhook_port": 0,
+                "release_webhook_path": "/dmz-release",
+            },
+        )()
+        cog = object.__new__(ReleaseApprovalCog)
+        cog.settings = settings
+        cog.webhook_server = None
+
+        with self.assertLogs("bulmaai.cogs.release_approval", level="ERROR") as logs:
+            cog._start_webhook_server()
+
+        self.assertIsNone(cog.webhook_server)
+        self.assertIn("DMZ_RELEASE_BOT_WEBHOOK_SECRET", "\n".join(logs.output))
 
 
 class GitHubDispatchTests(unittest.IsolatedAsyncioTestCase):

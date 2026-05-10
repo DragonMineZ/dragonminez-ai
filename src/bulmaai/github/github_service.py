@@ -3,6 +3,29 @@ from bulmaai.services.http import request
 from bulmaai.github.github_app_auth import GitHubAppAuth
 
 
+def _is_ref_already_exists_response(response) -> bool:
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+
+    message = str(payload.get("message", "")).lower()
+    if "reference already exists" in message:
+        return True
+
+    errors = payload.get("errors")
+    if not isinstance(errors, list):
+        return False
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        code = str(error.get("code", "")).lower()
+        error_message = str(error.get("message", "")).lower()
+        if code == "already_exists" or "reference already exists" in error_message:
+            return True
+    return False
+
+
 class GitHubService:
     def __init__(self, *, auth: GitHubAppAuth, owner: str, repo: str, base_branch: str = "main", whitelist_file_path: str | None = None):
         self.auth = auth
@@ -99,8 +122,11 @@ class GitHubService:
         sha = await self.get_ref_sha(from_branch)
         payload = {"ref": f"refs/heads/{new_branch}", "sha": sha}
         r = await request("POST", f"{self.api}/git/refs", headers=await self._headers(), json=payload)
-        if r.status_code not in (201, 422):
-            r.raise_for_status()
+        if r.status_code == 201:
+            return
+        if r.status_code == 422 and _is_ref_already_exists_response(r):
+            return
+        r.raise_for_status()
 
     async def remove_branch(self, branch: str) -> None:
         r = await request("DELETE", f"{self.api}/git/refs/heads/{branch}", headers=await self._headers())

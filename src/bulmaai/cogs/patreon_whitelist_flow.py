@@ -14,6 +14,10 @@ ADMIN_PING_ROLE_ID = 1309022450671161476
 STAFF_CHANNEL_ID = 1493390527004147876
 
 
+def _patreon_branch_name(user_id: int) -> str:
+    return f"patreon/user-{user_id}"
+
+
 async def _pick_staff_channel(
     bot: discord.Bot,
     ctx_or_inter: discord.Interaction | discord.ApplicationContext | None = None,
@@ -92,131 +96,26 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 interaction: discord.Interaction,
                 initial_nick: str,
             ):
-                state = {"nick": initial_nick}
-
-                safe_user = interaction.user.name.replace(" ", "_")
-                branch = f"patreon/{safe_user}-{interaction.user.id}"
-
-                await self.gh.create_branch(branch, self.gh.base_branch)
-
-                base_text, base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
-                base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
-
-                if state["nick"] in base_lines:
-                    await interaction.followup.send(
-                        f"`{state['nick']}` is already whitelisted. Nothing to do.",
-                        ephemeral=True,
+                try:
+                    await self._submit_whitelist_request(
+                        interaction=interaction,
+                        initial_nick=initial_nick,
                     )
-                    return
-
-                new_text = "\n".join(base_lines + [state["nick"]]) + "\n"
-                await self.gh.put_whitelist_file(
-                    branch=branch,
-                    new_text=new_text,
-                    sha=base_sha,
-                    message=f"Add beta tester: {state['nick']}",
-                )
-
-                pr_data = await self.gh.create_pr(
-                    head_branch=branch,
-                    title=f"Add beta tester: {state['nick']}",
-                    body=f"Requested by Discord user {interaction.user} ({interaction.user.id}).",
-                )
-                pr_number = pr_data["number"]
-                pr_url = pr_data["html_url"]
-
-                staff_channel = await _pick_staff_channel(self.bot, interaction)
-                if staff_channel is None:
+                except Exception:
+                    log.exception(
+                        "Failed to create Patreon whitelist request",
+                        extra={
+                            "event": "patreon_whitelist_request_failed",
+                            "user_id": interaction.user.id,
+                            "whitelist_repo": self.gh.repo,
+                            "whitelist_file_path": self.gh.whitelist_file_path,
+                        },
+                    )
                     await interaction.followup.send(
-                        "I created the whitelist PR, but I could not notify staff. "
+                        "I could not submit the whitelist request because the GitHub update failed. "
                         "Please ask staff to check the bot logs.",
                         ephemeral=True,
                     )
-                    log.error(
-                        "Patreon whitelist PR created but staff channel unavailable",
-                        extra={
-                            "event": "patreon_whitelist_staff_channel_missing",
-                            "user_id": interaction.user.id,
-                            "pr_number": pr_number,
-                        },
-                    )
-                    return
-                staff_guild = getattr(staff_channel, "guild", None)
-                admin_role = staff_guild.get_role(ADMIN_PING_ROLE_ID) if staff_guild else None
-                mention = admin_role.mention if admin_role else f"<@&{ADMIN_PING_ROLE_ID}>"
-
-                admin_view: AdminPRView | None = None
-
-                async def admin_confirm(admin_inter: discord.Interaction):
-                    await self.gh.merge_pr(pr_number)
-                    await self.gh.add_pr_comment(
-                        pr_number,
-                        f"Request approved by {admin_inter.user}, PR merged.",
-                    )
-                    await self.gh.remove_branch(branch)
-                    await admin_inter.followup.send(
-                        f"PR #{pr_number} merged. `{state['nick']}` approved."
-                    )
-
-                async def admin_edit(admin_inter: discord.Interaction, new_nick: str):
-                    old_nick = state["nick"]
-
-                    branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
-                    lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
-                    lines = [ln for ln in lines if ln != old_nick]
-                    if new_nick not in lines:
-                        lines.append(new_nick)
-
-                    updated = "\n".join(lines) + "\n"
-                    await self.gh.put_whitelist_file(
-                        branch=branch,
-                        new_text=updated,
-                        sha=branch_sha,
-                        message=f"Update beta tester: {old_nick} -> {new_nick}",
-                    )
-
-                    state["nick"] = new_nick
-                    if admin_view is not None:
-                        admin_view.nickname = new_nick
-
-                    await admin_inter.followup.send(
-                        f"Updated PR branch nickname to `{new_nick}`."
-                    )
-
-                async def admin_reject(admin_inter: discord.Interaction):
-                    await self.gh.close_pr(pr_number)
-                    await self.gh.add_pr_comment(
-                        pr_number,
-                        f"Request rejected by {admin_inter.user}, PR closed.",
-                    )
-                    await self.gh.remove_branch(branch)
-                    await admin_inter.followup.send(
-                        f"PR #{pr_number} closed. Request rejected."
-                    )
-
-                admin_view = AdminPRView(
-                    pr_number=pr_number,
-                    nickname=state["nick"],
-                    branch=branch,
-                    on_confirm=admin_confirm,
-                    on_edit=admin_edit,
-                    on_reject=admin_reject,
-                )
-
-                await staff_channel.send(
-                    f"{mention}\n\n"
-                    f"{interaction.user.mention} has set their Patreon Minecraft nickname as "
-                    f"`{state['nick']}`.\n"
-                    f"\n"
-                    f"PR: {pr_url}",
-                    view=admin_view,
-                    allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
-                )
-
-                await interaction.followup.send(
-                    "Request submitted. Please wait for an administrator to approve.",
-                    ephemeral=True,
-                )
 
             await channel.send(
                 f"You've said that `{nickname}` is your Minecraft nickname to get access to "
@@ -237,6 +136,141 @@ class PatreonWhitelistFlowCog(commands.Cog):
             f"so we can start the Patreon beta whitelist process."
         )
         return "asked_for_nickname"
+
+    async def _submit_whitelist_request(
+        self,
+        *,
+        interaction: discord.Interaction,
+        initial_nick: str,
+    ) -> None:
+        state = {"nick": initial_nick}
+        branch = _patreon_branch_name(interaction.user.id)
+
+        base_text, _base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
+        base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
+
+        if state["nick"] in base_lines:
+            await interaction.followup.send(
+                f"`{state['nick']}` is already whitelisted. Nothing to do.",
+                ephemeral=True,
+            )
+            return
+
+        await self.gh.create_branch(branch, self.gh.base_branch)
+
+        branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
+        branch_lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
+        if state["nick"] not in branch_lines:
+            branch_lines.append(state["nick"])
+
+        new_text = "\n".join(branch_lines) + "\n"
+        await self.gh.put_whitelist_file(
+            branch=branch,
+            new_text=new_text,
+            sha=branch_sha,
+            message=f"Add beta tester: {state['nick']}",
+        )
+
+        pr_data = await self.gh.create_pr(
+            head_branch=branch,
+            title=f"Add beta tester: {state['nick']}",
+            body=f"Requested by Discord user {interaction.user} ({interaction.user.id}).",
+        )
+        pr_number = pr_data["number"]
+        pr_url = pr_data["html_url"]
+
+        staff_channel = await _pick_staff_channel(self.bot, interaction)
+        if staff_channel is None:
+            await interaction.followup.send(
+                "I created the whitelist PR, but I could not notify staff. "
+                "Please ask staff to check the bot logs.",
+                ephemeral=True,
+            )
+            log.error(
+                "Patreon whitelist PR created but staff channel unavailable",
+                extra={
+                    "event": "patreon_whitelist_staff_channel_missing",
+                    "user_id": interaction.user.id,
+                    "pr_number": pr_number,
+                },
+            )
+            return
+        staff_guild = getattr(staff_channel, "guild", None)
+        admin_role = staff_guild.get_role(ADMIN_PING_ROLE_ID) if staff_guild else None
+        mention = admin_role.mention if admin_role else f"<@&{ADMIN_PING_ROLE_ID}>"
+
+        admin_view: AdminPRView | None = None
+
+        async def admin_confirm(admin_inter: discord.Interaction):
+            await self.gh.merge_pr(pr_number)
+            await self.gh.add_pr_comment(
+                pr_number,
+                f"Request approved by {admin_inter.user}, PR merged.",
+            )
+            await self.gh.remove_branch(branch)
+            await admin_inter.followup.send(
+                f"PR #{pr_number} merged. `{state['nick']}` approved."
+            )
+
+        async def admin_edit(admin_inter: discord.Interaction, new_nick: str):
+            old_nick = state["nick"]
+
+            branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
+            lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
+            lines = [ln for ln in lines if ln != old_nick]
+            if new_nick not in lines:
+                lines.append(new_nick)
+
+            updated = "\n".join(lines) + "\n"
+            await self.gh.put_whitelist_file(
+                branch=branch,
+                new_text=updated,
+                sha=branch_sha,
+                message=f"Update beta tester: {old_nick} -> {new_nick}",
+            )
+
+            state["nick"] = new_nick
+            if admin_view is not None:
+                admin_view.nickname = new_nick
+
+            await admin_inter.followup.send(
+                f"Updated PR branch nickname to `{new_nick}`."
+            )
+
+        async def admin_reject(admin_inter: discord.Interaction):
+            await self.gh.close_pr(pr_number)
+            await self.gh.add_pr_comment(
+                pr_number,
+                f"Request rejected by {admin_inter.user}, PR closed.",
+            )
+            await self.gh.remove_branch(branch)
+            await admin_inter.followup.send(
+                f"PR #{pr_number} closed. Request rejected."
+            )
+
+        admin_view = AdminPRView(
+            pr_number=pr_number,
+            nickname=state["nick"],
+            branch=branch,
+            on_confirm=admin_confirm,
+            on_edit=admin_edit,
+            on_reject=admin_reject,
+        )
+
+        await staff_channel.send(
+            f"{mention}\n\n"
+            f"{interaction.user.mention} has set their Patreon Minecraft nickname as "
+            f"`{state['nick']}`.\n"
+            f"\n"
+            f"PR: {pr_url}",
+            view=admin_view,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+        )
+
+        await interaction.followup.send(
+            "Request submitted. Please wait for an administrator to approve.",
+            ephemeral=True,
+        )
 
 
 def setup(bot: discord.Bot):

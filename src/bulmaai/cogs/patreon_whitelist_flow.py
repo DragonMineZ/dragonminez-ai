@@ -18,6 +18,28 @@ def _patreon_branch_name(user_id: int) -> str:
     return f"patreon/user-{user_id}"
 
 
+async def _edit_user_status_message(message, content: str) -> None:
+    if message is None:
+        return
+    try:
+        await message.edit(content=content, view=None)
+    except Exception:
+        log.exception("Failed to edit Patreon whitelist user status message")
+
+
+async def _dm_user(user, content: str) -> None:
+    try:
+        await user.send(content)
+    except Exception:
+        log.exception(
+            "Failed to DM Patreon whitelist requester",
+            extra={
+                "event": "patreon_whitelist_dm_failed",
+                "user_id": getattr(user, "id", None),
+            },
+        )
+
+
 async def _pick_staff_channel(
     bot: discord.Bot,
     ctx_or_inter: discord.Interaction | discord.ApplicationContext | None = None,
@@ -145,6 +167,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
     ) -> None:
         state = {"nick": initial_nick}
         branch = _patreon_branch_name(interaction.user.id)
+        requester = interaction.user
+        user_status_message = getattr(interaction, "message", None)
 
         base_text, _base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
         base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
@@ -160,18 +184,27 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
         branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
         branch_lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
-        if state["nick"] not in branch_lines:
+        if state["nick"] in branch_lines:
+            log.info(
+                "Patreon whitelist branch already contains nickname; reusing PR flow",
+                extra={
+                    "event": "patreon_whitelist_branch_already_updated",
+                    "user_id": interaction.user.id,
+                    "branch": branch,
+                    "nickname": state["nick"],
+                },
+            )
+        else:
             branch_lines.append(state["nick"])
+            new_text = "\n".join(branch_lines) + "\n"
+            await self.gh.put_whitelist_file(
+                branch=branch,
+                new_text=new_text,
+                sha=branch_sha,
+                message=f"Add beta tester: {state['nick']}",
+            )
 
-        new_text = "\n".join(branch_lines) + "\n"
-        await self.gh.put_whitelist_file(
-            branch=branch,
-            new_text=new_text,
-            sha=branch_sha,
-            message=f"Add beta tester: {state['nick']}",
-        )
-
-        pr_data = await self.gh.create_pr(
+        pr_data = await self.gh.create_or_get_pr(
             head_branch=branch,
             title=f"Add beta tester: {state['nick']}",
             body=f"Requested by Discord user {interaction.user} ({interaction.user.id}).",
@@ -208,6 +241,11 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 f"Request approved by {admin_inter.user}, PR merged.",
             )
             await self.gh.remove_branch(branch)
+            await _edit_user_status_message(user_status_message, "Success")
+            await _dm_user(
+                requester,
+                f"Congratulations, {admin_inter.user} has approved your request and you now have access to the latest previews!",
+            )
             await admin_inter.followup.send(
                 f"PR #{pr_number} merged. `{state['nick']}` approved."
             )
@@ -244,6 +282,11 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 f"Request rejected by {admin_inter.user}, PR closed.",
             )
             await self.gh.remove_branch(branch)
+            await _edit_user_status_message(user_status_message, "Rejected")
+            await _dm_user(
+                requester,
+                f"Your Patreon whitelist request was rejected by {admin_inter.user}. Please contact staff if you think this was a mistake.",
+            )
             await admin_inter.followup.send(
                 f"PR #{pr_number} closed. Request rejected."
             )

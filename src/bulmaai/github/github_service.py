@@ -1,4 +1,6 @@
 import base64
+from requests import HTTPError
+
 from bulmaai.services.http import request
 from bulmaai.github.github_app_auth import GitHubAppAuth
 
@@ -22,6 +24,28 @@ def _is_ref_already_exists_response(response) -> bool:
         code = str(error.get("code", "")).lower()
         error_message = str(error.get("message", "")).lower()
         if code == "already_exists" or "reference already exists" in error_message:
+            return True
+    return False
+
+
+def _is_pull_request_already_exists_response(response) -> bool:
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+
+    message = str(payload.get("message", "")).lower()
+    if "pull request already exists" in message:
+        return True
+
+    errors = payload.get("errors")
+    if not isinstance(errors, list):
+        return False
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        error_message = str(error.get("message", "")).lower()
+        if "pull request already exists" in error_message:
             return True
     return False
 
@@ -153,8 +177,10 @@ class GitHubService:
 
     # ==================== PULL REQUESTS ====================
 
-    async def list_prs(self, *, state: str = "open", per_page: int = 25) -> list[dict]:
+    async def list_prs(self, *, state: str = "open", per_page: int = 25, head: str | None = None) -> list[dict]:
         params = {"state": state, "per_page": per_page}
+        if head:
+            params["head"] = head
         r = await request("GET", f"{self.api}/pulls", headers=await self._headers(), params=params)
         r.raise_for_status()
         return r.json()
@@ -169,6 +195,33 @@ class GitHubService:
         r = await request("POST", f"{self.api}/pulls", headers=await self._headers(), json=payload)
         r.raise_for_status()
         return r.json()
+
+    async def get_pr_by_head_branch(self, head_branch: str, *, state: str = "open") -> dict | None:
+        prs = await self.list_prs(
+            state=state,
+            per_page=1,
+            head=f"{self.owner}:{head_branch}",
+        )
+        return prs[0] if prs else None
+
+    async def create_or_get_pr(self, *, head_branch: str, title: str, body: str) -> dict:
+        try:
+            return await self.create_pr(
+                head_branch=head_branch,
+                title=title,
+                body=body,
+            )
+        except HTTPError as exc:
+            response = getattr(exc, "response", None)
+            if (
+                response is not None
+                and response.status_code == 422
+                and _is_pull_request_already_exists_response(response)
+            ):
+                existing_pr = await self.get_pr_by_head_branch(head_branch)
+                if existing_pr is not None:
+                    return existing_pr
+            raise
 
     async def merge_pr(self, pr_number: int, *, merge_method: str = "squash") -> dict:
         r = await request("PUT", f"{self.api}/pulls/{pr_number}/merge", headers=await self._headers(), json={"merge_method": merge_method})

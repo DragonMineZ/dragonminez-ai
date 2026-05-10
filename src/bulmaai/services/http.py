@@ -6,6 +6,7 @@ from typing import Any
 
 async def request(method: str, url: str, *, headers: dict[str, str] | None = None,
                   params: dict[str, Any] | None = None, json: Any | None = None,
+                  data: Any | None = None,
                   timeout: int = 30) -> requests.Response:
     def _do():
         return requests.request(
@@ -13,6 +14,7 @@ async def request(method: str, url: str, *, headers: dict[str, str] | None = Non
             headers=headers,
             params=params,
             json=json,
+            data=data,
             timeout=timeout,
         )
     return await asyncio.to_thread(_do)

@@ -16,7 +16,11 @@ class FakeResponse:
         return self._payload
 
     def raise_for_status(self):
-        raise HTTPError(f"{self.status_code} error")
+        if self.status_code < 400:
+            return
+        error = HTTPError(f"{self.status_code} error")
+        error.response = self
+        raise error
 
 
 class GitHubServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +62,39 @@ class GitHubServiceTests(unittest.IsolatedAsyncioTestCase):
             ):
                 with self.assertRaises(HTTPError):
                     await service.create_branch("patreon/bad/name", "main")
+
+    async def test_create_or_get_pr_returns_existing_open_pr_on_duplicate_422(self) -> None:
+        service = GitHubService(
+            auth=SimpleNamespace(get_installation_token=AsyncMock(return_value="token")),
+            owner="DragonMineZ",
+            repo=".github",
+        )
+        duplicate_response = FakeResponse(
+            422,
+            {
+                "message": "Validation Failed",
+                "errors": [
+                    {
+                        "resource": "PullRequest",
+                        "code": "custom",
+                        "message": "A pull request already exists for DragonMineZ:patreon/user-456.",
+                    }
+                ],
+            },
+        )
+        existing_pr = {"number": 12, "html_url": "https://example.test/pr/12"}
+
+        with patch(
+            "bulmaai.github.github_service.request",
+            AsyncMock(side_effect=[duplicate_response, FakeResponse(200, [existing_pr])]),
+        ):
+            pr = await service.create_or_get_pr(
+                head_branch="patreon/user-456",
+                title="Add beta tester: NewTester",
+                body="Requested by Discord user Requester (456).",
+            )
+
+        self.assertEqual(pr, existing_pr)
 
 
 if __name__ == "__main__":

@@ -75,6 +75,53 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.phishdestroy_timeout_seconds, 5)
         self.assertEqual(settings.phishdestroy_recovery_interval_seconds, 300)
 
+    def test_dev_jar_download_settings_are_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DEV_JAR_DOWNLOAD_CHANNEL_ID": "1223439164121419838",
+                "DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL": "https://downloads.example.test",
+                "DEV_JAR_DOWNLOAD_UPLOAD_DIR": "/srv/dmz/dev-jars",
+                "DEV_JAR_DOWNLOAD_WEBHOOK_PATH": "/dmz-dev-jar",
+                "DEV_JAR_DOWNLOAD_DOWNLOAD_PATH": "/dev-download",
+                "DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH": "/dev-download/oauth/callback",
+                "DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS": "1341596685339725885",
+                "PATREON_OAUTH_CLIENT_ID": "client-id",
+                "PATREON_OAUTH_CLIENT_SECRET": "client-secret",
+                "DEV_JAR_DOWNLOAD_WEBHOOK_SECRET": "webhook-secret",
+            },
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.dev_jar_download_channel_id, 1223439164121419838)
+        self.assertEqual(settings.dev_jar_download_public_base_url, "https://downloads.example.test")
+        self.assertEqual(settings.dev_jar_download_upload_dir, "/srv/dmz/dev-jars")
+        self.assertEqual(settings.dev_jar_download_webhook_path, "/dmz-dev-jar")
+        self.assertEqual(settings.dev_jar_download_download_path, "/dev-download")
+        self.assertEqual(settings.dev_jar_download_oauth_callback_path, "/dev-download/oauth/callback")
+        self.assertEqual(settings.dev_jar_download_bypass_role_ids, (1341596685339725885,))
+        self.assertEqual(settings.patreon_oauth_client_id, "client-id")
+        self.assertEqual(settings.patreon_oauth_client_secret, "client-secret")
+        self.assertEqual(settings.dev_jar_download_webhook_secret, "webhook-secret")
+
+    def test_dev_jar_public_base_url_defaults_to_downloads_domain(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(
+            settings.dev_jar_download_public_base_url,
+            "https://downloads.dragonminez.com",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

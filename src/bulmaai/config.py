@@ -72,6 +72,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.patreon_announcements",
     "bulmaai.cogs.curseforge_updates",
     "bulmaai.cogs.release_approval",
+    "bulmaai.cogs.dev_jar_downloads",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -141,6 +142,18 @@ DEFAULT_RELEASE_WEBHOOK_ENABLED = True
 DEFAULT_RELEASE_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_RELEASE_WEBHOOK_PORT = 8088
 DEFAULT_RELEASE_WEBHOOK_PATH = "/dmz-release"
+DEFAULT_DEV_JAR_DOWNLOAD_ENABLED = True
+DEFAULT_DEV_JAR_DOWNLOAD_HOST = "0.0.0.0"
+DEFAULT_DEV_JAR_DOWNLOAD_PORT = 8090
+DEFAULT_DEV_JAR_DOWNLOAD_CHANNEL_ID = 1223439164121419838
+DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL: str | None = "https://downloads.dragonminez.com"
+DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR: str | None = None
+DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH = "/dmz-dev-jar"
+DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH = "/dev-download"
+DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH = "/dev-download/oauth/callback"
+DEFAULT_DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS: Sequence[int] = (1341596685339725885,)
+DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
+DEFAULT_PATREON_OAUTH_SCOPE = "identity"
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
 DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
@@ -189,6 +202,9 @@ NON_OVERRIDABLE_SETTINGS = {
     "PATREON_CREATOR_TOKEN",
     "curseforge_api_key",
     "release_webhook_secret",
+    "dev_jar_download_webhook_secret",
+    "dev_jar_download_upload_dir",
+    "patreon_oauth_client_secret",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -247,6 +263,22 @@ class Settings:
     release_webhook_port: int
     release_webhook_path: str
     release_webhook_secret: str | None
+    dev_jar_download_enabled: bool
+    dev_jar_download_host: str
+    dev_jar_download_port: int
+    dev_jar_download_channel_id: int | None
+    dev_jar_download_public_base_url: str | None
+    dev_jar_download_upload_dir: str | None
+    dev_jar_download_webhook_path: str
+    dev_jar_download_download_path: str
+    dev_jar_download_oauth_callback_path: str
+    dev_jar_download_webhook_secret: str | None
+    dev_jar_download_bypass_role_ids: Sequence[int]
+    dev_jar_download_token_ttl_seconds: int
+    patreon_oauth_client_id: str | None
+    patreon_oauth_client_secret: str | None
+    patreon_oauth_redirect_uri: str | None
+    patreon_oauth_scope: str
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_support_allowed_role_ids: Sequence[int]
@@ -450,6 +482,67 @@ def _build_settings_from_env() -> Settings:
             or DEFAULT_RELEASE_WEBHOOK_PATH
         ),
         release_webhook_secret=_get_env("DMZ_RELEASE_BOT_WEBHOOK_SECRET"),
+        dev_jar_download_enabled=_get_env_bool(
+            "DEV_JAR_DOWNLOAD_ENABLED",
+            DEFAULT_DEV_JAR_DOWNLOAD_ENABLED,
+        ),
+        dev_jar_download_host=(
+            _get_env("DEV_JAR_DOWNLOAD_HOST", DEFAULT_DEV_JAR_DOWNLOAD_HOST)
+            or DEFAULT_DEV_JAR_DOWNLOAD_HOST
+        ),
+        dev_jar_download_port=(
+            _get_env_int("DEV_JAR_DOWNLOAD_PORT", DEFAULT_DEV_JAR_DOWNLOAD_PORT)
+            or DEFAULT_DEV_JAR_DOWNLOAD_PORT
+        ),
+        dev_jar_download_channel_id=_get_env_int(
+            "DEV_JAR_DOWNLOAD_CHANNEL_ID",
+            DEFAULT_DEV_JAR_DOWNLOAD_CHANNEL_ID,
+        ),
+        dev_jar_download_public_base_url=_get_env(
+            "DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL",
+            DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL,
+        ),
+        dev_jar_download_upload_dir=_get_env(
+            "DEV_JAR_DOWNLOAD_UPLOAD_DIR",
+            DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR,
+        ),
+        dev_jar_download_webhook_path=(
+            _get_env("DEV_JAR_DOWNLOAD_WEBHOOK_PATH", DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH)
+            or DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH
+        ),
+        dev_jar_download_download_path=(
+            _get_env("DEV_JAR_DOWNLOAD_DOWNLOAD_PATH", DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH)
+            or DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH
+        ),
+        dev_jar_download_oauth_callback_path=(
+            _get_env(
+                "DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH",
+                DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH,
+            )
+            or DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH
+        ),
+        dev_jar_download_webhook_secret=(
+            _get_env("DEV_JAR_DOWNLOAD_WEBHOOK_SECRET")
+            or _get_env("DMZ_DEV_JAR_WEBHOOK_SECRET")
+        ),
+        dev_jar_download_bypass_role_ids=_get_env_int_list(
+            "DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS",
+            DEFAULT_DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS,
+        ),
+        dev_jar_download_token_ttl_seconds=(
+            _get_env_int(
+                "DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS",
+                DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS,
+            )
+            or DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS
+        ),
+        patreon_oauth_client_id=_get_env("PATREON_OAUTH_CLIENT_ID"),
+        patreon_oauth_client_secret=_get_env("PATREON_OAUTH_CLIENT_SECRET"),
+        patreon_oauth_redirect_uri=_get_env("PATREON_OAUTH_REDIRECT_URI"),
+        patreon_oauth_scope=(
+            _get_env("PATREON_OAUTH_SCOPE", DEFAULT_PATREON_OAUTH_SCOPE)
+            or DEFAULT_PATREON_OAUTH_SCOPE
+        ),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),
         ai_support_allowed_role_ids=_get_env_int_list(

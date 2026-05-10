@@ -2,8 +2,14 @@ import asyncio
 import http.client
 import json
 import unittest
+from dataclasses import dataclass
 
-from bulmaai.services.release_webhook import ReleaseWebhookServer, handle_release_webhook_post
+from bulmaai.services.release_webhook import (
+    ReleaseWebhookServer,
+    clear_extra_webhook_routes,
+    handle_release_webhook_post,
+    register_extra_webhook_route,
+)
 
 
 VALID_PAYLOAD = {
@@ -23,6 +29,9 @@ VALID_PAYLOAD = {
 
 
 class ReleaseWebhookTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        clear_extra_webhook_routes()
+
     def test_valid_post_queues_candidate_payload(self) -> None:
         queued: list[dict] = []
 
@@ -49,6 +58,58 @@ class ReleaseWebhookTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status, 404)
+
+    def test_registered_extra_route_handles_dev_jar_path_before_release_parser(self) -> None:
+        @dataclass(frozen=True)
+        class ParsedPayload:
+            remote_name: str
+
+        queued = []
+
+        def parse_dev_payload(payload: dict) -> ParsedPayload:
+            return ParsedPayload(remote_name=str(payload["remote_name"]))
+
+        register_extra_webhook_route(
+            path="/dmz-dev-jar",
+            secret="dev-secret",
+            secret_header="X-DMZ-Dev-Jar-Secret",
+            parse_payload=parse_dev_payload,
+            submit_payload=queued.append,
+            accepted_body="Dev jar upload queued",
+        )
+
+        response = handle_release_webhook_post(
+            path="/dmz-dev-jar",
+            body=json.dumps({"remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar"}).encode("utf-8"),
+            headers={"X-DMZ-Dev-Jar-Secret": "dev-secret"},
+            expected_path="/dmz-release",
+            secret="release-secret",
+            submit_payload=lambda payload: None,
+        )
+
+        self.assertEqual(response.status, 202)
+        self.assertEqual(queued, [ParsedPayload("dragonminez-2.1.2__v2.1__222222222222.jar")])
+
+    def test_registered_extra_route_rejects_wrong_secret_before_release_parser(self) -> None:
+        register_extra_webhook_route(
+            path="/dmz-dev-jar",
+            secret="dev-secret",
+            secret_header="X-DMZ-Dev-Jar-Secret",
+            parse_payload=lambda payload: payload,
+            submit_payload=lambda payload: None,
+            accepted_body="Dev jar upload queued",
+        )
+
+        response = handle_release_webhook_post(
+            path="/dmz-dev-jar",
+            body=b"{invalid-json",
+            headers={"X-DMZ-Dev-Jar-Secret": "wrong"},
+            expected_path="/dmz-release",
+            secret="release-secret",
+            submit_payload=lambda payload: None,
+        )
+
+        self.assertEqual(response.status, 403)
 
     def test_invalid_json_is_rejected(self) -> None:
         response = handle_release_webhook_post(

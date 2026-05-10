@@ -17,13 +17,19 @@ from bulmaai.services.dev_jar_downloads import (
     build_patreon_authorization_url,
     find_latest_dev_jar,
     has_active_patreon_membership,
+    parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
     parse_oauth_state,
 )
+from bulmaai.services.dev_jar_webhook import DEV_JAR_WEBHOOK_SECRET_HEADER
 from bulmaai.services.dev_jar_server import (
     DevJarDownloadServer,
     DevJarHttpResponse,
     text_response,
+)
+from bulmaai.services.release_webhook import (
+    register_extra_webhook_route,
+    unregister_extra_webhook_route,
 )
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 
@@ -88,15 +94,53 @@ class DevJarDownloadsCog(commands.Cog):
         self.token_store = OneTimeDownloadTokenStore(now=time.time)
         self.server: DevJarDownloadServer | None = None
         self._server_started = False
+        self._release_webhook_route_registered = False
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
+        self._register_release_webhook_route()
         self._start_server_if_configured()
 
     def cog_unload(self) -> None:
+        unregister_extra_webhook_route(self.settings.dev_jar_download_webhook_path)
         if self.server is not None:
             self.server.stop()
             self.server = None
+
+    def _register_release_webhook_route(self) -> None:
+        if self._release_webhook_route_registered:
+            return
+        self._release_webhook_route_registered = True
+        if not self.settings.dev_jar_download_enabled:
+            return
+        if not self.settings.dev_jar_download_webhook_secret:
+            log.error("DEV_JAR_DOWNLOAD_WEBHOOK_SECRET is missing; release webhook dev-jar route skipped.")
+            return
+
+        loop = asyncio.get_running_loop()
+
+        def submit_payload(payload: DevJarUploadPayload) -> None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._handle_upload_payload(payload),
+                loop,
+            )
+
+            def log_result(done_future: asyncio.Future[None]) -> None:
+                try:
+                    done_future.result()
+                except Exception:
+                    log.exception("Dev jar upload payload handling failed")
+
+            future.add_done_callback(log_result)
+
+        register_extra_webhook_route(
+            path=self.settings.dev_jar_download_webhook_path,
+            secret=self.settings.dev_jar_download_webhook_secret,
+            secret_header=DEV_JAR_WEBHOOK_SECRET_HEADER,
+            parse_payload=parse_dev_jar_upload_payload,
+            submit_payload=submit_payload,
+            accepted_body="Dev jar upload queued",
+        )
 
     def _start_server_if_configured(self) -> None:
         if self._server_started:

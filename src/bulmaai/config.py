@@ -143,8 +143,6 @@ DEFAULT_RELEASE_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_RELEASE_WEBHOOK_PORT = 8088
 DEFAULT_RELEASE_WEBHOOK_PATH = "/dmz-release"
 DEFAULT_DEV_JAR_DOWNLOAD_ENABLED = True
-DEFAULT_DEV_JAR_DOWNLOAD_HOST = "0.0.0.0"
-DEFAULT_DEV_JAR_DOWNLOAD_PORT = 8090
 DEFAULT_DEV_JAR_DOWNLOAD_CHANNEL_ID = 1223439164121419838
 DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL: str | None = "https://downloads.dragonminez.com"
 DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR: str | None = None
@@ -202,7 +200,6 @@ NON_OVERRIDABLE_SETTINGS = {
     "PATREON_CREATOR_TOKEN",
     "curseforge_api_key",
     "release_webhook_secret",
-    "dev_jar_download_webhook_secret",
     "dev_jar_download_upload_dir",
     "patreon_oauth_client_secret",
 }
@@ -264,15 +261,12 @@ class Settings:
     release_webhook_path: str
     release_webhook_secret: str | None
     dev_jar_download_enabled: bool
-    dev_jar_download_host: str
-    dev_jar_download_port: int
     dev_jar_download_channel_id: int | None
     dev_jar_download_public_base_url: str | None
     dev_jar_download_upload_dir: str | None
     dev_jar_download_webhook_path: str
     dev_jar_download_download_path: str
     dev_jar_download_oauth_callback_path: str
-    dev_jar_download_webhook_secret: str | None
     dev_jar_download_bypass_role_ids: Sequence[int]
     dev_jar_download_token_ttl_seconds: int
     patreon_oauth_client_id: str | None
@@ -486,14 +480,6 @@ def _build_settings_from_env() -> Settings:
             "DEV_JAR_DOWNLOAD_ENABLED",
             DEFAULT_DEV_JAR_DOWNLOAD_ENABLED,
         ),
-        dev_jar_download_host=(
-            _get_env("DEV_JAR_DOWNLOAD_HOST", DEFAULT_DEV_JAR_DOWNLOAD_HOST)
-            or DEFAULT_DEV_JAR_DOWNLOAD_HOST
-        ),
-        dev_jar_download_port=(
-            _get_env_int("DEV_JAR_DOWNLOAD_PORT", DEFAULT_DEV_JAR_DOWNLOAD_PORT)
-            or DEFAULT_DEV_JAR_DOWNLOAD_PORT
-        ),
         dev_jar_download_channel_id=_get_env_int(
             "DEV_JAR_DOWNLOAD_CHANNEL_ID",
             DEFAULT_DEV_JAR_DOWNLOAD_CHANNEL_ID,
@@ -520,10 +506,6 @@ def _build_settings_from_env() -> Settings:
                 DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH,
             )
             or DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH
-        ),
-        dev_jar_download_webhook_secret=(
-            _get_env("DEV_JAR_DOWNLOAD_WEBHOOK_SECRET")
-            or _get_env("DMZ_DEV_JAR_WEBHOOK_SECRET")
         ),
         dev_jar_download_bypass_role_ids=_get_env_int_list(
             "DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS",

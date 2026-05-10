@@ -21,15 +21,13 @@ from bulmaai.services.dev_jar_downloads import (
     parse_dev_jar_filename,
     parse_oauth_state,
 )
-from bulmaai.services.dev_jar_webhook import DEV_JAR_WEBHOOK_SECRET_HEADER
-from bulmaai.services.dev_jar_server import (
-    DevJarDownloadServer,
-    DevJarHttpResponse,
-    text_response,
-)
 from bulmaai.services.release_webhook import (
+    ReleaseWebhookHttpResponse,
     register_extra_webhook_route,
+    register_extra_get_route,
+    text_http_response,
     unregister_extra_webhook_route,
+    unregister_extra_get_route,
 )
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 
@@ -92,20 +90,18 @@ class DevJarDownloadsCog(commands.Cog):
         self.bot = bot
         self.settings = bot.settings
         self.token_store = OneTimeDownloadTokenStore(now=time.time)
-        self.server: DevJarDownloadServer | None = None
-        self._server_started = False
         self._release_webhook_route_registered = False
+        self._release_get_routes_registered = False
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         self._register_release_webhook_route()
-        self._start_server_if_configured()
+        self._register_release_get_routes()
 
     def cog_unload(self) -> None:
         unregister_extra_webhook_route(self.settings.dev_jar_download_webhook_path)
-        if self.server is not None:
-            self.server.stop()
-            self.server = None
+        unregister_extra_get_route(self.settings.dev_jar_download_oauth_callback_path)
+        unregister_extra_get_route(f"{self.settings.dev_jar_download_download_path.rstrip('/')}/")
 
     def _register_release_webhook_route(self) -> None:
         if self._release_webhook_route_registered:
@@ -113,8 +109,8 @@ class DevJarDownloadsCog(commands.Cog):
         self._release_webhook_route_registered = True
         if not self.settings.dev_jar_download_enabled:
             return
-        if not self.settings.dev_jar_download_webhook_secret:
-            log.error("DEV_JAR_DOWNLOAD_WEBHOOK_SECRET is missing; release webhook dev-jar route skipped.")
+        if not self.settings.release_webhook_secret:
+            log.error("DMZ_RELEASE_BOT_WEBHOOK_SECRET is missing; release webhook dev-jar route skipped.")
             return
 
         loop = asyncio.get_running_loop()
@@ -135,39 +131,53 @@ class DevJarDownloadsCog(commands.Cog):
 
         register_extra_webhook_route(
             path=self.settings.dev_jar_download_webhook_path,
-            secret=self.settings.dev_jar_download_webhook_secret,
-            secret_header=DEV_JAR_WEBHOOK_SECRET_HEADER,
+            secret=self.settings.release_webhook_secret,
+            secret_header="X-DMZ-Release-Bot-Secret",
             parse_payload=parse_dev_jar_upload_payload,
             submit_payload=submit_payload,
             accepted_body="Dev jar upload queued",
         )
 
-    def _start_server_if_configured(self) -> None:
-        if self._server_started:
+    def _register_release_get_routes(self) -> None:
+        if self._release_get_routes_registered:
             return
-        self._server_started = True
+        self._release_get_routes_registered = True
         if not self.settings.dev_jar_download_enabled:
             return
-        if not self.settings.dev_jar_download_webhook_secret:
-            log.error("DEV_JAR_DOWNLOAD_WEBHOOK_SECRET is missing; dev jar server skipped.")
-            return
         if not self.settings.dev_jar_download_upload_dir:
-            log.error("DEV_JAR_DOWNLOAD_UPLOAD_DIR is missing; dev jar server skipped.")
+            log.error("DEV_JAR_DOWNLOAD_UPLOAD_DIR is missing; dev jar download routes skipped.")
             return
 
-        self.server = DevJarDownloadServer(
-            host=self.settings.dev_jar_download_host,
-            port=self.settings.dev_jar_download_port,
-            webhook_path=self.settings.dev_jar_download_webhook_path,
-            download_path=self.settings.dev_jar_download_download_path,
-            oauth_callback_path=self.settings.dev_jar_download_oauth_callback_path,
-            secret=self.settings.dev_jar_download_webhook_secret,
-            loop=asyncio.get_running_loop(),
-            on_payload=self._handle_upload_payload,
-            on_direct_token=self._handle_direct_token,
-            on_oauth_callback=self._handle_oauth_callback,
+        loop = asyncio.get_running_loop()
+        direct_prefix = f"{self.settings.dev_jar_download_download_path.rstrip('/')}/"
+
+        def handle_oauth_callback(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
+            code = (query.get("code") or [""])[0]
+            state = (query.get("state") or [""])[0]
+            if not code or not state:
+                return text_http_response(400, "Missing OAuth code or state")
+            future = asyncio.run_coroutine_threadsafe(
+                self._handle_oauth_callback(code, state),
+                loop,
+            )
+            try:
+                return future.result(timeout=30)
+            except Exception:
+                log.exception("Dev jar OAuth callback handling failed")
+                return text_http_response(500, "Download authorization failed")
+
+        def handle_direct_download(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
+            token = path.removeprefix(direct_prefix)
+            return self._handle_direct_token(token)
+
+        register_extra_get_route(
+            path_prefix=self.settings.dev_jar_download_oauth_callback_path,
+            handle_request=handle_oauth_callback,
         )
-        self.server.start()
+        register_extra_get_route(
+            path_prefix=direct_prefix,
+            handle_request=handle_direct_download,
+        )
 
     def _upload_dir(self) -> Path:
         if not self.settings.dev_jar_download_upload_dir:
@@ -327,7 +337,7 @@ class DevJarDownloadsCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            if not self.settings.dev_jar_download_webhook_secret:
+            if not self.settings.release_webhook_secret:
                 await interaction.response.send_message(
                     "Download signing is not configured yet.",
                     ephemeral=True,
@@ -335,7 +345,7 @@ class DevJarDownloadsCog(commands.Cog):
                 return
 
             state = build_oauth_state(
-                secret=self.settings.dev_jar_download_webhook_secret,
+                secret=self.settings.release_webhook_secret,
                 artifact=artifact,
                 requester_id=interaction.user.id,
                 expires_at=int(time.time() + self.settings.dev_jar_download_token_ttl_seconds),
@@ -357,15 +367,15 @@ class DevJarDownloadsCog(commands.Cog):
                 ephemeral=True,
             )
 
-    def _handle_direct_token(self, token: str) -> DevJarHttpResponse:
+    def _handle_direct_token(self, token: str) -> ReleaseWebhookHttpResponse:
         artifact = self.token_store.consume(token)
         if artifact is None:
-            return text_response(403, "Download link expired or already used")
+            return text_http_response(403, "Download link expired or already used")
         try:
             path = self._artifact_path(artifact)
         except (FileNotFoundError, ValueError):
-            return text_response(404, "Artifact not found")
-        return DevJarHttpResponse(
+            return text_http_response(404, "Artifact not found")
+        return ReleaseWebhookHttpResponse(
             status=200,
             body=b"",
             content_type="application/java-archive",
@@ -373,18 +383,18 @@ class DevJarDownloadsCog(commands.Cog):
             download_name=artifact.file_name,
         )
 
-    async def _handle_oauth_callback(self, code: str, state: str) -> DevJarHttpResponse:
-        if not self.settings.dev_jar_download_webhook_secret:
-            return text_response(500, "Download signing is not configured")
+    async def _handle_oauth_callback(self, code: str, state: str) -> ReleaseWebhookHttpResponse:
+        if not self.settings.release_webhook_secret:
+            return text_http_response(500, "Download signing is not configured")
         parsed_state = parse_oauth_state(
-            self.settings.dev_jar_download_webhook_secret,
+            self.settings.release_webhook_secret,
             state,
             now=time.time,
         )
         if parsed_state is None:
-            return text_response(403, "Download authorization expired")
+            return text_http_response(403, "Download authorization expired")
         if not self.settings.patreon_oauth_client_id or not self.settings.patreon_oauth_client_secret:
-            return text_response(500, "Patreon OAuth is not configured")
+            return text_http_response(500, "Patreon OAuth is not configured")
 
         client = PatreonOAuthClient(
             client_id=self.settings.patreon_oauth_client_id,
@@ -395,20 +405,20 @@ class DevJarDownloadsCog(commands.Cog):
             identity_payload = await client.fetch_identity_for_code(code)
         except Exception:
             log.exception("Patreon OAuth exchange failed for dev jar download")
-            return text_response(403, "Patreon authorization failed")
+            return text_http_response(403, "Patreon authorization failed")
 
         if not has_active_patreon_membership(
             identity_payload,
             campaign_id=self.settings.PATREON_CAMPAIGN_ID,
         ):
-            return text_response(403, "Active DragonMineZ Patreon membership required")
+            return text_http_response(403, "Active DragonMineZ Patreon membership required")
 
         try:
             path = self._artifact_path(parsed_state.artifact)
         except (FileNotFoundError, ValueError):
-            return text_response(404, "Artifact not found")
+            return text_http_response(404, "Artifact not found")
 
-        return DevJarHttpResponse(
+        return ReleaseWebhookHttpResponse(
             status=200,
             body=b"",
             content_type="application/java-archive",

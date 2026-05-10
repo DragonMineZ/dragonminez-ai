@@ -6,7 +6,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from bulmaai.services.release_approval import (
     ReleaseCandidateError,
@@ -26,6 +28,15 @@ class ReleaseWebhookResponse:
 
 
 @dataclass(frozen=True)
+class ReleaseWebhookHttpResponse:
+    status: int
+    body: bytes
+    content_type: str = "text/plain; charset=utf-8"
+    file_path: Path | None = None
+    download_name: str | None = None
+
+
+@dataclass(frozen=True)
 class ExtraWebhookRoute:
     path: str
     secret: str
@@ -35,9 +46,20 @@ class ExtraWebhookRoute:
     accepted_body: str
 
 
+@dataclass(frozen=True)
+class ExtraGetRoute:
+    path_prefix: str
+    handle_request: Callable[[str, dict[str, list[str]]], ReleaseWebhookHttpResponse]
+
+
 FORBIDDEN_RESPONSE = ReleaseWebhookResponse(status=403, body="Forbidden")
 
 _extra_routes: dict[str, ExtraWebhookRoute] = {}
+_extra_get_routes: list[ExtraGetRoute] = []
+
+
+def text_http_response(status: int, body: str) -> ReleaseWebhookHttpResponse:
+    return ReleaseWebhookHttpResponse(status=status, body=body.encode("utf-8"))
 
 
 def register_extra_webhook_route(
@@ -67,6 +89,33 @@ def unregister_extra_webhook_route(path: str) -> None:
 
 def clear_extra_webhook_routes() -> None:
     _extra_routes.clear()
+    _extra_get_routes.clear()
+
+
+def register_extra_get_route(
+    *,
+    path_prefix: str,
+    handle_request: Callable[[str, dict[str, list[str]]], ReleaseWebhookHttpResponse],
+) -> None:
+    _extra_get_routes[:] = [
+        route for route in _extra_get_routes if route.path_prefix != path_prefix
+    ]
+    _extra_get_routes.append(
+        ExtraGetRoute(path_prefix=path_prefix, handle_request=handle_request)
+    )
+
+
+def unregister_extra_get_route(path_prefix: str) -> None:
+    _extra_get_routes[:] = [
+        route for route in _extra_get_routes if route.path_prefix != path_prefix
+    ]
+
+
+def handle_release_webhook_get(*, path: str, query: str = "") -> ReleaseWebhookHttpResponse:
+    for route in sorted(_extra_get_routes, key=lambda item: len(item.path_prefix), reverse=True):
+        if path.startswith(route.path_prefix):
+            return route.handle_request(path, parse_qs(query))
+    return text_http_response(403, "Forbidden")
 
 
 def _get_header(headers: Any, name: str) -> str | None:
@@ -197,6 +246,33 @@ class ReleaseWebhookServer:
                 self.end_headers()
                 self.wfile.write(response.body.encode("utf-8"))
 
+            def _send_http_response(self, response: ReleaseWebhookHttpResponse) -> None:
+                if response.file_path is None:
+                    self.send_response(response.status)
+                    self.send_header("Content-Type", response.content_type)
+                    self.send_header("Content-Length", str(len(response.body)))
+                    self.end_headers()
+                    self.wfile.write(response.body)
+                    return
+
+                try:
+                    file_size = response.file_path.stat().st_size
+                    self.send_response(response.status)
+                    self.send_header("Content-Type", response.content_type)
+                    self.send_header("Content-Length", str(file_size))
+                    if response.download_name:
+                        self.send_header(
+                            "Content-Disposition",
+                            f'attachment; filename="{response.download_name}"',
+                        )
+                    self.end_headers()
+                    with response.file_path.open("rb") as handle:
+                        while chunk := handle.read(1024 * 1024):
+                            self.wfile.write(chunk)
+                except OSError:
+                    log.exception("Failed to stream webhook file response")
+                    self._send_http_response(text_http_response(404, "Not found"))
+
             def do_POST(self) -> None:
                 content_length = int(self.headers.get("Content-Length", "0") or "0")
                 body = self.rfile.read(content_length)
@@ -210,10 +286,17 @@ class ReleaseWebhookServer:
                 )
                 self._send_release_response(response)
 
+            def do_GET(self) -> None:
+                parsed = urlparse(self.path)
+                response = handle_release_webhook_get(
+                    path=parsed.path,
+                    query=parsed.query,
+                )
+                self._send_http_response(response)
+
             def _reject_unsupported_method(self) -> None:
                 self._send_release_response(FORBIDDEN_RESPONSE)
 
-            do_GET = _reject_unsupported_method
             do_HEAD = _reject_unsupported_method
             do_PUT = _reject_unsupported_method
             do_PATCH = _reject_unsupported_method

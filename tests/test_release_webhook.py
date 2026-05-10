@@ -1,13 +1,17 @@
 import asyncio
 import http.client
 import json
+import tempfile
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 
 from bulmaai.services.release_webhook import (
+    ReleaseWebhookHttpResponse,
     ReleaseWebhookServer,
     clear_extra_webhook_routes,
     handle_release_webhook_post,
+    register_extra_get_route,
     register_extra_webhook_route,
 )
 
@@ -72,7 +76,7 @@ class ReleaseWebhookTests(unittest.TestCase):
         register_extra_webhook_route(
             path="/dmz-dev-jar",
             secret="dev-secret",
-            secret_header="X-DMZ-Dev-Jar-Secret",
+            secret_header="X-DMZ-Release-Bot-Secret",
             parse_payload=parse_dev_payload,
             submit_payload=queued.append,
             accepted_body="Dev jar upload queued",
@@ -81,7 +85,7 @@ class ReleaseWebhookTests(unittest.TestCase):
         response = handle_release_webhook_post(
             path="/dmz-dev-jar",
             body=json.dumps({"remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar"}).encode("utf-8"),
-            headers={"X-DMZ-Dev-Jar-Secret": "dev-secret"},
+            headers={"X-DMZ-Release-Bot-Secret": "dev-secret"},
             expected_path="/dmz-release",
             secret="release-secret",
             submit_payload=lambda payload: None,
@@ -94,7 +98,7 @@ class ReleaseWebhookTests(unittest.TestCase):
         register_extra_webhook_route(
             path="/dmz-dev-jar",
             secret="dev-secret",
-            secret_header="X-DMZ-Dev-Jar-Secret",
+            secret_header="X-DMZ-Release-Bot-Secret",
             parse_payload=lambda payload: payload,
             submit_payload=lambda payload: None,
             accepted_body="Dev jar upload queued",
@@ -103,13 +107,61 @@ class ReleaseWebhookTests(unittest.TestCase):
         response = handle_release_webhook_post(
             path="/dmz-dev-jar",
             body=b"{invalid-json",
-            headers={"X-DMZ-Dev-Jar-Secret": "wrong"},
+            headers={"X-DMZ-Release-Bot-Secret": "wrong"},
             expected_path="/dmz-release",
             secret="release-secret",
             submit_payload=lambda payload: None,
         )
 
         self.assertEqual(response.status, 403)
+
+    def test_registered_get_route_streams_file_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.jar"
+            path.write_bytes(b"jar-bytes")
+
+            register_extra_get_route(
+                path_prefix="/dev-download/",
+                handle_request=lambda path, query: ReleaseWebhookHttpResponse(
+                    status=200,
+                    body=b"",
+                    content_type="application/java-archive",
+                    file_path=Path(tmp) / "artifact.jar",
+                    download_name="artifact.jar",
+                ),
+            )
+
+            loop = asyncio.new_event_loop()
+
+            async def on_payload(payload: dict) -> None:
+                raise AssertionError("GET request should not submit a payload")
+
+            server = ReleaseWebhookServer(
+                host="127.0.0.1",
+                port=0,
+                path="/dmz-release",
+                secret="secret",
+                loop=loop,
+                on_payload=on_payload,
+            )
+            connection: http.client.HTTPConnection | None = None
+            try:
+                server.start()
+                assert server._server is not None
+                host, port = server._server.server_address
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request("GET", "/dev-download/token")
+                response = connection.getresponse()
+                body = response.read()
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Content-Type"), "application/java-archive")
+                self.assertEqual(body, b"jar-bytes")
+            finally:
+                if connection is not None:
+                    connection.close()
+                server.stop()
+                loop.close()
 
     def test_invalid_json_is_rejected(self) -> None:
         response = handle_release_webhook_post(

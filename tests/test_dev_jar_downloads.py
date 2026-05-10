@@ -19,10 +19,6 @@ from bulmaai.services.dev_jar_downloads import (
     parse_dev_jar_filename,
     parse_oauth_state,
 )
-from bulmaai.services.dev_jar_webhook import (
-    DEV_JAR_WEBHOOK_SECRET_HEADER,
-    handle_dev_jar_webhook_post,
-)
 
 
 class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
@@ -234,7 +230,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
             cog.settings = SimpleNamespace(
                 dev_jar_download_upload_dir=str(upload_dir),
-                dev_jar_download_webhook_secret="secret",
+                release_webhook_secret="secret",
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_oauth_callback_path="/dev-download/oauth/callback",
                 patreon_oauth_redirect_uri=None,
@@ -304,43 +300,6 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(identity_call["headers"]["Authorization"], "Bearer patreon-access-token")
         self.assertEqual(identity_call["params"]["include"], "memberships")
         self.assertIn("patron_status", identity_call["params"]["fields[member]"])
-
-    def test_dev_jar_webhook_validates_secret_and_queues_payload(self) -> None:
-        queued = []
-        body = b"""{
-            "remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "workflow_run_url": "https://github.com/DragonMineZ/dragonminez/actions/runs/123"
-        }"""
-
-        response = handle_dev_jar_webhook_post(
-            path="/dmz-dev-jar",
-            body=body,
-            headers={DEV_JAR_WEBHOOK_SECRET_HEADER: "secret"},
-            expected_path="/dmz-dev-jar",
-            secret="secret",
-            submit_payload=queued.append,
-        )
-
-        self.assertEqual(response.status, 202)
-        self.assertEqual(queued[0].artifact.file_name, "dragonminez-2.1.2__v2.1__222222222222.jar")
-        self.assertEqual(queued[0].sha256, "a" * 64)
-
-    def test_dev_jar_webhook_rejects_invalid_secret_before_parsing_body(self) -> None:
-        queued = []
-
-        response = handle_dev_jar_webhook_post(
-            path="/dmz-dev-jar",
-            body=b"{invalid",
-            headers={DEV_JAR_WEBHOOK_SECRET_HEADER: "wrong"},
-            expected_path="/dmz-dev-jar",
-            secret="secret",
-            submit_payload=queued.append,
-        )
-
-        self.assertEqual(response.status, 403)
-        self.assertEqual(queued, [])
-
 
 if __name__ == "__main__":
     unittest.main()

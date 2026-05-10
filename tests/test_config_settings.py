@@ -88,7 +88,6 @@ class ConfigSettingsTests(unittest.TestCase):
                 "DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS": "1341596685339725885",
                 "PATREON_OAUTH_CLIENT_ID": "client-id",
                 "PATREON_OAUTH_CLIENT_SECRET": "client-secret",
-                "DEV_JAR_DOWNLOAD_WEBHOOK_SECRET": "webhook-secret",
             },
             clear=False,
         ):
@@ -103,7 +102,6 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.dev_jar_download_bypass_role_ids, (1341596685339725885,))
         self.assertEqual(settings.patreon_oauth_client_id, "client-id")
         self.assertEqual(settings.patreon_oauth_client_secret, "client-secret")
-        self.assertEqual(settings.dev_jar_download_webhook_secret, "webhook-secret")
 
     def test_dev_jar_public_base_url_defaults_to_downloads_domain(self) -> None:
         with patch.dict(

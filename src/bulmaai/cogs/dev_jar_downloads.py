@@ -236,6 +236,23 @@ class DevJarDownloadsCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    async def _handle_upload_payload(self, payload: DevJarUploadPayload) -> None:
+        path = self._artifact_path(payload.artifact)
+        stat = path.stat()
+        artifact = DevJarArtifact(
+            file_name=payload.artifact.file_name,
+            version=payload.artifact.version,
+            branch_slug=payload.artifact.branch_slug,
+            commit_sha=payload.artifact.commit_sha,
+            size_bytes=stat.st_size,
+            modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+        )
+        await self._post_download_announcement(
+            artifact,
+            sha256=payload.sha256,
+            workflow_run_url=payload.workflow_run_url,
+        )
+
     @discord.slash_command(name="post-download", description="Post the latest DragonMineZ dev jar download announcement")
     @discord.option(
         "file_name",

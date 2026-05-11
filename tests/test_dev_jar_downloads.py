@@ -10,6 +10,7 @@ from bulmaai.cogs.dev_jar_downloads import (
     can_bypass_patreon_oauth,
 )
 from bulmaai.services.dev_jar_downloads import (
+    DevJarUploadPayload,
     OneTimeDownloadTokenStore,
     PatreonOAuthClient,
     build_oauth_state,
@@ -310,6 +311,49 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.download_name, artifact.file_name)
+
+    async def test_cog_upload_payload_posts_download_announcement(self) -> None:
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.sent: list[dict] = []
+
+            async def send(self, **kwargs) -> None:
+                self.sent.append(kwargs)
+
+        class FakeBot:
+            def __init__(self, channel: FakeChannel) -> None:
+                self._channel = channel
+
+            def get_channel(self, channel_id: int) -> FakeChannel:
+                return self._channel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+            channel = FakeChannel()
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.bot = FakeBot(channel)
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_download_channel_id=123,
+            )
+
+            await cog._handle_upload_payload(
+                DevJarUploadPayload(
+                    artifact=artifact,
+                    sha256="a" * 64,
+                    workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
+                )
+            )
+
+        self.assertEqual(len(channel.sent), 1)
+        embed = channel.sent[0]["embed"]
+        self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
+        field_values = {field.name: field.value for field in embed.fields}
+        self.assertEqual(field_values["Artifact"], f"`{artifact.file_name}`")
+        self.assertEqual(field_values["Size"], "0.0 MB")
+        self.assertEqual(field_values["SHA-256"], f"`{'a' * 64}`")
 
     async def test_patreon_oauth_client_fetches_identity_memberships(self) -> None:
         class FakeResponse:

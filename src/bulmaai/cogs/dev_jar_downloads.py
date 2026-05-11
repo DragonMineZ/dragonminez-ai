@@ -221,11 +221,12 @@ class DevJarDownloadsCog(commands.Cog):
         self,
         artifact: DevJarArtifact,
         *,
+        channel: discord.abc.Messageable | None = None,
         sha256: str | None = None,
         workflow_run_url: str | None = None,
     ) -> None:
-        channel = await self._resolve_channel()
-        await channel.send(
+        target_channel = channel or await self._resolve_channel()
+        await target_channel.send(
             embed=build_dev_jar_download_embed(
                 artifact,
                 sha256=sha256,
@@ -235,37 +236,22 @@ class DevJarDownloadsCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    async def _handle_upload_payload(self, payload: DevJarUploadPayload) -> None:
-        artifact = payload.artifact
-        try:
-            path = self._artifact_path(artifact)
-            stat = path.stat()
-            artifact = DevJarArtifact(
-                file_name=artifact.file_name,
-                version=artifact.version,
-                branch_slug=artifact.branch_slug,
-                commit_sha=artifact.commit_sha,
-                size_bytes=stat.st_size,
-                modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-            )
-        except FileNotFoundError:
-            log.warning("Uploaded dev jar payload references missing file %s", artifact.file_name)
-        await self._post_download_announcement(
-            artifact,
-            sha256=payload.sha256,
-            workflow_run_url=payload.workflow_run_url,
-        )
-
     @discord.slash_command(name="post-download", description="Post the latest DragonMineZ dev jar download announcement")
     @discord.option(
         "file_name",
         description="Specific uploaded jar filename; defaults to the latest dev jar",
         required=False,
     )
+    @discord.option(
+        "channel",
+        description="Channel to post the announcement in (default: configured dev jar channel)",
+        required=False,
+    )
     async def post_download(
         self,
         ctx: discord.ApplicationContext,
         file_name: str | None = None,
+        channel: discord.TextChannel | None = None,
     ) -> None:
         author = ctx.author
         if not can_bypass_patreon_oauth(
@@ -291,7 +277,8 @@ class DevJarDownloadsCog(commands.Cog):
                 )
             else:
                 artifact = find_latest_dev_jar(self._upload_dir())
-            await self._post_download_announcement(artifact)
+            target_channel = channel or await self._resolve_channel()
+            await self._post_download_announcement(artifact, channel=target_channel)
         except Exception as error:
             log.exception("Failed to post dev jar download announcement")
             await ctx.followup.send(f"Failed to post download announcement: {error}", ephemeral=True)

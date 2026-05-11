@@ -1,6 +1,7 @@
 import asyncio
 import http.client
 import json
+import threading
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -119,6 +120,7 @@ class ReleaseWebhookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "artifact.jar"
             path.write_bytes(b"jar-bytes")
+            completed = threading.Event()
 
             register_extra_get_route(
                 path_prefix="/dev-download/",
@@ -128,6 +130,7 @@ class ReleaseWebhookTests(unittest.TestCase):
                     content_type="application/java-archive",
                     file_path=Path(tmp) / "artifact.jar",
                     download_name="artifact.jar",
+                    on_stream_complete=completed.set,
                 ),
             )
 
@@ -157,6 +160,7 @@ class ReleaseWebhookTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.getheader("Content-Type"), "application/java-archive")
                 self.assertEqual(body, b"jar-bytes")
+                self.assertTrue(completed.wait(timeout=1))
             finally:
                 if connection is not None:
                     connection.close()

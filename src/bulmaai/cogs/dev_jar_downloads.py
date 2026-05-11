@@ -368,19 +368,22 @@ class DevJarDownloadsCog(commands.Cog):
             )
 
     def _handle_direct_token(self, token: str) -> ReleaseWebhookHttpResponse:
-        artifact = self.token_store.consume(token)
-        if artifact is None:
-            return text_http_response(403, "Download link expired or already used")
+        claim = self.token_store.claim(token)
+        if claim is None:
+            return text_http_response(403, "Download link expired, already used, or already in use")
         try:
-            path = self._artifact_path(artifact)
+            path = self._artifact_path(claim.artifact)
         except (FileNotFoundError, ValueError):
+            self.token_store.release_claim(claim)
             return text_http_response(404, "Artifact not found")
         return ReleaseWebhookHttpResponse(
             status=200,
             body=b"",
             content_type="application/java-archive",
             file_path=path,
-            download_name=artifact.file_name,
+            download_name=claim.artifact.file_name,
+            on_stream_complete=lambda: self.token_store.complete_claim(claim),
+            on_stream_error=lambda error: self.token_store.release_claim(claim),
         )
 
     async def _handle_oauth_callback(self, code: str, state: str) -> ReleaseWebhookHttpResponse:

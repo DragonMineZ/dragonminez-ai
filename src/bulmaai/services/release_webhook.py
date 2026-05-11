@@ -34,6 +34,8 @@ class ReleaseWebhookHttpResponse:
     content_type: str = "text/plain; charset=utf-8"
     file_path: Path | None = None
     download_name: str | None = None
+    on_stream_complete: Callable[[], None] | None = None
+    on_stream_error: Callable[[BaseException], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -248,30 +250,49 @@ class ReleaseWebhookServer:
 
             def _send_http_response(self, response: ReleaseWebhookHttpResponse) -> None:
                 if response.file_path is None:
-                    self.send_response(response.status)
-                    self.send_header("Content-Type", response.content_type)
-                    self.send_header("Content-Length", str(len(response.body)))
-                    self.end_headers()
-                    self.wfile.write(response.body)
+                    try:
+                        self.send_response(response.status)
+                        self.send_header("Content-Type", response.content_type)
+                        self.send_header("Content-Length", str(len(response.body)))
+                        self.end_headers()
+                        self.wfile.write(response.body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        log.info("Client disconnected while sending webhook text response")
                     return
 
                 try:
                     file_size = response.file_path.stat().st_size
-                    self.send_response(response.status)
-                    self.send_header("Content-Type", response.content_type)
-                    self.send_header("Content-Length", str(file_size))
-                    if response.download_name:
-                        self.send_header(
-                            "Content-Disposition",
-                            f'attachment; filename="{response.download_name}"',
-                        )
-                    self.end_headers()
-                    with response.file_path.open("rb") as handle:
+                    file_handle = response.file_path.open("rb")
+                except OSError as error:
+                    log.exception("Failed to open webhook file response")
+                    if response.on_stream_error is not None:
+                        response.on_stream_error(error)
+                    self._send_http_response(text_http_response(404, "Not found"))
+                    return
+
+                try:
+                    with file_handle as handle:
+                        self.send_response(response.status)
+                        self.send_header("Content-Type", response.content_type)
+                        self.send_header("Content-Length", str(file_size))
+                        if response.download_name:
+                            self.send_header(
+                                "Content-Disposition",
+                                f'attachment; filename="{response.download_name}"',
+                            )
+                        self.end_headers()
                         while chunk := handle.read(1024 * 1024):
                             self.wfile.write(chunk)
-                except OSError:
+                    if response.on_stream_complete is not None:
+                        response.on_stream_complete()
+                except (BrokenPipeError, ConnectionResetError) as error:
+                    log.info("Client disconnected while streaming webhook file response: %s", error)
+                    if response.on_stream_error is not None:
+                        response.on_stream_error(error)
+                except OSError as error:
                     log.exception("Failed to stream webhook file response")
-                    self._send_http_response(text_http_response(404, "Not found"))
+                    if response.on_stream_error is not None:
+                        response.on_stream_error(error)
 
             def do_POST(self) -> None:
                 content_length = int(self.headers.get("Content-Length", "0") or "0")

@@ -45,6 +45,12 @@ class DevJarDownloadGrant:
 
 
 @dataclass(frozen=True, slots=True)
+class DevJarDownloadClaim:
+    token_hash: str
+    artifact: DevJarArtifact
+
+
+@dataclass(frozen=True, slots=True)
 class DevJarUploadPayload:
     artifact: DevJarArtifact
     sha256: str
@@ -111,6 +117,7 @@ class OneTimeDownloadTokenStore:
     def __init__(self, *, now: Callable[[], float] = monotonic):
         self._now = now
         self._grants: dict[str, DevJarDownloadGrant] = {}
+        self._claimed: set[str] = set()
 
     @staticmethod
     def _hash_token(token: str) -> str:
@@ -132,18 +139,41 @@ class OneTimeDownloadTokenStore:
         return token
 
     def consume(self, token: str) -> DevJarArtifact | None:
-        grant = self._grants.pop(self._hash_token(token), None)
+        token_hash = self._hash_token(token)
+        grant = self._grants.pop(token_hash, None)
+        self._claimed.discard(token_hash)
         if grant is None:
             return None
         if grant.expires_at < self._now():
             return None
         return grant.artifact
 
+    def claim(self, token: str) -> DevJarDownloadClaim | None:
+        token_hash = self._hash_token(token)
+        if token_hash in self._claimed:
+            return None
+        grant = self._grants.get(token_hash)
+        if grant is None:
+            return None
+        if grant.expires_at < self._now():
+            self._grants.pop(token_hash, None)
+            return None
+        self._claimed.add(token_hash)
+        return DevJarDownloadClaim(token_hash=token_hash, artifact=grant.artifact)
+
+    def complete_claim(self, claim: DevJarDownloadClaim) -> None:
+        self._grants.pop(claim.token_hash, None)
+        self._claimed.discard(claim.token_hash)
+
+    def release_claim(self, claim: DevJarDownloadClaim) -> None:
+        self._claimed.discard(claim.token_hash)
+
     def cleanup_expired(self) -> None:
         now = self._now()
         for token_hash, grant in list(self._grants.items()):
             if grant.expires_at < now:
                 self._grants.pop(token_hash, None)
+                self._claimed.discard(token_hash)
 
 
 def parse_dev_jar_filename(file_name: str) -> DevJarArtifact:

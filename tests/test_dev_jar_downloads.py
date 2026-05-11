@@ -65,6 +65,25 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, artifact)
         self.assertIsNone(second)
 
+    def test_one_time_download_token_claim_completes_or_releases(self) -> None:
+        store = OneTimeDownloadTokenStore(now=lambda: 1000)
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+        token = store.issue(artifact=artifact, requester_id=123, ttl_seconds=60)
+
+        claim = store.claim(token)
+        self.assertIsNotNone(claim)
+        self.assertIsNone(store.claim(token))
+        assert claim is not None
+        store.release_claim(claim)
+
+        retry_claim = store.claim(token)
+        self.assertIsNotNone(retry_claim)
+        assert retry_claim is not None
+        self.assertEqual(retry_claim.artifact, artifact)
+        store.complete_claim(retry_claim)
+
+        self.assertIsNone(store.claim(token))
+
     def test_one_time_download_token_expires(self) -> None:
         now = 1000.0
 
@@ -201,7 +220,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`222222222222`", field_values)
         self.assertIn("`v2.1`", field_values)
 
-    def test_cog_direct_token_download_consumes_token_and_returns_file_response(self) -> None:
+    def test_cog_direct_token_download_consumes_token_after_successful_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
             artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
@@ -217,10 +236,36 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
             first = cog._handle_direct_token(token)
             second = cog._handle_direct_token(token)
+            assert first.on_stream_complete is not None
+            first.on_stream_complete()
+            third = cog._handle_direct_token(token)
 
         self.assertEqual(first.status, 200)
         self.assertEqual(first.download_name, artifact.file_name)
         self.assertEqual(second.status, 403)
+        self.assertEqual(third.status, 403)
+
+    def test_cog_direct_token_download_can_retry_after_interrupted_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.settings = SimpleNamespace(dev_jar_download_upload_dir=str(upload_dir))
+            cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1000)
+            token = cog.token_store.issue(
+                artifact=artifact,
+                requester_id=123,
+                ttl_seconds=60,
+            )
+
+            first = cog._handle_direct_token(token)
+            assert first.on_stream_error is not None
+            first.on_stream_error(ConnectionResetError("client reset"))
+            retry = cog._handle_direct_token(token)
+
+        self.assertEqual(first.status, 200)
+        self.assertEqual(retry.status, 200)
 
     async def test_cog_oauth_callback_streams_file_for_active_patron(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -103,7 +103,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
             settings=self.bot.settings,
         ):
             await channel.send(
-                f"{member.mention} You don't have permission to request Patreon whitelist access."
+                f"{member.mention} You don't have permission to request Patreon whitelist access. "
+                f"You need the Patreon Contributor role in Discord. Maybe try [this]( https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access) first."
             )
             return "user_not_allowed"
 

@@ -149,6 +149,18 @@ class OneTimeDownloadTokenStore:
             return None
         return grant.artifact
 
+    def peek(self, token: str) -> DevJarArtifact | None:
+        token_hash = self._hash_token(token)
+        if token_hash in self._claimed:
+            return None
+        grant = self._grants.get(token_hash)
+        if grant is None:
+            return None
+        if grant.expires_at < self._now():
+            self._grants.pop(token_hash, None)
+            return None
+        return grant.artifact
+
     def claim(self, token: str) -> DevJarDownloadClaim | None:
         token_hash = self._hash_token(token)
         if token_hash in self._claimed:

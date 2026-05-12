@@ -248,7 +248,11 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
             (upload_dir / artifact.file_name).write_bytes(b"jar")
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-            cog.settings = SimpleNamespace(dev_jar_download_upload_dir=str(upload_dir))
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_download_public_base_url="https://downloads.example.test",
+                dev_jar_download_download_path="/dev-download",
+            )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1000)
             token = cog.token_store.issue(
                 artifact=artifact,
@@ -256,16 +260,22 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 ttl_seconds=60,
             )
 
-            first = cog._handle_direct_token(token)
-            second = cog._handle_direct_token(token)
-            assert first.on_stream_complete is not None
-            first.on_stream_complete()
-            third = cog._handle_direct_token(token)
+            landing = cog._handle_direct_token(token)
+            first_file = cog._handle_direct_token_file(token)
+            second_file = cog._handle_direct_token_file(token)
+            assert first_file.on_stream_complete is not None
+            first_file.on_stream_complete()
+            third_file = cog._handle_direct_token_file(token)
 
-        self.assertEqual(first.status, 200)
-        self.assertEqual(first.download_name, artifact.file_name)
-        self.assertEqual(second.status, 403)
-        self.assertEqual(third.status, 403)
+        self.assertEqual(landing.status, 200)
+        self.assertEqual(landing.content_type, "text/html; charset=utf-8")
+        self.assertIn(b"200 success", landing.body)
+        self.assertIn(b"/dev-download/", landing.body)
+        self.assertIn(b"/file", landing.body)
+        self.assertEqual(first_file.status, 200)
+        self.assertEqual(first_file.download_name, artifact.file_name)
+        self.assertEqual(second_file.status, 403)
+        self.assertEqual(third_file.status, 403)
 
     def test_cog_direct_token_download_can_retry_after_interrupted_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,10 +291,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 ttl_seconds=60,
             )
 
-            first = cog._handle_direct_token(token)
+            first = cog._handle_direct_token_file(token)
             assert first.on_stream_error is not None
             first.on_stream_error(ConnectionResetError("client reset"))
-            retry = cog._handle_direct_token(token)
+            retry = cog._handle_direct_token_file(token)
 
         self.assertEqual(first.status, 200)
         self.assertEqual(retry.status, 200)
@@ -299,12 +309,14 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 dev_jar_download_upload_dir=str(upload_dir),
                 release_webhook_secret="secret",
                 dev_jar_download_public_base_url="https://downloads.example.test",
+                dev_jar_download_download_path="/dev-download",
                 dev_jar_download_oauth_callback_path="/dev-download/oauth/callback",
                 patreon_oauth_redirect_uri=None,
                 patreon_oauth_client_id="client-id",
                 patreon_oauth_client_secret="client-secret",
                 PATREON_CAMPAIGN_ID=None,
             )
+            cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
             state = build_oauth_state(
                 secret="secret",
                 artifact=artifact,
@@ -331,7 +343,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 response = await cog._handle_oauth_callback("oauth-code", state)
 
         self.assertEqual(response.status, 200)
-        self.assertEqual(response.download_name, artifact.file_name)
+        self.assertEqual(response.content_type, "text/html; charset=utf-8")
+        self.assertIn(b"200 success", response.body)
+        self.assertIn(b"/dev-download/", response.body)
+        self.assertIn(b"/file", response.body)
 
     async def test_cog_upload_payload_posts_download_announcement(self) -> None:
         class FakeChannel:

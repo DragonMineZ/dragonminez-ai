@@ -1,4 +1,6 @@
 import asyncio
+import html
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -35,6 +37,7 @@ from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 log = logging.getLogger(__name__)
 
 DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:"
+DOWNLOAD_FILE_SUFFIX = "/file"
 DEV_JAR_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
 
 
@@ -167,8 +170,11 @@ class DevJarDownloadsCog(commands.Cog):
                 return text_http_response(500, "Download authorization failed")
 
         def handle_direct_download(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
-            token = path.removeprefix(direct_prefix)
-            return self._handle_direct_token(token)
+            token_path = path.removeprefix(direct_prefix)
+            if token_path.endswith(DOWNLOAD_FILE_SUFFIX):
+                token = token_path[: -len(DOWNLOAD_FILE_SUFFIX)]
+                return self._handle_direct_token_file(token)
+            return self._handle_direct_token(token_path)
 
         register_extra_get_route(
             path_prefix=self.settings.dev_jar_download_oauth_callback_path,
@@ -199,6 +205,9 @@ class DevJarDownloadsCog(commands.Cog):
     def _direct_download_url(self, token: str) -> str:
         path = self.settings.dev_jar_download_download_path.rstrip("/")
         return f"{self._public_base_url()}{path}/{quote(token, safe='')}"
+
+    def _direct_download_file_url(self, token: str) -> str:
+        return f"{self._direct_download_url(token)}{DOWNLOAD_FILE_SUFFIX}"
 
     def _artifact_path(self, artifact: DevJarArtifact) -> Path:
         path = artifact.resolve_path(self._upload_dir())
@@ -372,6 +381,94 @@ class DevJarDownloadsCog(commands.Cog):
             )
 
     def _handle_direct_token(self, token: str) -> ReleaseWebhookHttpResponse:
+        artifact = self.token_store.peek(token)
+        if artifact is None:
+            return text_http_response(403, "Download link expired, already used, or already in use")
+        try:
+            self._artifact_path(artifact)
+        except (FileNotFoundError, ValueError):
+            return text_http_response(404, "Artifact not found")
+        return self._download_success_response(
+            artifact=artifact,
+            download_url=self._direct_download_file_url(token),
+        )
+
+    def _download_success_response(
+        self,
+        *,
+        artifact: DevJarArtifact,
+        download_url: str,
+    ) -> ReleaseWebhookHttpResponse:
+        safe_name = html.escape(artifact.file_name)
+        body = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>200 success</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #1f2937;
+      background: #f8fafc;
+    }}
+    main {{
+      width: min(92vw, 34rem);
+      padding: 2rem;
+      border: 1px solid #dbe3ef;
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+    }}
+    h1 {{
+      margin: 0 0 0.75rem;
+      font-size: 1.5rem;
+      line-height: 1.2;
+    }}
+    p {{
+      margin: 0.75rem 0 0;
+      line-height: 1.5;
+    }}
+    a {{
+      color: #2563eb;
+      overflow-wrap: anywhere;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>HTTP 200 - Success!</h1>
+    <p>Dev Note: These versions are automatically built by the latest commits, meaning they can be unstable or not run at all on your machine.</p>
+    <p>For stable (and mostly tested) beta/alpha releases, look for them in Discord.
+    <p>The file should be downloading shortly. When the download finishes, you can close this window.</p>
+    <p><strong>File:</strong> {safe_name}</p>
+    <p>If the download does not start, <a id="download-link" href="{html.escape(download_url, quote=True)}">click here</a>.</p>
+    <p>Thank you for your Support!</p>
+    <p>- The DragonMineZ Team</p>
+  </main>
+  <script>
+    const downloadUrl = {json.dumps(download_url)};
+    window.addEventListener("load", () => {{
+      const frame = document.createElement("iframe");
+      frame.hidden = true;
+      frame.src = downloadUrl;
+      document.body.appendChild(frame);
+    }});
+  </script>
+</body>
+</html>
+"""
+        return ReleaseWebhookHttpResponse(
+            status=200,
+            body=body.encode("utf-8"),
+            content_type="text/html; charset=utf-8",
+        )
+
+    def _handle_direct_token_file(self, token: str) -> ReleaseWebhookHttpResponse:
         claim = self.token_store.claim(token)
         if claim is None:
             return text_http_response(403, "Download link expired, already used, or already in use")
@@ -425,12 +522,14 @@ class DevJarDownloadsCog(commands.Cog):
         except (FileNotFoundError, ValueError):
             return text_http_response(404, "Artifact not found")
 
-        return ReleaseWebhookHttpResponse(
-            status=200,
-            body=b"",
-            content_type="application/java-archive",
-            file_path=path,
-            download_name=parsed_state.artifact.file_name,
+        token = self.token_store.issue(
+            artifact=parsed_state.artifact,
+            requester_id=parsed_state.requester_id,
+            ttl_seconds=max(1, parsed_state.expires_at - int(time.time())),
+        )
+        return self._download_success_response(
+            artifact=parsed_state.artifact,
+            download_url=self._direct_download_file_url(token),
         )
 
 

@@ -56,8 +56,8 @@ def build_dev_jar_download_embed(
     workflow_run_url: str | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
-        title="DragonMineZ dev jar",
-        description="Latest GitHub build is ready for authorized Patreon download.",
+        title="DragonMineZ Dev jar",
+        description="Latest GitHub build is ready for download, click the button for a one-time link.",
         url=workflow_run_url,
         colour=DEV_JAR_EMBED_COLOR,
         timestamp=artifact.modified_at,
@@ -69,7 +69,7 @@ def build_dev_jar_download_embed(
     embed.add_field(name="Size", value=_format_size(artifact.size_bytes), inline=True)
     if sha256:
         embed.add_field(name="SHA-256", value=f"`{sha256}`", inline=False)
-    embed.set_footer(text="Staff/admin bypass Patreon OAuth; other downloads require Patreon authorization.")
+    embed.set_footer(text="Downloads require Patreon OAuth login!")
     return embed
 
 

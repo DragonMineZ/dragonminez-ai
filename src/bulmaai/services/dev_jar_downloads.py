@@ -100,10 +100,11 @@ class PatreonOAuthClient:
             self.identity_url,
             headers={"Authorization": f"Bearer {access_token}"},
             params={
-                "include": "memberships",
+                "include": "memberships,memberships.campaign",
                 "fields[member]": (
                     "patron_status,last_charge_status,currently_entitled_amount_cents"
                 ),
+                "fields[campaign]": "creation_name,vanity,url",
             },
         )
         identity_response.raise_for_status()
@@ -320,7 +321,7 @@ def build_patreon_authorization_url(
     client_id: str,
     redirect_uri: str,
     state: str,
-    scope: str = "identity",
+    scope: str = "identity identity.memberships",
 ) -> str:
     query = urlencode(
         {

@@ -115,6 +115,27 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(has_active_patreon_membership(payload))
 
+    def test_active_patreon_membership_must_match_campaign_when_present(self) -> None:
+        payload = {
+            "included": [
+                {
+                    "type": "member",
+                    "id": "member-1",
+                    "relationships": {
+                        "campaign": {"data": {"type": "campaign", "id": "12861895"}}
+                    },
+                    "attributes": {
+                        "patron_status": "active_patron",
+                        "last_charge_status": "Paid",
+                        "currently_entitled_amount_cents": 999,
+                    },
+                }
+            ]
+        }
+
+        self.assertTrue(has_active_patreon_membership(payload, campaign_id="12861895"))
+        self.assertFalse(has_active_patreon_membership(payload, campaign_id="other"))
+
     def test_declined_patreon_membership_is_rejected(self) -> None:
         payload = {
             "included": [
@@ -160,7 +181,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(parse_oauth_state("secret", state + "x", now=lambda: 1999))
         self.assertIsNone(parse_oauth_state("secret", state, now=lambda: 2001))
 
-    def test_build_patreon_authorization_url_uses_identity_scope(self) -> None:
+    def test_build_patreon_authorization_url_uses_membership_scope(self) -> None:
         url = build_patreon_authorization_url(
             client_id="client-id",
             redirect_uri="https://downloads.example.test/dev-download/oauth/callback",
@@ -170,7 +191,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://www.patreon.com/oauth2/authorize?", url)
         self.assertIn("client_id=client-id", url)
         self.assertIn("response_type=code", url)
-        self.assertIn("scope=identity", url)
+        self.assertIn("scope=identity+identity.memberships", url)
         self.assertIn("state=state-token", url)
 
     def test_staff_role_or_admin_can_bypass_patreon_oauth(self) -> None:
@@ -215,7 +236,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
         )
 
-        self.assertEqual(embed.title, "DragonMineZ dev jar")
+        self.assertEqual(embed.title, "DragonMineZ Dev jar")
         self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
         field_values = [field.value for field in embed.fields]
         self.assertIn("`222222222222`", field_values)
@@ -387,8 +408,9 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(token_call["data"]["grant_type"], "authorization_code")
         self.assertEqual(token_call["data"]["code"], "oauth-code")
         self.assertEqual(identity_call["headers"]["Authorization"], "Bearer patreon-access-token")
-        self.assertEqual(identity_call["params"]["include"], "memberships")
+        self.assertEqual(identity_call["params"]["include"], "memberships,memberships.campaign")
         self.assertIn("patron_status", identity_call["params"]["fields[member]"])
+        self.assertIn("creation_name", identity_call["params"]["fields[campaign]"])
 
 if __name__ == "__main__":
     unittest.main()

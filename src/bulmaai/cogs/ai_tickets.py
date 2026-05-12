@@ -65,7 +65,25 @@ def _is_ticket_channel(
 
 
 def _is_pinging_bot(message: discord.Message, bot_user: discord.ClientUser | None) -> bool:
-    return bot_user is not None and bot_user in message.mentions
+    if bot_user is None:
+        return False
+
+    bot_user_id = getattr(bot_user, "id", None)
+    for mentioned_user in getattr(message, "mentions", ()) or ():
+        if mentioned_user == bot_user or getattr(mentioned_user, "id", None) == bot_user_id:
+            return True
+
+    reference = getattr(message, "reference", None)
+    if reference is None:
+        return False
+
+    for attr in ("resolved", "cached_message"):
+        referenced_message = getattr(reference, attr, None)
+        referenced_author = getattr(referenced_message, "author", None)
+        if referenced_author == bot_user or getattr(referenced_author, "id", None) == bot_user_id:
+            return True
+
+    return False
 
 
 def _strip_bot_mentions(text: str, bot_user: discord.ClientUser | None) -> str:

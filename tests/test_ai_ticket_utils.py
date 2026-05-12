@@ -13,6 +13,7 @@ from bulmaai.cogs.ai_tickets import (
     AITicketsCog,
     _chunk_discord_message,
     _has_user_visible_tool_result,
+    _is_pinging_bot,
     _message_support_intent,
     _should_shadow_log_support_intent,
     _is_staff_ticket_message,
@@ -91,6 +92,16 @@ class DiscordMessageChunkTests(unittest.TestCase):
 
         message.content = "<@999> how do I configure dragon blocks?"
         self.assertEqual(_message_support_intent(message, bot_user), SUPPORT_INTENT_SUPPORT_QUESTION)
+
+    def test_pinging_bot_detects_replies_to_bot_messages(self) -> None:
+        bot_user = types.SimpleNamespace(id=999, mention="<@999>")
+        referenced = types.SimpleNamespace(author=bot_user)
+        message = types.SimpleNamespace(
+            mentions=[],
+            reference=types.SimpleNamespace(resolved=referenced, cached_message=None),
+        )
+
+        self.assertTrue(_is_pinging_bot(message, bot_user))
 
     def test_shadow_logging_covers_ambient_guild_messages_but_skips_live_routes(self) -> None:
         settings = types.SimpleNamespace(ai_support_ambient_shadow_enabled=True)

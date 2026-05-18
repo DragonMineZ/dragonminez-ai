@@ -27,6 +27,25 @@ async def _edit_user_status_message(message, content: str) -> None:
         log.exception("Failed to edit Patreon whitelist user status message")
 
 
+async def _edit_user_interaction_status(interaction: discord.Interaction, content: str) -> None:
+    edit_original_response = getattr(interaction, "edit_original_response", None)
+    if edit_original_response is not None:
+        try:
+            await edit_original_response(content=content, view=None)
+            return
+        except Exception:
+            log.exception("Failed to edit Patreon whitelist interaction response")
+
+    message = getattr(interaction, "message", None)
+    if message is not None:
+        await _edit_user_status_message(message, content)
+        return
+
+    followup = getattr(interaction, "followup", None)
+    if followup is not None:
+        await followup.send(content, ephemeral=True)
+
+
 async def _dm_user(user, content: str) -> None:
     try:
         await user.send(content)
@@ -172,9 +191,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
                         "whitelist_file_path": self.gh.whitelist_file_path,
                     },
                 )
-                await interaction.followup.send(
+                await _edit_user_interaction_status(
+                    interaction,
                     "I could not submit the whitelist request. Please ask staff to check the bot logs.",
-                    ephemeral=True,
                 )
 
         await _send_message(
@@ -203,9 +222,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
         base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
 
         if state["nick"] in base_lines:
-            await interaction.followup.send(
+            await _edit_user_interaction_status(
+                interaction,
                 f"`{state['nick']}` is already whitelisted. Nothing to do.",
-                ephemeral=True,
             )
             return
 
@@ -243,10 +262,10 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
         staff_channel = await _pick_staff_channel(self.bot, interaction)
         if staff_channel is None:
-            await interaction.followup.send(
+            await _edit_user_interaction_status(
+                interaction,
                 "I created the whitelist PR, but I could not notify staff. "
                 "Please ask staff to check the bot logs.",
-                ephemeral=True,
             )
             log.error(
                 "Patreon whitelist PR created but staff channel unavailable",
@@ -339,9 +358,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
         )
 
-        await interaction.followup.send(
+        await _edit_user_interaction_status(
+            interaction,
             "Request submitted. Please wait for an administrator to approve.",
-            ephemeral=True,
         )
 
 

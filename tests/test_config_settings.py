@@ -85,10 +85,9 @@ class ConfigSettingsTests(unittest.TestCase):
                 "DEV_JAR_DOWNLOAD_WEBHOOK_PATH": "/dmz-dev-jar",
                 "DEV_JAR_DOWNLOAD_DOWNLOAD_PATH": "/dev-download",
                 "DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH": "/dev-download/oauth/callback",
-                "DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS": "1341596685339725885",
-                "PATREON_OAUTH_CLIENT_ID": "client-id",
-                "PATREON_OAUTH_CLIENT_SECRET": "client-secret",
-                "PATREON_OAUTH_SCOPE": "identity identity.memberships",
+                "DISCORD_OAUTH_CLIENT_ID": "client-id",
+                "DISCORD_OAUTH_CLIENT_SECRET": "client-secret",
+                "DISCORD_OAUTH_SCOPE": "identify guilds guilds.members.read",
             },
             clear=False,
         ):
@@ -100,10 +99,9 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.dev_jar_download_webhook_path, "/dmz-dev-jar")
         self.assertEqual(settings.dev_jar_download_download_path, "/dev-download")
         self.assertEqual(settings.dev_jar_download_oauth_callback_path, "/dev-download/oauth/callback")
-        self.assertEqual(settings.dev_jar_download_bypass_role_ids, (1341596685339725885,))
-        self.assertEqual(settings.patreon_oauth_client_id, "client-id")
-        self.assertEqual(settings.patreon_oauth_client_secret, "client-secret")
-        self.assertEqual(settings.patreon_oauth_scope, "identity identity.memberships")
+        self.assertEqual(settings.discord_oauth_client_id, "client-id")
+        self.assertEqual(settings.discord_oauth_client_secret, "client-secret")
+        self.assertEqual(settings.discord_oauth_scope, "identify guilds guilds.members.read")
 
     def test_dev_jar_public_base_url_defaults_to_downloads_domain(self) -> None:
         with patch.dict(
@@ -121,33 +119,6 @@ class ConfigSettingsTests(unittest.TestCase):
             settings.dev_jar_download_public_base_url,
             "https://downloads.dragonminez.com",
         )
-
-    def test_discord_auto_sync_commands_defaults_to_true(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
-                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
-            },
-            clear=True,
-        ):
-            settings = load_settings(include_overrides=False)
-
-        self.assertTrue(settings.discord_auto_sync_commands)
-
-    def test_discord_auto_sync_commands_is_environment_configurable(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "DISCORD_AUTO_SYNC_COMMANDS": "false",
-            },
-            clear=False,
-        ):
-            settings = load_settings(include_overrides=False)
-
-        self.assertFalse(settings.discord_auto_sync_commands)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -149,9 +149,8 @@ DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR: str | None = None
 DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH = "/dmz-dev-jar"
 DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH = "/dev-download"
 DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH = "/dev-download/oauth/callback"
-DEFAULT_DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS: Sequence[int] = (1341596685339725885,)
 DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
-DEFAULT_PATREON_OAUTH_SCOPE = "identity identity.memberships"
+DEFAULT_DISCORD_OAUTH_SCOPE = "identify guilds guilds.members.read"
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
 DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
@@ -201,7 +200,7 @@ NON_OVERRIDABLE_SETTINGS = {
     "curseforge_api_key",
     "release_webhook_secret",
     "dev_jar_download_upload_dir",
-    "patreon_oauth_client_secret",
+    "discord_oauth_client_secret",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -267,12 +266,11 @@ class Settings:
     dev_jar_download_webhook_path: str
     dev_jar_download_download_path: str
     dev_jar_download_oauth_callback_path: str
-    dev_jar_download_bypass_role_ids: Sequence[int]
     dev_jar_download_token_ttl_seconds: int
-    patreon_oauth_client_id: str | None
-    patreon_oauth_client_secret: str | None
-    patreon_oauth_redirect_uri: str | None
-    patreon_oauth_scope: str
+    discord_oauth_client_id: str | None
+    discord_oauth_client_secret: str | None
+    discord_oauth_redirect_uri: str | None
+    discord_oauth_scope: str
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_support_allowed_role_ids: Sequence[int]
@@ -507,10 +505,6 @@ def _build_settings_from_env() -> Settings:
             )
             or DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH
         ),
-        dev_jar_download_bypass_role_ids=_get_env_int_list(
-            "DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS",
-            DEFAULT_DEV_JAR_DOWNLOAD_BYPASS_ROLE_IDS,
-        ),
         dev_jar_download_token_ttl_seconds=(
             _get_env_int(
                 "DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS",
@@ -518,12 +512,12 @@ def _build_settings_from_env() -> Settings:
             )
             or DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS
         ),
-        patreon_oauth_client_id=_get_env("PATREON_OAUTH_CLIENT_ID"),
-        patreon_oauth_client_secret=_get_env("PATREON_OAUTH_CLIENT_SECRET"),
-        patreon_oauth_redirect_uri=_get_env("PATREON_OAUTH_REDIRECT_URI"),
-        patreon_oauth_scope=(
-            _get_env("PATREON_OAUTH_SCOPE", DEFAULT_PATREON_OAUTH_SCOPE)
-            or DEFAULT_PATREON_OAUTH_SCOPE
+        discord_oauth_client_id=_get_env("DISCORD_OAUTH_CLIENT_ID"),
+        discord_oauth_client_secret=_get_env("DISCORD_OAUTH_CLIENT_SECRET"),
+        discord_oauth_redirect_uri=_get_env("DISCORD_OAUTH_REDIRECT_URI"),
+        discord_oauth_scope=(
+            _get_env("DISCORD_OAUTH_SCOPE", DEFAULT_DISCORD_OAUTH_SCOPE)
+            or DEFAULT_DISCORD_OAUTH_SCOPE
         ),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),

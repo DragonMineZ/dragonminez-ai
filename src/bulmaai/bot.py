@@ -15,6 +15,7 @@ from .services.discord_log_forwarding import (
     DiscordLogForwarder,
     install_discord_log_forwarder,
 )
+from .services.db_schema import ensure_schema
 from .services.message_presets import ensure_message_presets_file
 
 log = logging.getLogger("bulmaai")
@@ -122,6 +123,7 @@ class BulmaAI(discord.Bot):
     async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""
         await init_db_pool()
+        await ensure_schema()
         ensure_message_presets_file()
         if self.settings.discord_log_forwarding_enabled and self.settings.discord_log_channel_id:
             self._discord_log_forwarder = install_discord_log_forwarder(

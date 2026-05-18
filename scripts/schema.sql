@@ -102,3 +102,71 @@ CREATE TABLE IF NOT EXISTS patreon_campaign_state (
 
 CREATE INDEX IF NOT EXISTS idx_patreon_campaign_state_updated_at
     ON patreon_campaign_state (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS patreon_links (
+    discord_user_id          BIGINT PRIMARY KEY,
+    discord_username         TEXT NOT NULL,
+    patreon_user_id          TEXT NOT NULL,
+    patreon_member_id        TEXT,
+    patreon_full_name        TEXT,
+    patron_status            TEXT,
+    tier_ids                 TEXT[] NOT NULL DEFAULT '{}',
+    last_charge_date         TIMESTAMPTZ,
+    entitlement_active       BOOLEAN NOT NULL DEFAULT FALSE,
+    linked_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS discord_username TEXT NOT NULL DEFAULT '';
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS patreon_user_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS patreon_member_id TEXT;
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS patreon_full_name TEXT;
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS patron_status TEXT;
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS tier_ids TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS last_charge_date TIMESTAMPTZ;
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS entitlement_active BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS linked_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patreon_links_patreon_user_id
+    ON patreon_links (patreon_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_patreon_links_patreon_member_id
+    ON patreon_links (patreon_member_id);
+
+CREATE INDEX IF NOT EXISTS idx_patreon_links_entitlement_active
+    ON patreon_links (entitlement_active);
+
+CREATE TABLE IF NOT EXISTS patreon_whitelist_grants (
+    id                          BIGSERIAL PRIMARY KEY,
+    owner_discord_user_id       BIGINT NOT NULL,
+    beneficiary_discord_user_id BIGINT NOT NULL,
+    beneficiary_discord_username TEXT NOT NULL,
+    minecraft_username          TEXT NOT NULL,
+    kind                        TEXT NOT NULL,
+    active                      BOOLEAN NOT NULL DEFAULT TRUE,
+    source_pr_url               TEXT,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT patreon_whitelist_grants_kind_check
+        CHECK (kind IN ('self', 'gift'))
+);
+
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS owner_discord_user_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS beneficiary_discord_user_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS beneficiary_discord_username TEXT NOT NULL DEFAULT '';
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS minecraft_username TEXT NOT NULL DEFAULT '';
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'self';
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS source_pr_url TEXT;
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE patreon_whitelist_grants ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patreon_whitelist_grants_identity
+    ON patreon_whitelist_grants (owner_discord_user_id, beneficiary_discord_user_id, kind);
+
+CREATE INDEX IF NOT EXISTS idx_patreon_whitelist_grants_owner_active
+    ON patreon_whitelist_grants (owner_discord_user_id, active);
+
+CREATE INDEX IF NOT EXISTS idx_patreon_whitelist_grants_minecraft_username
+    ON patreon_whitelist_grants (minecraft_username);

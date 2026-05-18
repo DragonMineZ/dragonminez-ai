@@ -120,5 +120,41 @@ class ConfigSettingsTests(unittest.TestCase):
             "https://downloads.dragonminez.com",
         )
 
+    def test_patreon_oauth_settings_are_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PATREON_OAUTH_CLIENT_ID": "patreon-client-id",
+                "PATREON_OAUTH_CLIENT_SECRET": "patreon-client-secret",
+                "PATREON_WEBHOOK_SECRET": "patreon-webhook-secret",
+                "PATREON_ELIGIBLE_TIER_IDS": "tier-contributor,tier-benefactor",
+            },
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.patreon_oauth_client_id, "patreon-client-id")
+        self.assertEqual(settings.patreon_oauth_client_secret, "patreon-client-secret")
+        self.assertEqual(settings.patreon_webhook_secret, "patreon-webhook-secret")
+        self.assertEqual(settings.patreon_eligible_tier_ids, ("tier-contributor", "tier-benefactor"))
+        self.assertEqual(
+            settings.patreon_oauth_redirect_uri,
+            "https://downloads.dragonminez.com/patreon/oauth/callback",
+        )
+
+    def test_patreon_eligible_tier_ids_default_to_actual_patreon_tiers(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.patreon_eligible_tier_ids, ("23999392", "23999460"))
+
 if __name__ == "__main__":
     unittest.main()

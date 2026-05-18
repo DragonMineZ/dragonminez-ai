@@ -40,6 +40,12 @@ async def _dm_user(user, content: str) -> None:
         )
 
 
+async def _send_message(destination, content: str, *, ephemeral: bool = False, **kwargs) -> None:
+    if ephemeral:
+        kwargs["ephemeral"] = True
+    await destination.send(content, **kwargs)
+
+
 async def _pick_staff_channel(
     bot: discord.Bot,
     ctx_or_inter: discord.Interaction | discord.ApplicationContext | None = None,
@@ -109,94 +115,78 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
-        if ctx.channel is None or not hasattr(ctx.channel, "send"):
-            await ctx.followup.send(
-                "I could not start the beta access request in this channel.",
-                ephemeral=True,
-            )
-            return
-
-        status = await self.start_whitelist_flow_for_user(ctx.author, ctx.channel, username)
-        await self._send_beta_access_command_result(ctx, status)
-
-    async def _send_beta_access_command_result(
-        self,
-        ctx: discord.ApplicationContext,
-        status: str,
-    ) -> None:
-        messages = {
-            "flow_started": "Beta access request started. Confirm your Minecraft username in the channel message.",
-            "invalid_nickname": "That Minecraft username is invalid. Use 3-16 letters, numbers, or underscores.",
-            "user_not_allowed": "You need a Patreon beta access role before using `/beta-access` like **Contributor** or **Benefactor**. "
-                                "Don't know how to get access? Check this resource: https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access",
-        }
-        await ctx.followup.send(
-            messages.get(status, "I could not start the beta access request."),
+        await self.start_whitelist_flow_for_user(
+            ctx.author,
+            ctx.followup,
+            username,
             ephemeral=True,
         )
 
     async def start_whitelist_flow_for_user(
         self,
         member: discord.Member,
-        channel: discord.abc.Messageable,
+        destination,
         initial_nickname: str,
-    ) -> str:
+        *,
+        ephemeral: bool = False,
+    ) -> None:
         """
         Core Patreon whitelist workflow used by /beta-access.
-
-        Returns only 'user_not_allowed', 'invalid_nickname', or 'flow_started'.
         """
         if not has_patreon_access_role(
             member,
             settings=self.bot.settings,
         ):
-            return "user_not_allowed"
-
-        async def run_flow_with_nick(nickname: str) -> str:
-            if not MC_NAME_RE.match(nickname):
-                await channel.send(
-                    f"{member.mention} Nickname must be 3-16 chars, letters/numbers/_ only."
-                )
-                return "invalid_nickname"
-
-            async def on_user_confirm(
-                interaction: discord.Interaction,
-                initial_nick: str,
-            ):
-                try:
-                    await self._submit_whitelist_request(
-                        interaction=interaction,
-                        initial_nick=initial_nick,
-                    )
-                except Exception:
-                    log.exception(
-                        "Failed to create Patreon whitelist request",
-                        extra={
-                            "event": "patreon_whitelist_request_failed",
-                            "user_id": interaction.user.id,
-                            "whitelist_repo": self.gh.repo,
-                            "whitelist_file_path": self.gh.whitelist_file_path,
-                        },
-                    )
-                    await interaction.followup.send(
-                        "I could not submit the whitelist request because the GitHub update failed. "
-                        "Please ask staff to check the bot logs.",
-                        ephemeral=True,
-                    )
-
-            await channel.send(
-                f"You've said that `{nickname}` is your Minecraft nickname to get access to "
-                f"the Patreon-only releases, is this correct?",
-                view=UserConfirmView(
-                    requester_id=member.id,
-                    nickname=nickname,
-                    on_confirm=on_user_confirm,
-                ),
+            await _send_message(
+                destination,
+                "You need a Patreon beta access role to use `/beta-access`.",
+                ephemeral=ephemeral,
             )
-            return "flow_started"
+            return
 
-        normalized_nickname = initial_nickname.strip() if initial_nickname is not None else ""
-        return await run_flow_with_nick(normalized_nickname)
+        nickname = initial_nickname.strip() if initial_nickname is not None else ""
+        if not MC_NAME_RE.match(nickname):
+            await _send_message(
+                destination,
+                "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
+                ephemeral=ephemeral,
+            )
+            return
+
+        async def on_user_confirm(
+            interaction: discord.Interaction,
+            initial_nick: str,
+        ):
+            try:
+                await self._submit_whitelist_request(
+                    interaction=interaction,
+                    initial_nick=initial_nick,
+                )
+            except Exception:
+                log.exception(
+                    "Failed to create Patreon whitelist request",
+                    extra={
+                        "event": "patreon_whitelist_request_failed",
+                        "user_id": interaction.user.id,
+                        "whitelist_repo": self.gh.repo,
+                        "whitelist_file_path": self.gh.whitelist_file_path,
+                    },
+                )
+                await interaction.followup.send(
+                    "I could not submit the whitelist request. Please ask staff to check the bot logs.",
+                    ephemeral=True,
+                )
+
+        await _send_message(
+            destination,
+            f"Confirm `{nickname}` as your Minecraft username?",
+            ephemeral=ephemeral,
+            view=UserConfirmView(
+                requester_id=member.id,
+                nickname=nickname,
+                on_confirm=on_user_confirm,
+            ),
+        )
 
     async def _submit_whitelist_request(
         self,

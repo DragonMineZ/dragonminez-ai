@@ -122,6 +122,32 @@ class ConfigSettingsTests(unittest.TestCase):
             "https://downloads.dragonminez.com",
         )
 
+    def test_discord_auto_sync_commands_defaults_to_true(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertTrue(settings.discord_auto_sync_commands)
+
+    def test_discord_auto_sync_commands_is_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_AUTO_SYNC_COMMANDS": "false",
+            },
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertFalse(settings.discord_auto_sync_commands)
+
 
 if __name__ == "__main__":
     unittest.main()

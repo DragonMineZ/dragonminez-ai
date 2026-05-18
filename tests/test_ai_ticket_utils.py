@@ -11,6 +11,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs.ai_tickets import (
     AITicketsCog,
+    _beta_access_command_hint,
     _chunk_discord_message,
     _has_user_visible_tool_result,
     _is_pinging_bot,
@@ -39,23 +40,31 @@ class DiscordMessageChunkTests(unittest.TestCase):
     def test_preserves_short_messages(self) -> None:
         self.assertEqual(_chunk_discord_message("Short answer."), ["Short answer."])
 
-    def test_detects_user_visible_tool_result(self) -> None:
+    def test_user_visible_tool_result_helper_still_detects_suppressed_tool_outputs(self) -> None:
         self.assertTrue(
             _has_user_visible_tool_result(
                 [
                     {
-                        "name": "start_patreon_whitelist_flow",
+                        "name": "manual_action",
                         "output": {"status": "ok", "suppress_ai_reply": True},
                     },
                 ]
             )
         )
 
-    def test_ignores_non_visible_tool_result(self) -> None:
+    def test_user_visible_tool_result_helper_ignores_non_suppressed_tool_outputs(self) -> None:
         self.assertFalse(
             _has_user_visible_tool_result(
-                [{"name": "start_patreon_whitelist_flow", "output": {"status": "needs_input"}}]
+                [{"name": "manual_action", "output": {"status": "needs_input"}}]
             )
+        )
+
+    def test_beta_access_command_hint_points_to_canonical_command(self) -> None:
+        message = types.SimpleNamespace(author=types.SimpleNamespace(mention="<@456>"))
+
+        self.assertEqual(
+            _beta_access_command_hint(message),
+            "<@456> Use `/beta-access username:<your Minecraft username>` to request Patreon beta access.",
         )
 
     def test_support_debounce_uses_configured_non_negative_value(self) -> None:
@@ -205,10 +214,12 @@ class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
             types.SimpleNamespace(filename="two.png", content_type="image/png", url="https://cdn.example/two.png"),
         ]
         message = types.SimpleNamespace(attachments=attachments)
+        prompts = []
 
         async def fake_create(**kwargs):
             nonlocal call_count
             call_count += 1
+            prompts.append(kwargs["input"][0]["content"][0]["text"])
             if call_count == 1:
                 first_started.set()
                 await asyncio.wait_for(second_started.wait(), timeout=0.5)
@@ -225,6 +236,9 @@ class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
             result = await asyncio.wait_for(cog._extract_image_context(message), timeout=1.0)
 
         self.assertEqual(result, "image details\nimage details")
+        self.assertTrue(prompts)
+        self.assertTrue(all("whitelist" not in prompt.lower() for prompt in prompts))
+        self.assertTrue(all("beta access" not in prompt.lower() for prompt in prompts))
 
 
 if __name__ == "__main__":

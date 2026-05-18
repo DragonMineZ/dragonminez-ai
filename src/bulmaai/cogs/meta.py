@@ -102,14 +102,14 @@ class MetaCog(commands.Cog):
         embed.add_field(
             name="Patreon Access",
             value=(
-                "Patreon whitelist and beta access requests can be handled through the support flow. "
-                "When the bot has enough information, it starts the whitelist process for staff review."
+                "Use `/beta-access username:<your Minecraft username>` to request Patreon beta access. "
+                "The request is sent to staff for approval."
             ),
             inline=False,
         )
         embed.add_field(
             name="Useful Commands",
-            value="`/ping`, `/about`, `/botfaq`, `/loghelp`, `/rules preview`, `/supportus preview`",
+            value="`/ping`, `/about`, `/botfaq`, `/loghelp`, `/beta-access`, `/rules preview`, `/supportus preview`",
             inline=False,
         )
         await ctx.respond(embed=embed, ephemeral=True)

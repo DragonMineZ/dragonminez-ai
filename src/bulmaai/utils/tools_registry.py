@@ -10,48 +10,14 @@ log = logging.getLogger(__name__)
 ToolFunc = Callable[..., Any]
 
 # Responses API tools format (no nested "function" key)
-TOOLS_SCHEMAS: dict[str, dict] = {
-    "start_patreon_whitelist_flow": {
-        "type": "function",
-        "name": "start_patreon_whitelist_flow",
-        "description": (
-            "Start the Patreon whitelist workflow for a Discord user. "
-            "Use when a Patreon asks for beta, whitelist, allowlist, Patreon release access, "
-            "or equivalent phrasing in any language, including when screenshots or images imply that request."
-        ),
-        "strict": True,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "nickname": {
-                    "type": ["string", "null"],
-                    "description": (
-                        "Minecraft nickname if the user already provided it in the "
-                        "conversation. Use null if it is unknown."
-                    ),
-                },
-            },
-            "required": ["nickname"],
-            "additionalProperties": False,
-        },
-    },
-}
+TOOLS_SCHEMAS: dict[str, dict] = {}
 
 # Bind tool names to Python functions (lazy loaded to avoid import-time issues)
 TOOLS_FUNCS: dict[str, ToolFunc] = {}
 
 
 def _init_tools_funcs() -> None:
-    global TOOLS_FUNCS
-    if TOOLS_FUNCS:  # Already initialized
-        return
-
-    # Lazy import to avoid circular imports
-    from bulmaai.utils import patreon_whitelist
-
-    TOOLS_FUNCS = {
-        "start_patreon_whitelist_flow": patreon_whitelist.start_patreon_whitelist_flow,
-    }
+    return
 
 
 def _normalize_schema(name: str) -> dict[str, Any]:

@@ -3,7 +3,6 @@ import hashlib
 import importlib.resources as pkg_resources
 import json
 import logging
-import re
 import time
 from typing import Any, Optional, TypedDict
 
@@ -23,20 +22,11 @@ from bulmaai.services.support_traces import (
     record_support_ai_trace,
     upsert_support_session,
 )
-from bulmaai.services.support_intent import (
-    SUPPORT_INTENT_PATREON_WHITELIST,
-    classify_support_intent,
-)
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils import tools_registry
 
 client = AsyncOpenAI(api_key=load_settings().openai_key)
 log = logging.getLogger(__name__)
-MINECRAFT_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
-NICKNAME_HINT_RE = re.compile(
-    r"(?i)\b(?:ign|in[- ]?game name|minecraft(?: username| name)?|mc(?: username| name)?|nickname|username|name)"
-    r"\s*(?:is|:|=)?\s*([A-Za-z0-9_]{3,16})\b"
-)
 class ConversationMessage(TypedDict, total=False):
     role: str
     content: str
@@ -138,24 +128,6 @@ def _latest_user_message(
     return None
 
 
-def _latest_non_staff_user_text(messages: list[ConversationMessage]) -> str:
-    latest = _latest_user_message(messages)
-    return (latest.get("content") if latest else "") or ""
-
-
-def _looks_like_patreon_whitelist_request(messages: list[ConversationMessage]) -> bool:
-    return classify_support_intent(_latest_non_staff_user_text(messages)) == SUPPORT_INTENT_PATREON_WHITELIST
-
-
-def _extract_minecraft_nickname_guess(messages: list[ConversationMessage]) -> str | None:
-    text = _latest_non_staff_user_text(messages)
-    match = NICKNAME_HINT_RE.search(text)
-    if not match:
-        return None
-    nickname = match.group(1).strip()
-    return nickname if MINECRAFT_NAME_RE.match(nickname) else None
-
-
 def _load_system_prompt(lang: str) -> str:
     filename = "support_system_en.txt"
     try:
@@ -207,12 +179,7 @@ def _hydrate_tool_args(
     user_id: int,
     channel_id: int,
 ) -> dict[str, Any]:
-    hydrated = dict(args)
-    if name == "start_patreon_whitelist_flow":
-        hydrated.setdefault("discord_user_id", str(user_id))
-        hydrated.setdefault("ticket_channel_id", str(channel_id))
-        hydrated.setdefault("nickname", None)
-    return hydrated
+    return dict(args)
 
 
 def _select_reasoning_effort(settings: Any, *, high_confidence: bool = False) -> str:
@@ -249,39 +216,6 @@ def _build_prompt_cache_key(*, model: str, tools: list[dict[str, Any]]) -> str:
         json.dumps(tools, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:16]
     return f"support:{model}:{tool_signature}"
-
-
-async def _run_direct_patreon_whitelist_flow(
-    *,
-    messages: list[ConversationMessage],
-    language: str,
-    user_id: int,
-    channel_id: int,
-    bot: Any,
-) -> AgentResult:
-    args = {
-        "discord_user_id": str(user_id),
-        "ticket_channel_id": str(channel_id),
-        "nickname": _extract_minecraft_nickname_guess(messages),
-    }
-    func = tools_registry.get_func("start_patreon_whitelist_flow", bot_context=bot)
-    output = await func(**args)
-    tool_results = [
-        ToolCallResult(
-            name="start_patreon_whitelist_flow",
-            arguments=args,
-            output=output,
-        )
-    ]
-    reply = "(no reply)"
-    if not (isinstance(output, dict) and output.get("suppress_ai_reply") is True):
-        reply = str(output.get("message") if isinstance(output, dict) else output)
-    return AgentResult(
-        reply=reply,
-        language=language,
-        tool_results=tool_results,
-        suggested_close=False,
-    )
 
 
 async def _create_response(*, timeout_seconds: int, **kwargs: Any) -> Any:
@@ -400,18 +334,6 @@ async def run_support_agent(
         language = detect_language_from_text(last_user["content"])
     else:
         language = "en"
-
-    if (
-        "start_patreon_whitelist_flow" in enabled_tools
-        and _looks_like_patreon_whitelist_request(messages)
-    ):
-        return await _run_direct_patreon_whitelist_flow(
-            messages=messages,
-            language=language,
-            user_id=user_id,
-            channel_id=channel_id,
-            bot=bot,
-        )
 
     openai_conversation_id: str | None = None
     conversation_already_exists = False

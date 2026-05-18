@@ -14,6 +14,7 @@ from bulmaai.services.openai_client import (
     run_support_agent,
 )
 from bulmaai.services.support_intent import (
+    SUPPORT_INTENT_PATREON_WHITELIST,
     SUPPORT_INTENT_UNCLEAR,
     SupportIntent,
     classify_support_intent,
@@ -222,6 +223,13 @@ def _message_content(message: discord.Message) -> str:
     return content.strip()
 
 
+def _beta_access_command_hint(message: discord.Message) -> str:
+    return (
+        f"{message.author.mention} Use `/beta-access username:<your Minecraft username>` "
+        "to request Patreon beta access."
+    )
+
+
 class AITicketsCog(commands.Cog):
     """AI triage / support for ticket channels and role-authorized support requests."""
 
@@ -425,7 +433,7 @@ class AITicketsCog(commands.Cog):
                             "text": (
                                 "Read this support screenshot and extract only actionable "
                                 "details relevant to support: errors, warnings, version hints, "
-                                "symptoms, access or whitelist requests, visible roles or status, "
+                                "symptoms, visible roles or status, "
                                 "buttons clicked, and any text that changes the recommended next step."
                             ),
                         },
@@ -473,6 +481,9 @@ class AITicketsCog(commands.Cog):
         intent = _message_support_intent(message, self.bot.user)
         if intent == SUPPORT_INTENT_UNCLEAR:
             return
+        if intent == SUPPORT_INTENT_PATREON_WHITELIST:
+            await self._send_messages_with_typing(channel, [_beta_access_command_hint(message)])
+            return
 
         async with self._channel_locks[channel.id]:
             try:
@@ -489,7 +500,7 @@ class AITicketsCog(commands.Cog):
                         )
                     )
 
-                enabled_tools = ["start_patreon_whitelist_flow"]
+                enabled_tools: list[str] = []
                 result = await run_support_agent(
                     messages=history,
                     enabled_tools=enabled_tools,

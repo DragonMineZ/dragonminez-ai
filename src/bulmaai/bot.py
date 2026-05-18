@@ -22,7 +22,6 @@ log = logging.getLogger("bulmaai")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESTART_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
 
-
 @dataclass(frozen=True)
 class GitRuntimeInfo:
     branch: str
@@ -112,7 +111,7 @@ class BulmaAI(discord.Bot):
         super().__init__(
             intents=intents,
             debug_guilds=debug_guilds,
-            auto_sync_commands=True,  # Default is True, but being explicit is nice.
+            auto_sync_commands=True,
         )
 
         self.settings = settings

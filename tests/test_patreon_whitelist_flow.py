@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from bulmaai.cogs.patreon_whitelist_flow import PatreonWhitelistFlowCog
 
@@ -19,6 +20,26 @@ class FakeFollowup:
 
     async def send(self, *args, **kwargs):
         self.sent.append((args, kwargs))
+
+
+class FakeCommandContext:
+    def __init__(self, *, author, channel):
+        self.author = author
+        self.channel = channel
+        self.deferred = []
+        self.followup = FakeFollowup()
+
+    async def defer(self, **kwargs):
+        self.deferred.append(kwargs)
+
+
+class CapturingPatreonWhitelistFlowCog(PatreonWhitelistFlowCog):
+    def __init__(self):
+        self.calls = []
+
+    async def start_whitelist_flow_for_user(self, member, channel, initial_nickname):
+        self.calls.append((member, channel, initial_nickname))
+        return "flow_started"
 
 
 class FakeMessage:
@@ -98,6 +119,94 @@ class FakeGitHubWithExistingBranchNick(FakeGitHub):
 
 
 class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_beta_access_command_requires_username_and_starts_flow(self) -> None:
+        cog = CapturingPatreonWhitelistFlowCog()
+        channel = FakeChannel()
+        author = FakeUser(user_id=456, name="Requester", mention="<@456>")
+        ctx = FakeCommandContext(author=author, channel=channel)
+
+        with patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", FakeUser):
+            await cog._handle_beta_access_command(ctx, "NewTester")
+
+        self.assertEqual(ctx.deferred, [{"ephemeral": True}])
+        self.assertEqual(cog.calls, [(author, channel, "NewTester")])
+        self.assertEqual(
+            ctx.followup.sent,
+            [(("Beta access request started. Confirm your Minecraft username in the channel message.",), {"ephemeral": True})],
+        )
+
+    async def test_admin_without_patreon_role_cannot_bypass_beta_access_role_check(self) -> None:
+        bot = SimpleNamespace(settings=SimpleNamespace(patreon_access_role_ids=(123,)))
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHub()
+
+        request_channel = FakeChannel()
+        member = SimpleNamespace(
+            id=456,
+            name="AdminNoPatreon",
+            mention="<@456>",
+            roles=[],
+            guild_permissions=SimpleNamespace(administrator=True),
+        )
+
+        result = await cog.start_whitelist_flow_for_user(
+            member,
+            request_channel,
+            "NewTester",
+        )
+
+        self.assertEqual(result, "user_not_allowed")
+        self.assertIn("You don't have permission", request_channel.sent[0][0][0])
+
+    async def test_beta_access_rejects_invalid_minecraft_username_immediately(self) -> None:
+        bot = SimpleNamespace(settings=SimpleNamespace(patreon_access_role_ids=(123,)))
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHub()
+
+        request_channel = FakeChannel()
+        member = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=123)],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+
+        result = await cog.start_whitelist_flow_for_user(
+            member,
+            request_channel,
+            "bad/name",
+        )
+
+        self.assertEqual(result, "invalid_nickname")
+        self.assertIn("Nickname must be 3-16 chars", request_channel.sent[0][0][0])
+
+    async def test_start_flow_rejects_missing_minecraft_username_safely(self) -> None:
+        bot = SimpleNamespace(settings=SimpleNamespace(patreon_access_role_ids=(123,)))
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHub()
+
+        request_channel = FakeChannel()
+        member = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=123)],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+
+        result = await cog.start_whitelist_flow_for_user(
+            member,
+            request_channel,
+            None,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(result, "invalid_nickname")
+        self.assertIn("Nickname must be 3-16 chars", request_channel.sent[0][0][0])
+
     async def test_user_confirm_uses_user_id_branch_and_branch_file_sha(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(

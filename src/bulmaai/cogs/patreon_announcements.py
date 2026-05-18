@@ -42,8 +42,8 @@ PATREON_WELCOME_DM_DESCRIPTION = (
     "You now have {role} ({role_name}) in the server, we're glad to have you here! "
     "If your perk is Supporter, it does NOT include alpha/beta access. "
     "To play the beta, you need at least the Contributor role/perk, which is USD $9.99. "
-    "If your perk is Contributor or Benefactor, you can ask for beta access in any channel on the DMZ server or DM/reply to me; "
-    "just ask however you want, and the bot can recognize beta access requests from messages or images. "
+    "If your perk is Contributor or Benefactor, use /beta-access username:<your Minecraft username> "
+    "in the DragonMineZ server to request beta access. "
     "Your support is invaluable, thank you again!"
 )
 PATREON_WELCOME_DM_FOOTER = "DragonMineZ Patreon"

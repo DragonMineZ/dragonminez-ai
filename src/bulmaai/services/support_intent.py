@@ -124,7 +124,7 @@ def _has_keyword(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
-def _looks_like_patreon_whitelist(text: str) -> bool:
+def _looks_like_beta_access_request(text: str) -> bool:
     if not text:
         return False
     has_patreon_or_beta = bool(re.search(r"(?i)\b(patreon|beta|alpha|early[- ]?access|creator)\b", text))
@@ -140,9 +140,9 @@ def _looks_like_patreon_whitelist(text: str) -> bool:
 
 def classify_support_intent(text: str, *, has_image: bool = False) -> SupportIntent:
     normalized = _normalized_text(text)
-    if _looks_like_patreon_whitelist(normalized):
+    if _looks_like_beta_access_request(normalized):
         return SUPPORT_INTENT_PATREON_WHITELIST
-    if has_image:
+    if has_image and normalized:
         return SUPPORT_INTENT_SUPPORT_QUESTION
     if not normalized:
         return SUPPORT_INTENT_UNCLEAR

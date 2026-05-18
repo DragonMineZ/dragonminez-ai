@@ -6,7 +6,7 @@ from discord.ext import commands
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
 from bulmaai.ui.patreon_views import UserConfirmView, AdminPRView, MC_NAME_RE
-from bulmaai.utils.permissions import has_patreon_access_role, is_admin
+from bulmaai.utils.permissions import has_patreon_access_role
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ async def _pick_staff_channel(
 
 
 class PatreonWhitelistFlowCog(commands.Cog):
-    """Patreon beta whitelist workflow used by the AI tool."""
+    """Patreon beta whitelist workflow used by the /beta-access command."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -83,22 +83,69 @@ class PatreonWhitelistFlowCog(commands.Cog):
             whitelist_file_path=settings.GITHUB_WHITELIST_FILE_PATH,
         )
 
+    @discord.slash_command(
+        name="beta-access",
+        description="Request DragonMineZ Patreon beta access for a Minecraft username",
+    )
+    @discord.option(
+        "username",
+        description="Your Minecraft username",
+        required=True,
+    )
+    async def beta_access(self, ctx: discord.ApplicationContext, username: str) -> None:
+        await self._handle_beta_access_command(ctx, username)
+
+    async def _handle_beta_access_command(
+        self,
+        ctx: discord.ApplicationContext,
+        username: str,
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+
+        if not isinstance(ctx.author, discord.Member):
+            await ctx.followup.send(
+                "Use `/beta-access` inside the DragonMineZ server so I can verify your Patreon role.",
+                ephemeral=True,
+            )
+            return
+
+        if ctx.channel is None or not hasattr(ctx.channel, "send"):
+            await ctx.followup.send(
+                "I could not start the beta access request in this channel.",
+                ephemeral=True,
+            )
+            return
+
+        status = await self.start_whitelist_flow_for_user(ctx.author, ctx.channel, username)
+        await self._send_beta_access_command_result(ctx, status)
+
+    async def _send_beta_access_command_result(
+        self,
+        ctx: discord.ApplicationContext,
+        status: str,
+    ) -> None:
+        messages = {
+            "flow_started": "Beta access request started. Confirm your Minecraft username in the channel message.",
+            "invalid_nickname": "That Minecraft username is invalid. Use 3-16 letters, numbers, or underscores.",
+            "user_not_allowed": "You need a Patreon beta access role before using `/beta-access`.",
+        }
+        await ctx.followup.send(
+            messages.get(status, "I could not start the beta access request."),
+            ephemeral=True,
+        )
+
     async def start_whitelist_flow_for_user(
         self,
         member: discord.Member,
         channel: discord.abc.Messageable,
-        initial_nickname: str | None = None,
+        initial_nickname: str,
     ) -> str:
         """
-        Core Patreon whitelist workflow used by the OpenAI tool (and any future commands).
+        Core Patreon whitelist workflow used by /beta-access.
 
-        Returns one of:
-        - 'user_not_allowed'
-        - 'invalid_nickname'
-        - 'asked_for_nickname'
-        - 'flow_started'
+        Returns only 'user_not_allowed', 'invalid_nickname', or 'flow_started'.
         """
-        if not is_admin(member) and not has_patreon_access_role(
+        if not has_patreon_access_role(
             member,
             settings=self.bot.settings,
         ):
@@ -152,14 +199,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return "flow_started"
 
-        if initial_nickname:
-            return await run_flow_with_nick(initial_nickname.strip())
-
-        await channel.send(
-            f"{member.mention} Please reply with your Minecraft nickname "
-            f"so we can start the Patreon beta whitelist process."
-        )
-        return "asked_for_nickname"
+        normalized_nickname = initial_nickname.strip() if initial_nickname is not None else ""
+        return await run_flow_with_nick(normalized_nickname)
 
     async def _submit_whitelist_request(
         self,
@@ -320,4 +361,3 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
 def setup(bot: discord.Bot):
     bot.add_cog(PatreonWhitelistFlowCog(bot))
-

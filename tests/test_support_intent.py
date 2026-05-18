@@ -37,9 +37,15 @@ class SupportIntentTests(unittest.TestCase):
             SUPPORT_INTENT_SUPPORT_QUESTION,
         )
 
-    def test_classifies_images_as_support_questions(self) -> None:
+    def test_image_only_messages_are_unclear_without_text(self) -> None:
         self.assertEqual(
             classify_support_intent("", has_image=True),
+            SUPPORT_INTENT_UNCLEAR,
+        )
+
+    def test_classifies_text_with_images_as_support_questions(self) -> None:
+        self.assertEqual(
+            classify_support_intent("Can you help with this crash?", has_image=True),
             SUPPORT_INTENT_SUPPORT_QUESTION,
         )
 

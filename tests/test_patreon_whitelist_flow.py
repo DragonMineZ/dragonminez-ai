@@ -286,6 +286,65 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(cog.gh.put_calls, [])
 
+    async def test_existing_whitelisted_user_edits_prompt_instead_of_followup(self) -> None:
+        bot = SimpleNamespace(
+            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            get_channel=lambda channel_id: FakeChannel(),
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHub()
+        user_message = FakeMessage()
+        interaction = SimpleNamespace(
+            user=FakeUser(name="Requester"),
+            message=user_message,
+            followup=FakeFollowup(),
+        )
+
+        await cog._submit_whitelist_request(
+            interaction=interaction,
+            initial_nick="ExistingUser",
+        )
+
+        self.assertEqual(interaction.followup.sent, [])
+        self.assertEqual(
+            user_message.edits[-1],
+            {
+                "content": "`ExistingUser` is already whitelisted. Nothing to do.",
+                "view": None,
+            },
+        )
+
+    async def test_submitted_request_edits_prompt_instead_of_followup(self) -> None:
+        staff_channel = FakeChannel()
+        bot = SimpleNamespace(
+            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            get_channel=lambda channel_id: staff_channel,
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHub()
+        user_message = FakeMessage()
+        interaction = SimpleNamespace(
+            user=FakeUser(name="Requester"),
+            message=user_message,
+            followup=FakeFollowup(),
+        )
+
+        await cog._submit_whitelist_request(
+            interaction=interaction,
+            initial_nick="NewTester",
+        )
+
+        self.assertEqual(interaction.followup.sent, [])
+        self.assertEqual(
+            user_message.edits[-1],
+            {
+                "content": "Request submitted. Please wait for an administrator to approve.",
+                "view": None,
+            },
+        )
+
     async def test_admin_approval_updates_user_message_and_dms_requester(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(

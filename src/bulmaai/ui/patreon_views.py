@@ -1,9 +1,27 @@
 import re
+
 import discord
 
 from bulmaai.utils.permissions import is_admin
 
 MC_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
+
+
+async def _edit_interaction_message(interaction: discord.Interaction, **kwargs) -> None:
+    edit_original_response = getattr(interaction, "edit_original_response", None)
+    if edit_original_response is not None:
+        try:
+            await edit_original_response(**kwargs)
+            return
+        except discord.HTTPException:
+            pass
+
+    message = getattr(interaction, "message", None)
+    if message is not None:
+        try:
+            await message.edit(**kwargs)
+        except discord.HTTPException:
+            pass
 
 
 class NicknameModal(discord.ui.Modal):
@@ -23,6 +41,7 @@ class NicknameModal(discord.ui.Modal):
         self.value = self.nick.value.strip()
         await interaction.response.defer(ephemeral=True)
 
+
 class UserConfirmView(discord.ui.View):
     def __init__(self, *, requester_id: int, nickname: str, on_confirm):
         super().__init__(timeout=300)
@@ -40,11 +59,15 @@ class UserConfirmView(discord.ui.View):
     async def yes_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
         if not await self._gate(interaction):
             return
-        await interaction.response.defer(ephemeral=True)
-        await self.on_confirm(interaction, self.nickname)
+        await interaction.response.defer()
         for child in self.children:
             child.disabled = True
-        await interaction.message.edit(view=self)
+        await _edit_interaction_message(
+            interaction,
+            content=f"Checking `{self.nickname}`...",
+            view=None,
+        )
+        await self.on_confirm(interaction, self.nickname)
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
     async def no_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -57,17 +80,19 @@ class UserConfirmView(discord.ui.View):
 
         new_nick = (modal.value or "").strip()
         if not MC_NAME_RE.match(new_nick):
-            return await interaction.followup.send(
-                "Invalid nickname (3–16 chars, letters/numbers/_). Try again.",
-                ephemeral=True,
+            return await _edit_interaction_message(
+                interaction,
+                content="Invalid nickname (3-16 chars, letters/numbers/_). Try again.",
+                view=self,
             )
 
         self.nickname = new_nick
-        await interaction.followup.send(
-            f"You've said that `{self.nickname}` is your Minecraft nickname to get access to the Patreon-only releases, is this correct?",
-            ephemeral=True,
+        await _edit_interaction_message(
+            interaction,
+            content=f"Confirm `{self.nickname}` as your Minecraft username?",
             view=self,
         )
+
 
 class AdminPRView(discord.ui.View):
     def __init__(self, *, pr_number: int, nickname: str, branch: str, on_confirm, on_edit, on_reject):

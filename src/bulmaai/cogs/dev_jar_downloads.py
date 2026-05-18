@@ -13,12 +13,12 @@ from discord.ext import commands
 from bulmaai.services.dev_jar_downloads import (
     DevJarArtifact,
     DevJarUploadPayload,
+    DiscordOAuthClient,
     OneTimeDownloadTokenStore,
-    PatreonOAuthClient,
+    build_discord_authorization_url,
     build_oauth_state,
-    build_patreon_authorization_url,
     find_latest_dev_jar,
-    has_active_patreon_membership,
+    has_authorized_discord_download_access,
     parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
     parse_oauth_state,
@@ -39,10 +39,19 @@ log = logging.getLogger(__name__)
 DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:"
 DOWNLOAD_FILE_SUFFIX = "/file"
 DEV_JAR_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
+DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS = (
+    1490060558110822542,
+    1453303311330709674,
+)
+DEV_JAR_PATREON_ROLE_IDS = (
+    1287877272224665640,
+    1287877305259130900,
+)
+DEV_JAR_TESTER_ROLE_IDS = (1286814599215317034,)
 
 
-def can_bypass_patreon_oauth(member: object, *, bypass_role_ids: tuple[int, ...]) -> bool:
-    return is_admin(member) or has_any_allowed_role(member, bypass_role_ids)  # type: ignore[arg-type]
+def can_post_download_announcement(member: object, *, staff_role_ids: tuple[int, ...]) -> bool:
+    return is_admin(member) or has_any_allowed_role(member, staff_role_ids)  # type: ignore[arg-type]
 
 
 def _format_size(size_bytes: int | None) -> str:
@@ -72,7 +81,7 @@ def build_dev_jar_download_embed(
     embed.add_field(name="Size", value=_format_size(artifact.size_bytes), inline=True)
     if sha256:
         embed.add_field(name="SHA-256", value=f"`{sha256}`", inline=False)
-    embed.set_footer(text="Downloads require Patreon OAuth login!")
+    embed.set_footer(text="Downloads require Discord authorization.")
     return embed
 
 
@@ -197,7 +206,7 @@ class DevJarDownloadsCog(commands.Cog):
         return value
 
     def _oauth_redirect_uri(self) -> str:
-        configured = (self.settings.patreon_oauth_redirect_uri or "").strip()
+        configured = (self.settings.discord_oauth_redirect_uri or "").strip()
         if configured:
             return configured
         return f"{self._public_base_url()}{self.settings.dev_jar_download_oauth_callback_path}"
@@ -226,6 +235,17 @@ class DevJarDownloadsCog(commands.Cog):
             raise RuntimeError(f"Configured dev jar channel {channel_id} is not messageable")
         return channel
 
+    async def _resolve_announcement_channels(self) -> list[discord.abc.Messageable]:
+        channels: list[discord.abc.Messageable] = []
+        for channel_id in DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS:
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                channel = await self.bot.fetch_channel(channel_id)
+            if not hasattr(channel, "send"):
+                raise RuntimeError(f"Configured dev jar channel {channel_id} is not messageable")
+            channels.append(channel)
+        return channels
+
     async def _post_download_announcement(
         self,
         artifact: DevJarArtifact,
@@ -234,16 +254,17 @@ class DevJarDownloadsCog(commands.Cog):
         sha256: str | None = None,
         workflow_run_url: str | None = None,
     ) -> None:
-        target_channel = channel or await self._resolve_channel()
-        await target_channel.send(
-            embed=build_dev_jar_download_embed(
-                artifact,
-                sha256=sha256,
-                workflow_run_url=workflow_run_url,
-            ),
-            view=DevJarDownloadView(artifact),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        target_channels = [channel] if channel is not None else await self._resolve_announcement_channels()
+        for target_channel in target_channels:
+            await target_channel.send(
+                embed=build_dev_jar_download_embed(
+                    artifact,
+                    sha256=sha256,
+                    workflow_run_url=workflow_run_url,
+                ),
+                view=DevJarDownloadView(artifact),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def _handle_upload_payload(self, payload: DevJarUploadPayload) -> None:
         path = self._artifact_path(payload.artifact)
@@ -280,9 +301,9 @@ class DevJarDownloadsCog(commands.Cog):
         channel: discord.TextChannel | None = None,
     ) -> None:
         author = ctx.author
-        if not can_bypass_patreon_oauth(
+        if not can_post_download_announcement(
             author,
-            bypass_role_ids=tuple(self.settings.dev_jar_download_bypass_role_ids),
+            staff_role_ids=tuple(self.settings.discord_staff_role_ids),
         ):
             await ctx.respond("Only staff can post dev jar download announcements.", ephemeral=True)
             return
@@ -329,24 +350,19 @@ class DevJarDownloadsCog(commands.Cog):
         try:
             artifact = parse_dev_jar_filename(file_name)
             self._artifact_path(artifact)
-            if can_bypass_patreon_oauth(
-                interaction.user,
-                bypass_role_ids=tuple(self.settings.dev_jar_download_bypass_role_ids),
-            ):
-                token = self.token_store.issue(
-                    artifact=artifact,
-                    requester_id=interaction.user.id,
-                    ttl_seconds=self.settings.dev_jar_download_token_ttl_seconds,
-                )
+            guild_id = getattr(interaction, "guild_id", None)
+            if guild_id is None:
                 await interaction.response.send_message(
-                    f"One-time download link: {self._direct_download_url(token)}",
+                    "Use this download button inside the DragonMineZ Discord server.",
                     ephemeral=True,
                 )
                 return
-
-            if not self.settings.patreon_oauth_client_id or not self.settings.patreon_oauth_client_secret:
+            client_id = self.settings.discord_oauth_client_id
+            if not client_id and getattr(self.bot, "user", None) is not None:
+                client_id = str(self.bot.user.id)
+            if not client_id or not self.settings.discord_oauth_client_secret:
                 await interaction.response.send_message(
-                    "Patreon download authorization is not configured yet.",
+                    "Discord download authorization is not configured yet.",
                     ephemeral=True,
                 )
                 return
@@ -361,16 +377,17 @@ class DevJarDownloadsCog(commands.Cog):
                 secret=self.settings.release_webhook_secret,
                 artifact=artifact,
                 requester_id=interaction.user.id,
+                guild_id=int(guild_id),
                 expires_at=int(time.time() + self.settings.dev_jar_download_token_ttl_seconds),
             )
-            url = build_patreon_authorization_url(
-                client_id=self.settings.patreon_oauth_client_id,
+            url = build_discord_authorization_url(
+                client_id=client_id,
                 redirect_uri=self._oauth_redirect_uri(),
                 state=state,
-                scope=self.settings.patreon_oauth_scope,
+                scope=self.settings.discord_oauth_scope,
             )
             await interaction.response.send_message(
-                f"Authorize with Patreon to download this build: {url}",
+                f"Authorize with Discord to download this build: {url}",
                 ephemeral=True,
             )
         except Exception:
@@ -497,25 +514,32 @@ class DevJarDownloadsCog(commands.Cog):
         )
         if parsed_state is None:
             return text_http_response(403, "Download authorization expired")
-        if not self.settings.patreon_oauth_client_id or not self.settings.patreon_oauth_client_secret:
-            return text_http_response(500, "Patreon OAuth is not configured")
+        client_id = self.settings.discord_oauth_client_id
+        if not client_id and getattr(self.bot, "user", None) is not None:
+            client_id = str(self.bot.user.id)
+        if not client_id or not self.settings.discord_oauth_client_secret:
+            return text_http_response(500, "Discord OAuth is not configured")
 
-        client = PatreonOAuthClient(
-            client_id=self.settings.patreon_oauth_client_id,
-            client_secret=self.settings.patreon_oauth_client_secret,
+        client = DiscordOAuthClient(
+            client_id=client_id,
+            client_secret=self.settings.discord_oauth_client_secret,
             redirect_uri=self._oauth_redirect_uri(),
         )
         try:
-            identity_payload = await client.fetch_identity_for_code(code)
+            member = await client.fetch_member_for_code(code, guild_id=parsed_state.guild_id)
         except Exception:
-            log.exception("Patreon OAuth exchange failed for dev jar download")
-            return text_http_response(403, "Patreon authorization failed")
+            log.exception("Discord OAuth exchange failed for dev jar download")
+            return text_http_response(403, "Discord authorization failed")
 
-        if not has_active_patreon_membership(
-            identity_payload,
-            campaign_id=self.settings.PATREON_CAMPAIGN_ID,
+        if member.user_id != parsed_state.requester_id:
+            return text_http_response(403, "Discord authorization user mismatch")
+
+        if not has_authorized_discord_download_access(
+            member,
+            patreon_role_ids=DEV_JAR_PATREON_ROLE_IDS,
+            tester_role_ids=DEV_JAR_TESTER_ROLE_IDS,
         ):
-            return text_http_response(403, "Active DragonMineZ Patreon membership required")
+            return text_http_response(403, "Discord account is not authorized for this download")
 
         try:
             path = self._artifact_path(parsed_state.artifact)

@@ -15,6 +15,8 @@ from urllib.parse import urlencode
 from bulmaai.services.http import request
 
 
+DISCORD_API_BASE = "https://discord.com/api/v10"
+ADMINISTRATOR_PERMISSION = 0x8
 DEV_JAR_FILENAME_RE = re.compile(
     r"^dragonminez-(?P<version>.+)__(?P<branch>[a-z0-9._-]+)__(?P<sha>[a-f0-9]{12})\.jar$"
 )
@@ -61,12 +63,20 @@ class DevJarUploadPayload:
 class DevJarOAuthState:
     artifact: DevJarArtifact
     requester_id: int
+    guild_id: int
     expires_at: int
 
 
-class PatreonOAuthClient:
-    token_url = "https://www.patreon.com/api/oauth2/token"
-    identity_url = "https://www.patreon.com/api/oauth2/v2/identity"
+@dataclass(frozen=True, slots=True)
+class DiscordOAuthMember:
+    user_id: int
+    guild_id: int
+    permissions: int
+    role_ids: tuple[int, ...]
+
+
+class DiscordOAuthClient:
+    token_url = "https://discord.com/api/oauth2/token"
 
     def __init__(
         self,
@@ -79,7 +89,7 @@ class PatreonOAuthClient:
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
 
-    async def fetch_identity_for_code(self, code: str) -> dict[str, Any]:
+    async def fetch_member_for_code(self, code: str, *, guild_id: int) -> DiscordOAuthMember:
         token_response = await request(
             "POST",
             self.token_url,
@@ -94,24 +104,57 @@ class PatreonOAuthClient:
         )
         token_response.raise_for_status()
         access_token = str(token_response.json()["access_token"])
+        headers = {"Authorization": f"Bearer {access_token}"}
 
-        identity_response = await request(
+        user_response = await request(
             "GET",
-            self.identity_url,
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={
-                "include": "memberships,memberships.campaign",
-                "fields[member]": (
-                    "patron_status,last_charge_status,currently_entitled_amount_cents"
-                ),
-                "fields[campaign]": "creation_name,vanity,url",
-            },
+            f"{DISCORD_API_BASE}/users/@me",
+            headers=headers,
         )
-        identity_response.raise_for_status()
-        payload = identity_response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Patreon identity response must be an object")
-        return payload
+        user_response.raise_for_status()
+        user_payload = user_response.json()
+        if not isinstance(user_payload, dict):
+            raise ValueError("Discord user response must be an object")
+        user_id = int(user_payload["id"])
+
+        guilds_response = await request(
+            "GET",
+            f"{DISCORD_API_BASE}/users/@me/guilds",
+            headers=headers,
+        )
+        guilds_response.raise_for_status()
+        guilds_payload = guilds_response.json()
+        if not isinstance(guilds_payload, list):
+            raise ValueError("Discord guilds response must be a list")
+
+        permissions = 0
+        for guild in guilds_payload:
+            if not isinstance(guild, dict):
+                continue
+            if int(guild.get("id") or 0) == int(guild_id):
+                permissions = int(guild.get("permissions") or 0)
+                break
+        else:
+            raise ValueError("Discord user is not in the requested guild")
+
+        member_response = await request(
+            "GET",
+            f"{DISCORD_API_BASE}/users/@me/guilds/{int(guild_id)}/member",
+            headers=headers,
+        )
+        member_response.raise_for_status()
+        member_payload = member_response.json()
+        if not isinstance(member_payload, dict):
+            raise ValueError("Discord guild member response must be an object")
+        roles = member_payload.get("roles") or []
+        if not isinstance(roles, list):
+            raise ValueError("Discord guild member roles must be a list")
+        return DiscordOAuthMember(
+            user_id=user_id,
+            guild_id=int(guild_id),
+            permissions=permissions,
+            role_ids=tuple(int(role_id) for role_id in roles),
+        )
 
 
 class OneTimeDownloadTokenStore:
@@ -289,12 +332,14 @@ def build_oauth_state(
     secret: str,
     artifact: DevJarArtifact,
     requester_id: int,
+    guild_id: int,
     expires_at: int,
 ) -> str:
     body = _b64encode_json(
         {
             "file_name": artifact.file_name,
             "requester_id": int(requester_id),
+            "guild_id": int(guild_id),
             "expires_at": int(expires_at),
         }
     )
@@ -322,18 +367,19 @@ def parse_oauth_state(
         return DevJarOAuthState(
             artifact=parse_dev_jar_filename(str(payload["file_name"])),
             requester_id=int(payload["requester_id"]),
+            guild_id=int(payload["guild_id"]),
             expires_at=expires_at,
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
 
 
-def build_patreon_authorization_url(
+def build_discord_authorization_url(
     *,
     client_id: str,
     redirect_uri: str,
     state: str,
-    scope: str = "identity identity.memberships",
+    scope: str = "identify guilds guilds.members.read",
 ) -> str:
     query = urlencode(
         {
@@ -344,36 +390,17 @@ def build_patreon_authorization_url(
             "state": state,
         }
     )
-    return f"https://www.patreon.com/oauth2/authorize?{query}"
+    return f"https://discord.com/oauth2/authorize?{query}"
 
 
-def _member_matches_campaign(member: dict[str, Any], campaign_id: str | None) -> bool:
-    if campaign_id is None:
-        return True
-    campaign = ((member.get("relationships") or {}).get("campaign") or {}).get("data") or {}
-    return str(campaign.get("id") or "") == str(campaign_id)
-
-
-def has_active_patreon_membership(
-    identity_payload: dict[str, Any],
+def has_authorized_discord_download_access(
+    member: DiscordOAuthMember,
     *,
-    campaign_id: str | None = None,
+    patreon_role_ids: Iterable[int],
+    tester_role_ids: Iterable[int],
 ) -> bool:
-    included = identity_payload.get("included")
-    if not isinstance(included, list):
-        return False
-
-    for item in included:
-        if not isinstance(item, dict) or item.get("type") != "member":
-            continue
-        if not _member_matches_campaign(item, campaign_id):
-            continue
-        attrs = item.get("attributes") or {}
-        patron_status = str(attrs.get("patron_status") or "").lower()
-        charge_status = str(attrs.get("last_charge_status") or "").lower()
-        amount_cents = int(attrs.get("currently_entitled_amount_cents") or 0)
-        if patron_status == "active_patron" and (
-            amount_cents > 0 or charge_status in {"paid", "pending"}
-        ):
-            return True
-    return False
+    if member.permissions & ADMINISTRATOR_PERMISSION:
+        return True
+    authorized_roles = {int(role_id) for role_id in patreon_role_ids}
+    authorized_roles.update(int(role_id) for role_id in tester_role_ids)
+    return any(role_id in authorized_roles for role_id in member.role_ids)

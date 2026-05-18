@@ -13,6 +13,7 @@ from bulmaai.services.release_webhook import (
     clear_extra_webhook_routes,
     handle_release_webhook_post,
     register_extra_get_route,
+    register_extra_raw_webhook_route,
     register_extra_webhook_route,
 )
 
@@ -115,6 +116,33 @@ class ReleaseWebhookTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status, 403)
+
+    def test_registered_raw_route_receives_body_and_headers(self) -> None:
+        queued = []
+
+        def handle_raw(body: bytes, headers):
+            if headers.get("X-Test-Signature") != "signed":
+                return ReleaseWebhookHttpResponse(status=403, body=b"Forbidden")
+            queued.append(body)
+            return ReleaseWebhookHttpResponse(status=202, body=b"Raw webhook queued")
+
+        register_extra_raw_webhook_route(
+            path="/patreon/webhook",
+            handle_request=handle_raw,
+        )
+
+        response = handle_release_webhook_post(
+            path="/patreon/webhook",
+            body=b'{"data":{"id":"member-1"}}',
+            headers={"X-Test-Signature": "signed"},
+            expected_path="/dmz-release",
+            secret="release-secret",
+            submit_payload=lambda payload: None,
+        )
+
+        self.assertEqual(response.status, 202)
+        self.assertEqual(response.body, "Raw webhook queued")
+        self.assertEqual(queued, [b'{"data":{"id":"member-1"}}'])
 
     def test_registered_get_route_streams_file_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

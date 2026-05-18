@@ -54,10 +54,17 @@ class ExtraGetRoute:
     handle_request: Callable[[str, dict[str, list[str]]], ReleaseWebhookHttpResponse]
 
 
+@dataclass(frozen=True)
+class ExtraRawWebhookRoute:
+    path: str
+    handle_request: Callable[[bytes, Any], ReleaseWebhookHttpResponse]
+
+
 FORBIDDEN_RESPONSE = ReleaseWebhookResponse(status=403, body="Forbidden")
 
 _extra_routes: dict[str, ExtraWebhookRoute] = {}
 _extra_get_routes: list[ExtraGetRoute] = []
+_extra_raw_routes: dict[str, ExtraRawWebhookRoute] = {}
 
 
 def text_http_response(status: int, body: str) -> ReleaseWebhookHttpResponse:
@@ -92,6 +99,22 @@ def unregister_extra_webhook_route(path: str) -> None:
 def clear_extra_webhook_routes() -> None:
     _extra_routes.clear()
     _extra_get_routes.clear()
+    _extra_raw_routes.clear()
+
+
+def register_extra_raw_webhook_route(
+    *,
+    path: str,
+    handle_request: Callable[[bytes, Any], ReleaseWebhookHttpResponse],
+) -> None:
+    _extra_raw_routes[path] = ExtraRawWebhookRoute(
+        path=path,
+        handle_request=handle_request,
+    )
+
+
+def unregister_extra_raw_webhook_route(path: str) -> None:
+    _extra_raw_routes.pop(path, None)
 
 
 def register_extra_get_route(
@@ -186,6 +209,14 @@ def handle_release_webhook_post(
     secret: str | None,
     submit_payload: Callable[[dict[str, Any]], None],
 ) -> ReleaseWebhookResponse:
+    raw_route = _extra_raw_routes.get(path)
+    if raw_route is not None:
+        raw_response = raw_route.handle_request(body, headers)
+        return ReleaseWebhookResponse(
+            status=raw_response.status,
+            body=raw_response.body.decode("utf-8", errors="replace"),
+        )
+
     extra_route = _extra_routes.get(path)
     if extra_route is not None:
         return _handle_extra_webhook_route(

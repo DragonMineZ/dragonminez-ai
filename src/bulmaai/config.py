@@ -118,6 +118,11 @@ DEFAULT_PATREON_ACCESS_ROLE_IDS: Sequence[int] = (
     1287877272224665640,
     1287877305259130900,
 )
+DEFAULT_PATREON_ELIGIBLE_TIER_IDS: Sequence[str] = (
+    "23999392",
+    "23999460",
+)
+DEFAULT_PATREON_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/patreon/oauth/callback"
 
 DEFAULT_AI_SUPPORT_ENABLED = True
 DEFAULT_AI_TICKET_CATEGORY_ID = 1262517992982315110
@@ -197,6 +202,8 @@ NON_OVERRIDABLE_SETTINGS = {
     "PGPASSWORD",
     "GH_APP_PRIVATE_KEY_PEM",
     "PATREON_CREATOR_TOKEN",
+    "patreon_oauth_client_secret",
+    "patreon_webhook_secret",
     "curseforge_api_key",
     "release_webhook_secret",
     "dev_jar_download_upload_dir",
@@ -253,6 +260,11 @@ class Settings:
     patreon_bot_user_id: int | None
     patreon_announcement_channel_id: int | None
     patreon_access_role_ids: Sequence[int]
+    patreon_eligible_tier_ids: Sequence[str]
+    patreon_oauth_client_id: str | None
+    patreon_oauth_client_secret: str | None
+    patreon_oauth_redirect_uri: str
+    patreon_webhook_secret: str | None
     bot_restart_channel_id: int | None
     release_webhook_enabled: bool
     release_webhook_host: str
@@ -348,6 +360,8 @@ def _build_settings_from_env() -> Settings:
     GH_APP_PRIVATE_KEY_PEM = _require_env("GH_APP_PRIVATE_KEY_PEM")
 
     PATREON_CREATOR_TOKEN = _get_env("PATREON_CREATOR_TOKEN")
+    PATREON_OAUTH_CLIENT_SECRET = _get_env("PATREON_OAUTH_CLIENT_SECRET")
+    PATREON_WEBHOOK_SECRET = _get_env("PATREON_WEBHOOK_SECRET")
     CURSEFORGE_API_KEY = _get_env("CURSEFORGE_API_KEY")
 
     return Settings(
@@ -453,6 +467,14 @@ def _build_settings_from_env() -> Settings:
             "PATREON_ACCESS_ROLE_IDS",
             DEFAULT_PATREON_ACCESS_ROLE_IDS,
         ),
+        patreon_eligible_tier_ids=_get_env_str_list(
+            "PATREON_ELIGIBLE_TIER_IDS",
+            DEFAULT_PATREON_ELIGIBLE_TIER_IDS,
+        ),
+        patreon_oauth_client_id=_get_env("PATREON_OAUTH_CLIENT_ID"),
+        patreon_oauth_client_secret=PATREON_OAUTH_CLIENT_SECRET,
+        patreon_oauth_redirect_uri=DEFAULT_PATREON_OAUTH_REDIRECT_URI,
+        patreon_webhook_secret=PATREON_WEBHOOK_SECRET,
         bot_restart_channel_id=_get_env_int(
             "BOT_RESTART_CHANNEL_ID",
             DEFAULT_BOT_RESTART_CHANNEL_ID,

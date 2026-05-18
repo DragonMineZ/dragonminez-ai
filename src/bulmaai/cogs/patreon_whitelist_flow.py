@@ -127,7 +127,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
         messages = {
             "flow_started": "Beta access request started. Confirm your Minecraft username in the channel message.",
             "invalid_nickname": "That Minecraft username is invalid. Use 3-16 letters, numbers, or underscores.",
-            "user_not_allowed": "You need a Patreon beta access role before using `/beta-access`.",
+            "user_not_allowed": "You need a Patreon beta access role before using `/beta-access` like **Contributor** or **Benefactor**. "
+                                "Don't know how to get access? Check this resource: https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access",
         }
         await ctx.followup.send(
             messages.get(status, "I could not start the beta access request."),
@@ -149,11 +150,6 @@ class PatreonWhitelistFlowCog(commands.Cog):
             member,
             settings=self.bot.settings,
         ):
-            await channel.send(
-                f"{member.mention} You don't have permission to request Patreon whitelist access. "
-                f"You need the Patreon Contributor role in Discord. "
-                f"Maybe try [this](https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access) first."
-            )
             return "user_not_allowed"
 
         async def run_flow_with_nick(nickname: str) -> str:

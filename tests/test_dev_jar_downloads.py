@@ -183,17 +183,18 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(parse_oauth_state("secret", state + "x", now=lambda: 1999))
         self.assertIsNone(parse_oauth_state("secret", state, now=lambda: 2001))
 
-    def test_build_discord_authorization_url_uses_guild_member_scope(self) -> None:
-        url = build_discord_authorization_url(
-            client_id="client-id",
-            redirect_uri="https://downloads.example.test/dev-download/oauth/callback",
-            state="state-token",
-        )
+    def test_build_discord_authorization_url_uses_hardcoded_production_oauth_url(self) -> None:
+        url = build_discord_authorization_url(state="state-token")
 
-        self.assertIn("https://discord.com/oauth2/authorize?", url)
-        self.assertIn("client_id=client-id", url)
+        self.assertTrue(
+            url.startswith(
+                "https://discord.com/oauth2/authorize?"
+                "client_id=1336867824815312906&response_type=code&"
+                "redirect_uri=https%3A%2F%2Fdragonminez.com%2Fdiscord_oauth_callback&"
+                "scope=identify+guilds.members.read+guilds"
+            )
+        )
         self.assertIn("response_type=code", url)
-        self.assertIn("scope=identify+guilds+guilds.members.read", url)
         self.assertIn("state=state-token", url)
 
     def test_download_embed_mentions_commit_and_workflow(self) -> None:
@@ -279,11 +280,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 release_webhook_secret="secret",
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_download_path="/dev-download",
-                dev_jar_download_oauth_callback_path="/dev-download/oauth/callback",
-                discord_oauth_redirect_uri=None,
-                discord_oauth_client_id="client-id",
                 discord_oauth_client_secret="client-secret",
-                discord_oauth_scope="identify guilds guilds.members.read",
             )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
             state = build_oauth_state(
@@ -323,11 +320,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 release_webhook_secret="secret",
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_download_path="/dev-download",
-                dev_jar_download_oauth_callback_path="/dev-download/oauth/callback",
-                discord_oauth_redirect_uri=None,
-                discord_oauth_client_id="client-id",
                 discord_oauth_client_secret="client-secret",
-                discord_oauth_scope="identify guilds guilds.members.read",
             )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
             state = build_oauth_state(
@@ -371,11 +364,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 release_webhook_secret="secret",
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_download_path="/dev-download",
-                dev_jar_download_oauth_callback_path="/dev-download/oauth/callback",
-                discord_oauth_redirect_uri=None,
-                discord_oauth_client_id="client-id",
                 discord_oauth_client_secret="client-secret",
-                discord_oauth_scope="identify guilds guilds.members.read",
                 dev_jar_download_token_ttl_seconds=300,
             )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
@@ -396,7 +385,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(response.messages), 1)
         content, kwargs = response.messages[0]
         self.assertIn("Authorize with Discord", content)
-        self.assertIn("https://discord.com/oauth2/authorize?", content)
+        self.assertIn("https://discord.com/oauth2/authorize?client_id=1336867824815312906", content)
+        self.assertIn("redirect_uri=https%3A%2F%2Fdragonminez.com%2Fdiscord_oauth_callback", content)
         self.assertNotIn("One-time download link", content)
         self.assertTrue(kwargs["ephemeral"])
 
@@ -424,7 +414,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
             cog.bot = FakeBot(
                 {
-                    1490060558110822542: patreon_channel,
+                    1287883800805642351: patreon_channel,
                     1453303311330709674: testing_channel,
                 }
             )

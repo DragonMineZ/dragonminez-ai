@@ -81,13 +81,14 @@ class ConfigSettingsTests(unittest.TestCase):
             {
                 "DEV_JAR_DOWNLOAD_CHANNEL_ID": "1223439164121419838",
                 "DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL": "https://downloads.example.test",
-                "DEV_JAR_DOWNLOAD_UPLOAD_DIR": "/srv/dmz/dev-jars",
                 "DEV_JAR_DOWNLOAD_WEBHOOK_PATH": "/dmz-dev-jar",
                 "DEV_JAR_DOWNLOAD_DOWNLOAD_PATH": "/dev-download",
-                "DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH": "/dev-download/oauth/callback",
-                "DISCORD_OAUTH_CLIENT_ID": "client-id",
+                "DEV_JAR_DOWNLOAD_UPLOAD_DIR": "/ignored/env/dev-jars",
+                "DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH": "/ignored/oauth/callback",
+                "DISCORD_OAUTH_CLIENT_ID": "ignored-client-id",
                 "DISCORD_OAUTH_CLIENT_SECRET": "client-secret",
-                "DISCORD_OAUTH_SCOPE": "identify guilds guilds.members.read",
+                "DISCORD_OAUTH_REDIRECT_URI": "https://ignored.example.test/callback",
+                "DISCORD_OAUTH_SCOPE": "ignored scope",
             },
             clear=False,
         ):
@@ -95,13 +96,11 @@ class ConfigSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.dev_jar_download_channel_id, 1223439164121419838)
         self.assertEqual(settings.dev_jar_download_public_base_url, "https://downloads.example.test")
-        self.assertEqual(settings.dev_jar_download_upload_dir, "/srv/dmz/dev-jars")
+        self.assertEqual(settings.dev_jar_download_upload_dir, "/var/www/dragonminez/dev-jars")
         self.assertEqual(settings.dev_jar_download_webhook_path, "/dmz-dev-jar")
         self.assertEqual(settings.dev_jar_download_download_path, "/dev-download")
-        self.assertEqual(settings.dev_jar_download_oauth_callback_path, "/dev-download/oauth/callback")
-        self.assertEqual(settings.discord_oauth_client_id, "client-id")
+        self.assertEqual(settings.dev_jar_download_oauth_callback_path, "/discord_oauth_callback")
         self.assertEqual(settings.discord_oauth_client_secret, "client-secret")
-        self.assertEqual(settings.discord_oauth_scope, "identify guilds guilds.members.read")
 
     def test_dev_jar_public_base_url_defaults_to_downloads_domain(self) -> None:
         with patch.dict(

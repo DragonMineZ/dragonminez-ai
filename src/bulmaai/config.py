@@ -150,12 +150,11 @@ DEFAULT_RELEASE_WEBHOOK_PATH = "/dmz-release"
 DEFAULT_DEV_JAR_DOWNLOAD_ENABLED = True
 DEFAULT_DEV_JAR_DOWNLOAD_CHANNEL_ID = 1223439164121419838
 DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL: str | None = "https://downloads.dragonminez.com"
-DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR: str | None = None
+DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR = "/var/www/dragonminez/dev-jars"
 DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH = "/dmz-dev-jar"
 DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH = "/dev-download"
-DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH = "/dev-download/oauth/callback"
+DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH = "/discord_oauth_callback"
 DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
-DEFAULT_DISCORD_OAUTH_SCOPE = "identify guilds guilds.members.read"
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
 DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
@@ -279,10 +278,7 @@ class Settings:
     dev_jar_download_download_path: str
     dev_jar_download_oauth_callback_path: str
     dev_jar_download_token_ttl_seconds: int
-    discord_oauth_client_id: str | None
     discord_oauth_client_secret: str | None
-    discord_oauth_redirect_uri: str | None
-    discord_oauth_scope: str
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_support_allowed_role_ids: Sequence[int]
@@ -508,10 +504,7 @@ def _build_settings_from_env() -> Settings:
             "DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL",
             DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL,
         ),
-        dev_jar_download_upload_dir=_get_env(
-            "DEV_JAR_DOWNLOAD_UPLOAD_DIR",
-            DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR,
-        ),
+        dev_jar_download_upload_dir=DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR,
         dev_jar_download_webhook_path=(
             _get_env("DEV_JAR_DOWNLOAD_WEBHOOK_PATH", DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH)
             or DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH
@@ -520,13 +513,7 @@ def _build_settings_from_env() -> Settings:
             _get_env("DEV_JAR_DOWNLOAD_DOWNLOAD_PATH", DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH)
             or DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH
         ),
-        dev_jar_download_oauth_callback_path=(
-            _get_env(
-                "DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH",
-                DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH,
-            )
-            or DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH
-        ),
+        dev_jar_download_oauth_callback_path=DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH,
         dev_jar_download_token_ttl_seconds=(
             _get_env_int(
                 "DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS",
@@ -534,13 +521,7 @@ def _build_settings_from_env() -> Settings:
             )
             or DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS
         ),
-        discord_oauth_client_id=_get_env("DISCORD_OAUTH_CLIENT_ID"),
         discord_oauth_client_secret=_get_env("DISCORD_OAUTH_CLIENT_SECRET"),
-        discord_oauth_redirect_uri=_get_env("DISCORD_OAUTH_REDIRECT_URI"),
-        discord_oauth_scope=(
-            _get_env("DISCORD_OAUTH_SCOPE", DEFAULT_DISCORD_OAUTH_SCOPE)
-            or DEFAULT_DISCORD_OAUTH_SCOPE
-        ),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),
         ai_support_allowed_role_ids=_get_env_int_list(

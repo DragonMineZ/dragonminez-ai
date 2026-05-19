@@ -14,6 +14,7 @@ from bulmaai.services.dev_jar_downloads import (
     DevJarArtifact,
     DevJarUploadPayload,
     DiscordOAuthClient,
+    DISCORD_OAUTH_REDIRECT_URI,
     OneTimeDownloadTokenStore,
     build_discord_authorization_url,
     build_oauth_state,
@@ -40,7 +41,7 @@ DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:"
 DOWNLOAD_FILE_SUFFIX = "/file"
 DEV_JAR_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
 DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS = (
-    1490060558110822542,
+    1287883800805642351,
     1453303311330709674,
 )
 DEV_JAR_PATREON_ROLE_IDS = (
@@ -206,10 +207,7 @@ class DevJarDownloadsCog(commands.Cog):
         return value
 
     def _oauth_redirect_uri(self) -> str:
-        configured = (self.settings.discord_oauth_redirect_uri or "").strip()
-        if configured:
-            return configured
-        return f"{self._public_base_url()}{self.settings.dev_jar_download_oauth_callback_path}"
+        return DISCORD_OAUTH_REDIRECT_URI
 
     def _direct_download_url(self, token: str) -> str:
         path = self.settings.dev_jar_download_download_path.rstrip("/")
@@ -357,10 +355,7 @@ class DevJarDownloadsCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            client_id = self.settings.discord_oauth_client_id
-            if not client_id and getattr(self.bot, "user", None) is not None:
-                client_id = str(self.bot.user.id)
-            if not client_id or not self.settings.discord_oauth_client_secret:
+            if not self.settings.discord_oauth_client_secret:
                 await interaction.response.send_message(
                     "Discord download authorization is not configured yet.",
                     ephemeral=True,
@@ -380,14 +375,15 @@ class DevJarDownloadsCog(commands.Cog):
                 guild_id=int(guild_id),
                 expires_at=int(time.time() + self.settings.dev_jar_download_token_ttl_seconds),
             )
-            url = build_discord_authorization_url(
-                client_id=client_id,
-                redirect_uri=self._oauth_redirect_uri(),
-                state=state,
-                scope=self.settings.discord_oauth_scope,
-            )
+            url = build_discord_authorization_url(state=state)
             await interaction.response.send_message(
                 f"Authorize with Discord to download this build: {url}",
+                ephemeral=True,
+            )
+        except FileNotFoundError:
+            log.exception("Dev jar artifact not found for download button")
+            await interaction.response.send_message(
+                "Hmm.. It seems that the file to download is missing. Maybe this announcement is outdated? Check for newer bot messages with the button.",
                 ephemeral=True,
             )
         except Exception:
@@ -514,16 +510,11 @@ class DevJarDownloadsCog(commands.Cog):
         )
         if parsed_state is None:
             return text_http_response(403, "Download authorization expired")
-        client_id = self.settings.discord_oauth_client_id
-        if not client_id and getattr(self.bot, "user", None) is not None:
-            client_id = str(self.bot.user.id)
-        if not client_id or not self.settings.discord_oauth_client_secret:
+        if not self.settings.discord_oauth_client_secret:
             return text_http_response(500, "Discord OAuth is not configured")
 
         client = DiscordOAuthClient(
-            client_id=client_id,
             client_secret=self.settings.discord_oauth_client_secret,
-            redirect_uri=self._oauth_redirect_uri(),
         )
         try:
             member = await client.fetch_member_for_code(code, guild_id=parsed_state.guild_id)

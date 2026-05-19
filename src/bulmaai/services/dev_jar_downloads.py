@@ -16,6 +16,14 @@ from bulmaai.services.http import request
 
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
+DISCORD_OAUTH_CLIENT_ID = "1336867824815312906"
+DISCORD_OAUTH_REDIRECT_URI = "https://dragonminez.com/discord_oauth_callback"
+DISCORD_AUTHORIZATION_URL = (
+    "https://discord.com/oauth2/authorize?"
+    "client_id=1336867824815312906&response_type=code&"
+    "redirect_uri=https%3A%2F%2Fdragonminez.com%2Fdiscord_oauth_callback&"
+    "scope=identify+guilds.members.read+guilds"
+)
 ADMINISTRATOR_PERMISSION = 0x8
 DEV_JAR_FILENAME_RE = re.compile(
     r"^dragonminez-(?P<version>.+)__(?P<branch>[a-z0-9._-]+)__(?P<sha>[a-f0-9]{12})\.jar$"
@@ -81,9 +89,9 @@ class DiscordOAuthClient:
     def __init__(
         self,
         *,
-        client_id: str,
         client_secret: str,
-        redirect_uri: str,
+        client_id: str = DISCORD_OAUTH_CLIENT_ID,
+        redirect_uri: str = DISCORD_OAUTH_REDIRECT_URI,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -376,21 +384,9 @@ def parse_oauth_state(
 
 def build_discord_authorization_url(
     *,
-    client_id: str,
-    redirect_uri: str,
     state: str,
-    scope: str = "identify guilds guilds.members.read",
 ) -> str:
-    query = urlencode(
-        {
-            "response_type": "code",
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "scope": scope,
-            "state": state,
-        }
-    )
-    return f"https://discord.com/oauth2/authorize?{query}"
+    return f"{DISCORD_AUTHORIZATION_URL}&{urlencode({'state': state})}"
 
 
 def has_authorized_discord_download_access(

@@ -17,11 +17,11 @@ from bulmaai.services.http import request
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 DISCORD_OAUTH_CLIENT_ID = "1336867824815312906"
-DISCORD_OAUTH_REDIRECT_URI = "https://dragonminez.com/discord_oauth_callback"
+DISCORD_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/discord/oauth/callback"
 DISCORD_AUTHORIZATION_URL = (
     "https://discord.com/oauth2/authorize?"
     "client_id=1336867824815312906&response_type=code&"
-    "redirect_uri=https%3A%2F%2Fdragonminez.com%2Fdiscord_oauth_callback&"
+    "redirect_uri=https%3A%2F%2Fdownloads.dragonminez.com%2Fdiscord%2Foauth%2Fcallback&"
     "scope=identify+guilds.members.read+guilds"
 )
 ADMINISTRATOR_PERMISSION = 0x8

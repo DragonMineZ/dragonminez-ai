@@ -116,6 +116,9 @@ class ConfigSettingsTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
+                "DISCORD_OAUTH_CLIENT_ID": "discord-client-id",
+                "DISCORD_OAUTH_CLIENT_SECRET": "discord-client-secret",
+                "DISCORD_OAUTH_REDIRECT_URI": "https://downloads.example.test/beta-access/discord/callback",
                 "PATREON_OAUTH_CLIENT_ID": "patreon-client-id",
                 "PATREON_OAUTH_CLIENT_SECRET": "patreon-client-secret",
                 "PATREON_WEBHOOK_SECRET": "patreon-webhook-secret",
@@ -132,6 +135,29 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(
             settings.patreon_oauth_redirect_uri,
             "https://downloads.dragonminez.com/patreon/oauth/callback",
+        )
+        self.assertEqual(settings.discord_oauth_client_id, "discord-client-id")
+        self.assertEqual(settings.discord_oauth_client_secret, "discord-client-secret")
+        self.assertEqual(
+            settings.discord_oauth_redirect_uri,
+            "https://downloads.example.test/beta-access/discord/callback",
+        )
+
+    def test_beta_access_oauth_redirect_defaults_to_downloads_domain(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(
+            settings.discord_oauth_redirect_uri,
+            "https://downloads.dragonminez.com/beta-access/discord/callback",
         )
 
     def test_patreon_eligible_tier_ids_default_to_actual_patreon_tiers(self) -> None:

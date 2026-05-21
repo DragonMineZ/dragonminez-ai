@@ -32,6 +32,7 @@ class ReleaseWebhookHttpResponse:
     status: int
     body: bytes
     content_type: str = "text/plain; charset=utf-8"
+    headers: tuple[tuple[str, str], ...] = ()
     file_path: Path | None = None
     download_name: str | None = None
     on_stream_complete: Callable[[], None] | None = None
@@ -285,6 +286,8 @@ class ReleaseWebhookServer:
                         self.send_response(response.status)
                         self.send_header("Content-Type", response.content_type)
                         self.send_header("Content-Length", str(len(response.body)))
+                        for name, value in response.headers:
+                            self.send_header(name, value)
                         self.end_headers()
                         self.wfile.write(response.body)
                     except (BrokenPipeError, ConnectionResetError):
@@ -306,6 +309,8 @@ class ReleaseWebhookServer:
                         self.send_response(response.status)
                         self.send_header("Content-Type", response.content_type)
                         self.send_header("Content-Length", str(file_size))
+                        for name, value in response.headers:
+                            self.send_header(name, value)
                         if response.download_name:
                             self.send_header(
                                 "Content-Disposition",

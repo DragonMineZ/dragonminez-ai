@@ -123,6 +123,8 @@ DEFAULT_PATREON_ELIGIBLE_TIER_IDS: Sequence[str] = (
     "23999460",
 )
 DEFAULT_PATREON_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/patreon/oauth/callback"
+DEFAULT_DISCORD_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/beta-access/discord/callback"
+DEFAULT_DISCORD_OAUTH_CLIENTID = 1336867824815312906
 
 DEFAULT_AI_SUPPORT_ENABLED = True
 DEFAULT_AI_TICKET_CATEGORY_ID = 1262517992982315110
@@ -200,6 +202,7 @@ NON_OVERRIDABLE_SETTINGS = {
     "PGPASSWORD",
     "GH_APP_PRIVATE_KEY_PEM",
     "PATREON_CREATOR_TOKEN",
+    "discord_oauth_client_secret",
     "patreon_oauth_client_secret",
     "patreon_webhook_secret",
     "curseforge_api_key",
@@ -216,6 +219,9 @@ FALSE_VALUES = {"0", "false", "no", "off"}
 class Settings:
 
     discord_token: str
+    discord_oauth_client_id: str | None
+    discord_oauth_client_secret: str | None
+    discord_oauth_redirect_uri: str
     dev_guild_id: int | None
     log_level: str
     initial_extensions: Sequence[str]
@@ -352,12 +358,19 @@ def _build_settings_from_env() -> Settings:
     GH_APP_PRIVATE_KEY_PEM = _require_env("GH_APP_PRIVATE_KEY_PEM")
 
     PATREON_CREATOR_TOKEN = _get_env("PATREON_CREATOR_TOKEN")
+    DISCORD_OAUTH_CLIENT_SECRET = _get_env("DISCORD_OAUTH_CLIENT_SECRET")
     PATREON_OAUTH_CLIENT_SECRET = _get_env("PATREON_OAUTH_CLIENT_SECRET")
     PATREON_WEBHOOK_SECRET = _get_env("PATREON_WEBHOOK_SECRET")
     CURSEFORGE_API_KEY = _get_env("CURSEFORGE_API_KEY")
 
     return Settings(
         discord_token=token,
+        discord_oauth_client_id=_get_env("DISCORD_OAUTH_CLIENT_ID") or DEFAULT_DISCORD_OAUTH_CLIENTID,
+        discord_oauth_client_secret=DISCORD_OAUTH_CLIENT_SECRET,
+        discord_oauth_redirect_uri=(
+            _get_env("DISCORD_OAUTH_REDIRECT_URI", DEFAULT_DISCORD_OAUTH_REDIRECT_URI)
+            or DEFAULT_DISCORD_OAUTH_REDIRECT_URI
+        ),
         dev_guild_id=DEFAULT_DEV_GUILD_ID,
         log_level=DEFAULT_LOG_LEVEL,
         initial_extensions=DEFAULT_INITIAL_EXTENSIONS,

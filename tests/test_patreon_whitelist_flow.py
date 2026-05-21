@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from bulmaai.cogs.patreon_whitelist_flow import PatreonWhitelistFlowCog
+from bulmaai.services.discord_oauth import build_discord_oauth_state
 from bulmaai.services.patreon_grants import PatreonGrant, PatreonGrantKind, PatreonLink
 
 
@@ -40,6 +41,22 @@ class CapturingPatreonWhitelistFlowCog(PatreonWhitelistFlowCog):
 
     async def start_whitelist_flow_for_user(self, member, destination, initial_nickname, *, ephemeral=False):
         self.calls.append((member, destination, initial_nickname, ephemeral))
+
+
+class FakeGuild:
+    def __init__(self, member):
+        self.id = 111
+        self.member = member
+
+    def get_member(self, user_id):
+        if self.member and self.member.id == user_id:
+            return self.member
+        return None
+
+    async def fetch_member(self, user_id):
+        if self.member and self.member.id == user_id:
+            return self.member
+        raise RuntimeError("member not found")
 
 
 class FakeMessage:
@@ -126,6 +143,9 @@ class FakeGitHubWithGrantNames(FakeGitHub):
 class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     def _settings(self):
         return SimpleNamespace(
+            discord_oauth_client_id="discord-client-id",
+            discord_oauth_client_secret="discord-client-secret",
+            discord_oauth_redirect_uri="https://downloads.example.test/beta-access/discord/callback",
             patreon_access_role_ids=(1287877272224665640, 1287877305259130900),
             patreon_eligible_tier_ids=("1287877272224665640", "1287877305259130900"),
             patreon_oauth_client_id="patreon-client-id",
@@ -134,6 +154,57 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             PATREON_CAMPAIGN_ID="12861895",
             PATREON_CREATOR_TOKEN="creator-token",
         )
+
+    def test_beta_access_start_redirects_to_discord_oauth(self) -> None:
+        bot = SimpleNamespace(settings=self._settings())
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+
+        response = cog._handle_beta_access_start({"username": ["NewTester"]})
+
+        self.assertEqual(response.status, 302)
+        headers = dict(response.headers)
+        self.assertIn("Location", headers)
+        self.assertIn("https://discord.com/oauth2/authorize?", headers["Location"])
+        self.assertIn("client_id=discord-client-id", headers["Location"])
+        self.assertIn("scope=identify", headers["Location"])
+
+    async def test_beta_access_callback_passes_verified_member_to_whitelist_flow(self) -> None:
+        member = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=1287877272224665640)],
+            guild_permissions=SimpleNamespace(administrator=False),
+            guild=SimpleNamespace(id=111),
+        )
+        bot = SimpleNamespace(settings=self._settings(), guilds=[FakeGuild(member)])
+        cog = CapturingPatreonWhitelistFlowCog()
+        cog.bot = bot
+        state = build_discord_oauth_state(
+            secret="discord-client-secret",
+            minecraft_username="NewTester",
+            expires_at=2000,
+        )
+
+        with patch(
+            "bulmaai.cogs.patreon_whitelist_flow.DiscordOAuthClient.fetch_user_id_for_code",
+            AsyncMock(return_value=456),
+        ):
+            response = await cog._handle_beta_access_discord_callback(
+                code="oauth-code",
+                state=state,
+                now=lambda: 1999,
+            )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(cog.calls), 1)
+        called_member, destination, nickname, ephemeral = cog.calls[0]
+        self.assertIs(called_member, member)
+        self.assertEqual(nickname, "NewTester")
+        self.assertFalse(ephemeral)
+        self.assertIn("Verification request accepted", response.body.decode("utf-8"))
+        self.assertEqual(destination.messages, [])
 
     async def test_beta_access_command_keeps_confirmation_ephemeral(self) -> None:
         bot = SimpleNamespace(settings=self._settings())

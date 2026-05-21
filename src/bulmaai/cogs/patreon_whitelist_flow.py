@@ -2,6 +2,8 @@ import logging
 import time
 import json
 import asyncio
+import html
+import re
 from urllib.parse import urlparse
 
 import discord
@@ -9,6 +11,12 @@ from discord.ext import commands
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
+from bulmaai.services.discord_oauth import (
+    DiscordOAuthClient,
+    build_discord_authorization_url,
+    build_discord_oauth_state,
+    parse_discord_oauth_state,
+)
 from bulmaai.services.patreon_access import (
     PatreonCreatorClient,
     PatreonOAuthClient,
@@ -49,6 +57,10 @@ CONTRIBUTOR_ROLE_ID = 1287877272224665640
 BENEFACTOR_ROLE_ID = 1287877305259130900
 PATREON_OAUTH_TTL_SECONDS = 10 * 60
 PATREON_WEBHOOK_PATH = "/patreon/webhook"
+BETA_ACCESS_ROUTE_PREFIX = "/beta-access/"
+BETA_ACCESS_START_PATH = "/beta-access/start"
+DISCORD_OAUTH_TTL_SECONDS = 10 * 60
+URL_RE = re.compile(r"https?://[^\s<]+")
 
 
 def _patreon_branch_name(user_id: int) -> str:
@@ -125,6 +137,14 @@ async def _send_message(destination, content: str, *, ephemeral: bool = False, *
     if ephemeral:
         kwargs["ephemeral"] = True
     await destination.send(content, **kwargs)
+
+
+class BrowserFlowDestination:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def send(self, content: str, **kwargs) -> None:
+        self.messages.append(str(content))
 
 
 async def _pick_staff_channel(
@@ -213,6 +233,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
     def cog_unload(self) -> None:
         path = urlparse(self.bot.settings.patreon_oauth_redirect_uri).path
         unregister_extra_get_route(path)
+        unregister_extra_get_route(BETA_ACCESS_ROUTE_PREFIX)
         unregister_extra_raw_webhook_route(PATREON_WEBHOOK_PATH)
 
     def _register_patreon_routes(self) -> None:
@@ -222,6 +243,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
         loop = asyncio.get_running_loop()
         callback_path = urlparse(self.bot.settings.patreon_oauth_redirect_uri).path
+        discord_callback_path = urlparse(self.bot.settings.discord_oauth_redirect_uri).path
 
         def handle_oauth_callback(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
             code = (query.get("code") or [""])[0]
@@ -249,14 +271,135 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 log.exception("Patreon webhook handling failed")
                 return text_http_response(500, "Patreon webhook failed")
 
+        def handle_beta_access(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
+            if path == BETA_ACCESS_START_PATH:
+                return self._handle_beta_access_start(query)
+            if path != discord_callback_path:
+                return text_http_response(404, "Not found")
+
+            code = (query.get("code") or [""])[0]
+            state = (query.get("state") or [""])[0]
+            if not code or not state:
+                return self._html_response("Missing Discord OAuth code or state.", status=400)
+            future = asyncio.run_coroutine_threadsafe(
+                self._handle_beta_access_discord_callback(code=code, state=state),
+                loop,
+            )
+            try:
+                return future.result(timeout=30)
+            except Exception:
+                log.exception("Beta access Discord OAuth callback handling failed")
+                return self._html_response("Discord verification failed.", status=500)
+
         register_extra_get_route(
             path_prefix=callback_path,
             handle_request=handle_oauth_callback,
+        )
+        register_extra_get_route(
+            path_prefix=BETA_ACCESS_ROUTE_PREFIX,
+            handle_request=handle_beta_access,
         )
         register_extra_raw_webhook_route(
             path=PATREON_WEBHOOK_PATH,
             handle_request=handle_webhook,
         )
+
+    def _handle_beta_access_start(self, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
+        username = (query.get("username") or [""])[0].strip()
+        if not MC_NAME_RE.match(username):
+            return self._html_response(
+                "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
+                status=400,
+            )
+
+        url = self._build_discord_oauth_url(username)
+        if url is None:
+            return self._html_response(
+                "Discord verification is not configured yet. Ask staff to check the bot settings.",
+                status=500,
+            )
+
+        return ReleaseWebhookHttpResponse(
+            status=302,
+            body=b"",
+            headers=(("Location", url),),
+        )
+
+    def _build_discord_oauth_url(self, minecraft_username: str) -> str | None:
+        settings = self.bot.settings
+        if not settings.discord_oauth_client_id or not settings.discord_oauth_client_secret:
+            return None
+        state = build_discord_oauth_state(
+            secret=settings.discord_oauth_client_secret,
+            minecraft_username=minecraft_username,
+            expires_at=int(time.time() + DISCORD_OAUTH_TTL_SECONDS),
+        )
+        return build_discord_authorization_url(
+            client_id=settings.discord_oauth_client_id,
+            redirect_uri=settings.discord_oauth_redirect_uri,
+            state=state,
+        )
+
+    async def _handle_beta_access_discord_callback(
+        self,
+        *,
+        code: str,
+        state: str,
+        now=time.time,
+    ) -> ReleaseWebhookHttpResponse:
+        settings = self.bot.settings
+        if not settings.discord_oauth_client_id or not settings.discord_oauth_client_secret:
+            return self._html_response(
+                "Discord verification is not configured yet. Ask staff to check the bot settings.",
+                status=500,
+            )
+        parsed_state = parse_discord_oauth_state(
+            settings.discord_oauth_client_secret,
+            state,
+            now=now,
+        )
+        if parsed_state is None or not MC_NAME_RE.match(parsed_state.minecraft_username):
+            return self._html_response("Discord verification expired. Please try again from Minecraft.", status=403)
+
+        try:
+            discord_user_id = await DiscordOAuthClient(
+                client_id=settings.discord_oauth_client_id,
+                client_secret=settings.discord_oauth_client_secret,
+                redirect_uri=settings.discord_oauth_redirect_uri,
+            ).fetch_user_id_for_code(code)
+        except Exception:
+            log.exception("Discord OAuth identity fetch failed")
+            return self._html_response("Discord authorization failed. Please try again.", status=500)
+
+        member = await self._resolve_member_across_guilds(discord_user_id)
+        if member is None:
+            return self._html_response(
+                "Join the DragonMineZ Discord server before verifying beta access.",
+                status=403,
+            )
+
+        destination = BrowserFlowDestination()
+        await self.start_whitelist_flow_for_user(
+            member,
+            destination,
+            parsed_state.minecraft_username,
+            ephemeral=False,
+        )
+        message = destination.messages[-1] if destination.messages else "Verification request accepted."
+        return self._html_response(message)
+
+    async def _resolve_member_across_guilds(self, user_id: int) -> discord.Member | None:
+        guilds = list(getattr(self.bot, "guilds", []) or [])
+        for guild in guilds:
+            member = guild.get_member(user_id)
+            if member is not None:
+                return member
+        for guild in guilds:
+            try:
+                return await guild.fetch_member(user_id)
+            except Exception:
+                continue
+        return None
 
     async def _handle_beta_access_command(
         self,
@@ -682,18 +825,39 @@ class PatreonWhitelistFlowCog(commands.Cog):
         except Exception:
             return None
 
-    def _html_response(self, message: str) -> ReleaseWebhookHttpResponse:
+    def _html_response(
+        self,
+        message: str,
+        *,
+        status: int = 200,
+        title: str = "DragonMineZ Beta Access",
+    ) -> ReleaseWebhookHttpResponse:
+        safe_message = self._linkify_message(message)
         body = (
             "<!doctype html><html><head><meta charset=\"utf-8\">"
-            "<title>Patreon linked</title></head><body>"
-            f"<main><h1>DragonMineZ Patreon</h1><p>{message}</p></main>"
+            f"<title>{html.escape(title)}</title></head><body>"
+            f"<main><h1>{html.escape(title)}</h1><p>{safe_message}</p></main>"
             "</body></html>"
         )
         return ReleaseWebhookHttpResponse(
-            status=200,
+            status=status,
             body=body.encode("utf-8"),
             content_type="text/html; charset=utf-8",
         )
+
+    def _linkify_message(self, message: str) -> str:
+        parts: list[str] = []
+        last = 0
+        for match in URL_RE.finditer(message):
+            parts.append(html.escape(message[last:match.start()]))
+            url = match.group(0).rstrip(".,)")
+            trailing = match.group(0)[len(url):]
+            safe_url = html.escape(url, quote=True)
+            parts.append(f'<a href="{safe_url}">{html.escape(url)}</a>')
+            parts.append(html.escape(trailing))
+            last = match.end()
+        parts.append(html.escape(message[last:]))
+        return "".join(parts)
 
     async def _handle_patreon_webhook(self, body: bytes, headers) -> ReleaseWebhookHttpResponse:
         settings = self.bot.settings

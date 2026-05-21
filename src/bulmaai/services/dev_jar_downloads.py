@@ -48,6 +48,15 @@ class DevJarArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class DevJarCommit:
+    sha: str
+    title: str
+    description: str | None
+    author: str
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
 class DevJarDownloadGrant:
     artifact: DevJarArtifact
     requester_id: int
@@ -64,6 +73,7 @@ class DevJarDownloadClaim:
 class DevJarUploadPayload:
     artifact: DevJarArtifact
     sha256: str
+    commits: tuple[DevJarCommit, ...]
     workflow_run_url: str | None = None
 
 
@@ -302,6 +312,7 @@ def parse_dev_jar_upload_payload(payload: dict[str, Any]) -> DevJarUploadPayload
     remote_name = str(payload.get("remote_name") or "").strip()
     sha256 = str(payload.get("sha256") or "").strip().lower()
     workflow_run_url = str(payload.get("workflow_run_url") or "").strip() or None
+    commits = _parse_dev_jar_commits(payload.get("commits"))
 
     if not remote_name:
         raise ValueError("remote_name is required")
@@ -313,8 +324,45 @@ def parse_dev_jar_upload_payload(payload: dict[str, Any]) -> DevJarUploadPayload
     return DevJarUploadPayload(
         artifact=parse_dev_jar_filename(remote_name),
         sha256=sha256,
+        commits=commits,
         workflow_run_url=workflow_run_url,
     )
+
+
+def _required_commit_string(commit: dict[str, Any], field_name: str) -> str:
+    value = str(commit.get(field_name) or "").strip()
+    if not value:
+        raise ValueError(f"commit {field_name} is required")
+    return value
+
+
+def _parse_dev_jar_commits(value: Any) -> tuple[DevJarCommit, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("commits must be a non-empty list")
+
+    commits: list[DevJarCommit] = []
+    for raw_commit in value:
+        if not isinstance(raw_commit, dict):
+            raise ValueError("each commit must be an object")
+        sha = _required_commit_string(raw_commit, "sha").lower()
+        title = _required_commit_string(raw_commit, "title")
+        author = _required_commit_string(raw_commit, "author")
+        url = _required_commit_string(raw_commit, "url")
+        description = str(raw_commit.get("description") or "").strip() or None
+        if not re.fullmatch(r"[a-f0-9]{7,40}", sha):
+            raise ValueError("commit sha must be a 7 to 40 character lowercase hex string")
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("commit url must be an HTTP(S) URL")
+        commits.append(
+            DevJarCommit(
+                sha=sha,
+                title=title,
+                description=description,
+                author=author,
+                url=url,
+            )
+        )
+    return tuple(commits)
 
 
 def _b64encode_json(payload: dict[str, Any]) -> str:

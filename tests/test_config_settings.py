@@ -99,7 +99,7 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.dev_jar_download_upload_dir, "/var/www/dragonminez/dev-jars")
         self.assertEqual(settings.dev_jar_download_webhook_path, "/dmz-dev-jar")
         self.assertEqual(settings.dev_jar_download_download_path, "/dev-download")
-        self.assertEqual(settings.dev_jar_download_oauth_callback_path, "/discord_oauth_callback")
+        self.assertEqual(settings.dev_jar_download_oauth_callback_path, "/discord/oauth/callback")
         self.assertEqual(settings.discord_oauth_client_secret, "client-secret")
 
     def test_dev_jar_public_base_url_defaults_to_downloads_domain(self) -> None:

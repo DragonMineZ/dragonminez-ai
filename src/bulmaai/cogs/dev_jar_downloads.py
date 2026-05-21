@@ -12,6 +12,7 @@ from discord.ext import commands
 
 from bulmaai.services.dev_jar_downloads import (
     DevJarArtifact,
+    DevJarCommit,
     DevJarUploadPayload,
     DiscordOAuthClient,
     DISCORD_OAUTH_REDIRECT_URI,
@@ -62,9 +63,49 @@ def _format_size(size_bytes: int | None) -> str:
     return f"{size_mb:.1f} MB"
 
 
+def _truncate_commit_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _manual_artifact_commit(artifact: DevJarArtifact, *, author: object) -> DevJarCommit:
+    return DevJarCommit(
+        sha=artifact.commit_sha,
+        title="Manual dev jar announcement",
+        description=None,
+        author=str(author),
+        url=f"https://github.com/DragonMineZ/dragonminez/commit/{artifact.commit_sha}",
+    )
+
+
+def _format_commit_summary(commits: tuple[DevJarCommit, ...]) -> str:
+    lines: list[str] = []
+    for index, commit in enumerate(commits):
+        short_sha = commit.sha[:7]
+        title = _truncate_commit_text(commit.title, 140)
+        author = _truncate_commit_text(commit.author, 60)
+        entry = f"[{short_sha}]({commit.url}) {title} - {author}"
+        if commit.description:
+            entry = f"{entry}\n{_truncate_commit_text(commit.description, 220)}"
+        candidate_lines = [*lines, entry]
+        candidate = "\n".join(candidate_lines)
+        if len(candidate) <= 1024:
+            lines = candidate_lines
+            continue
+        remaining = len(commits) - index
+        suffix = f"...and {remaining} more commit{'s' if remaining != 1 else ''}."
+        candidate = "\n".join([*lines, suffix])
+        if len(candidate) <= 1024:
+            lines.append(suffix)
+        break
+    return "\n".join(lines)
+
+
 def build_dev_jar_download_embed(
     artifact: DevJarArtifact,
     *,
+    commits: tuple[DevJarCommit, ...],
     sha256: str | None = None,
     workflow_run_url: str | None = None,
 ) -> discord.Embed:
@@ -82,6 +123,7 @@ def build_dev_jar_download_embed(
     embed.add_field(name="Size", value=_format_size(artifact.size_bytes), inline=True)
     if sha256:
         embed.add_field(name="SHA-256", value=f"`{sha256}`", inline=False)
+    embed.add_field(name="Commits", value=_format_commit_summary(commits), inline=False)
     embed.set_footer(text="Downloads require Discord authorization.")
     return embed
 
@@ -248,6 +290,7 @@ class DevJarDownloadsCog(commands.Cog):
         self,
         artifact: DevJarArtifact,
         *,
+        commits: tuple[DevJarCommit, ...],
         channel: discord.abc.Messageable | None = None,
         sha256: str | None = None,
         workflow_run_url: str | None = None,
@@ -257,6 +300,7 @@ class DevJarDownloadsCog(commands.Cog):
             await target_channel.send(
                 embed=build_dev_jar_download_embed(
                     artifact,
+                    commits=commits,
                     sha256=sha256,
                     workflow_run_url=workflow_run_url,
                 ),
@@ -277,6 +321,7 @@ class DevJarDownloadsCog(commands.Cog):
         )
         await self._post_download_announcement(
             artifact,
+            commits=payload.commits,
             sha256=payload.sha256,
             workflow_run_url=payload.workflow_run_url,
         )
@@ -323,7 +368,11 @@ class DevJarDownloadsCog(commands.Cog):
             else:
                 artifact = find_latest_dev_jar(self._upload_dir())
             target_channel = channel or await self._resolve_channel()
-            await self._post_download_announcement(artifact, channel=target_channel)
+            await self._post_download_announcement(
+                artifact,
+                commits=(_manual_artifact_commit(artifact, author=ctx.author),),
+                channel=target_channel,
+            )
         except Exception as error:
             log.exception("Failed to post dev jar download announcement")
             await ctx.followup.send(f"Failed to post download announcement: {error}", ephemeral=True)

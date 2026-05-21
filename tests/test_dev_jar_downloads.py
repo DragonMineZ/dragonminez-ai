@@ -10,6 +10,7 @@ from bulmaai.cogs.dev_jar_downloads import (
 )
 from bulmaai.services.dev_jar_downloads import (
     ADMINISTRATOR_PERMISSION,
+    DevJarCommit,
     DevJarUploadPayload,
     DiscordOAuthMember,
     DiscordOAuthClient,
@@ -18,6 +19,7 @@ from bulmaai.services.dev_jar_downloads import (
     build_discord_authorization_url,
     find_latest_dev_jar,
     has_authorized_discord_download_access,
+    parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
     parse_oauth_state,
 )
@@ -190,12 +192,50 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             url.startswith(
                 "https://discord.com/oauth2/authorize?"
                 "client_id=1336867824815312906&response_type=code&"
-                "redirect_uri=https%3A%2F%2Fdragonminez.com%2Fdiscord_oauth_callback&"
+                "redirect_uri=https%3A%2F%2Fdownloads.dragonminez.com%2Fdiscord%2Foauth%2Fcallback&"
                 "scope=identify+guilds.members.read+guilds"
             )
         )
         self.assertIn("response_type=code", url)
         self.assertIn("state=state-token", url)
+
+    def test_parse_dev_jar_upload_payload_requires_commit_metadata(self) -> None:
+        with self.assertRaisesRegex(ValueError, "commits"):
+            parse_dev_jar_upload_payload(
+                {
+                    "remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar",
+                    "sha256": "a" * 64,
+                }
+            )
+
+    def test_parse_dev_jar_upload_payload_accepts_required_commit_fields(self) -> None:
+        payload = parse_dev_jar_upload_payload(
+            {
+                "remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar",
+                "sha256": "a" * 64,
+                "workflow_run_url": "https://github.com/DragonMineZ/dragonminez/actions/runs/123",
+                "commits": [
+                    {
+                        "sha": "93066058a79b",
+                        "title": "feat: changed form drains",
+                        "description": "Adds support for new drain behavior.",
+                        "author": "Shokkoh",
+                        "url": "https://github.com/DragonMineZ/dragonminez/commit/93066058a79b",
+                    },
+                    {
+                        "sha": "086afb963f2c",
+                        "title": "fix: race selection screen fix",
+                        "author": "Shokkoh",
+                        "url": "https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(len(payload.commits), 2)
+        self.assertEqual(payload.commits[0].description, "Adds support for new drain behavior.")
+        self.assertIsNone(payload.commits[1].description)
+        self.assertEqual(payload.commits[1].author, "Shokkoh")
 
     def test_download_embed_mentions_commit_and_workflow(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
@@ -204,6 +244,15 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             artifact,
             sha256="a" * 64,
             workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
+            commits=(
+                DevJarCommit(
+                    sha="222222222222",
+                    title="fix: race selection screen fix",
+                    description=None,
+                    author="Shokkoh",
+                    url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                ),
+            ),
         )
 
         self.assertEqual(embed.title, "DragonMineZ Dev jar")
@@ -211,6 +260,37 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         field_values = [field.value for field in embed.fields]
         self.assertIn("`222222222222`", field_values)
         self.assertIn("`v2.1`", field_values)
+
+    def test_download_embed_includes_commit_summary_links_titles_descriptions_and_authors(self) -> None:
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__086afb963f2c.jar")
+
+        embed = build_dev_jar_download_embed(
+            artifact,
+            commits=(
+                DevJarCommit(
+                    sha="93066058a79b",
+                    title="feat: changed form drains",
+                    description="Adds support for new drain behavior.",
+                    author="Shokkoh",
+                    url="https://github.com/DragonMineZ/dragonminez/commit/93066058a79b",
+                ),
+                DevJarCommit(
+                    sha="086afb963f2c",
+                    title="fix: race selection screen fix",
+                    description=None,
+                    author="Shokkoh",
+                    url="https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c",
+                ),
+            ),
+        )
+
+        field_values = {field.name: field.value for field in embed.fields}
+        self.assertIn("[9306605](https://github.com/DragonMineZ/dragonminez/commit/93066058a79b)", field_values["Commits"])
+        self.assertIn("feat: changed form drains", field_values["Commits"])
+        self.assertIn("Adds support for new drain behavior.", field_values["Commits"])
+        self.assertIn("- Shokkoh", field_values["Commits"])
+        self.assertIn("[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)", field_values["Commits"])
+        self.assertIn("fix: race selection screen fix", field_values["Commits"])
 
     def test_cog_direct_token_download_consumes_token_after_successful_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -386,7 +466,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         content, kwargs = response.messages[0]
         self.assertIn("Authorize with Discord", content)
         self.assertIn("https://discord.com/oauth2/authorize?client_id=1336867824815312906", content)
-        self.assertIn("redirect_uri=https%3A%2F%2Fdragonminez.com%2Fdiscord_oauth_callback", content)
+        self.assertIn(
+            "redirect_uri=https%3A%2F%2Fdownloads.dragonminez.com%2Fdiscord%2Foauth%2Fcallback",
+            content,
+        )
         self.assertNotIn("One-time download link", content)
         self.assertTrue(kwargs["ephemeral"])
 
@@ -427,6 +510,15 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                     artifact=artifact,
                     sha256="a" * 64,
                     workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
+                    commits=(
+                        DevJarCommit(
+                            sha="222222222222",
+                            title="fix: race selection screen fix",
+                            description=None,
+                            author="Shokkoh",
+                            url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                        ),
+                    ),
                 )
             )
 

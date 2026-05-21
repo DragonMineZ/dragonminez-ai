@@ -44,8 +44,8 @@ class CapturingPatreonWhitelistFlowCog(PatreonWhitelistFlowCog):
 
 
 class FakeGuild:
-    def __init__(self, member):
-        self.id = 111
+    def __init__(self, member, *, guild_id=111):
+        self.id = guild_id
         self.member = member
 
     def get_member(self, user_id):
@@ -205,6 +205,37 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ephemeral)
         self.assertIn("Verification request accepted", response.body.decode("utf-8"))
         self.assertEqual(destination.messages, [])
+
+    async def test_beta_access_member_resolution_prefers_guild_member_with_patreon_role(self) -> None:
+        same_user_without_access = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[],
+            guild_permissions=SimpleNamespace(administrator=False),
+            guild=SimpleNamespace(id=111),
+        )
+        same_user_with_access = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=1287877272224665640)],
+            guild_permissions=SimpleNamespace(administrator=False),
+            guild=SimpleNamespace(id=222),
+        )
+        bot = SimpleNamespace(
+            settings=self._settings(),
+            guilds=[
+                FakeGuild(same_user_without_access, guild_id=111),
+                FakeGuild(same_user_with_access, guild_id=222),
+            ],
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+
+        member = await cog._resolve_member_across_guilds(456)
+
+        self.assertIs(member, same_user_with_access)
 
     async def test_beta_access_command_keeps_confirmation_ephemeral(self) -> None:
         bot = SimpleNamespace(settings=self._settings())

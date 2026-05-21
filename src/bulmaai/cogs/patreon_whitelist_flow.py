@@ -390,16 +390,41 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
     async def _resolve_member_across_guilds(self, user_id: int) -> discord.Member | None:
         guilds = list(getattr(self.bot, "guilds", []) or [])
+        members: list[discord.Member] = []
+        seen_guild_ids: set[int] = set()
+
+        def add_member(member: discord.Member | None) -> discord.Member | None:
+            if member is None:
+                return None
+            guild_id = getattr(getattr(member, "guild", None), "id", None)
+            if guild_id is not None:
+                if guild_id in seen_guild_ids:
+                    return None
+                seen_guild_ids.add(guild_id)
+            members.append(member)
+            return member
+
+        def pick_access_member() -> discord.Member | None:
+            for member in members:
+                if has_patreon_access_role(member, settings=self.bot.settings):
+                    return member
+            return None
+
         for guild in guilds:
-            member = guild.get_member(user_id)
-            if member is not None:
-                return member
+            add_member(guild.get_member(user_id))
+        access_member = pick_access_member()
+        if access_member is not None:
+            return access_member
+
         for guild in guilds:
             try:
-                return await guild.fetch_member(user_id)
+                add_member(await guild.fetch_member(user_id))
             except Exception:
                 continue
-        return None
+            access_member = pick_access_member()
+            if access_member is not None:
+                return access_member
+        return members[0] if members else None
 
     async def _handle_beta_access_command(
         self,

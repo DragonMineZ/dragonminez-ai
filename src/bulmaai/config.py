@@ -153,7 +153,6 @@ DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL: str | None = "https://downloads.dragon
 DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR = "/var/www/dragonminez/dev-jars"
 DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH = "/dmz-dev-jar"
 DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH = "/dev-download"
-DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH = "/discord/oauth/callback"
 DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
@@ -206,7 +205,6 @@ NON_OVERRIDABLE_SETTINGS = {
     "curseforge_api_key",
     "release_webhook_secret",
     "dev_jar_download_upload_dir",
-    "discord_oauth_client_secret",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -276,9 +274,7 @@ class Settings:
     dev_jar_download_upload_dir: str | None
     dev_jar_download_webhook_path: str
     dev_jar_download_download_path: str
-    dev_jar_download_oauth_callback_path: str
     dev_jar_download_token_ttl_seconds: int
-    discord_oauth_client_secret: str | None
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_support_allowed_role_ids: Sequence[int]
@@ -513,7 +509,6 @@ def _build_settings_from_env() -> Settings:
             _get_env("DEV_JAR_DOWNLOAD_DOWNLOAD_PATH", DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH)
             or DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH
         ),
-        dev_jar_download_oauth_callback_path=DEFAULT_DEV_JAR_DOWNLOAD_OAUTH_CALLBACK_PATH,
         dev_jar_download_token_ttl_seconds=(
             _get_env_int(
                 "DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS",
@@ -521,7 +516,6 @@ def _build_settings_from_env() -> Settings:
             )
             or DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS
         ),
-        discord_oauth_client_secret=_get_env("DISCORD_OAUTH_CLIENT_SECRET"),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),
         ai_support_allowed_role_ids=_get_env_int_list(

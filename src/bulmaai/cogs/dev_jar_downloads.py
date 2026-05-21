@@ -14,16 +14,11 @@ from bulmaai.services.dev_jar_downloads import (
     DevJarArtifact,
     DevJarCommit,
     DevJarUploadPayload,
-    DiscordOAuthClient,
-    DISCORD_OAUTH_REDIRECT_URI,
     OneTimeDownloadTokenStore,
-    build_discord_authorization_url,
-    build_oauth_state,
     find_latest_dev_jar,
-    has_authorized_discord_download_access,
+    iter_dev_jars,
     parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
-    parse_oauth_state,
 )
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
@@ -56,11 +51,19 @@ def can_post_download_announcement(member: object, *, staff_role_ids: tuple[int,
     return is_admin(member) or has_any_allowed_role(member, staff_role_ids)  # type: ignore[arg-type]
 
 
+def can_download_dev_jar(member: object) -> bool:
+    return (
+        is_admin(member)  # type: ignore[arg-type]
+        or has_any_allowed_role(member, DEV_JAR_PATREON_ROLE_IDS)  # type: ignore[arg-type]
+        or has_any_allowed_role(member, DEV_JAR_TESTER_ROLE_IDS)  # type: ignore[arg-type]
+    )
+
+
 def _format_size(size_bytes: int | None) -> str:
     if size_bytes is None:
         return "Unknown"
     size_mb = size_bytes / (1024 * 1024)
-    return f"{size_mb:.1f} MB"
+    return f"{size_mb:.3f} MB"
 
 
 def _truncate_commit_text(value: str, limit: int) -> str:
@@ -108,23 +111,32 @@ def build_dev_jar_download_embed(
     commits: tuple[DevJarCommit, ...],
     sha256: str | None = None,
     workflow_run_url: str | None = None,
+    previous_size_bytes: int | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
-        title="DragonMineZ Dev jar",
-        description="Latest GitHub build is ready for download, click the button for a one-time link.",
+        title="DragonMineZ Dev Update",
+        description="A push has been detected in GitHub and a .jar has successfully passed tests and is ready to be "
+                    "downloaded! These versions are automatically built by the latest commits, meaning they can be "
+                    "unstable or not run at all on your machine. For stable (and mostly tested) beta/alpha releases, "
+                    "look for them in Discord. Click the button to download the latest dev jar, and check the "
+                    "changelog for details on what changed.",
         url=workflow_run_url,
         colour=DEV_JAR_EMBED_COLOR,
         timestamp=artifact.modified_at,
     )
     embed.add_field(name="Version", value=f"`{artifact.version}`", inline=True)
     embed.add_field(name="Branch", value=f"`{artifact.branch_slug}`", inline=True)
-    embed.add_field(name="Commit", value=f"`{artifact.commit_sha}`", inline=True)
+    embed.add_field(name="Commit .jar", value=f"`{artifact.commit_sha}`", inline=True)
     embed.add_field(name="Artifact", value=f"`{artifact.file_name}`", inline=False)
-    embed.add_field(name="Size", value=_format_size(artifact.size_bytes), inline=True)
+
+    size_str = _format_size(artifact.size_bytes)
+    if previous_size_bytes is not None:
+        size_str = f"{_format_size(previous_size_bytes)} → {size_str}"
+    embed.add_field(name="Size", value=size_str, inline=True)
     if sha256:
         embed.add_field(name="SHA-256", value=f"`{sha256}`", inline=False)
-    embed.add_field(name="Commits", value=_format_commit_summary(commits), inline=False)
-    embed.set_footer(text="Downloads require Discord authorization.")
+    embed.add_field(name="Commits Changelog", value=_format_commit_summary(commits), inline=False)
+    embed.set_footer(text="Downloads require Discord access authorization.")
     return embed
 
 
@@ -155,7 +167,6 @@ class DevJarDownloadsCog(commands.Cog):
 
     def cog_unload(self) -> None:
         unregister_extra_webhook_route(self.settings.dev_jar_download_webhook_path)
-        unregister_extra_get_route(self.settings.dev_jar_download_oauth_callback_path)
         unregister_extra_get_route(f"{self.settings.dev_jar_download_download_path.rstrip('/')}/")
 
     def _register_release_webhook_route(self) -> None:
@@ -203,23 +214,7 @@ class DevJarDownloadsCog(commands.Cog):
             log.error("DEV_JAR_DOWNLOAD_UPLOAD_DIR is missing; dev jar download routes skipped.")
             return
 
-        loop = asyncio.get_running_loop()
         direct_prefix = f"{self.settings.dev_jar_download_download_path.rstrip('/')}/"
-
-        def handle_oauth_callback(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
-            code = (query.get("code") or [""])[0]
-            state = (query.get("state") or [""])[0]
-            if not code or not state:
-                return text_http_response(400, "Missing OAuth code or state")
-            future = asyncio.run_coroutine_threadsafe(
-                self._handle_oauth_callback(code, state),
-                loop,
-            )
-            try:
-                return future.result(timeout=30)
-            except Exception:
-                log.exception("Dev jar OAuth callback handling failed")
-                return text_http_response(500, "Download authorization failed")
 
         def handle_direct_download(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
             token_path = path.removeprefix(direct_prefix)
@@ -228,10 +223,6 @@ class DevJarDownloadsCog(commands.Cog):
                 return self._handle_direct_token_file(token)
             return self._handle_direct_token(token_path)
 
-        register_extra_get_route(
-            path_prefix=self.settings.dev_jar_download_oauth_callback_path,
-            handle_request=handle_oauth_callback,
-        )
         register_extra_get_route(
             path_prefix=direct_prefix,
             handle_request=handle_direct_download,
@@ -248,15 +239,32 @@ class DevJarDownloadsCog(commands.Cog):
             raise RuntimeError("DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL is not configured")
         return value
 
-    def _oauth_redirect_uri(self) -> str:
-        return DISCORD_OAUTH_REDIRECT_URI
-
     def _direct_download_url(self, token: str) -> str:
         path = self.settings.dev_jar_download_download_path.rstrip("/")
         return f"{self._public_base_url()}{path}/{quote(token, safe='')}"
 
     def _direct_download_file_url(self, token: str) -> str:
         return f"{self._direct_download_url(token)}{DOWNLOAD_FILE_SUFFIX}"
+
+    def _get_previous_artifact_size(self, current_file_name: str) -> int | None:
+        try:
+            artifacts = [
+                a for a in iter_dev_jars(self._upload_dir())
+                if a.file_name != current_file_name
+            ]
+            if not artifacts:
+                return None
+            latest = max(
+                artifacts,
+                key=lambda a: (
+                    a.modified_at or datetime.min.replace(tzinfo=timezone.utc),
+                    a.file_name,
+                ),
+            )
+            return latest.size_bytes
+        except Exception as e:
+            log.exception(f"Failed to get previous artifact size: {e}")
+            return None
 
     def _artifact_path(self, artifact: DevJarArtifact) -> Path:
         path = artifact.resolve_path(self._upload_dir())
@@ -294,6 +302,7 @@ class DevJarDownloadsCog(commands.Cog):
         channel: discord.abc.Messageable | None = None,
         sha256: str | None = None,
         workflow_run_url: str | None = None,
+        previous_size_bytes: int | None = None,
     ) -> None:
         target_channels = [channel] if channel is not None else await self._resolve_announcement_channels()
         for target_channel in target_channels:
@@ -303,6 +312,7 @@ class DevJarDownloadsCog(commands.Cog):
                     commits=commits,
                     sha256=sha256,
                     workflow_run_url=workflow_run_url,
+                    previous_size_bytes=previous_size_bytes,
                 ),
                 view=DevJarDownloadView(artifact),
                 allowed_mentions=discord.AllowedMentions.none(),
@@ -324,6 +334,7 @@ class DevJarDownloadsCog(commands.Cog):
             commits=payload.commits,
             sha256=payload.sha256,
             workflow_run_url=payload.workflow_run_url,
+            previous_size_bytes=self._get_previous_artifact_size(artifact.file_name),
         )
 
     @discord.slash_command(name="post-download", description="Post the latest DragonMineZ dev jar download announcement")
@@ -372,6 +383,7 @@ class DevJarDownloadsCog(commands.Cog):
                 artifact,
                 commits=(_manual_artifact_commit(artifact, author=ctx.author),),
                 channel=target_channel,
+                previous_size_bytes=self._get_previous_artifact_size(artifact.file_name),
             )
         except Exception as error:
             log.exception("Failed to post dev jar download announcement")
@@ -404,9 +416,9 @@ class DevJarDownloadsCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            if not self.settings.discord_oauth_client_secret:
+            if not can_download_dev_jar(interaction.user):
                 await interaction.response.send_message(
-                    "Discord download authorization is not configured yet.",
+                    "Your Discord account is not authorized for this download.",
                     ephemeral=True,
                 )
                 return
@@ -417,16 +429,14 @@ class DevJarDownloadsCog(commands.Cog):
                 )
                 return
 
-            state = build_oauth_state(
-                secret=self.settings.release_webhook_secret,
+            token = self.token_store.issue(
                 artifact=artifact,
                 requester_id=interaction.user.id,
-                guild_id=int(guild_id),
-                expires_at=int(time.time() + self.settings.dev_jar_download_token_ttl_seconds),
+                ttl_seconds=self.settings.dev_jar_download_token_ttl_seconds,
             )
-            url = build_discord_authorization_url(state=state)
+            url = self._direct_download_url(token)
             await interaction.response.send_message(
-                f"Authorize with Discord to download this build: {url}",
+                f"One-time download link: {url}",
                 ephemeral=True,
             )
         except FileNotFoundError:
@@ -548,54 +558,6 @@ class DevJarDownloadsCog(commands.Cog):
             on_stream_complete=lambda: self.token_store.complete_claim(claim),
             on_stream_error=lambda error: self.token_store.release_claim(claim),
         )
-
-    async def _handle_oauth_callback(self, code: str, state: str) -> ReleaseWebhookHttpResponse:
-        if not self.settings.release_webhook_secret:
-            return text_http_response(500, "Download signing is not configured")
-        parsed_state = parse_oauth_state(
-            self.settings.release_webhook_secret,
-            state,
-            now=time.time,
-        )
-        if parsed_state is None:
-            return text_http_response(403, "Download authorization expired")
-        if not self.settings.discord_oauth_client_secret:
-            return text_http_response(500, "Discord OAuth is not configured")
-
-        client = DiscordOAuthClient(
-            client_secret=self.settings.discord_oauth_client_secret,
-        )
-        try:
-            member = await client.fetch_member_for_code(code, guild_id=parsed_state.guild_id)
-        except Exception:
-            log.exception("Discord OAuth exchange failed for dev jar download")
-            return text_http_response(403, "Discord authorization failed")
-
-        if member.user_id != parsed_state.requester_id:
-            return text_http_response(403, "Discord authorization user mismatch")
-
-        if not has_authorized_discord_download_access(
-            member,
-            patreon_role_ids=DEV_JAR_PATREON_ROLE_IDS,
-            tester_role_ids=DEV_JAR_TESTER_ROLE_IDS,
-        ):
-            return text_http_response(403, "Discord account is not authorized for this download")
-
-        try:
-            path = self._artifact_path(parsed_state.artifact)
-        except (FileNotFoundError, ValueError):
-            return text_http_response(404, "Artifact not found")
-
-        token = self.token_store.issue(
-            artifact=parsed_state.artifact,
-            requester_id=parsed_state.requester_id,
-            ttl_seconds=max(1, parsed_state.expires_at - int(time.time())),
-        )
-        return self._download_success_response(
-            artifact=parsed_state.artifact,
-            download_url=self._direct_download_file_url(token),
-        )
-
 
 def setup(bot: discord.Bot) -> None:
     bot.add_cog(DevJarDownloadsCog(bot))

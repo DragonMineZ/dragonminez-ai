@@ -2,26 +2,19 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from bulmaai.cogs.dev_jar_downloads import (
     DevJarDownloadsCog,
     build_dev_jar_download_embed,
 )
 from bulmaai.services.dev_jar_downloads import (
-    ADMINISTRATOR_PERMISSION,
     DevJarCommit,
     DevJarUploadPayload,
-    DiscordOAuthMember,
-    DiscordOAuthClient,
     OneTimeDownloadTokenStore,
-    build_oauth_state,
-    build_discord_authorization_url,
     find_latest_dev_jar,
-    has_authorized_discord_download_access,
     parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
-    parse_oauth_state,
 )
 
 
@@ -101,104 +94,6 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(store.consume(token))
 
-    def test_discord_download_access_allows_admin_patreon_or_tester_role(self) -> None:
-        patreon_role_ids = (1287877272224665640, 1287877305259130900)
-        tester_role_ids = (1286814599215317034,)
-
-        self.assertTrue(
-            has_authorized_discord_download_access(
-                DiscordOAuthMember(
-                    user_id=123,
-                    guild_id=456,
-                    permissions=ADMINISTRATOR_PERMISSION,
-                    role_ids=(),
-                ),
-                patreon_role_ids=patreon_role_ids,
-                tester_role_ids=tester_role_ids,
-            )
-        )
-        self.assertTrue(
-            has_authorized_discord_download_access(
-                DiscordOAuthMember(
-                    user_id=123,
-                    guild_id=456,
-                    permissions=0,
-                    role_ids=(1287877272224665640,),
-                ),
-                patreon_role_ids=patreon_role_ids,
-                tester_role_ids=tester_role_ids,
-            )
-        )
-        self.assertTrue(
-            has_authorized_discord_download_access(
-                DiscordOAuthMember(
-                    user_id=123,
-                    guild_id=456,
-                    permissions=0,
-                    role_ids=(1286814599215317034,),
-                ),
-                patreon_role_ids=patreon_role_ids,
-                tester_role_ids=tester_role_ids,
-            )
-        )
-        self.assertFalse(
-            has_authorized_discord_download_access(
-                DiscordOAuthMember(
-                    user_id=123,
-                    guild_id=456,
-                    permissions=0,
-                    role_ids=(999,),
-                ),
-                patreon_role_ids=patreon_role_ids,
-                tester_role_ids=tester_role_ids,
-            )
-        )
-
-    def test_oauth_state_round_trips_artifact_and_discord_user(self) -> None:
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
-
-        state = build_oauth_state(
-            secret="secret",
-            artifact=artifact,
-            requester_id=123,
-            guild_id=456,
-            expires_at=2000,
-        )
-        parsed = parse_oauth_state("secret", state, now=lambda: 1999)
-
-        self.assertIsNotNone(parsed)
-        assert parsed is not None
-        self.assertEqual(parsed.artifact, artifact)
-        self.assertEqual(parsed.requester_id, 123)
-        self.assertEqual(parsed.guild_id, 456)
-
-    def test_oauth_state_rejects_tampering_and_expiry(self) -> None:
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
-        state = build_oauth_state(
-            secret="secret",
-            artifact=artifact,
-            requester_id=123,
-            guild_id=456,
-            expires_at=2000,
-        )
-
-        self.assertIsNone(parse_oauth_state("secret", state + "x", now=lambda: 1999))
-        self.assertIsNone(parse_oauth_state("secret", state, now=lambda: 2001))
-
-    def test_build_discord_authorization_url_uses_hardcoded_production_oauth_url(self) -> None:
-        url = build_discord_authorization_url(state="state-token")
-
-        self.assertTrue(
-            url.startswith(
-                "https://discord.com/oauth2/authorize?"
-                "client_id=1336867824815312906&response_type=code&"
-                "redirect_uri=https%3A%2F%2Fdownloads.dragonminez.com%2Fdiscord%2Foauth%2Fcallback&"
-                "scope=identify+guilds.members.read+guilds"
-            )
-        )
-        self.assertIn("response_type=code", url)
-        self.assertIn("state=state-token", url)
-
     def test_parse_dev_jar_upload_payload_requires_commit_metadata(self) -> None:
         with self.assertRaisesRegex(ValueError, "commits"):
             parse_dev_jar_upload_payload(
@@ -255,7 +150,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.assertEqual(embed.title, "DragonMineZ Dev jar")
+        self.assertEqual(embed.title, "DragonMineZ Dev Update")
         self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
         field_values = [field.value for field in embed.fields]
         self.assertIn("`222222222222`", field_values)
@@ -285,12 +180,12 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         )
 
         field_values = {field.name: field.value for field in embed.fields}
-        self.assertIn("[9306605](https://github.com/DragonMineZ/dragonminez/commit/93066058a79b)", field_values["Commits"])
-        self.assertIn("feat: changed form drains", field_values["Commits"])
-        self.assertIn("Adds support for new drain behavior.", field_values["Commits"])
-        self.assertIn("- Shokkoh", field_values["Commits"])
-        self.assertIn("[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)", field_values["Commits"])
-        self.assertIn("fix: race selection screen fix", field_values["Commits"])
+        self.assertIn("[9306605](https://github.com/DragonMineZ/dragonminez/commit/93066058a79b)", field_values["Commits Changelog"])
+        self.assertIn("feat: changed form drains", field_values["Commits Changelog"])
+        self.assertIn("Adds support for new drain behavior.", field_values["Commits Changelog"])
+        self.assertIn("- Shokkoh", field_values["Commits Changelog"])
+        self.assertIn("[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)", field_values["Commits Changelog"])
+        self.assertIn("fix: race selection screen fix", field_values["Commits Changelog"])
 
     def test_cog_direct_token_download_consumes_token_after_successful_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -349,84 +244,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.status, 200)
         self.assertEqual(retry.status, 200)
 
-    async def test_cog_oauth_callback_streams_file_for_authorized_tester(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            upload_dir = Path(tmp)
-            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
-            (upload_dir / artifact.file_name).write_bytes(b"jar")
-            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-            cog.settings = SimpleNamespace(
-                dev_jar_download_upload_dir=str(upload_dir),
-                release_webhook_secret="secret",
-                dev_jar_download_public_base_url="https://downloads.example.test",
-                dev_jar_download_download_path="/dev-download",
-                discord_oauth_client_secret="client-secret",
-            )
-            cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
-            state = build_oauth_state(
-                secret="secret",
-                artifact=artifact,
-                requester_id=123,
-                guild_id=456,
-                expires_at=2000,
-            )
-            identity_payload = DiscordOAuthMember(
-                user_id=123,
-                guild_id=456,
-                permissions=0,
-                role_ids=(1286814599215317034,),
-            )
-
-            with patch(
-                "bulmaai.cogs.dev_jar_downloads.DiscordOAuthClient.fetch_member_for_code",
-                AsyncMock(return_value=identity_payload),
-            ), patch("bulmaai.cogs.dev_jar_downloads.time.time", return_value=1999):
-                response = await cog._handle_oauth_callback("oauth-code", state)
-
-        self.assertEqual(response.status, 200)
-        self.assertEqual(response.content_type, "text/html; charset=utf-8")
-        self.assertIn(b"200 success", response.body)
-        self.assertIn(b"/dev-download/", response.body)
-        self.assertIn(b"/file", response.body)
-
-    async def test_cog_oauth_callback_rejects_unapproved_discord_member(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            upload_dir = Path(tmp)
-            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
-            (upload_dir / artifact.file_name).write_bytes(b"jar")
-            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-            cog.settings = SimpleNamespace(
-                dev_jar_download_upload_dir=str(upload_dir),
-                release_webhook_secret="secret",
-                dev_jar_download_public_base_url="https://downloads.example.test",
-                dev_jar_download_download_path="/dev-download",
-                discord_oauth_client_secret="client-secret",
-            )
-            cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
-            state = build_oauth_state(
-                secret="secret",
-                artifact=artifact,
-                requester_id=123,
-                guild_id=456,
-                expires_at=2000,
-            )
-            identity_payload = DiscordOAuthMember(
-                user_id=123,
-                guild_id=456,
-                permissions=0,
-                role_ids=(999,),
-            )
-
-            with patch(
-                "bulmaai.cogs.dev_jar_downloads.DiscordOAuthClient.fetch_member_for_code",
-                AsyncMock(return_value=identity_payload),
-            ), patch("bulmaai.cogs.dev_jar_downloads.time.time", return_value=1999):
-                response = await cog._handle_oauth_callback("oauth-code", state)
-
-        self.assertEqual(response.status, 403)
-        self.assertIn(b"Discord account is not authorized", response.body)
-
-    async def test_download_button_sends_discord_oauth_for_admin_instead_of_direct_link(self) -> None:
+    async def test_download_button_sends_direct_link_for_authorized_member(self) -> None:
         class FakeResponse:
             def __init__(self) -> None:
                 self.messages: list[tuple[str, dict]] = []
@@ -444,7 +262,6 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 release_webhook_secret="secret",
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_download_path="/dev-download",
-                discord_oauth_client_secret="client-secret",
                 dev_jar_download_token_ttl_seconds=300,
             )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
@@ -464,13 +281,48 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(response.messages), 1)
         content, kwargs = response.messages[0]
-        self.assertIn("Authorize with Discord", content)
-        self.assertIn("https://discord.com/oauth2/authorize?client_id=1336867824815312906", content)
-        self.assertIn(
-            "redirect_uri=https%3A%2F%2Fdownloads.dragonminez.com%2Fdiscord%2Foauth%2Fcallback",
-            content,
-        )
-        self.assertNotIn("One-time download link", content)
+        self.assertIn("One-time download link", content)
+        self.assertIn("https://downloads.example.test/dev-download/", content)
+        self.assertNotIn("discord.com/oauth2/authorize", content)
+        self.assertTrue(kwargs["ephemeral"])
+
+    async def test_download_button_rejects_unauthorized_member_without_oauth(self) -> None:
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, dict]] = []
+
+            async def send_message(self, content: str, **kwargs) -> None:
+                self.messages.append((content, kwargs))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                release_webhook_secret="secret",
+                dev_jar_download_public_base_url="https://downloads.example.test",
+                dev_jar_download_download_path="/dev-download",
+                dev_jar_download_token_ttl_seconds=300,
+            )
+            cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
+            response = FakeResponse()
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(
+                    id=123,
+                    guild_permissions=SimpleNamespace(administrator=False),
+                    roles=[SimpleNamespace(id=999)],
+                ),
+                guild_id=456,
+                response=response,
+            )
+
+            await cog._handle_download_button(interaction, artifact.file_name)
+
+        self.assertEqual(len(response.messages), 1)
+        content, kwargs = response.messages[0]
+        self.assertIn("not authorized", content)
         self.assertTrue(kwargs["ephemeral"])
 
     async def test_cog_upload_payload_posts_download_announcement(self) -> None:
@@ -528,55 +380,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
         field_values = {field.name: field.value for field in embed.fields}
         self.assertEqual(field_values["Artifact"], f"`{artifact.file_name}`")
-        self.assertEqual(field_values["Size"], "0.0 MB")
+        self.assertEqual(field_values["Size"], "0.000 MB")
         self.assertEqual(field_values["SHA-256"], f"`{'a' * 64}`")
-
-    async def test_discord_oauth_client_fetches_identity_guilds_and_member_roles(self) -> None:
-        class FakeResponse:
-            def __init__(self, payload):
-                self._payload = payload
-
-            def raise_for_status(self):
-                return None
-
-            def json(self):
-                return self._payload
-
-        calls = AsyncMock(
-            side_effect=[
-                FakeResponse({"access_token": "discord-access-token"}),
-                FakeResponse({"id": "123"}),
-                FakeResponse([{"id": "456", "permissions": str(ADMINISTRATOR_PERMISSION)}]),
-                FakeResponse({"roles": ["1286814599215317034"]}),
-            ]
-        )
-        client = DiscordOAuthClient(
-            client_id="client-id",
-            client_secret="client-secret",
-            redirect_uri="https://downloads.example.test/dev-download/oauth/callback",
-        )
-
-        with patch("bulmaai.services.dev_jar_downloads.request", calls):
-            payload = await client.fetch_member_for_code("oauth-code", guild_id=456)
-
-        self.assertEqual(
-            payload,
-            DiscordOAuthMember(
-                user_id=123,
-                guild_id=456,
-                permissions=ADMINISTRATOR_PERMISSION,
-                role_ids=(1286814599215317034,),
-            ),
-        )
-        token_call = calls.await_args_list[0].kwargs
-        user_call = calls.await_args_list[1].kwargs
-        guilds_call = calls.await_args_list[2].kwargs
-        member_call = calls.await_args_list[3].kwargs
-        self.assertEqual(token_call["data"]["grant_type"], "authorization_code")
-        self.assertEqual(token_call["data"]["code"], "oauth-code")
-        self.assertEqual(user_call["headers"]["Authorization"], "Bearer discord-access-token")
-        self.assertEqual(guilds_call["headers"]["Authorization"], "Bearer discord-access-token")
-        self.assertEqual(member_call["headers"]["Authorization"], "Bearer discord-access-token")
 
 if __name__ == "__main__":
     unittest.main()

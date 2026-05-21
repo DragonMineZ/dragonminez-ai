@@ -1,30 +1,14 @@
 import hashlib
-import hmac
-import json
 import re
 import secrets
-from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any
-from urllib.parse import urlencode
-
-from bulmaai.services.http import request
 
 
-DISCORD_API_BASE = "https://discord.com/api/v10"
-DISCORD_OAUTH_CLIENT_ID = "1336867824815312906"
-DISCORD_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/discord/oauth/callback"
-DISCORD_AUTHORIZATION_URL = (
-    "https://discord.com/oauth2/authorize?"
-    "client_id=1336867824815312906&response_type=code&"
-    "redirect_uri=https%3A%2F%2Fdownloads.dragonminez.com%2Fdiscord%2Foauth%2Fcallback&"
-    "scope=identify+guilds.members.read+guilds"
-)
-ADMINISTRATOR_PERMISSION = 0x8
 DEV_JAR_FILENAME_RE = re.compile(
     r"^dragonminez-(?P<version>.+)__(?P<branch>[a-z0-9._-]+)__(?P<sha>[a-f0-9]{12})\.jar$"
 )
@@ -75,104 +59,6 @@ class DevJarUploadPayload:
     sha256: str
     commits: tuple[DevJarCommit, ...]
     workflow_run_url: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class DevJarOAuthState:
-    artifact: DevJarArtifact
-    requester_id: int
-    guild_id: int
-    expires_at: int
-
-
-@dataclass(frozen=True, slots=True)
-class DiscordOAuthMember:
-    user_id: int
-    guild_id: int
-    permissions: int
-    role_ids: tuple[int, ...]
-
-
-class DiscordOAuthClient:
-    token_url = "https://discord.com/api/oauth2/token"
-
-    def __init__(
-        self,
-        *,
-        client_secret: str,
-        client_id: str = DISCORD_OAUTH_CLIENT_ID,
-        redirect_uri: str = DISCORD_OAUTH_REDIRECT_URI,
-    ):
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.redirect_uri = redirect_uri
-
-    async def fetch_member_for_code(self, code: str, *, guild_id: int) -> DiscordOAuthMember:
-        token_response = await request(
-            "POST",
-            self.token_url,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "redirect_uri": self.redirect_uri,
-            },
-        )
-        token_response.raise_for_status()
-        access_token = str(token_response.json()["access_token"])
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        user_response = await request(
-            "GET",
-            f"{DISCORD_API_BASE}/users/@me",
-            headers=headers,
-        )
-        user_response.raise_for_status()
-        user_payload = user_response.json()
-        if not isinstance(user_payload, dict):
-            raise ValueError("Discord user response must be an object")
-        user_id = int(user_payload["id"])
-
-        guilds_response = await request(
-            "GET",
-            f"{DISCORD_API_BASE}/users/@me/guilds",
-            headers=headers,
-        )
-        guilds_response.raise_for_status()
-        guilds_payload = guilds_response.json()
-        if not isinstance(guilds_payload, list):
-            raise ValueError("Discord guilds response must be a list")
-
-        permissions = 0
-        for guild in guilds_payload:
-            if not isinstance(guild, dict):
-                continue
-            if int(guild.get("id") or 0) == int(guild_id):
-                permissions = int(guild.get("permissions") or 0)
-                break
-        else:
-            raise ValueError("Discord user is not in the requested guild")
-
-        member_response = await request(
-            "GET",
-            f"{DISCORD_API_BASE}/users/@me/guilds/{int(guild_id)}/member",
-            headers=headers,
-        )
-        member_response.raise_for_status()
-        member_payload = member_response.json()
-        if not isinstance(member_payload, dict):
-            raise ValueError("Discord guild member response must be an object")
-        roles = member_payload.get("roles") or []
-        if not isinstance(roles, list):
-            raise ValueError("Discord guild member roles must be a list")
-        return DiscordOAuthMember(
-            user_id=user_id,
-            guild_id=int(guild_id),
-            permissions=permissions,
-            role_ids=tuple(int(role_id) for role_id in roles),
-        )
 
 
 class OneTimeDownloadTokenStore:
@@ -363,88 +249,3 @@ def _parse_dev_jar_commits(value: Any) -> tuple[DevJarCommit, ...]:
             )
         )
     return tuple(commits)
-
-
-def _b64encode_json(payload: dict[str, Any]) -> str:
-    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _b64decode_json(value: str) -> dict[str, Any]:
-    padding = "=" * (-len(value) % 4)
-    decoded = urlsafe_b64decode((value + padding).encode("ascii"))
-    payload = json.loads(decoded.decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("OAuth state payload must be an object")
-    return payload
-
-
-def _sign_state(secret: str, body: str) -> str:
-    return hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).hexdigest()
-
-
-def build_oauth_state(
-    *,
-    secret: str,
-    artifact: DevJarArtifact,
-    requester_id: int,
-    guild_id: int,
-    expires_at: int,
-) -> str:
-    body = _b64encode_json(
-        {
-            "file_name": artifact.file_name,
-            "requester_id": int(requester_id),
-            "guild_id": int(guild_id),
-            "expires_at": int(expires_at),
-        }
-    )
-    return f"{body}.{_sign_state(secret, body)}"
-
-
-def parse_oauth_state(
-    secret: str,
-    state: str,
-    *,
-    now: Callable[[], float] = monotonic,
-) -> DevJarOAuthState | None:
-    try:
-        body, signature = state.rsplit(".", 1)
-    except ValueError:
-        return None
-    expected = _sign_state(secret, body)
-    if not hmac.compare_digest(signature, expected):
-        return None
-    try:
-        payload = _b64decode_json(body)
-        expires_at = int(payload["expires_at"])
-        if expires_at < now():
-            return None
-        return DevJarOAuthState(
-            artifact=parse_dev_jar_filename(str(payload["file_name"])),
-            requester_id=int(payload["requester_id"]),
-            guild_id=int(payload["guild_id"]),
-            expires_at=expires_at,
-        )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return None
-
-
-def build_discord_authorization_url(
-    *,
-    state: str,
-) -> str:
-    return f"{DISCORD_AUTHORIZATION_URL}&{urlencode({'state': state})}"
-
-
-def has_authorized_discord_download_access(
-    member: DiscordOAuthMember,
-    *,
-    patreon_role_ids: Iterable[int],
-    tester_role_ids: Iterable[int],
-) -> bool:
-    if member.permissions & ADMINISTRATOR_PERMISSION:
-        return True
-    authorized_roles = {int(role_id) for role_id in patreon_role_ids}
-    authorized_roles.update(int(role_id) for role_id in tester_role_ids)
-    return any(role_id in authorized_roles for role_id in member.role_ids)

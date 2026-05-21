@@ -49,8 +49,26 @@ class PatreonAccessTests(unittest.TestCase):
         self.assertEqual(parsed.discord_user_id, 456)
         self.assertEqual(parsed.guild_id, 789)
         self.assertEqual(parsed.action, "link")
+        self.assertIsNone(parsed.minecraft_username)
         self.assertIsNone(parse_patreon_oauth_state("secret", state + "x", now=lambda: 1999))
         self.assertIsNone(parse_patreon_oauth_state("secret", state, now=lambda: 2001))
+
+    def test_oauth_state_can_carry_pending_minecraft_username(self) -> None:
+        state = build_patreon_oauth_state(
+            secret="secret",
+            discord_user_id=456,
+            guild_id=789,
+            action="beta_access",
+            expires_at=2000,
+            minecraft_username="NewTester",
+        )
+
+        parsed = parse_patreon_oauth_state("secret", state, now=lambda: 1999)
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.action, "beta_access")
+        self.assertEqual(parsed.minecraft_username, "NewTester")
 
     def test_authorization_url_uses_identity_memberships_scope(self) -> None:
         url = build_patreon_authorization_url(

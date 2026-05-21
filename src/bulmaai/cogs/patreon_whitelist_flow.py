@@ -457,7 +457,13 @@ class PatreonWhitelistFlowCog(commands.Cog):
             return
         await self._send_patreon_oauth_prompt(ctx.author, ctx.followup, ephemeral=True)
 
-    def _build_patreon_oauth_url(self, member: discord.Member, *, action: str = "link") -> str | None:
+    def _build_patreon_oauth_url(
+        self,
+        member: discord.Member,
+        *,
+        action: str = "link",
+        minecraft_username: str | None = None,
+    ) -> str | None:
         settings = self.bot.settings
         if not settings.patreon_oauth_client_id or not settings.patreon_oauth_client_secret:
             return None
@@ -470,6 +476,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
             guild_id=int(guild_id),
             action=action,
             expires_at=int(time.time() + PATREON_OAUTH_TTL_SECONDS),
+            minecraft_username=minecraft_username,
         )
         return build_patreon_authorization_url(
             client_id=settings.patreon_oauth_client_id,
@@ -483,8 +490,14 @@ class PatreonWhitelistFlowCog(commands.Cog):
         destination,
         *,
         ephemeral: bool,
+        minecraft_username: str | None = None,
     ) -> None:
-        url = self._build_patreon_oauth_url(member)
+        action = "beta_access" if minecraft_username else "link"
+        url = self._build_patreon_oauth_url(
+            member,
+            action=action,
+            minecraft_username=minecraft_username,
+        )
         if url is None:
             await _send_message(
                 destination,
@@ -492,9 +505,16 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 ephemeral=ephemeral,
             )
             return
+        if minecraft_username:
+            await _send_message(
+                destination,
+                f"Authorize with Patreon to continue beta access verification for `{minecraft_username}`: {url}",
+                ephemeral=ephemeral,
+            )
+            return
         await _send_message(
             destination,
-            f"Authorize with Patreon to link your account, then run the command again: {url}",
+            f"Authorize with Patreon to link your account: {url}",
             ephemeral=ephemeral,
         )
 
@@ -505,6 +525,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         initial_nickname: str,
         *,
         ephemeral: bool = False,
+        active_link: PatreonLink | None = None,
     ) -> None:
         """
         Core Patreon whitelist workflow used by /beta-access.
@@ -526,9 +547,14 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
-        link = await get_patreon_link(member.id)
+        link = active_link or await get_patreon_link(member.id)
         if link is None or not _is_active_link(link, self.bot.settings):
-            await self._send_patreon_oauth_prompt(member, destination, ephemeral=ephemeral)
+            await self._send_patreon_oauth_prompt(
+                member,
+                destination,
+                ephemeral=ephemeral,
+                minecraft_username=nickname,
+            )
             return
 
         try:
@@ -818,24 +844,46 @@ class PatreonWhitelistFlowCog(commands.Cog):
         )
         member = await self._resolve_member(parsed_state.guild_id, parsed_state.discord_user_id)
         discord_username = str(member) if member is not None else str(parsed_state.discord_user_id)
-        await upsert_patreon_link(
-            PatreonLink(
-                discord_user_id=parsed_state.discord_user_id,
-                discord_username=discord_username,
-                patreon_user_id=identity.status.patreon_user_id,
-                patreon_member_id=identity.status.member_id,
-                patreon_full_name=identity.status.full_name,
-                patron_status=identity.status.patron_status,
-                tier_ids=identity.status.tier_ids,
-                last_charge_date=identity.status.last_charge_date,
-                entitlement_active=active,
-            )
+        link = PatreonLink(
+            discord_user_id=parsed_state.discord_user_id,
+            discord_username=discord_username,
+            patreon_user_id=identity.status.patreon_user_id,
+            patreon_member_id=identity.status.member_id,
+            patreon_full_name=identity.status.full_name,
+            patron_status=identity.status.patron_status,
+            tier_ids=identity.status.tier_ids,
+            last_charge_date=identity.status.last_charge_date,
+            entitlement_active=active,
         )
+        await upsert_patreon_link(link)
         await self._log_staff_info(
             f"Patreon link updated for <@{parsed_state.discord_user_id}>: status `{identity.status.patron_status}`, tiers `{', '.join(identity.status.tier_ids) or 'none'}`."
         )
         if not active:
             return self._html_response("Patreon linked, but active Contributor/Benefactor access was not found.")
+        if parsed_state.action == "beta_access":
+            minecraft_username = parsed_state.minecraft_username
+            if not MC_NAME_RE.match(minecraft_username or ""):
+                return self._html_response(
+                    "Patreon linked, but the Minecraft username in this verification request was invalid. Please try again from Minecraft.",
+                    status=400,
+                )
+            if member is None:
+                return self._html_response(
+                    "Patreon linked, but I could not find you in the DragonMineZ Discord server.",
+                    status=403,
+                )
+
+            destination = BrowserFlowDestination()
+            await self.start_whitelist_flow_for_user(
+                member,
+                destination,
+                minecraft_username,
+                ephemeral=False,
+                active_link=link,
+            )
+            message = destination.messages[-1] if destination.messages else "Verification request accepted."
+            return self._html_response(message)
         return self._html_response("Patreon linked. You can close this tab and return to Discord.")
 
     async def _resolve_member(self, guild_id: int, user_id: int) -> discord.Member | None:

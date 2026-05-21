@@ -23,6 +23,7 @@ class PatreonOAuthState:
     guild_id: int
     action: str
     expires_at: int
+    minecraft_username: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,15 +67,17 @@ def build_patreon_oauth_state(
     guild_id: int,
     action: str,
     expires_at: int,
+    minecraft_username: str | None = None,
 ) -> str:
-    body = _b64encode_json(
-        {
-            "discord_user_id": int(discord_user_id),
-            "guild_id": int(guild_id),
-            "action": str(action),
-            "expires_at": int(expires_at),
-        }
-    )
+    payload = {
+        "discord_user_id": int(discord_user_id),
+        "guild_id": int(guild_id),
+        "action": str(action),
+        "expires_at": int(expires_at),
+    }
+    if minecraft_username is not None:
+        payload["minecraft_username"] = str(minecraft_username)
+    body = _b64encode_json(payload)
     return f"{body}.{_sign_state(secret, body)}"
 
 
@@ -101,6 +104,11 @@ def parse_patreon_oauth_state(
             guild_id=int(payload["guild_id"]),
             action=str(payload["action"]),
             expires_at=expires_at,
+            minecraft_username=(
+                str(payload["minecraft_username"])
+                if payload.get("minecraft_username") is not None
+                else None
+            ),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None

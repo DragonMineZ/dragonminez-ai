@@ -48,6 +48,7 @@ class UserConfirmView(discord.ui.View):
         self.requester_id = requester_id
         self.nickname = nickname
         self.on_confirm = on_confirm  # async (interaction, nickname) -> None
+        self._submitted = False
 
     async def _gate(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester_id:
@@ -59,6 +60,10 @@ class UserConfirmView(discord.ui.View):
     async def yes_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
         if not await self._gate(interaction):
             return
+        if self._submitted:
+            await interaction.response.send_message("This request was already submitted.", ephemeral=True)
+            return
+        self._submitted = True
         await interaction.response.defer()
         for child in self.children:
             child.disabled = True
@@ -67,7 +72,13 @@ class UserConfirmView(discord.ui.View):
             content=f"Checking `{self.nickname}`...",
             view=None,
         )
-        await self.on_confirm(interaction, self.nickname)
+        try:
+            await self.on_confirm(interaction, self.nickname)
+        except Exception:
+            self._submitted = False
+            for child in self.children:
+                child.disabled = False
+            raise
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
     async def no_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -103,6 +114,8 @@ class AdminPRView(discord.ui.View):
         self.on_confirm = on_confirm  # async (interaction) -> None
         self.on_edit = on_edit        # async (interaction, new_nick) -> None
         self.on_reject = on_reject    # async (interaction) -> None
+        self._terminal_action_running = False
+        self._terminal_action_finished = False
 
     async def _admin_only(self, interaction: discord.Interaction) -> bool:
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
@@ -111,19 +124,60 @@ class AdminPRView(discord.ui.View):
             return False
         return True
 
+    async def _send_already_busy(self, interaction: discord.Interaction) -> None:
+        if self._terminal_action_finished:
+            await interaction.response.send_message("This request was already handled.", ephemeral=True)
+            return
+        await interaction.response.send_message("This request is already being processed.", ephemeral=True)
+
+    async def _begin_terminal_action(self, interaction: discord.Interaction) -> bool:
+        if self._terminal_action_running or self._terminal_action_finished:
+            await self._send_already_busy(interaction)
+            return False
+
+        self._terminal_action_running = True
+        for child in self.children:
+            child.disabled = True
+
+        await interaction.response.defer()
+        message = getattr(interaction, "message", None)
+        if message is not None:
+            try:
+                await message.edit(view=self)
+            except discord.HTTPException:
+                pass
+        return True
+
+    async def _restore_terminal_action(self, interaction: discord.Interaction) -> None:
+        self._terminal_action_running = False
+        for child in self.children:
+            child.disabled = False
+        message = getattr(interaction, "message", None)
+        if message is not None:
+            try:
+                await message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
         if not await self._admin_only(interaction):
             return
-        await interaction.response.defer()
-        await self.on_confirm(interaction)
-        for c in self.children:
-            c.disabled = True
-        await interaction.message.edit(view=self)
+        if not await self._begin_terminal_action(interaction):
+            return
+        try:
+            await self.on_confirm(interaction)
+        except Exception:
+            await self._restore_terminal_action(interaction)
+            raise
+        self._terminal_action_finished = True
 
     @discord.ui.button(label="Edit Nickname", style=discord.ButtonStyle.secondary)
     async def edit_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
         if not await self._admin_only(interaction):
+            return
+        if self._terminal_action_running or self._terminal_action_finished:
+            await self._send_already_busy(interaction)
             return
 
         modal = NicknameModal(title="Edit nickname (admin)")
@@ -140,8 +194,11 @@ class AdminPRView(discord.ui.View):
     async def reject_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
         if not await self._admin_only(interaction):
             return
-        await interaction.response.defer()
-        await self.on_reject(interaction)
-        for c in self.children:
-            c.disabled = True
-        await interaction.message.edit(view=self)
+        if not await self._begin_terminal_action(interaction):
+            return
+        try:
+            await self.on_reject(interaction)
+        except Exception:
+            await self._restore_terminal_action(interaction)
+            raise
+        self._terminal_action_finished = True

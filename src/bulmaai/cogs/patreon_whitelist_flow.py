@@ -4,10 +4,12 @@ import json
 import asyncio
 import html
 import re
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import discord
 from discord.ext import commands
+from requests import HTTPError
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
@@ -60,7 +62,14 @@ PATREON_WEBHOOK_PATH = "/patreon/webhook"
 BETA_ACCESS_ROUTE_PREFIX = "/beta-access/"
 BETA_ACCESS_START_PATH = "/beta-access/start"
 DISCORD_OAUTH_TTL_SECONDS = 10 * 60
+PROCESSED_OAUTH_STATE_TTL_SECONDS = PATREON_OAUTH_TTL_SECONDS + 60
 URL_RE = re.compile(r"https?://[^\s<]+")
+
+
+@dataclass(frozen=True, slots=True)
+class AutoApprovalResult:
+    pr_url: str | None
+    approved: bool
 
 
 def _patreon_branch_name(user_id: int) -> str:
@@ -90,6 +99,16 @@ def _gift_limit_for_member(member: discord.Member) -> int:
 
 def _is_active_link(link: PatreonLink, settings) -> bool:
     return link.entitlement_active
+
+
+def _github_error_status(exc: HTTPError) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return int(status_code) if isinstance(status_code, int) else None
+
+
+def _is_recoverable_merge_error(exc: HTTPError) -> bool:
+    return _github_error_status(exc) in {405, 409}
 
 
 async def _edit_user_status_message(message, content: str) -> None:
@@ -175,6 +194,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
         self.bot = bot
         self.gh = self._build_github_service()
         self._patreon_routes_registered = False
+        self._beta_access_locks: dict[tuple[int, str], asyncio.Lock] = {}
+        self._patreon_oauth_state_locks: dict[str, asyncio.Lock] = {}
+        self._processed_patreon_oauth_states: dict[str, float] = {}
 
     def _build_github_service(self) -> GitHubService:
         settings = self.bot.settings
@@ -190,6 +212,52 @@ class PatreonWhitelistFlowCog(commands.Cog):
             base_branch=settings.GITHUB_BASE_BRANCH,
             whitelist_file_path=settings.GITHUB_WHITELIST_FILE_PATH,
         )
+
+    def _ensure_runtime_state(self) -> None:
+        if not hasattr(self, "_beta_access_locks"):
+            self._beta_access_locks = {}
+        if not hasattr(self, "_patreon_oauth_state_locks"):
+            self._patreon_oauth_state_locks = {}
+        if not hasattr(self, "_processed_patreon_oauth_states"):
+            self._processed_patreon_oauth_states = {}
+
+    def _beta_access_lock(self, member_id: int, nickname: str) -> asyncio.Lock:
+        self._ensure_runtime_state()
+        key = (int(member_id), nickname.casefold())
+        lock = self._beta_access_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._beta_access_locks[key] = lock
+        return lock
+
+    def _patreon_oauth_state_lock(self, state: str) -> asyncio.Lock:
+        self._ensure_runtime_state()
+        self._prune_processed_patreon_oauth_states()
+        lock = self._patreon_oauth_state_locks.get(state)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._patreon_oauth_state_locks[state] = lock
+        return lock
+
+    def _prune_processed_patreon_oauth_states(self) -> None:
+        now = time.monotonic()
+        expired_states = [
+            state
+            for state, processed_at in self._processed_patreon_oauth_states.items()
+            if now - processed_at > PROCESSED_OAUTH_STATE_TTL_SECONDS
+        ]
+        for state in expired_states:
+            self._processed_patreon_oauth_states.pop(state, None)
+            self._patreon_oauth_state_locks.pop(state, None)
+
+    def _patreon_oauth_state_processed(self, state: str) -> bool:
+        self._ensure_runtime_state()
+        self._prune_processed_patreon_oauth_states()
+        return state in self._processed_patreon_oauth_states
+
+    def _mark_patreon_oauth_state_processed(self, state: str) -> None:
+        self._ensure_runtime_state()
+        self._processed_patreon_oauth_states[state] = time.monotonic()
 
     @discord.slash_command(
         name="beta-access",
@@ -557,45 +625,63 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
-        try:
-            pr_url = await self._auto_approve_beta_access(member, nickname)
-        except Exception:
-            log.exception(
-                "Failed to auto approve Patreon beta access",
-                extra={
-                    "event": "patreon_beta_access_auto_approval_failed",
-                    "user_id": member.id,
-                    "nickname": nickname,
-                },
+        async with self._beta_access_lock(member.id, nickname):
+            try:
+                approval = await self._auto_approve_beta_access(member, nickname)
+            except Exception:
+                log.exception(
+                    "Failed to auto approve Patreon beta access",
+                    extra={
+                        "event": "patreon_beta_access_auto_approval_failed",
+                        "user_id": member.id,
+                        "nickname": nickname,
+                    },
+                )
+                await _send_message(
+                    destination,
+                    "I could not submit the whitelist change. Please ask staff to check the bot logs.",
+                    ephemeral=ephemeral,
+                )
+                return
+
+            if approval.pr_url is None:
+                await _send_message(
+                    destination,
+                    f"`{nickname}` is already whitelisted. Nothing to do.",
+                    ephemeral=ephemeral,
+                )
+                return
+
+            if not approval.approved:
+                await _send_message(
+                    destination,
+                    "Whitelist PR created, but GitHub would not auto-merge it yet. "
+                    f"Staff can review it here: {approval.pr_url}",
+                    ephemeral=ephemeral,
+                )
+                return
+
+            await upsert_whitelist_grant(
+                PatreonGrant(
+                    owner_discord_user_id=member.id,
+                    beneficiary_discord_user_id=member.id,
+                    beneficiary_discord_username=str(member),
+                    minecraft_username=nickname,
+                    kind=PatreonGrantKind.SELF,
+                    active=True,
+                    source_pr_url=approval.pr_url,
+                )
             )
             await _send_message(
                 destination,
-                "I could not submit the whitelist change. Please ask staff to check the bot logs.",
+                f"`{nickname}` was approved automatically for Patreon beta access.",
                 ephemeral=ephemeral,
             )
-            return
-
-        await upsert_whitelist_grant(
-            PatreonGrant(
-                owner_discord_user_id=member.id,
-                beneficiary_discord_user_id=member.id,
-                beneficiary_discord_username=str(member),
-                minecraft_username=nickname,
-                kind=PatreonGrantKind.SELF,
-                active=True,
-                source_pr_url=pr_url,
+            await self._log_staff_info(
+                f"{member.mention} linked Patreon access and `{nickname}` was approved automatically.\nPR: {approval.pr_url}"
             )
-        )
-        await _send_message(
-            destination,
-            f"`{nickname}` was approved automatically for Patreon beta access.",
-            ephemeral=ephemeral,
-        )
-        await self._log_staff_info(
-            f"{member.mention} linked Patreon access and `{nickname}` was approved automatically.\nPR: {pr_url}"
-        )
 
-    async def _auto_approve_beta_access(self, member: discord.Member, nickname: str) -> str | None:
+    async def _auto_approve_beta_access(self, member: discord.Member, nickname: str) -> AutoApprovalResult:
         branch = _patreon_branch_name(member.id)
         pr_data = await self._create_whitelist_add_pr(
             branch=branch,
@@ -605,16 +691,63 @@ class PatreonWhitelistFlowCog(commands.Cog):
             body=f"Automatically approved through Patreon OAuth for Discord user {member} ({member.id}).",
         )
         if pr_data is None:
-            return None
+            return AutoApprovalResult(pr_url=None, approved=False)
         pr_number = pr_data["number"]
         pr_url = pr_data["html_url"]
-        await self.gh.merge_pr(pr_number)
+        try:
+            await self.gh.merge_pr(pr_number)
+        except HTTPError as exc:
+            if not _is_recoverable_merge_error(exc):
+                raise
+            current_pr = await self.gh.get_pr(pr_number)
+            if current_pr.get("merged"):
+                await self.gh.remove_branch(branch)
+                return AutoApprovalResult(pr_url=pr_url, approved=True)
+            await self._record_auto_merge_pending(
+                member=member,
+                nickname=nickname,
+                pr_number=pr_number,
+                pr_url=pr_url,
+                status_code=_github_error_status(exc),
+            )
+            return AutoApprovalResult(pr_url=pr_url, approved=False)
         await self.gh.add_pr_comment(
             pr_number,
             f"Automatically approved through Patreon OAuth for {member} ({member.id}).",
         )
         await self.gh.remove_branch(branch)
-        return pr_url
+        return AutoApprovalResult(pr_url=pr_url, approved=True)
+
+    async def _record_auto_merge_pending(
+        self,
+        *,
+        member: discord.Member,
+        nickname: str,
+        pr_number: int,
+        pr_url: str,
+        status_code: int | None,
+    ) -> None:
+        reason = f"HTTP {status_code}" if status_code is not None else "GitHub rejected the merge"
+        comment = (
+            "Automatic Patreon approval created this PR, but GitHub would not auto-merge it "
+            f"({reason}). Staff should review and merge manually if the whitelist change is valid."
+        )
+        try:
+            await self.gh.add_pr_comment(pr_number, comment)
+        except Exception:
+            log.exception(
+                "Failed to comment on Patreon auto-merge pending PR",
+                extra={
+                    "event": "patreon_beta_access_pending_comment_failed",
+                    "user_id": member.id,
+                    "nickname": nickname,
+                    "pr_number": pr_number,
+                },
+            )
+        await self._log_staff_info(
+            f"{member.mention} linked Patreon access and `{nickname}` has a whitelist PR, "
+            f"but it could not be auto-merged ({reason}).\nPR: {pr_url}"
+        )
 
     async def _create_whitelist_add_pr(
         self,
@@ -831,6 +964,22 @@ class PatreonWhitelistFlowCog(commands.Cog):
         if parsed_state is None:
             return text_http_response(403, "Patreon authorization expired")
 
+        async with self._patreon_oauth_state_lock(state):
+            if self._patreon_oauth_state_processed(state):
+                return self._html_response(
+                    "This Patreon authorization was already processed. You can close this tab and return to Discord."
+                )
+            response = await self._complete_patreon_oauth_callback(code, parsed_state)
+            if response.status < 500:
+                self._mark_patreon_oauth_state_processed(state)
+            return response
+
+    async def _complete_patreon_oauth_callback(
+        self,
+        code: str,
+        parsed_state,
+    ) -> ReleaseWebhookHttpResponse:
+        settings = self.bot.settings
         client = PatreonOAuthClient(
             client_id=settings.patreon_oauth_client_id,
             client_secret=settings.patreon_oauth_client_secret,

@@ -178,6 +178,11 @@ class FakeGitHubWithBaseNick(FakeGitHub):
         return "ExistingUser\nNewTester\n", "branch-sha"
 
 
+class FakeGitHubWithOldSelfGrantNick(FakeGitHub):
+    async def get_whitelist_file(self, ref):
+        return "ExistingUser\nOldTester\n", "sha"
+
+
 class FakeGitHubSlowMerge(FakeGitHub):
     def __init__(self):
         super().__init__()
@@ -456,6 +461,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=identity),
             ),
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_patreon_link", AsyncMock()),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=[])),
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
         ):
             response = await cog._handle_patreon_oauth_callback("oauth-code", state)
@@ -534,6 +540,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=[])),
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
         ):
             await cog.start_whitelist_flow_for_user(
@@ -580,6 +587,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=[])),
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
         ):
             await asyncio.gather(
@@ -603,6 +611,71 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`NewTester` was approved automatically for Patreon beta access.", all_messages)
         self.assertIn("`NewTester` is already whitelisted. Nothing to do.", all_messages)
         self.assertEqual(len(staff_channel.sent), 1)
+
+    async def test_concurrent_beta_access_for_different_names_prompts_for_username_update(self) -> None:
+        staff_channel = FakeChannel()
+        author = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=1287877272224665640)],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        bot = SimpleNamespace(
+            settings=self._settings(),
+            get_channel=lambda channel_id: staff_channel,
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHubSlowMerge()
+        link = PatreonLink(
+            discord_user_id=456,
+            discord_username="Requester",
+            patreon_user_id="patreon-user-1",
+            patreon_member_id="member-1",
+            patreon_full_name="Patron User",
+            patron_status="active_patron",
+            tier_ids=("1287877272224665640",),
+            last_charge_date=None,
+            entitlement_active=True,
+        )
+        first_destination = FakeFollowup()
+        second_destination = FakeFollowup()
+        active_grants = []
+
+        async def list_grants(owner_id):
+            return list(active_grants)
+
+        async def upsert_grant(grant):
+            active_grants[:] = [grant]
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(side_effect=list_grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock(side_effect=upsert_grant)) as upsert_grant_mock,
+        ):
+            await asyncio.gather(
+                cog.start_whitelist_flow_for_user(
+                    author,
+                    first_destination,
+                    "NewTester",
+                    ephemeral=True,
+                ),
+                cog.start_whitelist_flow_for_user(
+                    author,
+                    second_destination,
+                    "OtherTester",
+                    ephemeral=True,
+                ),
+            )
+
+        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(len(cog.gh.put_calls), 1)
+        self.assertEqual(upsert_grant_mock.await_count, 1)
+        all_messages = [call[0][0] for call in first_destination.sent + second_destination.sent]
+        self.assertTrue(any("approved automatically" in message for message in all_messages))
+        self.assertTrue(any("already are whitelisted" in message for message in all_messages))
+        self.assertTrue(any("view" in call[1] for call in first_destination.sent + second_destination.sent))
 
     async def test_auto_approval_does_not_record_grant_when_username_already_whitelisted(self) -> None:
         staff_channel = FakeChannel()
@@ -635,6 +708,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=[])),
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
         ):
             await cog.start_whitelist_flow_for_user(
@@ -679,6 +753,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=[])),
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
         ):
             await cog.start_whitelist_flow_for_user(
@@ -696,6 +771,132 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("https://example.test/pr/12", destination.sent[-1][0][0])
         self.assertIn("could not be auto-merged", staff_channel.sent[-1][0][0])
+
+    async def test_existing_self_grant_prompts_before_updating_minecraft_username(self) -> None:
+        author = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=1287877272224665640)],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        bot = SimpleNamespace(
+            settings=self._settings(),
+            get_channel=lambda channel_id: FakeChannel(),
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHubWithOldSelfGrantNick()
+        destination = FakeFollowup()
+        link = PatreonLink(
+            discord_user_id=456,
+            discord_username="Requester",
+            patreon_user_id="patreon-user-1",
+            patreon_member_id="member-1",
+            patreon_full_name="Patron User",
+            patron_status="active_patron",
+            tier_ids=("1287877272224665640",),
+            last_charge_date=None,
+            entitlement_active=True,
+        )
+        grant = PatreonGrant(
+            owner_discord_user_id=456,
+            beneficiary_discord_user_id=456,
+            beneficiary_discord_username="Requester",
+            minecraft_username="OldTester",
+            kind=PatreonGrantKind.SELF,
+            active=True,
+            source_pr_url="https://example.test/pr/1",
+        )
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[grant]),
+                create=True,
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog.start_whitelist_flow_for_user(
+                author,
+                destination,
+                "NewTester",
+                ephemeral=True,
+            )
+
+        args, kwargs = destination.sent[-1]
+        self.assertIn("already are whitelisted", args[0])
+        self.assertIn("`OldTester`", args[0])
+        self.assertIn("`NewTester`", args[0])
+        self.assertIn("view", kwargs)
+        self.assertEqual(cog.gh.merged_prs, [])
+        self.assertEqual(upsert_grant.await_count, 0)
+
+    async def test_confirmed_self_grant_username_update_replaces_old_whitelist_entry(self) -> None:
+        staff_channel = FakeChannel()
+        author = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=1287877272224665640)],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        bot = SimpleNamespace(
+            settings=self._settings(),
+            get_channel=lambda channel_id: staff_channel,
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHubWithOldSelfGrantNick()
+        destination = FakeFollowup()
+        link = PatreonLink(
+            discord_user_id=456,
+            discord_username="Requester",
+            patreon_user_id="patreon-user-1",
+            patreon_member_id="member-1",
+            patreon_full_name="Patron User",
+            patron_status="active_patron",
+            tier_ids=("1287877272224665640",),
+            last_charge_date=None,
+            entitlement_active=True,
+        )
+        grant = PatreonGrant(
+            owner_discord_user_id=456,
+            beneficiary_discord_user_id=456,
+            beneficiary_discord_username="Requester",
+            minecraft_username="OldTester",
+            kind=PatreonGrantKind.SELF,
+            active=True,
+            source_pr_url="https://example.test/pr/1",
+        )
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[grant]),
+                create=True,
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog.start_whitelist_flow_for_user(
+                author,
+                destination,
+                "NewTester",
+                ephemeral=True,
+            )
+            update_view = destination.sent[-1][1]["view"]
+            interaction = FakeButtonInteraction(user=author)
+            await update_view.children[0].callback(interaction)
+
+        self.assertEqual(cog.gh.created_branches, [("patreon/user-456", "main")])
+        self.assertEqual(cog.gh.put_calls[0]["new_text"], "ExistingUser\nNewTester\n")
+        self.assertEqual(cog.gh.put_calls[0]["message"], "Update beta tester: OldTester -> NewTester")
+        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(upsert_grant.await_args.args[0].minecraft_username, "NewTester")
+        self.assertIn("updated from `OldTester` to `NewTester`", interaction.followup.sent[-1][0][0])
+        self.assertIn("updated Patreon beta access", staff_channel.sent[-1][0][0])
 
     async def test_replayed_patreon_oauth_state_is_processed_once(self) -> None:
         member = SimpleNamespace(

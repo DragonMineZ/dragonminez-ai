@@ -105,6 +105,70 @@ class UserConfirmView(discord.ui.View):
         )
 
 
+class UsernameUpdateConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        requester_id: int,
+        old_nickname: str,
+        new_nickname: str,
+        on_confirm,
+    ):
+        super().__init__(timeout=300)
+        self.requester_id = requester_id
+        self.old_nickname = old_nickname
+        self.new_nickname = new_nickname
+        self.on_confirm = on_confirm  # async (interaction) -> None
+        self._submitted = False
+
+    async def _gate(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("Only the command author can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        if self._submitted:
+            await interaction.response.send_message("This username update was already submitted.", ephemeral=True)
+            return
+        self._submitted = True
+        await interaction.response.defer()
+        for child in self.children:
+            child.disabled = True
+        await _edit_interaction_message(
+            interaction,
+            content=f"Updating `{self.old_nickname}` to `{self.new_nickname}`...",
+            view=None,
+        )
+        try:
+            await self.on_confirm(interaction)
+        except Exception:
+            self._submitted = False
+            for child in self.children:
+                child.disabled = False
+            raise
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def no_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        if self._submitted:
+            await interaction.response.send_message("This username update was already submitted.", ephemeral=True)
+            return
+        self._submitted = True
+        await interaction.response.defer()
+        for child in self.children:
+            child.disabled = True
+        await _edit_interaction_message(
+            interaction,
+            content="Username update cancelled.",
+            view=None,
+        )
+
+
 class AdminPRView(discord.ui.View):
     def __init__(self, *, pr_number: int, nickname: str, branch: str, on_confirm, on_edit, on_reject):
         super().__init__(timeout=86400)

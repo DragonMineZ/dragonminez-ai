@@ -10,7 +10,7 @@ from typing import Any
 
 
 DEV_JAR_FILENAME_RE = re.compile(
-    r"^dragonminez-(?P<version>.+)__(?P<branch>[a-z0-9._-]+)__(?P<sha>[a-f0-9]{12})\.jar$"
+    r"^dragonminez-(?P<version>.+)__(?P<sha>[a-f0-9]{12})\.jar$"
 )
 
 
@@ -18,7 +18,6 @@ DEV_JAR_FILENAME_RE = re.compile(
 class DevJarArtifact:
     file_name: str
     version: str
-    branch_slug: str
     commit_sha: str
     size_bytes: int | None = None
     modified_at: datetime | None = None
@@ -147,7 +146,6 @@ def parse_dev_jar_filename(file_name: str) -> DevJarArtifact:
     return DevJarArtifact(
         file_name=file_name,
         version=match.group("version"),
-        branch_slug=match.group("branch"),
         commit_sha=match.group("sha"),
     )
 
@@ -163,7 +161,6 @@ def _artifact_from_path(path: Path) -> DevJarArtifact | None:
     return DevJarArtifact(
         file_name=artifact.file_name,
         version=artifact.version,
-        branch_slug=artifact.branch_slug,
         commit_sha=artifact.commit_sha,
         size_bytes=stat.st_size,
         modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),

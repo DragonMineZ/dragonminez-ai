@@ -21,22 +21,21 @@ from bulmaai.services.dev_jar_downloads import (
 class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
     def test_parse_dev_jar_filename_keeps_hyphenated_version_intact(self) -> None:
         artifact = parse_dev_jar_filename(
-            "dragonminez-2.1.2-alpha__v2.1__39cd4f1c1234.jar"
+            "dragonminez-2.1.2-alpha__39cd4f1c1234.jar"
         )
 
         self.assertEqual(artifact.version, "2.1.2-alpha")
-        self.assertEqual(artifact.branch_slug, "v2.1")
         self.assertEqual(artifact.commit_sha, "39cd4f1c1234")
 
     def test_parse_dev_jar_filename_rejects_path_like_names(self) -> None:
         with self.assertRaises(ValueError):
-            parse_dev_jar_filename("../dragonminez-2.1.2__v2.1__39cd4f1c1234.jar")
+            parse_dev_jar_filename("../dragonminez-2.1.2__39cd4f1c1234.jar")
 
     def test_find_latest_dev_jar_uses_file_modified_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
-            older = upload_dir / "dragonminez-2.1.1__v2.1__111111111111.jar"
-            newer = upload_dir / "dragonminez-2.1.2__v2.1__222222222222.jar"
+            older = upload_dir / "dragonminez-2.1.1__111111111111.jar"
+            newer = upload_dir / "dragonminez-2.1.2__222222222222.jar"
             ignored = upload_dir / "dragonminez-2.1.2-slim.jar"
             older.write_bytes(b"older")
             newer.write_bytes(b"newer")
@@ -52,7 +51,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
     def test_one_time_download_token_can_only_be_consumed_once(self) -> None:
         now = 1000.0
         store = OneTimeDownloadTokenStore(now=lambda: now)
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
 
         token = store.issue(artifact=artifact, requester_id=123, ttl_seconds=60)
 
@@ -64,7 +63,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
     def test_one_time_download_token_claim_completes_or_releases(self) -> None:
         store = OneTimeDownloadTokenStore(now=lambda: 1000)
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
         token = store.issue(artifact=artifact, requester_id=123, ttl_seconds=60)
 
         claim = store.claim(token)
@@ -88,7 +87,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             return now
 
         store = OneTimeDownloadTokenStore(now=current_time)
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
         token = store.issue(artifact=artifact, requester_id=123, ttl_seconds=5)
         now = 1006.0
 
@@ -98,7 +97,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "commits"):
             parse_dev_jar_upload_payload(
                 {
-                    "remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar",
+                    "remote_name": "dragonminez-2.1.2__222222222222.jar",
                     "sha256": "a" * 64,
                 }
             )
@@ -106,7 +105,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
     def test_parse_dev_jar_upload_payload_accepts_required_commit_fields(self) -> None:
         payload = parse_dev_jar_upload_payload(
             {
-                "remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar",
+                "remote_name": "dragonminez-2.1.2__222222222222.jar",
                 "sha256": "a" * 64,
                 "workflow_run_url": "https://github.com/DragonMineZ/dragonminez/actions/runs/123",
                 "commits": [
@@ -133,7 +132,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload.commits[1].author, "Shokkoh")
 
     def test_download_embed_mentions_commit_and_workflow(self) -> None:
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
 
         embed = build_dev_jar_download_embed(
             artifact,
@@ -154,10 +153,9 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
         field_values = [field.value for field in embed.fields]
         self.assertIn("`222222222222`", field_values)
-        self.assertIn("`v2.1`", field_values)
 
     def test_download_embed_includes_commit_summary_links_titles_descriptions_and_authors(self) -> None:
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__086afb963f2c.jar")
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__086afb963f2c.jar")
 
         embed = build_dev_jar_download_embed(
             artifact,
@@ -190,7 +188,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
     def test_cog_direct_token_download_consumes_token_after_successful_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
-            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
             (upload_dir / artifact.file_name).write_bytes(b"jar")
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
             cog.settings = SimpleNamespace(
@@ -225,7 +223,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
     def test_cog_direct_token_download_can_retry_after_interrupted_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
-            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
             (upload_dir / artifact.file_name).write_bytes(b"jar")
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
             cog.settings = SimpleNamespace(dev_jar_download_upload_dir=str(upload_dir))
@@ -254,7 +252,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
-            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
             (upload_dir / artifact.file_name).write_bytes(b"jar")
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
             cog.settings = SimpleNamespace(
@@ -296,7 +294,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
-            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
             (upload_dir / artifact.file_name).write_bytes(b"jar")
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
             cog.settings = SimpleNamespace(
@@ -342,7 +340,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
-            artifact = parse_dev_jar_filename("dragonminez-2.1.2__v2.1__222222222222.jar")
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
             (upload_dir / artifact.file_name).write_bytes(b"jar")
             patreon_channel = FakeChannel()
             testing_channel = FakeChannel()

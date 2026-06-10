@@ -86,7 +86,7 @@ class ReleaseWebhookTests(unittest.TestCase):
 
         response = handle_release_webhook_post(
             path="/dmz-dev-jar",
-            body=json.dumps({"remote_name": "dragonminez-2.1.2__v2.1__222222222222.jar"}).encode("utf-8"),
+            body=json.dumps({"remote_name": "dragonminez-2.1.2__222222222222.jar"}).encode("utf-8"),
             headers={"X-DMZ-Release-Bot-Secret": "dev-secret"},
             expected_path="/dmz-release",
             secret="release-secret",
@@ -94,7 +94,7 @@ class ReleaseWebhookTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status, 202)
-        self.assertEqual(queued, [ParsedPayload("dragonminez-2.1.2__v2.1__222222222222.jar")])
+        self.assertEqual(queued, [ParsedPayload("dragonminez-2.1.2__222222222222.jar")])
 
     def test_registered_extra_route_rejects_wrong_secret_before_release_parser(self) -> None:
         register_extra_webhook_route(

@@ -125,7 +125,6 @@ def build_dev_jar_download_embed(
         timestamp=artifact.modified_at,
     )
     embed.add_field(name="Version", value=f"`{artifact.version}`", inline=True)
-    embed.add_field(name="Branch", value=f"`{artifact.branch_slug}`", inline=True)
     embed.add_field(name="Commit .jar", value=f"`{artifact.commit_sha}`", inline=True)
     embed.add_field(name="Artifact", value=f"`{artifact.file_name}`", inline=False)
 
@@ -324,7 +323,6 @@ class DevJarDownloadsCog(commands.Cog):
         artifact = DevJarArtifact(
             file_name=payload.artifact.file_name,
             version=payload.artifact.version,
-            branch_slug=payload.artifact.branch_slug,
             commit_sha=payload.artifact.commit_sha,
             size_bytes=stat.st_size,
             modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
@@ -371,7 +369,6 @@ class DevJarDownloadsCog(commands.Cog):
                 artifact = DevJarArtifact(
                     file_name=artifact.file_name,
                     version=artifact.version,
-                    branch_slug=artifact.branch_slug,
                     commit_sha=artifact.commit_sha,
                     size_bytes=stat.st_size,
                     modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),

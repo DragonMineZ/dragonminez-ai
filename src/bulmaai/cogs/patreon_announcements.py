@@ -14,6 +14,7 @@ from bulmaai.services.patreon_state import (
     get_patreon_campaign_state,
     upsert_patreon_campaign_state,
 )
+from bulmaai.ui.patreon_views import PatreonWelcomeView
 from bulmaai.utils.permissions import is_admin
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,30 @@ PATREON_WELCOME_DM_TITLE = "Welcome to DragonMineZ - Patreon"
 PATREON_WELCOME_DM_DESCRIPTION = (
     "Hi {member_name}, thanks for joining the DragonMineZ Patreon! "
     "You now have {role} ({role_name}) in the server, we're glad to have you here! "
-    "If your perk is Supporter, it does NOT include alpha/beta access. "
-    "To play the beta, you need at least the Contributor role/perk, which is USD $9.99. "
-    "If your perk is Contributor or Benefactor, use /beta-access username:<your Minecraft username> "
-    "in the DragonMineZ server to request beta access. "
-    "Your support is invaluable, thank you again!"
+    "Here is the fastest way to get into the betas/alphas:"
+)
+PATREON_WELCOME_DM_STEPS = (
+    (
+        "1. Verify your access",
+        "Click **Verify & Get Beta Access** below and enter your Minecraft username "
+        "(or run `/beta-access username:<your Minecraft username>` in the server). "
+        "You will be asked to authorize with Patreon once.",
+    ),
+    (
+        "2. Get whitelisted",
+        "Contributor and Benefactor perks are approved automatically - you will get a "
+        "confirmation as soon as your username is on the beta whitelist.",
+    ),
+    (
+        "3. Download and play",
+        "Beta/alpha releases and the latest dev builds are posted in the downloads channel. "
+        "Press **Get download link** under any release to grab your copy. "
+        "Heads up: download links are one-time per user per build.",
+    ),
+)
+PATREON_WELCOME_DM_NOTE = (
+    "Note: the Supporter perk does NOT include alpha/beta access. To play the beta you need "
+    "at least the Contributor perk (USD $9.99). Your support is invaluable, thank you again!"
 )
 PATREON_WELCOME_DM_FOOTER = "DragonMineZ Patreon"
 
@@ -252,11 +272,29 @@ def _build_dm_welcome_embed(*, member: discord.Member, role: discord.Role) -> di
         colour=PATREON_COLOUR,
         timestamp=datetime.now(timezone.utc),
     )
+    for step_name, step_value in PATREON_WELCOME_DM_STEPS:
+        embed.add_field(
+            name=step_name,
+            value=_render_welcome_text(step_value, member=member, role=role),
+            inline=False,
+        )
+    embed.add_field(
+        name="​",
+        value=_render_welcome_text(PATREON_WELCOME_DM_NOTE, member=member, role=role),
+        inline=False,
+    )
     embed.set_thumbnail(url=member.display_avatar.url)
     footer = _render_welcome_text(PATREON_WELCOME_DM_FOOTER, member=member, role=role)
     if footer:
         embed.set_footer(text=footer)
     return embed
+
+
+def _downloads_channel_url(member: discord.Member, channel_id: int | None) -> str | None:
+    guild_id = getattr(getattr(member, "guild", None), "id", None)
+    if guild_id is None or channel_id is None:
+        return None
+    return f"https://discord.com/channels/{guild_id}/{channel_id}"
 
 
 class PatreonAnnouncementsCog(commands.Cog):
@@ -348,6 +386,12 @@ class PatreonAnnouncementsCog(commands.Cog):
         try:
             await member.send(
                 embed=_build_dm_welcome_embed(member=member, role=role),
+                view=PatreonWelcomeView(
+                    downloads_channel_url=_downloads_channel_url(
+                        member,
+                        self.bot.settings.patreon_welcome_channel_id,
+                    ),
+                ),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.Forbidden:

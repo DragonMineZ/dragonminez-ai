@@ -6,6 +6,8 @@ from bulmaai.utils.permissions import is_admin
 
 MC_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 
+PATREON_WELCOME_VERIFY_CUSTOM_ID = "patreon_welcome:verify"
+
 
 async def _edit_interaction_message(interaction: discord.Interaction, **kwargs) -> None:
     edit_original_response = getattr(interaction, "edit_original_response", None)
@@ -40,6 +42,46 @@ class NicknameModal(discord.ui.Modal):
     async def callback(self, interaction: discord.Interaction):
         self.value = self.nick.value.strip()
         await interaction.response.defer(ephemeral=True)
+
+
+class BetaAccessUsernameModal(discord.ui.Modal):
+    """Asks for a Minecraft username, then hands off to the whitelist flow."""
+
+    def __init__(self, *, on_submit, title: str = "DragonMineZ Beta Access"):
+        super().__init__(title=title)
+        self.on_submit_callback = on_submit  # async (interaction, username) -> None
+        self.username = discord.ui.InputText(
+            label="Minecraft username",
+            placeholder="e.g. Bruno_123",
+            min_length=3,
+            max_length=16,
+            required=True,
+        )
+        self.add_item(self.username)
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.on_submit_callback(interaction, (self.username.value or "").strip())
+
+
+class PatreonWelcomeView(discord.ui.View):
+    """Quick-start buttons attached to the Patreon welcome DM."""
+
+    def __init__(self, *, downloads_channel_url: str | None = None):
+        super().__init__(timeout=None)
+        self.add_item(
+            discord.ui.Button(
+                label="Verify & Get Beta Access",
+                style=discord.ButtonStyle.success,
+                custom_id=PATREON_WELCOME_VERIFY_CUSTOM_ID,
+            )
+        )
+        if downloads_channel_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Open Downloads Channel",
+                    url=downloads_channel_url,
+                )
+            )
 
 
 class UserConfirmView(discord.ui.View):

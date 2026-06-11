@@ -50,6 +50,7 @@ class DevJarDownloadGrant:
 class DevJarDownloadClaim:
     token_hash: str
     artifact: DevJarArtifact
+    requester_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +119,11 @@ class OneTimeDownloadTokenStore:
             self._grants.pop(token_hash, None)
             return None
         self._claimed.add(token_hash)
-        return DevJarDownloadClaim(token_hash=token_hash, artifact=grant.artifact)
+        return DevJarDownloadClaim(
+            token_hash=token_hash,
+            artifact=grant.artifact,
+            requester_id=grant.requester_id,
+        )
 
     def complete_claim(self, claim: DevJarDownloadClaim) -> None:
         self._grants.pop(claim.token_hash, None)

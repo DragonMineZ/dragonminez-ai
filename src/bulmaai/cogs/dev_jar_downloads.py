@@ -10,9 +10,14 @@ from urllib.parse import quote
 import discord
 from discord.ext import commands
 
+from bulmaai.services.dev_jar_download_records import (
+    has_completed_dev_jar_download,
+    record_completed_dev_jar_download,
+)
 from bulmaai.services.dev_jar_downloads import (
     DevJarArtifact,
     DevJarCommit,
+    DevJarDownloadClaim,
     DevJarUploadPayload,
     OneTimeDownloadTokenStore,
     find_latest_dev_jar,
@@ -20,6 +25,7 @@ from bulmaai.services.dev_jar_downloads import (
     parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
 )
+from bulmaai.services.patch_notes import PATCH_NOTES_URL
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
     register_extra_webhook_route,
@@ -135,8 +141,24 @@ def build_dev_jar_download_embed(
     if sha256:
         embed.add_field(name="SHA-256", value=f"`{sha256}`", inline=False)
     embed.add_field(name="Commits Changelog", value=_format_commit_summary(commits), inline=False)
-    embed.set_footer(text="Downloads require Discord access authorization.")
+    notes_day = _artifact_day(artifact)
+    embed.add_field(
+        name="Patch Notes",
+        value=(
+            f"The **Patch Notes** button below opens the v2.1 patch notes for {notes_day} "
+            "with everything that changed in this update."
+        ),
+        inline=False,
+    )
+    embed.set_footer(
+        text="Downloads require Discord access authorization. Download links are one-time per user per jar."
+    )
     return embed
+
+
+def _artifact_day(artifact: DevJarArtifact) -> str:
+    moment = artifact.modified_at or datetime.now(timezone.utc)
+    return f"{moment:%B %d, %Y}"
 
 
 class DevJarDownloadView(discord.ui.View):
@@ -147,6 +169,12 @@ class DevJarDownloadView(discord.ui.View):
                 label="Get download link",
                 style=discord.ButtonStyle.primary,
                 custom_id=f"{DOWNLOAD_BUTTON_PREFIX}{artifact.file_name}",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label=f"Patch Notes – {_artifact_day(artifact)}",
+                url=PATCH_NOTES_URL,
             )
         )
 
@@ -425,6 +453,14 @@ class DevJarDownloadsCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
+            if await self._user_already_downloaded(interaction.user.id, artifact.file_name):
+                await interaction.response.send_message(
+                    f"You already downloaded `{artifact.file_name}`. Download links are one-time "
+                    "per user per jar, so this build cannot be requested again. A newer dev jar "
+                    "announcement will come with a fresh download.",
+                    ephemeral=True,
+                )
+                return
 
             token = self.token_store.issue(
                 artifact=artifact,
@@ -448,6 +484,34 @@ class DevJarDownloadsCog(commands.Cog):
                 "I could not prepare that download link. Ask staff to check the bot logs.",
                 ephemeral=True,
             )
+
+    async def _user_already_downloaded(self, user_id: int, file_name: str) -> bool:
+        try:
+            return await has_completed_dev_jar_download(user_id, file_name)
+        except Exception:
+            # The database being unreachable should not break downloads outright;
+            # the one-time token still protects each issued link.
+            log.exception("Failed to check completed dev jar downloads; allowing link request")
+            return False
+
+    def _complete_download_claim(self, claim: DevJarDownloadClaim) -> None:
+        self.token_store.complete_claim(claim)
+        loop = getattr(getattr(self, "bot", None), "loop", None)
+        if loop is None or not loop.is_running():
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            record_completed_dev_jar_download(claim.requester_id, claim.artifact.file_name),
+            loop,
+        )
+
+        def log_result(done_future) -> None:
+            try:
+                done_future.result()
+            except Exception:
+                log.exception("Failed to record completed dev jar download")
+
+        future.add_done_callback(log_result)
 
     def _handle_direct_token(self, token: str) -> ReleaseWebhookHttpResponse:
         artifact = self.token_store.peek(token)
@@ -552,7 +616,7 @@ class DevJarDownloadsCog(commands.Cog):
             content_type="application/java-archive",
             file_path=path,
             download_name=claim.artifact.file_name,
-            on_stream_complete=lambda: self.token_store.complete_claim(claim),
+            on_stream_complete=lambda: self._complete_download_claim(claim),
             on_stream_error=lambda error: self.token_store.release_claim(claim),
         )
 

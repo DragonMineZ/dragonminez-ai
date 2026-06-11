@@ -170,3 +170,23 @@ CREATE INDEX IF NOT EXISTS idx_patreon_whitelist_grants_owner_active
 
 CREATE INDEX IF NOT EXISTS idx_patreon_whitelist_grants_minecraft_username
     ON patreon_whitelist_grants (minecraft_username);
+
+
+CREATE TABLE IF NOT EXISTS dev_jar_user_downloads (
+    discord_user_id BIGINT NOT NULL,
+    file_name       TEXT NOT NULL,
+    downloaded_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (discord_user_id, file_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dev_jar_user_downloads_file_name
+    ON dev_jar_user_downloads (file_name);
+
+CREATE TABLE IF NOT EXISTS patch_notes_state (
+    branch        TEXT NOT NULL,
+    file_path     TEXT NOT NULL,
+    content_sha   TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (branch, file_path)
+);

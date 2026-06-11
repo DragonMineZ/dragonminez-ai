@@ -1,13 +1,16 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from bulmaai.cogs.dev_jar_downloads import (
     DevJarDownloadsCog,
+    DevJarDownloadView,
     build_dev_jar_download_embed,
 )
+from bulmaai.services.patch_notes import PATCH_NOTES_URL
 from bulmaai.services.dev_jar_downloads import (
     DevJarCommit,
     DevJarUploadPayload,
@@ -185,6 +188,25 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)", field_values["Commits Changelog"])
         self.assertIn("fix: race selection screen fix", field_values["Commits Changelog"])
 
+    async def test_download_view_includes_dated_patch_notes_link_button(self) -> None:
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+
+        view = DevJarDownloadView(artifact)
+
+        labels = [getattr(child, "label", "") for child in view.children]
+        urls = [getattr(child, "url", None) for child in view.children]
+        self.assertIn("Get download link", labels)
+        self.assertTrue(any(label.startswith("Patch Notes – ") for label in labels))
+        self.assertIn(PATCH_NOTES_URL, urls)
+
+    def test_download_embed_notes_patch_notes_day(self) -> None:
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+
+        embed = build_dev_jar_download_embed(artifact, commits=())
+
+        field_values = {field.name: field.value for field in embed.fields}
+        self.assertIn("patch notes", field_values["Patch Notes"].lower())
+
     def test_cog_direct_token_download_consumes_token_after_successful_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
@@ -274,7 +296,13 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 response=response,
             )
 
-            with patch("bulmaai.cogs.dev_jar_downloads.time.time", return_value=1999):
+            with (
+                patch("bulmaai.cogs.dev_jar_downloads.time.time", return_value=1999),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.has_completed_dev_jar_download",
+                    new=AsyncMock(return_value=False),
+                ),
+            ):
                 await cog._handle_download_button(interaction, artifact.file_name)
 
         self.assertEqual(len(response.messages), 1)
@@ -322,6 +350,86 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         content, kwargs = response.messages[0]
         self.assertIn("not authorized", content)
         self.assertTrue(kwargs["ephemeral"])
+
+    async def test_download_button_refuses_user_who_already_downloaded_jar(self) -> None:
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, dict]] = []
+
+            async def send_message(self, content: str, **kwargs) -> None:
+                self.messages.append((content, kwargs))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                release_webhook_secret="secret",
+                dev_jar_download_public_base_url="https://downloads.example.test",
+                dev_jar_download_download_path="/dev-download",
+                dev_jar_download_token_ttl_seconds=300,
+            )
+            cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
+            response = FakeResponse()
+            interaction = SimpleNamespace(
+                user=SimpleNamespace(
+                    id=123,
+                    guild_permissions=SimpleNamespace(administrator=True),
+                    roles=[],
+                ),
+                guild_id=456,
+                response=response,
+            )
+
+            with patch(
+                "bulmaai.cogs.dev_jar_downloads.has_completed_dev_jar_download",
+                new=AsyncMock(return_value=True),
+            ):
+                await cog._handle_download_button(interaction, artifact.file_name)
+
+        self.assertEqual(len(response.messages), 1)
+        content, kwargs = response.messages[0]
+        self.assertIn("already downloaded", content)
+        self.assertNotIn("https://downloads.example.test/dev-download/", content)
+        self.assertTrue(kwargs["ephemeral"])
+
+    async def test_completed_stream_records_one_time_download_for_requester(self) -> None:
+        recorded: list[tuple[int, str]] = []
+
+        async def fake_record(user_id: int, file_name: str) -> None:
+            recorded.append((user_id, file_name))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.settings = SimpleNamespace(dev_jar_download_upload_dir=str(upload_dir))
+            cog.bot = SimpleNamespace(loop=asyncio.get_running_loop())
+            cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1000)
+            token = cog.token_store.issue(
+                artifact=artifact,
+                requester_id=123,
+                ttl_seconds=60,
+            )
+
+            with patch(
+                "bulmaai.cogs.dev_jar_downloads.record_completed_dev_jar_download",
+                new=fake_record,
+            ):
+                file_response = cog._handle_direct_token_file(token)
+                assert file_response.on_stream_complete is not None
+                file_response.on_stream_complete()
+                for _ in range(50):
+                    if recorded:
+                        break
+                    await asyncio.sleep(0.01)
+
+        self.assertEqual(file_response.status, 200)
+        self.assertEqual(recorded, [(123, artifact.file_name)])
+        self.assertEqual(cog._handle_direct_token_file(token).status, 403)
 
     async def test_cog_upload_payload_posts_download_announcement(self) -> None:
         class FakeChannel:

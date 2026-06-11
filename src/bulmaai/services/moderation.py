@@ -96,6 +96,9 @@ class ModerationConfig:
     suspicious_shortener_domains: tuple[str, ...] = DEFAULT_SUSPICIOUS_SHORTENERS
     image_burst_count: int = 3
     image_burst_window_seconds: int = 20
+    # Images spread across fewer messages than this never trigger the burst,
+    # so a single legitimate multi-screenshot message is not punished.
+    image_burst_min_messages: int = 2
     link_burst_count: int = 5
     link_burst_window_seconds: int = 60
 
@@ -119,11 +122,20 @@ class ModerationDecision:
 @dataclass
 class ModerationState:
     image_events: dict[tuple[int, int], list[float]] = field(default_factory=lambda: defaultdict(list))
+    image_message_events: dict[tuple[int, int], list[float]] = field(default_factory=lambda: defaultdict(list))
     link_events: dict[tuple[int, int], list[float]] = field(default_factory=lambda: defaultdict(list))
 
-    def record(self, bucket: dict[tuple[int, int], list[float]], key: tuple[int, int], now: float, window_seconds: float) -> tuple[float, ...]:
+    def record(
+        self,
+        bucket: dict[tuple[int, int], list[float]],
+        key: tuple[int, int],
+        now: float,
+        window_seconds: float,
+        *,
+        count: int = 1,
+    ) -> tuple[float, ...]:
         events = [event_time for event_time in bucket[key] if now - event_time <= window_seconds]
-        events.append(now)
+        events.extend([now] * count)
         bucket[key] = events
         return tuple(events)
 
@@ -275,10 +287,6 @@ def decide_burst_threshold(
     )
 
 
-def _message_has_only_images(signal: MessageSignal, image_count: int) -> bool:
-    return image_count > 0 and not signal.content.strip()
-
-
 def evaluate_message(
     signal: MessageSignal,
     config: ModerationConfig,
@@ -354,9 +362,19 @@ def evaluate_message(
             )
 
     images = extract_image_attachments(signal.attachments)
-    if _message_has_only_images(signal, len(images)):
+    if images:
+        # Every image counts toward the burst, even when the message also has
+        # text, so spammers cannot dodge detection by attaching captions or
+        # batching several images into one message.
         image_events = state.record(
             state.image_events,
+            key,
+            now,
+            config.image_burst_window_seconds,
+            count=len(images),
+        )
+        message_events = state.record(
+            state.image_message_events,
             key,
             now,
             config.image_burst_window_seconds,
@@ -366,12 +384,19 @@ def evaluate_message(
             now=now,
             window_seconds=config.image_burst_window_seconds,
             max_events=config.image_burst_count,
+            action=ModerationAction.TIMEOUT,
         )
-        if image_decision.action is not ModerationAction.ALLOW:
+        if (
+            image_decision.action is not ModerationAction.ALLOW
+            and len(message_events) >= config.image_burst_min_messages
+        ):
             return ModerationDecision(
                 action=image_decision.action,
                 reason="image burst",
-                details=image_decision.details,
+                details=(
+                    f"{len(image_events)} images across {len(message_events)} messages "
+                    f"in {_format_seconds(config.image_burst_window_seconds)}s"
+                ),
                 image_count=len(images),
             )
 

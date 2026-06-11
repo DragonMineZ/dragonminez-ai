@@ -1,5 +1,9 @@
+import time
 import unittest
+from datetime import timedelta
+from types import SimpleNamespace
 
+from bulmaai.cogs.moderation import ModerationCog
 from bulmaai.services.moderation import (
     AttachmentMetadata,
     DomainClassification,
@@ -103,6 +107,78 @@ class ModerationDecisionTests(unittest.TestCase):
         )
 
         self.assertEqual(decision, ModerationDecision.allow("burst_threshold_not_met"))
+
+
+class ModerationTimeoutEnforcementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_decision_times_out_and_purges_recent_channels(self) -> None:
+        purge_calls: list[dict] = []
+        timeout_calls: list[tuple[timedelta, str | None]] = []
+        deleted: list[str] = []
+
+        class FakeChannel:
+            def __init__(self, channel_id: int) -> None:
+                self.id = channel_id
+
+            async def purge(self, *, limit, after, check, reason):
+                purge_calls.append(
+                    {"channel_id": self.id, "limit": limit, "after": after, "reason": reason}
+                )
+                fake_message = SimpleNamespace(author=SimpleNamespace(id=3))
+                self_match = check(fake_message)
+                other_match = check(SimpleNamespace(author=SimpleNamespace(id=99)))
+                return [fake_message] if self_match and not other_match else []
+
+        spam_channel = FakeChannel(2)
+        other_channel = FakeChannel(7)
+        guild = SimpleNamespace(
+            id=1,
+            get_channel=lambda channel_id: {2: spam_channel, 7: other_channel}.get(channel_id),
+        )
+
+        class FakeAuthor:
+            id = 3
+
+            async def timeout_for(self, duration, *, reason=None):
+                timeout_calls.append((duration, reason))
+
+        class FakeMessage:
+            id = 1234
+            guild = None
+            channel = spam_channel
+            author = FakeAuthor()
+
+            async def delete(self, *, reason=None):
+                deleted.append(reason)
+
+        message = FakeMessage()
+        message.guild = guild
+
+        cog = ModerationCog.__new__(ModerationCog)
+        cog.bot = SimpleNamespace(
+            settings=SimpleNamespace(
+                moderation_image_burst_timeout_seconds=7 * 24 * 3600,
+                moderation_image_burst_purge_seconds=600,
+                moderation_log_channel_id=None,
+                discord_log_channel_id=None,
+            )
+        )
+        cog._recent_message_channels = {(1, 3): {7: time.monotonic()}}
+
+        decision = ModerationDecision(
+            action=ModerationAction.TIMEOUT,
+            reason="image burst",
+            details="4 images across 2 messages in 20s",
+            image_count=2,
+        )
+
+        await cog._apply_decision(message, decision)
+
+        self.assertEqual(deleted, ["BulmaAI moderation: image burst"])
+        self.assertEqual(len(timeout_calls), 1)
+        self.assertEqual(timeout_calls[0][0], timedelta(days=7))
+        purged_channel_ids = {call["channel_id"] for call in purge_calls}
+        self.assertEqual(purged_channel_ids, {2, 7})
+        self.assertNotIn((1, 3), cog._recent_message_channels)
 
 
 if __name__ == "__main__":

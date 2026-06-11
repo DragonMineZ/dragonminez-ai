@@ -49,7 +49,13 @@ from bulmaai.services.release_webhook import (
     unregister_extra_get_route,
     unregister_extra_raw_webhook_route,
 )
-from bulmaai.ui.patreon_views import AdminPRView, MC_NAME_RE, UsernameUpdateConfirmView
+from bulmaai.ui.patreon_views import (
+    AdminPRView,
+    BetaAccessUsernameModal,
+    MC_NAME_RE,
+    PATREON_WELCOME_VERIFY_CUSTOM_ID,
+    UsernameUpdateConfirmView,
+)
 from bulmaai.utils.permissions import has_patreon_access_role
 
 log = logging.getLogger(__name__)
@@ -311,6 +317,42 @@ class PatreonWhitelistFlowCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         self._register_patreon_routes()
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        if interaction.type != discord.InteractionType.component:
+            return
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if custom_id != PATREON_WELCOME_VERIFY_CUSTOM_ID:
+            return
+        await interaction.response.send_modal(
+            BetaAccessUsernameModal(on_submit=self._handle_welcome_verify_submit)
+        )
+
+    async def _handle_welcome_verify_submit(
+        self,
+        interaction: discord.Interaction,
+        username: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        user = interaction.user
+        member = user if isinstance(user, discord.Member) else None
+        if member is None:
+            member = await self._resolve_member_across_guilds(user.id)
+        if member is None:
+            await interaction.followup.send(
+                "Join the DragonMineZ Discord server first, then press the button again.",
+                ephemeral=True,
+            )
+            return
+
+        await self.start_whitelist_flow_for_user(
+            member,
+            interaction.followup,
+            username,
+            ephemeral=True,
+        )
 
     def cog_unload(self) -> None:
         path = urlparse(self.bot.settings.patreon_oauth_redirect_uri).path

@@ -73,6 +73,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.curseforge_updates",
     "bulmaai.cogs.release_approval",
     "bulmaai.cogs.dev_jar_downloads",
+    "bulmaai.cogs.patch_notes_updates",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -184,6 +185,9 @@ DEFAULT_MODERATION_ALLOWED_DOMAINS: Sequence[str] = (
 DEFAULT_MODERATION_BLOCK_DISCORD_INVITES = False
 DEFAULT_MODERATION_IMAGE_BURST_COUNT = 3
 DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS = 20
+DEFAULT_MODERATION_IMAGE_BURST_MIN_MESSAGES = 2
+DEFAULT_MODERATION_IMAGE_BURST_TIMEOUT_SECONDS = 7 * 24 * 3600
+DEFAULT_MODERATION_IMAGE_BURST_PURGE_SECONDS = 10 * 60
 DEFAULT_MODERATION_LINK_BURST_COUNT = 5
 DEFAULT_MODERATION_LINK_BURST_WINDOW_SECONDS = 60
 DEFAULT_PHISHDESTROY_ENABLED = True
@@ -316,6 +320,9 @@ class Settings:
     moderation_block_discord_invites: bool
     moderation_image_burst_count: int
     moderation_image_burst_window_seconds: int
+    moderation_image_burst_min_messages: int
+    moderation_image_burst_timeout_seconds: int
+    moderation_image_burst_purge_seconds: int
     moderation_link_burst_count: int
     moderation_link_burst_window_seconds: int
     phishdestroy_enabled: bool
@@ -647,6 +654,27 @@ def _build_settings_from_env() -> Settings:
                 DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS,
             )
             or DEFAULT_MODERATION_IMAGE_BURST_WINDOW_SECONDS
+        ),
+        moderation_image_burst_min_messages=(
+            _get_env_int(
+                "MODERATION_IMAGE_BURST_MIN_MESSAGES",
+                DEFAULT_MODERATION_IMAGE_BURST_MIN_MESSAGES,
+            )
+            or DEFAULT_MODERATION_IMAGE_BURST_MIN_MESSAGES
+        ),
+        moderation_image_burst_timeout_seconds=(
+            _get_env_int(
+                "MODERATION_IMAGE_BURST_TIMEOUT_SECONDS",
+                DEFAULT_MODERATION_IMAGE_BURST_TIMEOUT_SECONDS,
+            )
+            or DEFAULT_MODERATION_IMAGE_BURST_TIMEOUT_SECONDS
+        ),
+        moderation_image_burst_purge_seconds=(
+            _get_env_int(
+                "MODERATION_IMAGE_BURST_PURGE_SECONDS",
+                DEFAULT_MODERATION_IMAGE_BURST_PURGE_SECONDS,
+            )
+            or DEFAULT_MODERATION_IMAGE_BURST_PURGE_SECONDS
         ),
         moderation_link_burst_count=(
             _get_env_int(

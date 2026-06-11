@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import timedelta
 
 import discord
 from discord.ext import commands, tasks
@@ -32,6 +33,9 @@ class ModerationCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self._state = ModerationState()
+        # (guild_id, author_id) -> {channel_id: last_message_monotonic} so a
+        # burst purge can clean every channel the spammer recently posted in.
+        self._recent_message_channels: dict[tuple[int, int], dict[int, float]] = {}
         settings = self._settings()
         self._phishdestroy: PhishDestroyClient | None = None
         self._phishdestroy_down = False
@@ -54,6 +58,7 @@ class ModerationCog(commands.Cog):
             block_discord_invites=settings.moderation_block_discord_invites,
             image_burst_count=settings.moderation_image_burst_count,
             image_burst_window_seconds=settings.moderation_image_burst_window_seconds,
+            image_burst_min_messages=settings.moderation_image_burst_min_messages,
             link_burst_count=settings.moderation_link_burst_count,
             link_burst_window_seconds=settings.moderation_link_burst_window_seconds,
         )
@@ -120,8 +125,14 @@ class ModerationCog(commands.Cog):
         decision: ModerationDecision,
         *,
         deleted: bool,
+        timed_out: bool = False,
+        purged_count: int = 0,
     ) -> discord.Embed:
-        color = discord.Color.red() if decision.action is ModerationAction.DELETE else discord.Color.orange()
+        color = (
+            discord.Color.red()
+            if decision.action in (ModerationAction.DELETE, ModerationAction.TIMEOUT)
+            else discord.Color.orange()
+        )
         embed = discord.Embed(
             title="Moderation Alert",
             description=decision.details or decision.reason,
@@ -131,6 +142,11 @@ class ModerationCog(commands.Cog):
         embed.add_field(name="Action", value=decision.action.value, inline=True)
         embed.add_field(name="Reason", value=decision.reason, inline=True)
         embed.add_field(name="Deleted", value=str(deleted), inline=True)
+        if decision.action is ModerationAction.TIMEOUT:
+            timeout_seconds = self._settings().moderation_image_burst_timeout_seconds
+            timeout_label = f"{timeout_seconds // 86400}d" if timed_out else "failed"
+            embed.add_field(name="Timeout", value=timeout_label, inline=True)
+            embed.add_field(name="Messages Purged", value=str(purged_count), inline=True)
         if decision.source:
             embed.add_field(name="Source", value=decision.source, inline=True)
         embed.add_field(name="User", value=f"{message.author} (`{message.author.id}`)", inline=False)
@@ -158,13 +174,21 @@ class ModerationCog(commands.Cog):
         decision: ModerationDecision,
         *,
         deleted: bool,
+        timed_out: bool = False,
+        purged_count: int = 0,
     ) -> None:
         channel = await self._resolve_log_channel()
         if channel is None:
             return
         try:
             await channel.send(
-                embed=self._build_log_embed(message, decision, deleted=deleted),
+                embed=self._build_log_embed(
+                    message,
+                    decision,
+                    deleted=deleted,
+                    timed_out=timed_out,
+                    purged_count=purged_count,
+                ),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except Exception:
@@ -183,7 +207,7 @@ class ModerationCog(commands.Cog):
             return
 
         deleted = False
-        if decision.action is ModerationAction.DELETE:
+        if decision.action in (ModerationAction.DELETE, ModerationAction.TIMEOUT):
             try:
                 await message.delete(reason=f"BulmaAI moderation: {decision.reason}")
                 deleted = True
@@ -210,7 +234,127 @@ class ModerationCog(commands.Cog):
                     },
                 )
 
-        await self._send_log(message, decision, deleted=deleted)
+        timed_out = False
+        purged_count = 0
+        if decision.action is ModerationAction.TIMEOUT:
+            timed_out = await self._timeout_member(message, decision)
+            purged_count = await self._purge_recent_messages(message, decision)
+
+        await self._send_log(
+            message,
+            decision,
+            deleted=deleted,
+            timed_out=timed_out,
+            purged_count=purged_count,
+        )
+
+    async def _timeout_member(self, message: discord.Message, decision: ModerationDecision) -> bool:
+        member = message.author
+        timeout_for = getattr(member, "timeout_for", None)
+        if timeout_for is None:
+            return False
+        duration = timedelta(seconds=self._settings().moderation_image_burst_timeout_seconds)
+        try:
+            await timeout_for(duration, reason=f"BulmaAI moderation: {decision.reason}")
+            return True
+        except discord.Forbidden:
+            log.warning(
+                "Missing permission to timeout member",
+                extra={
+                    "event": "moderation_timeout_forbidden",
+                    "guild_id": getattr(message.guild, "id", None),
+                    "user_id": member.id,
+                },
+            )
+        except discord.HTTPException:
+            log.exception(
+                "Failed to timeout member",
+                extra={
+                    "event": "moderation_timeout_failed",
+                    "guild_id": getattr(message.guild, "id", None),
+                    "user_id": member.id,
+                },
+            )
+        return False
+
+    def _record_recent_channel(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
+        window_seconds = self._settings().moderation_image_burst_purge_seconds
+        cutoff = time.monotonic() - window_seconds
+        if len(self._recent_message_channels) > 2048:
+            self._recent_message_channels = {
+                key: channels
+                for key, channels in self._recent_message_channels.items()
+                if any(seen_at >= cutoff for seen_at in channels.values())
+            }
+        key = (message.guild.id, message.author.id)
+        channels = {
+            channel_id: seen_at
+            for channel_id, seen_at in self._recent_message_channels.get(key, {}).items()
+            if seen_at >= cutoff
+        }
+        channels[message.channel.id] = time.monotonic()
+        self._recent_message_channels[key] = channels
+
+    def _recent_channel_ids(self, guild_id: int, author_id: int, *, window_seconds: float) -> list[int]:
+        channels = self._recent_message_channels.get((guild_id, author_id), {})
+        cutoff = time.monotonic() - window_seconds
+        return [channel_id for channel_id, seen_at in channels.items() if seen_at >= cutoff]
+
+    async def _purge_recent_messages(self, message: discord.Message, decision: ModerationDecision) -> int:
+        guild = message.guild
+        if guild is None:
+            return 0
+        settings = self._settings()
+        author_id = message.author.id
+        purge_after = discord.utils.utcnow() - timedelta(
+            seconds=settings.moderation_image_burst_purge_seconds
+        )
+        channel_ids = set(
+            self._recent_channel_ids(
+                guild.id,
+                author_id,
+                window_seconds=settings.moderation_image_burst_purge_seconds,
+            )
+        )
+        channel_ids.add(message.channel.id)
+
+        purged = 0
+        for channel_id in channel_ids:
+            channel = guild.get_channel(channel_id)
+            if channel is None or not hasattr(channel, "purge"):
+                continue
+            try:
+                removed = await channel.purge(
+                    limit=200,
+                    after=purge_after,
+                    check=lambda candidate: candidate.author.id == author_id,
+                    reason=f"BulmaAI moderation: {decision.reason}",
+                )
+                purged += len(removed)
+            except discord.Forbidden:
+                log.warning(
+                    "Missing permission to purge burst messages",
+                    extra={
+                        "event": "moderation_purge_forbidden",
+                        "guild_id": guild.id,
+                        "channel_id": channel_id,
+                        "user_id": author_id,
+                    },
+                )
+            except discord.HTTPException:
+                log.exception(
+                    "Failed to purge burst messages",
+                    extra={
+                        "event": "moderation_purge_failed",
+                        "guild_id": guild.id,
+                        "channel_id": channel_id,
+                        "user_id": author_id,
+                    },
+                )
+        self._recent_message_channels.pop((guild.id, author_id), None)
+        return purged
 
     async def _inspect_message(self, message: discord.Message) -> None:
         settings = self._settings()
@@ -225,6 +369,7 @@ class ModerationCog(commands.Cog):
         if signal is None:
             return
 
+        self._record_recent_channel(message)
         decision = evaluate_message(
             signal,
             self._decision_config(),

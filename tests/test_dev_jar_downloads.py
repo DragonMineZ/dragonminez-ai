@@ -455,7 +455,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
             cog.bot = FakeBot(
                 {
-                    1287883800805642351: patreon_channel,
+                    1516564287210913932: patreon_channel,
                     1453303311330709674: testing_channel,
                 }
             )

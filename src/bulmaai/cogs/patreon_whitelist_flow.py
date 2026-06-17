@@ -314,6 +314,28 @@ class PatreonWhitelistFlowCog(commands.Cog):
     ) -> None:
         await self._handle_gift_beta_command(ctx, recipient, username)
 
+    @discord.slash_command(
+        name="edit-gift",
+        description="Update the Minecraft username for someone you've gifted Patreon beta access to",
+    )
+    @discord.option(
+        "recipient",
+        description="The Discord member you gifted beta access to",
+        required=True,
+    )
+    @discord.option(
+        "username",
+        description="New Minecraft username for the gift recipient",
+        required=True,
+    )
+    async def edit_gift(
+        self,
+        ctx: discord.ApplicationContext,
+        recipient: discord.Member,
+        username: str,
+    ) -> None:
+        await self._handle_edit_gift_command(ctx, recipient, username)
+
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         self._register_patreon_routes()
@@ -1072,6 +1094,152 @@ class PatreonWhitelistFlowCog(commands.Cog):
             head_branch=branch,
             title=title,
             body=body,
+        )
+
+    async def _handle_edit_gift_command(
+        self,
+        ctx: discord.ApplicationContext,
+        recipient: discord.Member,
+        username: str,
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+
+        if not isinstance(ctx.author, discord.Member):
+            await ctx.followup.send(
+                "Use `/edit-gift` inside the DragonMineZ server.",
+                ephemeral=True,
+            )
+            return
+
+        nickname = username.strip() if username is not None else ""
+        if not MC_NAME_RE.match(nickname):
+            await ctx.followup.send(
+                "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
+                ephemeral=True,
+            )
+            return
+
+        grants = await list_active_grants_for_owner(ctx.author.id)
+        gift_grant = next(
+            (
+                g for g in grants
+                if g.kind == PatreonGrantKind.GIFT
+                and g.beneficiary_discord_user_id == recipient.id
+            ),
+            None,
+        )
+        if gift_grant is None:
+            await ctx.followup.send(
+                f"You don't have an active Patreon gift for {recipient.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        old_nickname = gift_grant.minecraft_username
+        if old_nickname.casefold() == nickname.casefold():
+            await ctx.followup.send(
+                f"`{nickname}` is already the active Minecraft username for {recipient.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        branch = f"patreon/gift-edit-{ctx.author.id}-{recipient.id}"
+        try:
+            approval = await self._auto_update_gift_access(
+                owner=ctx.author,
+                recipient=recipient,
+                old_nickname=old_nickname,
+                new_nickname=nickname,
+                branch=branch,
+            )
+        except Exception:
+            log.exception(
+                "Failed to update gifted Patreon beta access",
+                extra={
+                    "event": "patreon_gift_edit_failed",
+                    "owner_user_id": ctx.author.id,
+                    "recipient_user_id": recipient.id,
+                    "old_nickname": old_nickname,
+                    "new_nickname": nickname,
+                },
+            )
+            await ctx.followup.send(
+                "I could not submit the username update. Please ask staff to check the bot logs.",
+                ephemeral=True,
+            )
+            return
+
+        if approval.pr_url is None:
+            await ctx.followup.send(
+                f"`{nickname}` is already whitelisted. Nothing to update.",
+                ephemeral=True,
+            )
+            return
+
+        if not approval.approved:
+            await ctx.followup.send(
+                "Username update PR created, but GitHub would not auto-merge it yet. "
+                f"Staff can review it here: {approval.pr_url}",
+                ephemeral=True,
+            )
+            return
+
+        await upsert_whitelist_grant(
+            PatreonGrant(
+                owner_discord_user_id=ctx.author.id,
+                beneficiary_discord_user_id=recipient.id,
+                beneficiary_discord_username=str(recipient),
+                minecraft_username=nickname,
+                kind=PatreonGrantKind.GIFT,
+                active=True,
+                source_pr_url=approval.pr_url,
+            )
+        )
+        await ctx.followup.send(
+            f"Updated {recipient.mention}'s Patreon beta whitelist username from `{old_nickname}` to `{nickname}`.",
+            ephemeral=True,
+        )
+        await self._log_staff_info(
+            f"{ctx.author.mention} updated gifted Patreon beta access for {recipient.mention}: "
+            f"`{old_nickname}` -> `{nickname}`.\nPR: {approval.pr_url}"
+        )
+
+    async def _auto_update_gift_access(
+        self,
+        *,
+        owner: discord.Member,
+        recipient: discord.Member,
+        old_nickname: str,
+        new_nickname: str,
+        branch: str,
+    ) -> AutoApprovalResult:
+        pr_data = await self._create_whitelist_update_pr(
+            branch=branch,
+            old_nickname=old_nickname,
+            new_nickname=new_nickname,
+            title=f"Update gifted beta tester: {old_nickname} -> {new_nickname}",
+            commit_message=f"Update gifted beta tester: {old_nickname} -> {new_nickname}",
+            body=(
+                f"Username update requested by Discord user {owner} ({owner.id}) "
+                f"for gift recipient {recipient} ({recipient.id}). "
+                f"Replacing `{old_nickname}` with `{new_nickname}`."
+            ),
+        )
+        if pr_data is None:
+            return AutoApprovalResult(pr_url=None, approved=False)
+        pr_number = pr_data["number"]
+        pr_url = pr_data["html_url"]
+        return await self._merge_auto_pr(
+            member=owner,
+            nickname=new_nickname,
+            branch=branch,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            success_comment=(
+                f"Gift username update by {owner} ({owner.id}): "
+                f"`{old_nickname}` -> `{new_nickname}` for {recipient} ({recipient.id})."
+            ),
+            pending_description="Gift username update",
         )
 
     async def _handle_gift_beta_command(

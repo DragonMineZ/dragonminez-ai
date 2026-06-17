@@ -61,6 +61,7 @@ DEFAULT_DEV_GUILD_ID: int | None = None
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.meta",
+    "bulmaai.cogs.admin_db",
     "bulmaai.cogs.patreon_whitelist_flow",
     "bulmaai.cogs.ai_tickets",
     "bulmaai.cogs.github_cmds",

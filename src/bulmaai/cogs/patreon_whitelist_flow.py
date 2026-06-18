@@ -601,6 +601,15 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 ephemeral=True,
             )
             return
+        if not has_patreon_access_role(ctx.author, settings=self.bot.settings):
+            await ctx.followup.send(
+                "**Heads up:** You don't have a Patreon beta access role yet. "
+                "If you're a Patron, connect your Patreon account to Discord first so the role is granted automatically — "
+                "otherwise this link won't activate your beta access: "
+                "https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access\n\n"
+                "If you've already done that and are still missing the role, you can proceed with linking below.",
+                ephemeral=True,
+            )
         await self._send_patreon_oauth_prompt(ctx.author, ctx.followup, ephemeral=True)
 
     def _build_patreon_oauth_url(
@@ -688,7 +697,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
         if not has_patreon_access_role(member, settings=self.bot.settings):
             await _send_message(
                 destination,
-                "You need a Patreon beta access role to use `/beta-access`.",
+                "You don't have a Patreon beta access role yet. "
+                "If you're a Patron, make sure to connect your Patreon account to Discord so the role is granted automatically: "
+                "https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access",
                 ephemeral=ephemeral,
             )
             return

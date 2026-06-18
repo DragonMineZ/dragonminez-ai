@@ -507,7 +507,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             "NewTester",
         )
 
-        self.assertIn("You need a Patreon beta access role", request_channel.sent[0][0][0])
+        self.assertIn("You don't have a Patreon beta access role yet", request_channel.sent[0][0][0])
 
     async def test_beta_access_auto_merges_for_active_linked_patron(self) -> None:
         staff_channel = FakeChannel()

@@ -996,6 +996,191 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Gift submitted for staff approval", ctx.followup.sent[-1][0][0])
         self.assertIn("view", staff_channel.sent[0][1])
 
+    def _edit_gift_cog(self, *, gh=None):
+        staff_channel = FakeChannel()
+        bot = SimpleNamespace(
+            settings=self._settings(),
+            get_channel=lambda channel_id: staff_channel,
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = gh or FakeGitHub()
+        return cog, staff_channel
+
+    def _gift_grant(self, *, beneficiary_id=789, nickname="GiftedMC"):
+        return PatreonGrant(
+            owner_discord_user_id=456,
+            beneficiary_discord_user_id=beneficiary_id,
+            beneficiary_discord_username="Gifted",
+            minecraft_username=nickname,
+            kind=PatreonGrantKind.GIFT,
+            active=True,
+            source_pr_url="https://example.test/pr/1",
+        )
+
+    async def test_edit_gift_changes_only_username_for_matching_recipient(self) -> None:
+        cog, _staff = self._edit_gift_cog()
+        author = SimpleNamespace(id=456, name="Owner", mention="<@456>")
+        recipient = SimpleNamespace(id=789, name="Gifted", mention="<@789>", bot=False)
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[self._gift_grant()]),
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_gift_grant", AsyncMock()) as deactivate,
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog._handle_edit_gift_command(ctx, recipient, None, "NewMC")
+
+        self.assertEqual(deactivate.await_count, 0)
+        self.assertEqual(cog.gh.merged_prs, [12])
+        grant = upsert_grant.await_args.args[0]
+        self.assertEqual(grant.beneficiary_discord_user_id, 789)
+        self.assertEqual(grant.minecraft_username, "NewMC")
+        self.assertIn("from `GiftedMC` to `NewMC`", ctx.followup.sent[-1][0][0])
+
+    async def test_edit_gift_moves_gift_to_new_recipient_without_github_change(self) -> None:
+        cog, _staff = self._edit_gift_cog()
+        author = SimpleNamespace(id=456, name="Owner", mention="<@456>")
+        recipient = SimpleNamespace(id=789, name="Gifted", mention="<@789>", bot=False)
+        new_recipient = SimpleNamespace(id=999, name="NewGifted", mention="<@999>", bot=False)
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[self._gift_grant()]),
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_gift_grant", AsyncMock()) as deactivate,
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog._handle_edit_gift_command(ctx, recipient, new_recipient, None)
+
+        deactivate.assert_awaited_once_with(456, 789)
+        self.assertEqual(cog.gh.merged_prs, [])
+        grant = upsert_grant.await_args.args[0]
+        self.assertEqual(grant.beneficiary_discord_user_id, 999)
+        self.assertEqual(grant.minecraft_username, "GiftedMC")
+        self.assertIn("Moved the Patreon beta gift", ctx.followup.sent[-1][0][0])
+
+    async def test_edit_gift_changes_recipient_and_username_together(self) -> None:
+        cog, _staff = self._edit_gift_cog()
+        author = SimpleNamespace(id=456, name="Owner", mention="<@456>")
+        recipient = SimpleNamespace(id=789, name="Gifted", mention="<@789>", bot=False)
+        new_recipient = SimpleNamespace(id=999, name="NewGifted", mention="<@999>", bot=False)
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[self._gift_grant()]),
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_gift_grant", AsyncMock()) as deactivate,
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog._handle_edit_gift_command(ctx, recipient, new_recipient, "NewMC")
+
+        deactivate.assert_awaited_once_with(456, 789)
+        self.assertEqual(cog.gh.merged_prs, [12])
+        grant = upsert_grant.await_args.args[0]
+        self.assertEqual(grant.beneficiary_discord_user_id, 999)
+        self.assertEqual(grant.minecraft_username, "NewMC")
+        self.assertIn("Moved the Patreon beta gift", ctx.followup.sent[-1][0][0])
+        self.assertIn("`GiftedMC` to `NewMC`", ctx.followup.sent[-1][0][0])
+
+    async def test_edit_gift_falls_back_to_single_gift_for_unmatched_recipient(self) -> None:
+        cog, _staff = self._edit_gift_cog()
+        author = SimpleNamespace(id=456, name="Owner", mention="<@456>")
+        # Owner names the member they want the gift to land on; it doesn't match
+        # the original (mis-)gifted recipient (789), but it's their only gift.
+        target = SimpleNamespace(id=999, name="Correct", mention="<@999>", bot=False)
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[self._gift_grant(beneficiary_id=789)]),
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_gift_grant", AsyncMock()) as deactivate,
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog._handle_edit_gift_command(ctx, target, None, None)
+
+        deactivate.assert_awaited_once_with(456, 789)
+        grant = upsert_grant.await_args.args[0]
+        self.assertEqual(grant.beneficiary_discord_user_id, 999)
+        self.assertIn("Moved the Patreon beta gift", ctx.followup.sent[-1][0][0])
+
+    async def test_edit_gift_reports_nothing_to_change(self) -> None:
+        cog, _staff = self._edit_gift_cog()
+        author = SimpleNamespace(id=456, name="Owner", mention="<@456>")
+        recipient = SimpleNamespace(id=789, name="Gifted", mention="<@789>", bot=False)
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[self._gift_grant()]),
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_gift_grant", AsyncMock()) as deactivate,
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog._handle_edit_gift_command(ctx, recipient, None, "GiftedMC")
+
+        self.assertEqual(deactivate.await_count, 0)
+        self.assertEqual(upsert_grant.await_count, 0)
+        self.assertIn("Nothing to change", ctx.followup.sent[-1][0][0])
+
+    async def test_edit_gift_without_any_gift_reports_clearly(self) -> None:
+        cog, _staff = self._edit_gift_cog()
+        author = SimpleNamespace(id=456, name="Owner", mention="<@456>")
+        recipient = SimpleNamespace(id=789, name="Gifted", mention="<@789>", bot=False)
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(return_value=[]),
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog._handle_edit_gift_command(ctx, recipient, None, "NewMC")
+
+        self.assertEqual(upsert_grant.await_count, 0)
+        self.assertIn("don't have any active Patreon gift", ctx.followup.sent[-1][0][0])
+
+    async def test_edit_gift_requires_recipient_choice_with_multiple_gifts(self) -> None:
+        cog, _staff = self._edit_gift_cog()
+        author = SimpleNamespace(id=456, name="Owner", mention="<@456>")
+        unknown = SimpleNamespace(id=555, name="Unknown", mention="<@555>", bot=False)
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner",
+                AsyncMock(
+                    return_value=[
+                        self._gift_grant(beneficiary_id=789, nickname="GiftA"),
+                        self._gift_grant(beneficiary_id=790, nickname="GiftB"),
+                    ]
+                ),
+            ),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog._handle_edit_gift_command(ctx, unknown, None, "NewMC")
+
+        self.assertEqual(upsert_grant.await_count, 0)
+        self.assertIn("don't have an active Patreon gift for", ctx.followup.sent[-1][0][0])
+
     async def test_expired_patreon_removal_removes_self_and_gifted_whitelist_entries(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(

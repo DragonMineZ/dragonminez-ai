@@ -262,6 +262,27 @@ async def list_active_grants_for_owner(owner_discord_user_id: int) -> list[Patre
     return [_row_to_grant(row) for row in rows]
 
 
+async def deactivate_gift_grant(
+    owner_discord_user_id: int,
+    beneficiary_discord_user_id: int,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE patreon_whitelist_grants
+            SET active = FALSE,
+                updated_at = now()
+            WHERE owner_discord_user_id = $1
+              AND beneficiary_discord_user_id = $2
+              AND kind = 'gift'
+              AND active = TRUE
+            """,
+            int(owner_discord_user_id),
+            int(beneficiary_discord_user_id),
+        )
+
+
 async def deactivate_grants_for_owner(owner_discord_user_id: int) -> list[PatreonGrant]:
     grants = await list_active_grants_for_owner(owner_discord_user_id)
     pool = await get_pool()

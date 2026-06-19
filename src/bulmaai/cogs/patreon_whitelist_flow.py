@@ -33,6 +33,7 @@ from bulmaai.services.patreon_grants import (
     PatreonGrantKind,
     PatreonLink,
     count_active_gifts_for_owner,
+    deactivate_gift_grant,
     deactivate_grants_for_owner,
     get_patreon_link,
     get_patreon_link_by_member_id,
@@ -295,7 +296,10 @@ class PatreonWhitelistFlowCog(commands.Cog):
     async def link_patreon(self, ctx: discord.ApplicationContext) -> None:
         await self._handle_link_patreon_command(ctx)
 
-    @discord.slash_command(name="gift-beta")
+    @discord.slash_command(
+        name="gift-beta",
+        description="Gift your Patreon beta access to another Discord member's Minecraft username",
+    )
     @discord.option(
         "recipient",
         description="Discord member receiving beta access",
@@ -316,25 +320,33 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
     @discord.slash_command(
         name="edit-gift",
-        description="Update the Minecraft username for someone you've gifted Patreon beta access to",
+        description="Reassign a Patreon beta gift to another member and/or change the Minecraft username",
     )
     @discord.option(
         "recipient",
-        description="The Discord member you gifted beta access to",
+        description="The Discord member you currently have a gift for",
         required=True,
     )
     @discord.option(
+        "new_recipient",
+        description="Move the gift to this Discord member instead (optional)",
+        required=False,
+        default=None,
+    )
+    @discord.option(
         "username",
-        description="New Minecraft username for the gift recipient",
-        required=True,
+        description="New Minecraft username for the gift (optional)",
+        required=False,
+        default=None,
     )
     async def edit_gift(
         self,
         ctx: discord.ApplicationContext,
         recipient: discord.Member,
-        username: str,
+        new_recipient: discord.Member | None = None,
+        username: str | None = None,
     ) -> None:
-        await self._handle_edit_gift_command(ctx, recipient, username)
+        await self._handle_edit_gift_command(ctx, recipient, new_recipient, username)
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -1111,7 +1123,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         recipient: discord.Member,
-        username: str,
+        new_recipient: discord.Member | None = None,
+        username: str | None = None,
     ) -> None:
         await ctx.defer(ephemeral=True)
 
@@ -1122,97 +1135,164 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
-        nickname = username.strip() if username is not None else ""
+        if new_recipient is not None and new_recipient.bot:
+            await ctx.followup.send("You cannot gift beta access to a bot.", ephemeral=True)
+            return
+
+        gift_grants = [
+            g
+            for g in await list_active_grants_for_owner(ctx.author.id)
+            if g.kind == PatreonGrantKind.GIFT
+        ]
+        gift_grant = next(
+            (g for g in gift_grants if g.beneficiary_discord_user_id == recipient.id),
+            None,
+        )
+        # Fall back to the single gift so an owner can fix it regardless of which
+        # Discord member they originally (mis)gifted to.
+        if gift_grant is None and len(gift_grants) == 1:
+            gift_grant = gift_grants[0]
+        if gift_grant is None:
+            if not gift_grants:
+                await ctx.followup.send(
+                    "You don't have any active Patreon gift to edit.",
+                    ephemeral=True,
+                )
+            else:
+                await ctx.followup.send(
+                    f"You don't have an active Patreon gift for {recipient.mention}. "
+                    "Pick the member you currently have a gift for as `recipient`.",
+                    ephemeral=True,
+                )
+            return
+
+        old_recipient_id = gift_grant.beneficiary_discord_user_id
+        old_nickname = gift_grant.minecraft_username
+
+        target = new_recipient if new_recipient is not None else recipient
+        recipient_changed = target.id != old_recipient_id
+
+        nickname = username.strip() if username is not None else old_nickname
         if not MC_NAME_RE.match(nickname):
             await ctx.followup.send(
                 "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
                 ephemeral=True,
             )
             return
+        nickname_changed = old_nickname.casefold() != nickname.casefold()
 
-        grants = await list_active_grants_for_owner(ctx.author.id)
-        gift_grant = next(
-            (
-                g for g in grants
-                if g.kind == PatreonGrantKind.GIFT
-                and g.beneficiary_discord_user_id == recipient.id
-            ),
-            None,
-        )
-        if gift_grant is None:
+        if not recipient_changed and not nickname_changed:
             await ctx.followup.send(
-                f"You don't have an active Patreon gift for {recipient.mention}.",
+                f"Nothing to change — {target.mention} already holds this gift as `{nickname}`.",
                 ephemeral=True,
             )
             return
 
-        old_nickname = gift_grant.minecraft_username
-        if old_nickname.casefold() == nickname.casefold():
-            await ctx.followup.send(
-                f"`{nickname}` is already the active Minecraft username for {recipient.mention}.",
-                ephemeral=True,
-            )
-            return
+        pr_url: str | None = None
+        if nickname_changed:
+            branch = f"patreon/gift-edit-{ctx.author.id}-{target.id}"
+            try:
+                approval = await self._auto_update_gift_access(
+                    owner=ctx.author,
+                    recipient=target,
+                    old_nickname=old_nickname,
+                    new_nickname=nickname,
+                    branch=branch,
+                )
+            except Exception:
+                log.exception(
+                    "Failed to update gifted Patreon beta access",
+                    extra={
+                        "event": "patreon_gift_edit_failed",
+                        "owner_user_id": ctx.author.id,
+                        "old_recipient_user_id": old_recipient_id,
+                        "new_recipient_user_id": target.id,
+                        "old_nickname": old_nickname,
+                        "new_nickname": nickname,
+                    },
+                )
+                await ctx.followup.send(
+                    "I could not submit the username update. Please ask staff to check the bot logs.",
+                    ephemeral=True,
+                )
+                return
 
-        branch = f"patreon/gift-edit-{ctx.author.id}-{recipient.id}"
-        try:
-            approval = await self._auto_update_gift_access(
-                owner=ctx.author,
-                recipient=recipient,
-                old_nickname=old_nickname,
-                new_nickname=nickname,
-                branch=branch,
-            )
-        except Exception:
-            log.exception(
-                "Failed to update gifted Patreon beta access",
-                extra={
-                    "event": "patreon_gift_edit_failed",
-                    "owner_user_id": ctx.author.id,
-                    "recipient_user_id": recipient.id,
-                    "old_nickname": old_nickname,
-                    "new_nickname": nickname,
-                },
-            )
-            await ctx.followup.send(
-                "I could not submit the username update. Please ask staff to check the bot logs.",
-                ephemeral=True,
-            )
-            return
+            if approval.pr_url is None:
+                await ctx.followup.send(
+                    f"`{nickname}` is already whitelisted. Nothing to update.",
+                    ephemeral=True,
+                )
+                return
 
-        if approval.pr_url is None:
-            await ctx.followup.send(
-                f"`{nickname}` is already whitelisted. Nothing to update.",
-                ephemeral=True,
-            )
-            return
+            if not approval.approved:
+                await ctx.followup.send(
+                    "Username update PR created, but GitHub would not auto-merge it yet. "
+                    f"Staff can review it here: {approval.pr_url}",
+                    ephemeral=True,
+                )
+                return
+            pr_url = approval.pr_url
 
-        if not approval.approved:
-            await ctx.followup.send(
-                "Username update PR created, but GitHub would not auto-merge it yet. "
-                f"Staff can review it here: {approval.pr_url}",
-                ephemeral=True,
-            )
-            return
+        # Move the gift to the new recipient by retiring the old grant row before
+        # writing the new one, so the owner's active gift count stays accurate.
+        if recipient_changed:
+            await deactivate_gift_grant(ctx.author.id, old_recipient_id)
 
         await upsert_whitelist_grant(
             PatreonGrant(
                 owner_discord_user_id=ctx.author.id,
-                beneficiary_discord_user_id=recipient.id,
-                beneficiary_discord_username=str(recipient),
+                beneficiary_discord_user_id=target.id,
+                beneficiary_discord_username=str(target),
                 minecraft_username=nickname,
                 kind=PatreonGrantKind.GIFT,
                 active=True,
-                source_pr_url=approval.pr_url,
+                source_pr_url=pr_url if pr_url is not None else gift_grant.source_pr_url,
             )
         )
+
         await ctx.followup.send(
-            f"Updated {recipient.mention}'s Patreon beta whitelist username from `{old_nickname}` to `{nickname}`.",
+            self._edit_gift_summary(
+                recipient_changed=recipient_changed,
+                nickname_changed=nickname_changed,
+                old_recipient_id=old_recipient_id,
+                target=target,
+                old_nickname=old_nickname,
+                nickname=nickname,
+            ),
             ephemeral=True,
         )
-        await self._log_staff_info(
-            f"{ctx.author.mention} updated gifted Patreon beta access for {recipient.mention}: "
-            f"`{old_nickname}` -> `{nickname}`.\nPR: {approval.pr_url}"
+        staff_note = (
+            f"{ctx.author.mention} edited a gifted Patreon beta access "
+            f"(recipient <@{old_recipient_id}> -> {target.mention}, "
+            f"`{old_nickname}` -> `{nickname}`)."
+        )
+        if pr_url is not None:
+            staff_note += f"\nPR: {pr_url}"
+        await self._log_staff_info(staff_note)
+
+    @staticmethod
+    def _edit_gift_summary(
+        *,
+        recipient_changed: bool,
+        nickname_changed: bool,
+        old_recipient_id: int,
+        target: discord.Member,
+        old_nickname: str,
+        nickname: str,
+    ) -> str:
+        if recipient_changed and nickname_changed:
+            return (
+                f"Moved the Patreon beta gift from <@{old_recipient_id}> to {target.mention} "
+                f"and updated the Minecraft username from `{old_nickname}` to `{nickname}`."
+            )
+        if recipient_changed:
+            return (
+                f"Moved the Patreon beta gift from <@{old_recipient_id}> to {target.mention} "
+                f"(Minecraft username `{nickname}`)."
+            )
+        return (
+            f"Updated {target.mention}'s Patreon beta whitelist username "
+            f"from `{old_nickname}` to `{nickname}`."
         )
 
     async def _auto_update_gift_access(

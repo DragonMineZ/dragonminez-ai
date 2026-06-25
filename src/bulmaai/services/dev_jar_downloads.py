@@ -44,6 +44,7 @@ class DevJarDownloadGrant:
     artifact: DevJarArtifact
     requester_id: int
     expires_at: float
+    is_manual: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,7 @@ class DevJarDownloadClaim:
     token_hash: str
     artifact: DevJarArtifact
     requester_id: int
+    is_manual: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,12 +79,14 @@ class OneTimeDownloadTokenStore:
         artifact: DevJarArtifact,
         requester_id: int,
         ttl_seconds: int,
+        is_manual: bool = False,
     ) -> str:
         token = secrets.token_urlsafe(32)
         self._grants[self._hash_token(token)] = DevJarDownloadGrant(
             artifact=artifact,
             requester_id=requester_id,
             expires_at=self._now() + ttl_seconds,
+            is_manual=is_manual,
         )
         return token
 
@@ -123,6 +127,7 @@ class OneTimeDownloadTokenStore:
             token_hash=token_hash,
             artifact=grant.artifact,
             requester_id=grant.requester_id,
+            is_manual=grant.is_manual,
         )
 
     def complete_claim(self, claim: DevJarDownloadClaim) -> None:

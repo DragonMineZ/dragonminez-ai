@@ -40,6 +40,7 @@ from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 log = logging.getLogger(__name__)
 
 DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:"
+MANUAL_DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:manual:"
 DOWNLOAD_FILE_SUFFIX = "/file"
 DEV_JAR_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
 DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS = (
@@ -162,13 +163,14 @@ def _artifact_day(artifact: DevJarArtifact) -> str:
 
 
 class DevJarDownloadView(discord.ui.View):
-    def __init__(self, artifact: DevJarArtifact):
+    def __init__(self, artifact: DevJarArtifact, *, is_manual: bool = False):
         super().__init__(timeout=None)
+        prefix = MANUAL_DOWNLOAD_BUTTON_PREFIX if is_manual else DOWNLOAD_BUTTON_PREFIX
         self.add_item(
             discord.ui.Button(
                 label="Get download link",
                 style=discord.ButtonStyle.primary,
-                custom_id=f"{DOWNLOAD_BUTTON_PREFIX}{artifact.file_name}",
+                custom_id=f"{prefix}{artifact.file_name}",
             )
         )
         self.add_item(
@@ -330,6 +332,7 @@ class DevJarDownloadsCog(commands.Cog):
         sha256: str | None = None,
         workflow_run_url: str | None = None,
         previous_size_bytes: int | None = None,
+        is_manual: bool = False,
     ) -> None:
         target_channels = [channel] if channel is not None else await self._resolve_announcement_channels()
         for target_channel in target_channels:
@@ -341,7 +344,7 @@ class DevJarDownloadsCog(commands.Cog):
                     workflow_run_url=workflow_run_url,
                     previous_size_bytes=previous_size_bytes,
                 ),
-                view=DevJarDownloadView(artifact),
+                view=DevJarDownloadView(artifact, is_manual=is_manual),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
 
@@ -409,6 +412,7 @@ class DevJarDownloadsCog(commands.Cog):
                 commits=(_manual_artifact_commit(artifact, author=ctx.author),),
                 channel=target_channel,
                 previous_size_bytes=self._get_previous_artifact_size(artifact.file_name),
+                is_manual=True,
             )
         except Exception as error:
             log.exception("Failed to post dev jar download announcement")
@@ -422,14 +426,23 @@ class DevJarDownloadsCog(commands.Cog):
         if interaction.type != discord.InteractionType.component:
             return
         custom_id = (interaction.data or {}).get("custom_id", "")
-        if not isinstance(custom_id, str) or not custom_id.startswith(DOWNLOAD_BUTTON_PREFIX):
+        if not isinstance(custom_id, str):
             return
-        await self._handle_download_button(interaction, custom_id.removeprefix(DOWNLOAD_BUTTON_PREFIX))
+        if custom_id.startswith(MANUAL_DOWNLOAD_BUTTON_PREFIX):
+            await self._handle_download_button(
+                interaction,
+                custom_id.removeprefix(MANUAL_DOWNLOAD_BUTTON_PREFIX),
+                is_manual=True,
+            )
+        elif custom_id.startswith(DOWNLOAD_BUTTON_PREFIX):
+            await self._handle_download_button(interaction, custom_id.removeprefix(DOWNLOAD_BUTTON_PREFIX))
 
     async def _handle_download_button(
         self,
         interaction: discord.Interaction,
         file_name: str,
+        *,
+        is_manual: bool = False,
     ) -> None:
         try:
             artifact = parse_dev_jar_filename(file_name)
@@ -453,7 +466,7 @@ class DevJarDownloadsCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            if await self._user_already_downloaded(interaction.user.id, artifact.file_name):
+            if not is_manual and await self._user_already_downloaded(interaction.user.id, artifact.file_name):
                 await interaction.response.send_message(
                     f"You already downloaded `{artifact.file_name}`. Download links are one-time "
                     "per user per jar, so this build cannot be requested again. A newer dev jar "
@@ -466,6 +479,7 @@ class DevJarDownloadsCog(commands.Cog):
                 artifact=artifact,
                 requester_id=interaction.user.id,
                 ttl_seconds=self.settings.dev_jar_download_token_ttl_seconds,
+                is_manual=is_manual,
             )
             url = self._direct_download_url(token)
             await interaction.response.send_message(
@@ -496,6 +510,8 @@ class DevJarDownloadsCog(commands.Cog):
 
     def _complete_download_claim(self, claim: DevJarDownloadClaim) -> None:
         self.token_store.complete_claim(claim)
+        if claim.is_manual:
+            return
         loop = getattr(getattr(self, "bot", None), "loop", None)
         if loop is None or not loop.is_running():
             return

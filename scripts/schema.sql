@@ -190,3 +190,25 @@ CREATE TABLE IF NOT EXISTS patch_notes_state (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (branch, file_path)
 );
+
+CREATE TABLE IF NOT EXISTS bug_reports (
+    thread_id          BIGINT PRIMARY KEY,
+    guild_id           BIGINT,
+    reporter_id        BIGINT,
+    triage_message_id  BIGINT,
+    repo               TEXT,
+    issue_number       INTEGER,
+    status             TEXT NOT NULL DEFAULT 'triaged',
+    ai_title           TEXT,
+    ai_summary         TEXT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT bug_reports_status_check
+        CHECK (status IN ('triaged', 'tracked', 'resolved', 'dismissed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_reports_status
+    ON bug_reports (status);
+
+CREATE INDEX IF NOT EXISTS idx_bug_reports_issue
+    ON bug_reports (repo, issue_number);

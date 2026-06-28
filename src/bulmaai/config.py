@@ -75,6 +75,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.release_approval",
     "bulmaai.cogs.dev_jar_downloads",
     "bulmaai.cogs.patch_notes_updates",
+    "bulmaai.cogs.bug_reports",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -93,6 +94,8 @@ DEFAULT_OPENAI_FAQ_GENERATED_PATH = "data/knowledge/generated/dragonminez-faq.md
 # Pin helper models to incentive-eligible IDs where possible.
 DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
 DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini-2025-04-14"
+# Bug-report triage runs on a cheap model to keep token usage low.
+DEFAULT_OPENAI_BUGREPORT_MODEL = "gpt-5-mini"
 
 DEFAULT_PGHOST = "localhost"
 DEFAULT_PGPORT = 5432
@@ -198,6 +201,10 @@ DEFAULT_PHISHDESTROY_TIMEOUT_SECONDS = 5
 DEFAULT_PHISHDESTROY_SAFE_TTL_SECONDS = 6 * 3600
 DEFAULT_PHISHDESTROY_THREAT_TTL_SECONDS = 24 * 3600
 DEFAULT_PHISHDESTROY_RECOVERY_INTERVAL_SECONDS = 300
+DEFAULT_BUG_REPORTS_ENABLED = True
+DEFAULT_BUG_REPORT_FORUM_CHANNEL_ID = 1484275827146363061
+DEFAULT_BUG_REPORT_REPO = DEFAULT_GITHUB_DEFAULT_REPO
+DEFAULT_BUG_REPORT_POLL_MINUTES = 10
 DEFAULT_SETTINGS_OVERRIDES_PATH = "data/settings_overrides.json"
 
 NON_OVERRIDABLE_SETTINGS = {
@@ -244,6 +251,11 @@ class Settings:
     openai_faq_generated_path: str
     openai_vision_model: str
     openai_translation_model: str
+    openai_bugreport_model: str
+    bug_reports_enabled: bool
+    bug_report_forum_channel_id: int | None
+    bug_report_repo: str
+    bug_report_poll_minutes: int
 
     POSTGRES_DSN: str | None
     PGHOST: str
@@ -443,6 +455,22 @@ def _build_settings_from_env() -> Settings:
         openai_translation_model=(
             _get_env("OPENAI_TRANSLATION_MODEL", DEFAULT_OPENAI_TRANSLATION_MODEL)
             or DEFAULT_OPENAI_TRANSLATION_MODEL
+        ),
+        openai_bugreport_model=(
+            _get_env("OPENAI_BUGREPORT_MODEL", DEFAULT_OPENAI_BUGREPORT_MODEL)
+            or DEFAULT_OPENAI_BUGREPORT_MODEL
+        ),
+        bug_reports_enabled=_get_env_bool("BUG_REPORTS_ENABLED", DEFAULT_BUG_REPORTS_ENABLED),
+        bug_report_forum_channel_id=_get_env_int(
+            "BUG_REPORT_FORUM_CHANNEL_ID",
+            DEFAULT_BUG_REPORT_FORUM_CHANNEL_ID,
+        ),
+        bug_report_repo=(
+            _get_env("BUG_REPORT_REPO", DEFAULT_BUG_REPORT_REPO) or DEFAULT_BUG_REPORT_REPO
+        ),
+        bug_report_poll_minutes=(
+            _get_env_int("BUG_REPORT_POLL_MINUTES", DEFAULT_BUG_REPORT_POLL_MINUTES)
+            or DEFAULT_BUG_REPORT_POLL_MINUTES
         ),
         POSTGRES_DSN=PGDSN,
         PGHOST=DEFAULT_PGHOST,

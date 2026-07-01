@@ -16,7 +16,6 @@ from bulmaai.cogs.ai_tickets import (
     _has_user_visible_tool_result,
     _is_pinging_bot,
     _message_support_intent,
-    _should_shadow_log_support_intent,
     _is_staff_ticket_message,
     _support_debounce_seconds,
 )
@@ -112,89 +111,6 @@ class DiscordMessageChunkTests(unittest.TestCase):
 
         self.assertTrue(_is_pinging_bot(message, bot_user))
 
-    def test_shadow_logging_covers_ambient_guild_messages_but_skips_live_routes(self) -> None:
-        settings = types.SimpleNamespace(ai_support_ambient_shadow_enabled=True)
-        message = types.SimpleNamespace(
-            author=types.SimpleNamespace(bot=False),
-            content="How do I install DragonMineZ?",
-            attachments=[],
-        )
-
-        self.assertTrue(
-            _should_shadow_log_support_intent(
-                message,
-                settings=settings,
-                in_ticket=False,
-                mention_request=False,
-            )
-        )
-        self.assertFalse(
-            _should_shadow_log_support_intent(
-                message,
-                settings=settings,
-                in_ticket=True,
-                mention_request=False,
-            )
-        )
-        self.assertFalse(
-            _should_shadow_log_support_intent(
-                message,
-                settings=settings,
-                in_ticket=False,
-                mention_request=True,
-            )
-        )
-
-    def test_shadow_logging_skips_disabled_bots_commands_and_log_attachments(self) -> None:
-        enabled = types.SimpleNamespace(ai_support_ambient_shadow_enabled=True)
-        disabled = types.SimpleNamespace(ai_support_ambient_shadow_enabled=False)
-        attachment = types.SimpleNamespace(filename="latest.log", content_type="text/plain")
-        message = types.SimpleNamespace(
-            author=types.SimpleNamespace(bot=False),
-            content="How do I install DragonMineZ?",
-            attachments=[],
-        )
-
-        self.assertFalse(
-            _should_shadow_log_support_intent(
-                message,
-                settings=disabled,
-                in_ticket=False,
-                mention_request=False,
-            )
-        )
-
-        message.author.bot = True
-        self.assertFalse(
-            _should_shadow_log_support_intent(
-                message,
-                settings=enabled,
-                in_ticket=False,
-                mention_request=False,
-            )
-        )
-
-        message.author.bot = False
-        message.content = "/faq pending"
-        self.assertFalse(
-            _should_shadow_log_support_intent(
-                message,
-                settings=enabled,
-                in_ticket=False,
-                mention_request=False,
-            )
-        )
-
-        message.content = "please check this"
-        message.attachments = [attachment]
-        self.assertFalse(
-            _should_shadow_log_support_intent(
-                message,
-                settings=enabled,
-                in_ticket=False,
-                mention_request=False,
-            )
-        )
 
 class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_extracts_multiple_image_contexts_concurrently(self) -> None:

@@ -145,56 +145,6 @@ def _has_user_visible_tool_result(tool_results: list[Any]) -> bool:
     return False
 
 
-def _should_shadow_log_support_intent(
-    message: discord.Message,
-    *,
-    settings: Any,
-    in_ticket: bool,
-    mention_request: bool,
-) -> bool:
-    if not getattr(settings, "ai_support_ambient_shadow_enabled", False):
-        return False
-    if in_ticket or mention_request:
-        return False
-    if getattr(message.author, "bot", False):
-        return False
-    if message.content.startswith(("!", "/", ".")):
-        return False
-    if _contains_log_attachment(message):
-        return False
-    return True
-
-
-def _log_support_intent_shadow(
-    message: discord.Message,
-    *,
-    bot_user: discord.ClientUser | None,
-    in_ticket: bool,
-    mention_request: bool,
-) -> None:
-    intent = _message_support_intent(message, bot_user)
-    content = _strip_bot_mentions(message.content, bot_user)
-    preview = " ".join(content.split())[:160]
-    log.info(
-        "AI support ambient shadow intent=%s guild_id=%s channel_id=%s message_id=%s user_id=%s has_image=%s preview=%r",
-        intent,
-        getattr(getattr(message, "guild", None), "id", None),
-        getattr(getattr(message, "channel", None), "id", None),
-        getattr(message, "id", None),
-        getattr(getattr(message, "author", None), "id", None),
-        any(_is_image_attachment(attachment) for attachment in message.attachments),
-        preview,
-        extra={
-            "event": "ai_support_ambient_shadow",
-            "intent": intent,
-            "guild_id": getattr(getattr(message, "guild", None), "id", None),
-            "channel_id": getattr(getattr(message, "channel", None), "id", None),
-            "message_id": getattr(message, "id", None),
-            "user_id": getattr(getattr(message, "author", None), "id", None),
-        },
-    )
-
-
 def _pending_key(message: discord.Message, *, in_ticket: bool) -> tuple[int, int]:
     return message.channel.id, 0 if in_ticket else message.author.id
 
@@ -639,18 +589,6 @@ class AITicketsCog(commands.Cog):
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
         author_has_support_access = await self._can_use_support_from_message(message, settings=settings)
-        if _should_shadow_log_support_intent(
-            message,
-            settings=settings,
-            in_ticket=in_ticket,
-            mention_request=mention_request,
-        ):
-            _log_support_intent_shadow(
-                message,
-                bot_user=self.bot.user,
-                in_ticket=in_ticket,
-                mention_request=mention_request,
-            )
         if not in_ticket and not mention_request:
             return
         if mention_request and not in_ticket and not author_has_support_access:

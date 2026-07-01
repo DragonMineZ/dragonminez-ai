@@ -141,7 +141,6 @@ DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 12
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 70
 DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 0
 DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS = 1.5
-DEFAULT_AI_SUPPORT_AMBIENT_SHADOW_ENABLED = True
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
 DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
@@ -305,7 +304,6 @@ class Settings:
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
     ai_support_debounce_seconds: float
-    ai_support_ambient_shadow_enabled: bool
     message_presets_path: str
     announcement_source_channel_id: int | None
     announcement_spanish_channel_id: int | None
@@ -577,10 +575,6 @@ def _build_settings_from_env() -> Settings:
         ai_support_debounce_seconds=_get_env_float_default(
             "AI_SUPPORT_DEBOUNCE_SECONDS",
             DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS,
-        ),
-        ai_support_ambient_shadow_enabled=_get_env_bool(
-            "AI_SUPPORT_AMBIENT_SHADOW_ENABLED",
-            DEFAULT_AI_SUPPORT_AMBIENT_SHADOW_ENABLED,
         ),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
         announcement_source_channel_id=_get_env_int(

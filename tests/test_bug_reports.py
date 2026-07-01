@@ -8,7 +8,7 @@ os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.config import load_settings
-from bulmaai.services.bug_report_ai import _coerce_triage
+from bulmaai.services.bug_report_ai import DuplicateAssessment, _coerce_triage
 from bulmaai.ui.bug_report_views import apply_status, build_triage_embed
 
 
@@ -104,6 +104,51 @@ class BugTriageEmbedTests(unittest.TestCase):
         status_values = [field.value for field in updated.fields if field.name == "Status"]
         self.assertEqual(len(status_values), 1)
         self.assertIn("Resolved", status_values[0])
+
+    def test_apply_status_supports_duplicate_and_fixed_display_labels(self) -> None:
+        embed = build_triage_embed(self._sample_triage(), status="triaged", reporter_id=42)
+
+        dup = apply_status(embed, "duplicate")
+        dup_status = next(f.value for f in dup.fields if f.name == "Status")
+        self.assertIn("duplicate", dup_status.lower())
+
+        fixed = apply_status(embed, "fixed")
+        fixed_status = next(f.value for f in fixed.fields if f.name == "Status")
+        self.assertIn("fixed", fixed_status.lower())
+
+    def test_embed_renders_duplicate_suggestion(self) -> None:
+        duplicate = DuplicateAssessment(
+            match_type="duplicate",
+            issue_number=123,
+            issue_title="Crash when transforming",
+            confidence="high",
+            reason="Same crash on the transform menu.",
+        )
+        embed = build_triage_embed(self._sample_triage(), reporter_id=42, duplicate=duplicate)
+        dup_fields = [f for f in embed.fields if "duplicate" in f.name.lower()]
+        self.assertEqual(len(dup_fields), 1)
+        self.assertIn("#123", dup_fields[0].value)
+
+    def test_embed_renders_already_fixed_suggestion(self) -> None:
+        duplicate = DuplicateAssessment(
+            match_type="already_fixed",
+            issue_number=88,
+            issue_title="Transform crash",
+            confidence="medium",
+            reason="Fixed in a merged PR.",
+        )
+        embed = build_triage_embed(self._sample_triage(), reporter_id=42, duplicate=duplicate)
+        fixed_fields = [f for f in embed.fields if "already fixed" in f.name.lower()]
+        self.assertEqual(len(fixed_fields), 1)
+        self.assertIn("#88", fixed_fields[0].value)
+
+    def test_embed_omits_suggestion_when_no_match(self) -> None:
+        no_match = DuplicateAssessment("none", None, "", "low", "")
+        self.assertFalse(no_match.has_match)
+        embed = build_triage_embed(self._sample_triage(), reporter_id=42, duplicate=no_match)
+        names = " ".join(f.name.lower() for f in embed.fields)
+        self.assertNotIn("duplicate", names)
+        self.assertNotIn("already fixed", names)
 
 
 if __name__ == "__main__":

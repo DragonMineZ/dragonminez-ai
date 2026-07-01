@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 import discord
 from discord.ext import commands, tasks
@@ -8,7 +9,12 @@ from requests import HTTPError
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
-from bulmaai.services.bug_report_ai import BugTriage, analyze_bug_report
+from bulmaai.services.bug_report_ai import (
+    BugTriage,
+    DuplicateAssessment,
+    analyze_bug_report,
+    assess_duplicate,
+)
 from bulmaai.services.bug_reports import (
     get_bug_report,
     list_tracked,
@@ -137,7 +143,14 @@ class BugReportsCog(commands.Cog):
             log.exception("Bug-report triage failed for thread %s", thread.id)
             return
 
-        embed = build_triage_embed(triage, status="triaged", reporter_id=reporter_id)
+        duplicate = await self._assess_duplicate(triage)
+
+        embed = build_triage_embed(
+            triage,
+            status="triaged",
+            reporter_id=reporter_id,
+            duplicate=duplicate,
+        )
         try:
             message = await thread.send(embed=embed, view=BugTriageView(thread.id))
         except Exception:
@@ -163,6 +176,34 @@ class BugReportsCog(commands.Cog):
             log.warning("Could not fetch starter message for thread %s", thread.id)
             return None
 
+    async def _assess_duplicate(self, triage: BugTriage) -> DuplicateAssessment | None:
+        """Search existing GitHub issues and ask the AI whether this report duplicates,
+        or is already fixed by, one of them. Suggestion only — never closes anything.
+        Returns None when it can't produce a useful suggestion."""
+        if not triage.is_bug:
+            return None
+        repo = self.settings.bug_report_repo
+        if not repo:
+            return None
+        service = _get_github_service(self.settings, repo)
+        try:
+            candidates = await service.search_issues(triage.title, per_page=10)
+        except Exception:
+            log.warning("Duplicate search failed for %r", triage.title, exc_info=True)
+            return None
+        # Exclude pull requests, which the issue-search endpoint also returns.
+        issues = [c for c in candidates if "pull_request" not in c]
+        if not issues:
+            return None
+        report_text = triage.summary or triage.title
+        assessment = await assess_duplicate(
+            self.client,
+            model=self.settings.openai_bugreport_model,
+            report_text=report_text,
+            candidates=issues,
+        )
+        return assessment if assessment.has_match else None
+
     # ==================== button interactions ====================
 
     @commands.Cog.listener()
@@ -174,6 +215,10 @@ class BugReportsCog(commands.Cog):
             await self._handle_create_issue(interaction, int(custom_id.split(":")[1]))
         elif custom_id.startswith("bug_notbug:"):
             await self._handle_not_a_bug(interaction, int(custom_id.split(":")[1]))
+        elif custom_id.startswith("bug_dup:"):
+            await self._handle_close_duplicate(interaction, int(custom_id.split(":")[1]))
+        elif custom_id.startswith("bug_fixed:"):
+            await self._handle_close_fixed(interaction, int(custom_id.split(":")[1]))
 
     async def _handle_create_issue(self, interaction: discord.Interaction, thread_id: int) -> None:
         if not is_staff(interaction.user, settings=self.settings):
@@ -256,6 +301,102 @@ class BugReportsCog(commands.Cog):
                 log.exception("Failed to close dismissed bug thread %s", thread_id)
 
         await interaction.followup.send("Marked as not a bug and closed the post.", ephemeral=True)
+
+    async def _handle_close_duplicate(self, interaction: discord.Interaction, thread_id: int) -> None:
+        issue_number = self._suggested_issue_number(interaction, "🔁 Possible duplicate")
+        ref = f" in issue #{issue_number}" if issue_number else ""
+
+        def build(report) -> str:
+            mention = f"<@{report.reporter_id}> " if report.reporter_id else ""
+            return (
+                f"{mention}Thanks for the report! It looks like this has already been reported"
+                f"{ref}, so we're closing this post as a **duplicate**. Please follow the existing "
+                "report for updates. 🙂"
+            )
+
+        await self._close_report(
+            interaction,
+            thread_id,
+            stored_status="dismissed",
+            display_status="duplicate",
+            message_builder=build,
+            ack="Closed as duplicate.",
+        )
+
+    async def _handle_close_fixed(self, interaction: discord.Interaction, thread_id: int) -> None:
+        issue_number = self._suggested_issue_number(interaction, "✅ Possibly already fixed")
+        ref = f" (see #{issue_number})" if issue_number else ""
+
+        def build(report) -> str:
+            mention = f"<@{report.reporter_id}> " if report.reporter_id else ""
+            return (
+                f"{mention}Good news! 🎉 This looks like it's already been **fixed**{ref} and will "
+                "be included in an upcoming update. Thanks a lot for reporting it!"
+            )
+
+        await self._close_report(
+            interaction,
+            thread_id,
+            stored_status="resolved",
+            display_status="fixed",
+            message_builder=build,
+            ack="Closed as already fixed.",
+        )
+
+    async def _close_report(
+        self,
+        interaction: discord.Interaction,
+        thread_id: int,
+        *,
+        stored_status: str,
+        display_status: str,
+        message_builder,
+        ack: str,
+    ) -> None:
+        """Shared staff-close flow: set status, update the embed, message and archive the thread."""
+        if not is_staff(interaction.user, settings=self.settings):
+            return await interaction.response.send_message(
+                "Only staff can close reports.", ephemeral=True
+            )
+
+        report = await get_bug_report(thread_id)
+        if report is None:
+            return await interaction.response.send_message(
+                "No triage data found for this report.", ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        await set_status(thread_id, stored_status)
+        if interaction.message is not None and interaction.message.embeds:
+            await interaction.message.edit(
+                embed=apply_status(interaction.message.embeds[0], display_status),
+                view=None,
+            )
+
+        thread = interaction.channel
+        if isinstance(thread, discord.Thread):
+            try:
+                await thread.send(
+                    message_builder(report),
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+                await thread.edit(archived=True, locked=True)
+            except Exception:
+                log.exception("Failed to close bug thread %s", thread_id)
+
+        await interaction.followup.send(ack, ephemeral=True)
+
+    @staticmethod
+    def _suggested_issue_number(interaction: discord.Interaction, field_name: str) -> int | None:
+        """Recover the AI-suggested issue number from the triage embed, if present."""
+        if interaction.message is None or not interaction.message.embeds:
+            return None
+        for field in interaction.message.embeds[0].fields:
+            if field.name == field_name and field.value:
+                match = re.search(r"#(\d+)", field.value)
+                if match:
+                    return int(match.group(1))
+        return None
 
     def _triage_from_embed(self, interaction: discord.Interaction, report) -> BugTriage:
         """Reconstruct enough triage detail from the posted embed to fill the issue."""

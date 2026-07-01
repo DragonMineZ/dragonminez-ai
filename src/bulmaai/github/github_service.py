@@ -135,6 +135,18 @@ class GitHubService:
         r.raise_for_status()
         return r.json()
 
+    async def search_issues(self, text: str, *, per_page: int = 10) -> list[dict]:
+        """Full-text search issues (open and closed) in this repo, most relevant first."""
+        query = f"repo:{self.owner}/{self.repo} is:issue {text}".strip()
+        r = await request(
+            "GET",
+            "https://api.github.com/search/issues",
+            headers=await self._headers(),
+            params={"q": query, "per_page": per_page, "sort": "updated", "order": "desc"},
+        )
+        r.raise_for_status()
+        return r.json().get("items", [])
+
     # ==================== BRANCHES & REFS ====================
 
     async def get_ref_sha(self, branch: str) -> str:

@@ -105,7 +105,9 @@ class BulmaAI(discord.Bot):
     instance: "BulmaAI | None" = None
 
     def __init__(self, settings: Settings):
-        intents = discord.Intents.all()
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
 
         debug_guilds = [settings.dev_guild_id] if settings.dev_guild_id else None
 

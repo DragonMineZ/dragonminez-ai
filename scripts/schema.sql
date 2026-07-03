@@ -182,6 +182,21 @@ CREATE TABLE IF NOT EXISTS dev_jar_user_downloads (
 CREATE INDEX IF NOT EXISTS idx_dev_jar_user_downloads_file_name
     ON dev_jar_user_downloads (file_name);
 
+CREATE TABLE IF NOT EXISTS dev_jar_pending_review (
+    id                   INTEGER PRIMARY KEY DEFAULT 1,
+    channel_id           BIGINT,
+    message_id           BIGINT,
+    artifact_file_name   TEXT NOT NULL,
+    artifact_version     TEXT NOT NULL,
+    artifact_commit_sha  TEXT NOT NULL,
+    artifact_sha256      TEXT,
+    workflow_run_url     TEXT,
+    commits              JSONB NOT NULL DEFAULT '[]',
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT dev_jar_pending_review_singleton CHECK (id = 1)
+);
+
 CREATE TABLE IF NOT EXISTS patch_notes_state (
     branch        TEXT NOT NULL,
     file_path     TEXT NOT NULL,

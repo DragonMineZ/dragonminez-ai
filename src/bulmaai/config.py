@@ -155,6 +155,7 @@ DEFAULT_RELEASE_WEBHOOK_PORT = 8088
 DEFAULT_RELEASE_WEBHOOK_PATH = "/dmz-release"
 DEFAULT_DEV_JAR_DOWNLOAD_ENABLED = True
 DEFAULT_DEV_JAR_DOWNLOAD_CHANNEL_ID = 1223439164121419838
+DEFAULT_DEV_JAR_REVIEW_CHANNEL_ID = 1370061119586173070
 DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL: str | None = "https://downloads.dragonminez.com"
 DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR = "/var/www/dragonminez/dev-jars"
 DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH = "/dmz-dev-jar"
@@ -292,6 +293,7 @@ class Settings:
     release_webhook_secret: str | None
     dev_jar_download_enabled: bool
     dev_jar_download_channel_id: int | None
+    dev_jar_review_channel_id: int | None
     dev_jar_download_public_base_url: str | None
     dev_jar_download_upload_dir: str | None
     dev_jar_download_webhook_path: str
@@ -542,6 +544,10 @@ def _build_settings_from_env() -> Settings:
         dev_jar_download_channel_id=_get_env_int(
             "DEV_JAR_DOWNLOAD_CHANNEL_ID",
             DEFAULT_DEV_JAR_DOWNLOAD_CHANNEL_ID,
+        ),
+        dev_jar_review_channel_id=_get_env_int(
+            "DEV_JAR_REVIEW_CHANNEL_ID",
+            DEFAULT_DEV_JAR_REVIEW_CHANNEL_ID,
         ),
         dev_jar_download_public_base_url=_get_env(
             "DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL",

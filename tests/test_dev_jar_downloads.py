@@ -15,7 +15,10 @@ from bulmaai.services.dev_jar_downloads import (
     DevJarCommit,
     DevJarUploadPayload,
     OneTimeDownloadTokenStore,
+    build_dev_jar_commit_layout,
     find_latest_dev_jar,
+    format_dev_jar_commit_line,
+    merge_dev_jar_commits,
     parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
 )
@@ -133,6 +136,77 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload.commits[0].description, "Adds support for new drain behavior.")
         self.assertIsNone(payload.commits[1].description)
         self.assertEqual(payload.commits[1].author, "Shokkoh")
+
+    def test_merge_dev_jar_commits_deduplicates_by_sha_and_preserves_order(self) -> None:
+        first = DevJarCommit(
+            sha="111111111111", title="feat: one", description=None, author="A", url="https://x/1"
+        )
+        second = DevJarCommit(
+            sha="222222222222", title="feat: two", description=None, author="A", url="https://x/2"
+        )
+        duplicate_of_first = DevJarCommit(
+            sha="111111111111",
+            title="feat: one (again)",
+            description=None,
+            author="A",
+            url="https://x/1",
+        )
+
+        merged = merge_dev_jar_commits((first,), (duplicate_of_first, second))
+
+        self.assertEqual(merged, (first, second))
+
+    def test_format_dev_jar_commit_line_does_not_truncate_long_titles(self) -> None:
+        long_title = "feat: " + ("a very long commit title " * 5).strip()
+        commit = DevJarCommit(
+            sha="abcdef123456",
+            title=long_title,
+            description=None,
+            author="Shokkoh",
+            url="https://github.com/DragonMineZ/dragonminez/commit/abcdef123456",
+        )
+
+        line = format_dev_jar_commit_line(commit)
+
+        self.assertIn(long_title, line)
+
+    def test_build_dev_jar_commit_layout_spills_into_continuation_fields(self) -> None:
+        commits = tuple(
+            DevJarCommit(
+                sha=f"{i:012x}",
+                title=f"fix: commit number {i} with a reasonably descriptive title",
+                description=None,
+                author="Shokkoh",
+                url=f"https://github.com/DragonMineZ/dragonminez/commit/{i:012x}",
+            )
+            for i in range(20)
+        )
+
+        layout = build_dev_jar_commit_layout(commits, base_char_count=0)
+
+        self.assertFalse(layout.overflowed)
+        self.assertGreater(len(layout.fields), 1)
+        combined = "\n".join(value for _, value in layout.fields)
+        for commit in commits:
+            self.assertIn(commit.title, combined)
+
+    def test_build_dev_jar_commit_layout_falls_back_to_file_when_over_budget(self) -> None:
+        commits = tuple(
+            DevJarCommit(
+                sha=f"{i:012x}",
+                title=f"fix: commit number {i} " + ("padding " * 20),
+                description=None,
+                author="Shokkoh",
+                url=f"https://github.com/DragonMineZ/dragonminez/commit/{i:012x}",
+            )
+            for i in range(60)
+        )
+
+        layout = build_dev_jar_commit_layout(commits, base_char_count=0, char_budget=2000)
+
+        self.assertTrue(layout.overflowed)
+        for commit in commits:
+            self.assertIn(commit.title, layout.full_changelog_text)
 
     def test_download_embed_mentions_commit_and_workflow(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
@@ -431,7 +505,399 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded, [(123, artifact.file_name)])
         self.assertEqual(cog._handle_direct_token_file(token).status, 403)
 
-    async def test_cog_upload_payload_posts_download_announcement(self) -> None:
+    async def test_cog_upload_payload_posts_to_review_channel_not_public(self) -> None:
+        class FakeMessage:
+            def __init__(self, message_id: int) -> None:
+                self.id = message_id
+
+        class FakeChannel:
+            def __init__(self, channel_id: int) -> None:
+                self.id = channel_id
+                self.sent: list[dict] = []
+
+            async def send(self, **kwargs) -> "FakeMessage":
+                self.sent.append(kwargs)
+                return FakeMessage(999)
+
+        class FakeBot:
+            def __init__(self, channels: dict[int, FakeChannel]) -> None:
+                self._channels = channels
+
+            def get_channel(self, channel_id: int):
+                return self._channels.get(channel_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+
+            review_channel = FakeChannel(1370061119586173070)
+            patreon_channel = FakeChannel(1516564287210913932)
+            testing_channel = FakeChannel(1453303311330709674)
+
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.bot = FakeBot(
+                {
+                    1370061119586173070: review_channel,
+                    1516564287210913932: patreon_channel,
+                    1453303311330709674: testing_channel,
+                }
+            )
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_review_channel_id=1370061119586173070,
+                discord_staff_role_ids=(1352882775304175668,),
+            )
+            cog._pending_review_lock = asyncio.Lock()
+
+            with (
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.upsert_pending_dev_jar_review",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.set_pending_dev_jar_review_message",
+                    new=AsyncMock(),
+                ) as set_message_mock,
+            ):
+                await cog._handle_upload_payload(
+                    DevJarUploadPayload(
+                        artifact=artifact,
+                        sha256="a" * 64,
+                        workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
+                        commits=(
+                            DevJarCommit(
+                                sha="222222222222",
+                                title="fix: race selection screen fix",
+                                description=None,
+                                author="Shokkoh",
+                                url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                            ),
+                        ),
+                    )
+                )
+
+        self.assertEqual(len(review_channel.sent), 1)
+        self.assertEqual(len(patreon_channel.sent), 0)
+        self.assertEqual(len(testing_channel.sent), 0)
+        embeds = review_channel.sent[0]["embeds"]
+        self.assertEqual(embeds[0].title, "DragonMineZ Dev Jar Review")
+        field_values = {field.name: field.value for field in embeds[0].fields}
+        self.assertEqual(field_values["Status"], "Pending review")
+        self.assertEqual(field_values["Commits since last decision"], "1")
+        view = review_channel.sent[0]["view"]
+        labels = [child.label for child in view.children]
+        self.assertIn("Publish", labels)
+        self.assertIn("Discard", labels)
+        set_message_mock.assert_awaited_once_with(1370061119586173070, 999)
+
+    async def test_cog_upload_payload_merges_commits_into_existing_review_message(self) -> None:
+        class FakeMessage:
+            def __init__(self, message_id: int) -> None:
+                self.id = message_id
+                self.edits: list[dict] = []
+
+            async def edit(self, **kwargs) -> None:
+                self.edits.append(kwargs)
+
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.id = 1370061119586173070
+                self.sent: list[dict] = []
+                self._messages: dict[int, "FakeMessage"] = {}
+
+            async def send(self, **kwargs) -> "FakeMessage":
+                self.sent.append(kwargs)
+                message = FakeMessage(1)
+                self._messages[message.id] = message
+                return message
+
+            async def fetch_message(self, message_id: int) -> "FakeMessage":
+                return self._messages[message_id]
+
+        class FakeBot:
+            def __init__(self, channel: FakeChannel) -> None:
+                self._channel = channel
+
+            def get_channel(self, channel_id: int):
+                return self._channel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            first_artifact = parse_dev_jar_filename("dragonminez-2.1.1__111111111111.jar")
+            second_artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / first_artifact.file_name).write_bytes(b"jar")
+            (upload_dir / second_artifact.file_name).write_bytes(b"jar")
+
+            review_channel = FakeChannel()
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.bot = FakeBot(review_channel)
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_review_channel_id=1370061119586173070,
+                discord_staff_role_ids=(1352882775304175668,),
+            )
+            cog._pending_review_lock = asyncio.Lock()
+
+            commit_one = DevJarCommit(
+                sha="111111111111",
+                title="feat: first commit",
+                description=None,
+                author="Shokkoh",
+                url="https://github.com/DragonMineZ/dragonminez/commit/111111111111",
+            )
+            commit_two = DevJarCommit(
+                sha="222222222222",
+                title="fix: second commit",
+                description=None,
+                author="Shokkoh",
+                url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+            )
+
+            stored_review = {"value": None}
+
+            async def fake_get_pending():
+                return stored_review["value"]
+
+            async def fake_upsert(**kwargs) -> None:
+                stored_review["value"] = SimpleNamespace(**kwargs)
+
+            async def fake_set_message(channel_id: int, message_id: int) -> None:
+                stored_review["value"] = SimpleNamespace(
+                    **{
+                        **stored_review["value"].__dict__,
+                        "channel_id": channel_id,
+                        "message_id": message_id,
+                    }
+                )
+
+            with (
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                    new=fake_get_pending,
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.upsert_pending_dev_jar_review",
+                    new=fake_upsert,
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.set_pending_dev_jar_review_message",
+                    new=fake_set_message,
+                ),
+            ):
+                await cog._handle_upload_payload(
+                    DevJarUploadPayload(
+                        artifact=first_artifact,
+                        sha256="a" * 64,
+                        workflow_run_url=None,
+                        commits=(commit_one,),
+                    )
+                )
+                await cog._handle_upload_payload(
+                    DevJarUploadPayload(
+                        artifact=second_artifact,
+                        sha256="b" * 64,
+                        workflow_run_url=None,
+                        commits=(commit_two,),
+                    )
+                )
+
+        self.assertEqual(len(review_channel.sent), 1)
+        message = review_channel._messages[1]
+        self.assertEqual(len(message.edits), 1)
+        embeds = message.edits[0]["embeds"]
+        field_values = {field.name: field.value for field in embeds[0].fields}
+        self.assertEqual(field_values["Commits since last decision"], "2")
+        all_field_text = "\n".join(field.value for embed in embeds for field in embed.fields)
+        self.assertIn("feat: first commit", all_field_text)
+        self.assertIn("fix: second commit", all_field_text)
+
+    async def test_discarded_commits_reappear_merged_on_next_push(self) -> None:
+        class FakeMessage:
+            def __init__(self, message_id: int) -> None:
+                self.id = message_id
+                self.edits: list[dict] = []
+
+            async def edit(self, **kwargs) -> None:
+                self.edits.append(kwargs)
+
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.id = 1370061119586173070
+                self.sent: list[dict] = []
+                self._messages: dict[int, "FakeMessage"] = {}
+
+            async def send(self, **kwargs) -> "FakeMessage":
+                self.sent.append(kwargs)
+                message = FakeMessage(1)
+                self._messages[message.id] = message
+                return message
+
+            async def fetch_message(self, message_id: int) -> "FakeMessage":
+                return self._messages[message_id]
+
+        class FakeBot:
+            def __init__(self, channel: FakeChannel) -> None:
+                self._channel = channel
+
+            def get_channel(self, channel_id: int):
+                return self._channel
+
+        class FakeResponse:
+            async def defer(self, **kwargs) -> None:
+                return None
+
+        class FakeFollowup:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, dict]] = []
+
+            async def send(self, content: str, **kwargs) -> None:
+                self.messages.append((content, kwargs))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            first_artifact = parse_dev_jar_filename("dragonminez-2.1.1__111111111111.jar")
+            second_artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / first_artifact.file_name).write_bytes(b"jar")
+            (upload_dir / second_artifact.file_name).write_bytes(b"jar")
+
+            review_channel = FakeChannel()
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.bot = FakeBot(review_channel)
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_review_channel_id=1370061119586173070,
+                discord_staff_role_ids=(1352882775304175668,),
+            )
+            cog._pending_review_lock = asyncio.Lock()
+
+            commit_one = DevJarCommit(
+                sha="111111111111",
+                title="feat: first commit",
+                description=None,
+                author="Shokkoh",
+                url="https://github.com/DragonMineZ/dragonminez/commit/111111111111",
+            )
+            commit_two = DevJarCommit(
+                sha="222222222222",
+                title="fix: second commit",
+                description=None,
+                author="Shokkoh",
+                url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+            )
+
+            stored_review = {"value": None}
+
+            async def fake_get_pending():
+                return stored_review["value"]
+
+            async def fake_upsert(**kwargs) -> None:
+                stored_review["value"] = SimpleNamespace(**kwargs)
+
+            async def fake_set_message(channel_id: int, message_id: int) -> None:
+                stored_review["value"] = SimpleNamespace(
+                    **{
+                        **stored_review["value"].__dict__,
+                        "channel_id": channel_id,
+                        "message_id": message_id,
+                    }
+                )
+
+            with (
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                    new=fake_get_pending,
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.upsert_pending_dev_jar_review",
+                    new=fake_upsert,
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.set_pending_dev_jar_review_message",
+                    new=fake_set_message,
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
+                    new=AsyncMock(),
+                ) as clear_mock,
+            ):
+                await cog._handle_upload_payload(
+                    DevJarUploadPayload(
+                        artifact=first_artifact,
+                        sha256="a" * 64,
+                        workflow_run_url=None,
+                        commits=(commit_one,),
+                    )
+                )
+
+                message = review_channel._messages[1]
+                interaction = SimpleNamespace(
+                    response=FakeResponse(),
+                    followup=FakeFollowup(),
+                    message=message,
+                    user="StaffUser#0001",
+                )
+                await cog._discard_pending_review(
+                    interaction,
+                    SimpleNamespace(
+                        artifact=stored_review["value"].artifact,
+                        commits=stored_review["value"].commits,
+                        sha256=stored_review["value"].sha256,
+                        workflow_run_url=stored_review["value"].workflow_run_url,
+                    ),
+                )
+
+                await cog._handle_upload_payload(
+                    DevJarUploadPayload(
+                        artifact=second_artifact,
+                        sha256="b" * 64,
+                        workflow_run_url=None,
+                        commits=(commit_two,),
+                    )
+                )
+
+        # Discard never touches the cache; only the second push's own merge does.
+        clear_mock.assert_not_awaited()
+        # Still the same message: one send, then two edits (discard, then re-queue).
+        self.assertEqual(len(review_channel.sent), 1)
+        self.assertEqual(len(message.edits), 2)
+        discard_embeds = message.edits[0]["embeds"]
+        discard_status = {field.name: field.value for field in discard_embeds[0].fields}["Status"]
+        self.assertEqual(discard_status, "Discarded")
+
+        requeue_embeds = message.edits[1]["embeds"]
+        requeue_fields = {field.name: field.value for field in requeue_embeds[0].fields}
+        self.assertEqual(requeue_fields["Status"], "Pending review")
+        self.assertEqual(requeue_fields["Commits since last decision"], "2")
+        all_field_text = "\n".join(
+            field.value for embed in requeue_embeds for field in embed.fields
+        )
+        self.assertIn("feat: first commit", all_field_text)
+        self.assertIn("fix: second commit", all_field_text)
+
+    async def test_publish_pending_review_posts_publicly_and_clears_state(self) -> None:
+        class FakeResponse:
+            async def defer(self, **kwargs) -> None:
+                return None
+
+        class FakeFollowup:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, dict]] = []
+
+            async def send(self, content: str, **kwargs) -> None:
+                self.messages.append((content, kwargs))
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.edits: list[dict] = []
+
+            async def edit(self, **kwargs) -> None:
+                self.edits.append(kwargs)
+
         class FakeChannel:
             def __init__(self) -> None:
                 self.sent: list[dict] = []
@@ -439,55 +905,127 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             async def send(self, **kwargs) -> None:
                 self.sent.append(kwargs)
 
-        class FakeBot:
-            def __init__(self, channels: dict[int, FakeChannel]) -> None:
-                self._channels = channels
-
-            def get_channel(self, channel_id: int) -> FakeChannel:
-                return self._channels[channel_id]
-
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
             artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
             (upload_dir / artifact.file_name).write_bytes(b"jar")
+
             patreon_channel = FakeChannel()
             testing_channel = FakeChannel()
+
             cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-            cog.bot = FakeBot(
-                {
+            cog.bot = SimpleNamespace(
+                get_channel=lambda channel_id: {
                     1516564287210913932: patreon_channel,
                     1453303311330709674: testing_channel,
-                }
+                }.get(channel_id)
             )
-            cog.settings = SimpleNamespace(
-                dev_jar_download_upload_dir=str(upload_dir),
+            cog.settings = SimpleNamespace(dev_jar_download_upload_dir=str(upload_dir))
+            cog._pending_review_lock = asyncio.Lock()
+
+            review = SimpleNamespace(
+                artifact=artifact,
+                commits=(
+                    DevJarCommit(
+                        sha="222222222222",
+                        title="fix: race selection screen fix",
+                        description=None,
+                        author="Shokkoh",
+                        url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                    ),
+                ),
+                sha256="a" * 64,
+                workflow_run_url=None,
+            )
+            message = FakeMessage()
+            interaction = SimpleNamespace(
+                response=FakeResponse(),
+                followup=FakeFollowup(),
+                message=message,
+                user="StaffUser#0001",
             )
 
-            await cog._handle_upload_payload(
-                DevJarUploadPayload(
-                    artifact=artifact,
-                    sha256="a" * 64,
-                    workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
-                    commits=(
-                        DevJarCommit(
-                            sha="222222222222",
-                            title="fix: race selection screen fix",
-                            description=None,
-                            author="Shokkoh",
-                            url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
-                        ),
-                    ),
-                )
-            )
+            with patch(
+                "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
+                new=AsyncMock(),
+            ) as clear_mock:
+                await cog._publish_pending_review(interaction, review)
 
         self.assertEqual(len(patreon_channel.sent), 1)
         self.assertEqual(len(testing_channel.sent), 1)
-        embed = patreon_channel.sent[0]["embed"]
-        self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
-        field_values = {field.name: field.value for field in embed.fields}
-        self.assertEqual(field_values["Artifact"], f"`{artifact.file_name}`")
-        self.assertEqual(field_values["Size"], "0.000 MB")
-        self.assertEqual(field_values["SHA-256"], f"`{'a' * 64}`")
+        clear_mock.assert_awaited_once()
+        self.assertEqual(len(message.edits), 1)
+        self.assertIsNone(message.edits[0]["view"])
+        self.assertTrue(
+            any("published" in content.lower() for content, _ in interaction.followup.messages)
+        )
+
+    async def test_discard_pending_review_keeps_commits_queued(self) -> None:
+        class FakeResponse:
+            async def defer(self, **kwargs) -> None:
+                return None
+
+        class FakeFollowup:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, dict]] = []
+
+            async def send(self, content: str, **kwargs) -> None:
+                self.messages.append((content, kwargs))
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.edits: list[dict] = []
+
+            async def edit(self, **kwargs) -> None:
+                self.edits.append(kwargs)
+
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        cog._pending_review_lock = asyncio.Lock()
+
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+        review = SimpleNamespace(
+            artifact=artifact,
+            commits=(
+                DevJarCommit(
+                    sha="222222222222",
+                    title="fix: race selection screen fix",
+                    description=None,
+                    author="Shokkoh",
+                    url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                ),
+            ),
+            sha256=None,
+            workflow_run_url=None,
+        )
+        message = FakeMessage()
+        interaction = SimpleNamespace(
+            response=FakeResponse(),
+            followup=FakeFollowup(),
+            message=message,
+            user="StaffUser#0001",
+        )
+
+        with patch(
+            "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
+            new=AsyncMock(),
+        ) as clear_mock:
+            await cog._discard_pending_review(interaction, review)
+
+        # Discard must NOT clear the cache: accumulated commits stay queued so
+        # they reappear (merged with anything new) on the next push's prompt.
+        clear_mock.assert_not_awaited()
+        self.assertEqual(len(message.edits), 1)
+        self.assertIsNone(message.edits[0]["view"])
+        field_values = {
+            field.name: field.value for field in message.edits[0]["embeds"][0].fields
+        }
+        self.assertEqual(field_values["Status"], "Discarded")
+        self.assertTrue(
+            any("discarded" in content.lower() for content, _ in interaction.followup.messages)
+        )
+        self.assertTrue(
+            any("remain queued" in content.lower() for content, _ in interaction.followup.messages)
+        )
 
 if __name__ == "__main__":
     unittest.main()

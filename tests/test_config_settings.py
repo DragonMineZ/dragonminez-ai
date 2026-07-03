@@ -95,6 +95,30 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.dev_jar_download_webhook_path, "/dmz-dev-jar")
         self.assertEqual(settings.dev_jar_download_download_path, "/dev-download")
 
+    def test_dev_jar_review_channel_settings_are_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"DEV_JAR_REVIEW_CHANNEL_ID": "111222333444555666"},
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.dev_jar_review_channel_id, 111222333444555666)
+
+    def test_dev_jar_review_channel_defaults_to_staff_devs_channel(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.dev_jar_review_channel_id, 1370061119586173070)
+
     def test_dev_jar_public_base_url_defaults_to_downloads_domain(self) -> None:
         with patch.dict(
             os.environ,

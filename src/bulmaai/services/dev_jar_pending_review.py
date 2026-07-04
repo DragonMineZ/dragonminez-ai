@@ -113,6 +113,24 @@ async def set_pending_dev_jar_review_message(channel_id: int, message_id: int) -
         )
 
 
+async def clear_pending_dev_jar_review_message() -> None:
+    """Drop the Discord message link but keep the cached commits.
+
+    Used when a build is discarded: the accumulated commits must carry forward
+    to the next push, but the message reference is cleared so that next push
+    posts a fresh prompt instead of trying to re-edit the discard record.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE dev_jar_pending_review
+            SET channel_id = NULL, message_id = NULL, updated_at = now()
+            WHERE id = 1
+            """
+        )
+
+
 async def clear_pending_dev_jar_review() -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:

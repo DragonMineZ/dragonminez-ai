@@ -31,6 +31,7 @@ from bulmaai.services.dev_jar_downloads import (
 )
 from bulmaai.services.dev_jar_pending_review import (
     clear_pending_dev_jar_review,
+    clear_pending_dev_jar_review_message,
     get_pending_dev_jar_review,
     set_pending_dev_jar_review_message,
     upsert_pending_dev_jar_review,
@@ -608,6 +609,9 @@ class DevJarDownloadsCog(commands.Cog):
                 existing.commits if existing is not None else (),
                 commits,
             )
+            # Persist the merged commit cache up front (still pointing at the old
+            # message, if any) so a later Discord failure can never drop commits;
+            # the message link is refreshed after the fresh post below.
             await upsert_pending_dev_jar_review(
                 artifact=artifact,
                 sha256=sha256,
@@ -618,6 +622,13 @@ class DevJarDownloadsCog(commands.Cog):
             )
 
             channel = await self._resolve_review_channel()
+
+            # Repost fresh: delete the previous pending prompt (if any) and post a
+            # new one so it lands at the bottom of the channel and is actually
+            # noticed, instead of silently editing a message scrolled out of view.
+            if existing is not None and existing.message_id is not None:
+                await self._delete_review_message(channel, existing.message_id)
+
             embeds, overflow_text = build_dev_jar_review_embeds(
                 artifact,
                 commits=merged_commits,
@@ -635,26 +646,45 @@ class DevJarDownloadsCog(commands.Cog):
             )
             files = self._overflow_files(overflow_text)
 
-            message = None
-            if existing is not None and existing.message_id is not None:
-                try:
-                    message = await channel.fetch_message(existing.message_id)
-                except discord.NotFound:
-                    message = None
-                except discord.HTTPException:
-                    log.exception("Failed to fetch pending dev jar review message; posting a new one")
-                    message = None
+            sent = await channel.send(
+                embeds=embeds,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+                files=files,
+            )
+            await set_pending_dev_jar_review_message(channel.id, sent.id)
 
-            if message is not None:
-                await message.edit(embeds=embeds, view=view, files=files, attachments=[])
-            else:
-                sent = await channel.send(
-                    embeds=embeds,
-                    view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                    files=files,
-                )
-                await set_pending_dev_jar_review_message(channel.id, sent.id)
+    async def _delete_review_message(
+        self, channel: discord.abc.Messageable, message_id: int
+    ) -> None:
+        """Best-effort delete of a prior pending review message."""
+        try:
+            message = await channel.fetch_message(message_id)
+        except discord.NotFound:
+            return
+        except discord.HTTPException:
+            log.exception(
+                "Failed to fetch prior dev jar review message %s for deletion", message_id
+            )
+            return
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            log.exception("Failed to delete prior dev jar review message %s", message_id)
+
+    def _delete_artifact_file(self, artifact: DevJarArtifact) -> None:
+        """Best-effort delete of a dev jar file from the upload directory."""
+        try:
+            path = artifact.resolve_path(self._upload_dir())
+        except Exception:
+            log.exception(
+                "Failed to resolve discarded dev jar path for %s", artifact.file_name
+            )
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            log.exception("Failed to delete discarded dev jar %s", artifact.file_name)
 
     async def _publish_pending_review(
         self,
@@ -709,11 +739,15 @@ class DevJarDownloadsCog(commands.Cog):
         interaction: discord.Interaction,
         review: "DevJarReviewView",
     ) -> None:
-        # Discard only rejects *this* build; the accumulated commits stay cached
-        # (see dev_jar_pending_review) so they carry forward and reappear on the
-        # next push's review prompt instead of being lost.
+        # Discard rejects *this* build: the jar is deleted from disk (only the
+        # published and next-pending jars are worth keeping as backups), but the
+        # accumulated commits stay cached (see dev_jar_pending_review) so they
+        # carry forward and reappear on the next push's prompt instead of being
+        # lost. The message link is cleared so that next push posts a fresh
+        # prompt rather than trying to re-edit this discard record.
         await interaction.response.defer(ephemeral=True)
         async with self._pending_review_lock:
+            self._delete_artifact_file(review.artifact)
             if interaction.message is not None:
                 embeds, _ = build_dev_jar_review_embeds(
                     review.artifact,
@@ -724,8 +758,10 @@ class DevJarDownloadsCog(commands.Cog):
                     actor=f"Discarded by {interaction.user}",
                 )
                 await interaction.message.edit(embeds=embeds, view=None, attachments=[])
+            await clear_pending_dev_jar_review_message()
         await interaction.followup.send(
-            "Dev jar build discarded. Accumulated commits remain queued for the next push.",
+            "Dev jar build discarded and deleted from disk. Accumulated commits "
+            "remain queued for the next push.",
             ephemeral=True,
         )
 

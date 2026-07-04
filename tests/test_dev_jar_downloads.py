@@ -595,25 +595,31 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Discard", labels)
         set_message_mock.assert_awaited_once_with(1370061119586173070, 999)
 
-    async def test_cog_upload_payload_merges_commits_into_existing_review_message(self) -> None:
+    async def test_cog_upload_payload_reposts_fresh_prompt_with_merged_commits(self) -> None:
         class FakeMessage:
             def __init__(self, message_id: int) -> None:
                 self.id = message_id
                 self.edits: list[dict] = []
+                self.deleted = False
 
             async def edit(self, **kwargs) -> None:
                 self.edits.append(kwargs)
+
+            async def delete(self) -> None:
+                self.deleted = True
 
         class FakeChannel:
             def __init__(self) -> None:
                 self.id = 1370061119586173070
                 self.sent: list[dict] = []
                 self._messages: dict[int, "FakeMessage"] = {}
+                self._next_id = 1
 
             async def send(self, **kwargs) -> "FakeMessage":
                 self.sent.append(kwargs)
-                message = FakeMessage(1)
+                message = FakeMessage(self._next_id)
                 self._messages[message.id] = message
+                self._next_id += 1
                 return message
 
             async def fetch_message(self, message_id: int) -> "FakeMessage":
@@ -706,10 +712,11 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
-        self.assertEqual(len(review_channel.sent), 1)
-        message = review_channel._messages[1]
-        self.assertEqual(len(message.edits), 1)
-        embeds = message.edits[0]["embeds"]
+        # Repost-fresh: the second push deletes the first prompt and posts a new
+        # one at the bottom, rather than editing the (possibly scrolled-away) one.
+        self.assertEqual(len(review_channel.sent), 2)
+        self.assertTrue(review_channel._messages[1].deleted)
+        embeds = review_channel.sent[1]["embeds"]
         field_values = {field.name: field.value for field in embeds[0].fields}
         self.assertEqual(field_values["Commits since last decision"], "2")
         all_field_text = "\n".join(field.value for embed in embeds for field in embed.fields)
@@ -721,20 +728,26 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, message_id: int) -> None:
                 self.id = message_id
                 self.edits: list[dict] = []
+                self.deleted = False
 
             async def edit(self, **kwargs) -> None:
                 self.edits.append(kwargs)
+
+            async def delete(self) -> None:
+                self.deleted = True
 
         class FakeChannel:
             def __init__(self) -> None:
                 self.id = 1370061119586173070
                 self.sent: list[dict] = []
                 self._messages: dict[int, "FakeMessage"] = {}
+                self._next_id = 1
 
             async def send(self, **kwargs) -> "FakeMessage":
                 self.sent.append(kwargs)
-                message = FakeMessage(1)
+                message = FakeMessage(self._next_id)
                 self._messages[message.id] = message
+                self._next_id += 1
                 return message
 
             async def fetch_message(self, message_id: int) -> "FakeMessage":
@@ -807,6 +820,16 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                     }
                 )
 
+            async def fake_clear_message() -> None:
+                if stored_review["value"] is not None:
+                    stored_review["value"] = SimpleNamespace(
+                        **{
+                            **stored_review["value"].__dict__,
+                            "channel_id": None,
+                            "message_id": None,
+                        }
+                    )
+
             with (
                 patch(
                     "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
@@ -819,6 +842,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "bulmaai.cogs.dev_jar_downloads.set_pending_dev_jar_review_message",
                     new=fake_set_message,
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review_message",
+                    new=fake_clear_message,
                 ),
                 patch(
                     "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
@@ -834,11 +861,11 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
-                message = review_channel._messages[1]
+                first_message = review_channel._messages[1]
                 interaction = SimpleNamespace(
                     response=FakeResponse(),
                     followup=FakeFollowup(),
-                    message=message,
+                    message=first_message,
                     user="StaffUser#0001",
                 )
                 await cog._discard_pending_review(
@@ -860,16 +887,22 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
-        # Discard never touches the cache; only the second push's own merge does.
+            # Discard deletes the rejected jar from disk...
+            self.assertFalse((upload_dir / first_artifact.file_name).exists())
+
+        # Discard never wipes the commit cache; only Publish does.
         clear_mock.assert_not_awaited()
-        # Still the same message: one send, then two edits (discard, then re-queue).
-        self.assertEqual(len(review_channel.sent), 1)
-        self.assertEqual(len(message.edits), 2)
-        discard_embeds = message.edits[0]["embeds"]
-        discard_status = {field.name: field.value for field in discard_embeds[0].fields}["Status"]
+        # Discard keeps its record message (edited to "Discarded"), and the next
+        # push reposts a fresh prompt rather than resurrecting that record.
+        self.assertEqual(len(review_channel.sent), 2)
+        self.assertFalse(first_message.deleted)
+        self.assertEqual(len(first_message.edits), 1)
+        discard_status = {
+            field.name: field.value for field in first_message.edits[0]["embeds"][0].fields
+        }["Status"]
         self.assertEqual(discard_status, "Discarded")
 
-        requeue_embeds = message.edits[1]["embeds"]
+        requeue_embeds = review_channel.sent[1]["embeds"]
         requeue_fields = {field.name: field.value for field in requeue_embeds[0].fields}
         self.assertEqual(requeue_fields["Status"], "Pending review")
         self.assertEqual(requeue_fields["Commits since last decision"], "2")
@@ -1025,41 +1058,57 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             async def edit(self, **kwargs) -> None:
                 self.edits.append(kwargs)
 
-        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-        cog._pending_review_lock = asyncio.Lock()
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
 
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
-        review = SimpleNamespace(
-            artifact=artifact,
-            commits=(
-                DevJarCommit(
-                    sha="222222222222",
-                    title="fix: race selection screen fix",
-                    description=None,
-                    author="Shokkoh",
-                    url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog._pending_review_lock = asyncio.Lock()
+            cog.settings = SimpleNamespace(dev_jar_download_upload_dir=str(upload_dir))
+
+            review = SimpleNamespace(
+                artifact=artifact,
+                commits=(
+                    DevJarCommit(
+                        sha="222222222222",
+                        title="fix: race selection screen fix",
+                        description=None,
+                        author="Shokkoh",
+                        url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                    ),
                 ),
-            ),
-            sha256=None,
-            workflow_run_url=None,
-        )
-        message = FakeMessage()
-        interaction = SimpleNamespace(
-            response=FakeResponse(),
-            followup=FakeFollowup(),
-            message=message,
-            user="StaffUser#0001",
-        )
+                sha256=None,
+                workflow_run_url=None,
+            )
+            message = FakeMessage()
+            interaction = SimpleNamespace(
+                response=FakeResponse(),
+                followup=FakeFollowup(),
+                message=message,
+                user="StaffUser#0001",
+            )
 
-        with patch(
-            "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
-            new=AsyncMock(),
-        ) as clear_mock:
-            await cog._discard_pending_review(interaction, review)
+            with (
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
+                    new=AsyncMock(),
+                ) as clear_mock,
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review_message",
+                    new=AsyncMock(),
+                ) as clear_message_mock,
+            ):
+                await cog._discard_pending_review(interaction, review)
+
+            # The rejected jar is deleted from disk...
+            self.assertFalse((upload_dir / artifact.file_name).exists())
 
         # Discard must NOT clear the cache: accumulated commits stay queued so
-        # they reappear (merged with anything new) on the next push's prompt.
+        # they reappear (merged with anything new) on the next push's prompt. It
+        # only clears the message link (so the next push posts fresh).
         clear_mock.assert_not_awaited()
+        clear_message_mock.assert_awaited_once()
         self.assertEqual(len(message.edits), 1)
         self.assertIsNone(message.edits[0]["view"])
         field_values = {

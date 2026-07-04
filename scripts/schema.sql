@@ -197,6 +197,13 @@ CREATE TABLE IF NOT EXISTS dev_jar_pending_review (
     CONSTRAINT dev_jar_pending_review_singleton CHECK (id = 1)
 );
 
+CREATE TABLE IF NOT EXISTS dev_jar_published_state (
+    id                   INTEGER PRIMARY KEY DEFAULT 1,
+    artifact_file_name   TEXT NOT NULL,
+    published_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT dev_jar_published_state_singleton CHECK (id = 1)
+);
+
 CREATE TABLE IF NOT EXISTS patch_notes_state (
     branch        TEXT NOT NULL,
     file_path     TEXT NOT NULL,

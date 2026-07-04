@@ -35,6 +35,10 @@ from bulmaai.services.dev_jar_pending_review import (
     set_pending_dev_jar_review_message,
     upsert_pending_dev_jar_review,
 )
+from bulmaai.services.dev_jar_published_state import (
+    get_published_dev_jar_file_name,
+    set_published_dev_jar_file_name,
+)
 from bulmaai.services.patch_notes import PATCH_NOTES_URL
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
@@ -58,6 +62,11 @@ DEV_JAR_REVIEW_EMBED_COLOR = discord.Colour.blurple()
 # after the commit changelog (e.g. Patch Notes).
 MAX_FIELDS_PER_EMBED = 24
 OVERFLOW_COMMITS_FILENAME = "dev-jar-commits.md"
+# Local-only endpoint (bound to 127.0.0.1) the VPS-side cleanup script polls to learn
+# which dev jar files must survive pruning: the currently published build (its public
+# download button is live) and the currently pending-review build (staff haven't
+# decided on it yet).
+PROTECTED_ARTIFACTS_PATH = "/dmz-dev-jar/protected"
 DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS = (
     1516564287210913932,
     1453303311330709674,
@@ -351,6 +360,7 @@ class DevJarDownloadsCog(commands.Cog):
     def cog_unload(self) -> None:
         unregister_extra_webhook_route(self.settings.dev_jar_download_webhook_path)
         unregister_extra_get_route(f"{self.settings.dev_jar_download_download_path.rstrip('/')}/")
+        unregister_extra_get_route(PROTECTED_ARTIFACTS_PATH)
 
     def _register_release_webhook_route(self) -> None:
         if self._release_webhook_route_registered:
@@ -410,6 +420,35 @@ class DevJarDownloadsCog(commands.Cog):
             path_prefix=direct_prefix,
             handle_request=handle_direct_download,
         )
+        register_extra_get_route(
+            path_prefix=PROTECTED_ARTIFACTS_PATH,
+            handle_request=self._handle_protected_artifacts_request,
+        )
+
+    def _handle_protected_artifacts_request(
+        self, path: str, query: dict[str, list[str]]
+    ) -> ReleaseWebhookHttpResponse:
+        loop = getattr(getattr(self, "bot", None), "loop", None)
+        if loop is None or not loop.is_running():
+            return text_http_response(503, "Bot event loop is not ready")
+        future = asyncio.run_coroutine_threadsafe(self._collect_protected_artifact_names(), loop)
+        try:
+            names = future.result(timeout=5)
+        except Exception:
+            log.exception("Failed to collect protected dev jar artifact names")
+            return text_http_response(500, "Failed to collect protected artifacts")
+        body = json.dumps({"protected": names}).encode("utf-8")
+        return ReleaseWebhookHttpResponse(status=200, body=body, content_type="application/json")
+
+    async def _collect_protected_artifact_names(self) -> list[str]:
+        names: set[str] = set()
+        published = await get_published_dev_jar_file_name()
+        if published:
+            names.add(published)
+        pending = await get_pending_dev_jar_review()
+        if pending is not None:
+            names.add(pending.artifact.file_name)
+        return sorted(names)
 
     def _upload_dir(self) -> Path:
         if not self.settings.dev_jar_download_upload_dir:
@@ -519,6 +558,10 @@ class DevJarDownloadsCog(commands.Cog):
                 allowed_mentions=discord.AllowedMentions.none(),
                 files=self._overflow_files(overflow_text),
             )
+        # Record this as the live public download so the VPS-side cleanup script
+        # (via the /dmz-dev-jar/protected endpoint) never prunes it out from under
+        # the download button we just posted.
+        await set_published_dev_jar_file_name(artifact.file_name)
 
     async def _handle_upload_payload(self, payload: DevJarUploadPayload) -> None:
         path = self._artifact_path(payload.artifact)

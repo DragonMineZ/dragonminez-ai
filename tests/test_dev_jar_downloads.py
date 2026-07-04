@@ -879,6 +879,45 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("feat: first commit", all_field_text)
         self.assertIn("fix: second commit", all_field_text)
 
+    async def test_collect_protected_artifact_names_includes_published_and_pending(self) -> None:
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        pending_artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+        pending = SimpleNamespace(artifact=pending_artifact)
+
+        with (
+            patch(
+                "bulmaai.cogs.dev_jar_downloads.get_published_dev_jar_file_name",
+                new=AsyncMock(return_value="dragonminez-2.1.1__111111111111.jar"),
+            ),
+            patch(
+                "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                new=AsyncMock(return_value=pending),
+            ),
+        ):
+            names = await cog._collect_protected_artifact_names()
+
+        self.assertEqual(
+            names,
+            sorted(["dragonminez-2.1.1__111111111111.jar", "dragonminez-2.1.2__222222222222.jar"]),
+        )
+
+    async def test_collect_protected_artifact_names_handles_no_published_or_pending(self) -> None:
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+
+        with (
+            patch(
+                "bulmaai.cogs.dev_jar_downloads.get_published_dev_jar_file_name",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            names = await cog._collect_protected_artifact_names()
+
+        self.assertEqual(names, [])
+
     async def test_publish_pending_review_posts_publicly_and_clears_state(self) -> None:
         class FakeResponse:
             async def defer(self, **kwargs) -> None:
@@ -945,15 +984,22 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 user="StaffUser#0001",
             )
 
-            with patch(
-                "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
-                new=AsyncMock(),
-            ) as clear_mock:
+            with (
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
+                    new=AsyncMock(),
+                ) as clear_mock,
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.set_published_dev_jar_file_name",
+                    new=AsyncMock(),
+                ) as set_published_mock,
+            ):
                 await cog._publish_pending_review(interaction, review)
 
         self.assertEqual(len(patreon_channel.sent), 1)
         self.assertEqual(len(testing_channel.sent), 1)
         clear_mock.assert_awaited_once()
+        set_published_mock.assert_awaited_once_with(artifact.file_name)
         self.assertEqual(len(message.edits), 1)
         self.assertIsNone(message.edits[0]["view"])
         self.assertTrue(

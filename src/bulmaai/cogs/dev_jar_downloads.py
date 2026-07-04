@@ -30,6 +30,7 @@ from bulmaai.services.dev_jar_downloads import (
     parse_dev_jar_filename,
 )
 from bulmaai.services.dev_jar_pending_review import (
+    PendingDevJarReview,
     clear_pending_dev_jar_review,
     clear_pending_dev_jar_review_message,
     get_pending_dev_jar_review,
@@ -57,6 +58,9 @@ log = logging.getLogger(__name__)
 DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:"
 MANUAL_DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:manual:"
 DOWNLOAD_FILE_SUFFIX = "/file"
+# Stable custom_ids for the staff review prompt so its buttons survive restarts.
+DEV_JAR_REVIEW_PUBLISH_ID = "dev_jar_review:publish"
+DEV_JAR_REVIEW_DISCARD_ID = "dev_jar_review:discard"
 DEV_JAR_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
 DEV_JAR_REVIEW_EMBED_COLOR = discord.Colour.blurple()
 # Discord caps embeds at 25 fields; leave headroom for trailing fields appended
@@ -307,47 +311,30 @@ class DevJarDownloadView(discord.ui.View):
 
 
 class DevJarReviewView(discord.ui.View):
-    def __init__(
-        self,
-        *,
-        artifact: DevJarArtifact,
-        commits: tuple[DevJarCommit, ...],
-        sha256: str | None,
-        workflow_run_url: str | None,
-        staff_role_ids: tuple[int, ...],
-        on_publish,
-        on_discard,
-        timeout: float | None = None,
-    ):
-        super().__init__(timeout=timeout)
-        self.artifact = artifact
-        self.commits = commits
-        self.sha256 = sha256
-        self.workflow_run_url = workflow_run_url
-        self._staff_role_ids = staff_role_ids
-        self._on_publish = on_publish
-        self._on_discard = on_discard
+    """Persistent Publish/Discard prompt.
 
-    async def _require_staff(self, interaction: discord.Interaction) -> bool:
-        if can_post_download_announcement(interaction.user, staff_role_ids=self._staff_role_ids):
-            return True
-        await interaction.response.send_message(
-            "Only staff can publish or discard dev jar builds.",
-            ephemeral=True,
+    The buttons carry stable custom_ids and hold no per-message state, so they
+    keep working after a bot restart: clicks are routed through the cog's
+    on_interaction listener, which reloads the pending review from the database
+    (there is only ever one, a singleton row) before acting.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(
+            discord.ui.Button(
+                label="Publish",
+                style=discord.ButtonStyle.success,
+                custom_id=DEV_JAR_REVIEW_PUBLISH_ID,
+            )
         )
-        return False
-
-    @discord.ui.button(label="Publish", style=discord.ButtonStyle.success)
-    async def publish_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if not await self._require_staff(interaction):
-            return
-        await self._on_publish(interaction, self)
-
-    @discord.ui.button(label="Discard", style=discord.ButtonStyle.danger)
-    async def discard_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if not await self._require_staff(interaction):
-            return
-        await self._on_discard(interaction, self)
+        self.add_item(
+            discord.ui.Button(
+                label="Discard",
+                style=discord.ButtonStyle.danger,
+                custom_id=DEV_JAR_REVIEW_DISCARD_ID,
+            )
+        )
 
 
 class DevJarDownloadsCog(commands.Cog):
@@ -651,15 +638,7 @@ class DevJarDownloadsCog(commands.Cog):
                 sha256=sha256,
                 workflow_run_url=workflow_run_url,
             )
-            view = DevJarReviewView(
-                artifact=artifact,
-                commits=merged_commits,
-                sha256=sha256,
-                workflow_run_url=workflow_run_url,
-                staff_role_ids=tuple(self.settings.discord_staff_role_ids),
-                on_publish=self._publish_pending_review,
-                on_discard=self._discard_pending_review,
-            )
+            view = DevJarReviewView()
             files = self._overflow_files(overflow_text)
 
             sent = await channel.send(
@@ -702,13 +681,26 @@ class DevJarDownloadsCog(commands.Cog):
         except OSError:
             log.exception("Failed to delete discarded dev jar %s", artifact.file_name)
 
+    async def _review_still_current(self, review: PendingDevJarReview) -> bool:
+        """True if the pending review still matches this build (not already
+        published/discarded, nor replaced by a newer push). Guards against a
+        second button click racing the first."""
+        current = await get_pending_dev_jar_review()
+        return current is not None and current.artifact.file_name == review.artifact.file_name
+
     async def _publish_pending_review(
         self,
         interaction: discord.Interaction,
-        review: "DevJarReviewView",
+        review: PendingDevJarReview,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         async with self._pending_review_lock:
+            if not await self._review_still_current(review):
+                await interaction.followup.send(
+                    "This dev jar review was already handled or replaced by a newer push.",
+                    ephemeral=True,
+                )
+                return
             try:
                 path = self._artifact_path(review.artifact)
                 stat = path.stat()
@@ -753,7 +745,7 @@ class DevJarDownloadsCog(commands.Cog):
     async def _discard_pending_review(
         self,
         interaction: discord.Interaction,
-        review: "DevJarReviewView",
+        review: PendingDevJarReview,
     ) -> None:
         # Discard rejects *this* build: the jar is deleted from disk (only the
         # published and next-pending jars are worth keeping as backups), but the
@@ -763,6 +755,12 @@ class DevJarDownloadsCog(commands.Cog):
         # prompt rather than trying to re-edit this discard record.
         await interaction.response.defer(ephemeral=True)
         async with self._pending_review_lock:
+            if not await self._review_still_current(review):
+                await interaction.followup.send(
+                    "This dev jar review was already handled or replaced by a newer push.",
+                    ephemeral=True,
+                )
+                return
             self._delete_artifact_file(review.artifact)
             if interaction.message is not None:
                 embeds, _ = build_dev_jar_review_embeds(
@@ -843,7 +841,11 @@ class DevJarDownloadsCog(commands.Cog):
         custom_id = (interaction.data or {}).get("custom_id", "")
         if not isinstance(custom_id, str):
             return
-        if custom_id.startswith(MANUAL_DOWNLOAD_BUTTON_PREFIX):
+        if custom_id == DEV_JAR_REVIEW_PUBLISH_ID:
+            await self._handle_review_decision(interaction, publish=True)
+        elif custom_id == DEV_JAR_REVIEW_DISCARD_ID:
+            await self._handle_review_decision(interaction, publish=False)
+        elif custom_id.startswith(MANUAL_DOWNLOAD_BUTTON_PREFIX):
             await self._handle_download_button(
                 interaction,
                 custom_id.removeprefix(MANUAL_DOWNLOAD_BUTTON_PREFIX),
@@ -851,6 +853,32 @@ class DevJarDownloadsCog(commands.Cog):
             )
         elif custom_id.startswith(DOWNLOAD_BUTTON_PREFIX):
             await self._handle_download_button(interaction, custom_id.removeprefix(DOWNLOAD_BUTTON_PREFIX))
+
+    async def _handle_review_decision(
+        self, interaction: discord.Interaction, *, publish: bool
+    ) -> None:
+        if not can_post_download_announcement(
+            interaction.user,
+            staff_role_ids=tuple(self.settings.discord_staff_role_ids),
+        ):
+            await interaction.response.send_message(
+                "Only staff can publish or discard dev jar builds.",
+                ephemeral=True,
+            )
+            return
+        # State lives in the DB (singleton row), not the View instance, so this
+        # works even after a restart wiped the in-memory view.
+        review = await get_pending_dev_jar_review()
+        if review is None:
+            await interaction.response.send_message(
+                "This dev jar review is no longer pending (already published or discarded).",
+                ephemeral=True,
+            )
+            return
+        if publish:
+            await self._publish_pending_review(interaction, review)
+        else:
+            await self._discard_pending_review(interaction, review)
 
     async def _handle_download_button(
         self,

@@ -1027,6 +1027,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
+                    "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                    new=AsyncMock(return_value=review),
+                ),
+                patch(
                     "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
                     new=AsyncMock(),
                 ) as clear_mock,
@@ -1099,6 +1103,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
+                    "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                    new=AsyncMock(return_value=review),
+                ),
+                patch(
                     "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review",
                     new=AsyncMock(),
                 ) as clear_mock,
@@ -1128,6 +1136,65 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             any("remain queued" in content.lower() for content, _ in interaction.followup.messages)
+        )
+
+    async def test_review_buttons_dispatch_from_reloaded_state(self) -> None:
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, dict]] = []
+
+            async def send_message(self, content: str, **kwargs) -> None:
+                self.messages.append((content, kwargs))
+
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
+
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+        review = SimpleNamespace(artifact=artifact)
+
+        # Non-staff clicks are rejected before any state is loaded.
+        nonstaff = SimpleNamespace(
+            response=FakeResponse(),
+            user=SimpleNamespace(
+                guild_permissions=SimpleNamespace(administrator=False), roles=[]
+            ),
+        )
+        await cog._handle_review_decision(nonstaff, publish=True)
+        self.assertEqual(len(nonstaff.response.messages), 1)
+        self.assertIn("Only staff", nonstaff.response.messages[0][0])
+
+        # A staff click reloads the pending review from the DB (not the view) and
+        # routes to the publish handler — this is what makes the buttons survive
+        # a restart that wiped the in-memory view.
+        publish_mock = AsyncMock()
+        cog._publish_pending_review = publish_mock
+        staff = SimpleNamespace(
+            response=FakeResponse(),
+            user=SimpleNamespace(
+                guild_permissions=SimpleNamespace(administrator=True), roles=[]
+            ),
+        )
+        with patch(
+            "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+            new=AsyncMock(return_value=review),
+        ):
+            await cog._handle_review_decision(staff, publish=True)
+        publish_mock.assert_awaited_once_with(staff, review)
+
+        # A staff click with nothing pending (e.g. already handled) gets a notice.
+        staff_stale = SimpleNamespace(
+            response=FakeResponse(),
+            user=SimpleNamespace(
+                guild_permissions=SimpleNamespace(administrator=True), roles=[]
+            ),
+        )
+        with patch(
+            "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+            new=AsyncMock(return_value=None),
+        ):
+            await cog._handle_review_decision(staff_stale, publish=False)
+        self.assertTrue(
+            any("no longer pending" in content.lower() for content, _ in staff_stale.response.messages)
         )
 
 if __name__ == "__main__":

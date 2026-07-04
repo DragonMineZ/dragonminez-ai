@@ -8,12 +8,15 @@ from bulmaai.cogs.patch_notes_updates import (
     build_patch_notes_update_embed,
 )
 from bulmaai.services.patch_notes import (
-    PATCH_NOTES_BRANCH,
-    PATCH_NOTES_FILE_PATH,
-    PATCH_NOTES_URL,
     PatchNotesState,
+    build_patch_notes_url,
     summarize_patch_notes_update,
 )
+
+TEST_REPO = "dragonminez"
+TEST_BRANCH = "v2.1.x"
+TEST_FILE_PATH = "PATCH_NOTES-v2.1.1.md"
+TEST_URL = build_patch_notes_url(TEST_REPO, TEST_BRANCH, TEST_FILE_PATH)
 
 
 class PatchNotesSummaryTests(unittest.TestCase):
@@ -50,9 +53,11 @@ class PatchNotesEmbedTests(unittest.TestCase):
     def test_embed_links_patch_notes_and_mentions_day(self) -> None:
         updated_at = datetime(2026, 6, 10, 9, 5, tzinfo=timezone.utc)
 
-        embed = build_patch_notes_update_embed(summary="- Added fusion dance", updated_at=updated_at)
+        embed = build_patch_notes_update_embed(
+            summary="- Added fusion dance", updated_at=updated_at, patch_notes_url=TEST_URL
+        )
 
-        self.assertEqual(embed.url, PATCH_NOTES_URL)
+        self.assertEqual(embed.url, TEST_URL)
         self.assertIn("June 10, 2026", embed.description)
         self.assertIn("9 AM", embed.description)
         field_values = {field.name: field.value for field in embed.fields}
@@ -62,7 +67,13 @@ class PatchNotesEmbedTests(unittest.TestCase):
 class PatchNotesPollTests(unittest.IsolatedAsyncioTestCase):
     def _cog(self, *, file_content: str) -> PatchNotesUpdatesCog:
         cog = PatchNotesUpdatesCog.__new__(PatchNotesUpdatesCog)
-        cog.bot = SimpleNamespace()
+        cog.bot = SimpleNamespace(
+            settings=SimpleNamespace(
+                patch_notes_repo=TEST_REPO,
+                patch_notes_branch=TEST_BRANCH,
+                patch_notes_file_path=TEST_FILE_PATH,
+            )
+        )
         cog.gh = SimpleNamespace(get_file=AsyncMock(return_value=(file_content, "blobsha")))
         cog._announced: list[str] = []
 
@@ -89,8 +100,8 @@ class PatchNotesPollTests(unittest.IsolatedAsyncioTestCase):
             await cog._poll_once()
 
         self.assertEqual(len(stored), 1)
-        self.assertEqual(stored[0].branch, PATCH_NOTES_BRANCH)
-        self.assertEqual(stored[0].file_path, PATCH_NOTES_FILE_PATH)
+        self.assertEqual(stored[0].branch, TEST_BRANCH)
+        self.assertEqual(stored[0].file_path, TEST_FILE_PATH)
         self.assertEqual(cog._announced, [])
 
     async def test_changed_content_announces_whats_new(self) -> None:
@@ -98,8 +109,8 @@ class PatchNotesPollTests(unittest.IsolatedAsyncioTestCase):
         new_content = "# Patch Notes\n- First entry\n- Added fusion dance\n"
         cog = self._cog(file_content=new_content)
         previous = PatchNotesState(
-            branch=PATCH_NOTES_BRANCH,
-            file_path=PATCH_NOTES_FILE_PATH,
+            branch=TEST_BRANCH,
+            file_path=TEST_FILE_PATH,
             content_sha="old-sha",
             content=old_content,
         )
@@ -125,8 +136,8 @@ class PatchNotesPollTests(unittest.IsolatedAsyncioTestCase):
         import hashlib
 
         previous = PatchNotesState(
-            branch=PATCH_NOTES_BRANCH,
-            file_path=PATCH_NOTES_FILE_PATH,
+            branch=TEST_BRANCH,
+            file_path=TEST_FILE_PATH,
             content_sha=hashlib.sha256(content.encode("utf-8")).hexdigest(),
             content=content,
         )

@@ -10,11 +10,8 @@ from bulmaai.cogs.dev_jar_downloads import DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
 from bulmaai.services.patch_notes import (
-    PATCH_NOTES_BRANCH,
-    PATCH_NOTES_FILE_PATH,
-    PATCH_NOTES_REPO,
-    PATCH_NOTES_URL,
     PatchNotesState,
+    build_patch_notes_url,
     get_patch_notes_state,
     summarize_patch_notes_update,
     upsert_patch_notes_state,
@@ -30,14 +27,15 @@ def build_patch_notes_update_embed(
     *,
     summary: str,
     updated_at: datetime,
+    patch_notes_url: str,
 ) -> discord.Embed:
     day = f"{updated_at:%B %d, %Y}"
     embed = discord.Embed(
         title="DragonMineZ Patch Notes Updated",
-        url=PATCH_NOTES_URL,
+        url=patch_notes_url,
         description=(
-            f"The daily 9 AM patch notes routine has finished and the v2.1 patch notes "
-            f"for {day} are live. Read the full document here:\n{PATCH_NOTES_URL}"
+            f"The daily 9 AM patch notes routine has finished and the patch notes "
+            f"for {day} are live. Read the full document here:\n{patch_notes_url}"
         ),
         colour=PATCH_NOTES_EMBED_COLOR,
         timestamp=updated_at,
@@ -48,9 +46,9 @@ def build_patch_notes_update_embed(
 
 
 class PatchNotesUpdateView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, patch_notes_url: str):
         super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(label="Read the Patch Notes", url=PATCH_NOTES_URL))
+        self.add_item(discord.ui.Button(label="Read the Patch Notes", url=patch_notes_url))
 
 
 class PatchNotesUpdatesCog(commands.Cog):
@@ -75,7 +73,7 @@ class PatchNotesUpdatesCog(commands.Cog):
         return GitHubService(
             auth=auth,
             owner=settings.GITHUB_OWNER,
-            repo=PATCH_NOTES_REPO,
+            repo=settings.patch_notes_repo,
         )
 
     @commands.Cog.listener()
@@ -109,17 +107,21 @@ class PatchNotesUpdatesCog(commands.Cog):
     async def _poll_once(self) -> None:
         if self.gh is None:
             return
-        content, _blob_sha = await self.gh.get_file(PATCH_NOTES_FILE_PATH, ref=PATCH_NOTES_BRANCH)
+        # Read fresh from bot.settings so /settings set (which calls
+        # reload_settings) repoints the file on the next poll without a restart.
+        branch = self.bot.settings.patch_notes_branch
+        file_path = self.bot.settings.patch_notes_file_path
+        content, _blob_sha = await self.gh.get_file(file_path, ref=branch)
         content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-        previous = await get_patch_notes_state(PATCH_NOTES_BRANCH, PATCH_NOTES_FILE_PATH)
+        previous = await get_patch_notes_state(branch, file_path)
         if previous is not None and previous.content_sha == content_sha:
             return
 
         await upsert_patch_notes_state(
             PatchNotesState(
-                branch=PATCH_NOTES_BRANCH,
-                file_path=PATCH_NOTES_FILE_PATH,
+                branch=branch,
+                file_path=file_path,
                 content_sha=content_sha,
                 content=content,
             )
@@ -133,9 +135,15 @@ class PatchNotesUpdatesCog(commands.Cog):
         await self._announce_update(summary)
 
     async def _announce_update(self, summary: str) -> None:
+        patch_notes_url = build_patch_notes_url(
+            self.bot.settings.patch_notes_repo,
+            self.bot.settings.patch_notes_branch,
+            self.bot.settings.patch_notes_file_path,
+        )
         embed = build_patch_notes_update_embed(
             summary=summary,
             updated_at=datetime.now(timezone.utc),
+            patch_notes_url=patch_notes_url,
         )
         for channel_id in DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS:
             try:
@@ -147,7 +155,7 @@ class PatchNotesUpdatesCog(commands.Cog):
                     continue
                 await channel.send(
                     embed=embed,
-                    view=PatchNotesUpdateView(),
+                    view=PatchNotesUpdateView(patch_notes_url),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except Exception:

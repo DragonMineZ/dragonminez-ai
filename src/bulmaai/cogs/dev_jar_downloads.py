@@ -40,7 +40,7 @@ from bulmaai.services.dev_jar_published_state import (
     get_published_dev_jar_file_name,
     set_published_dev_jar_file_name,
 )
-from bulmaai.services.patch_notes import PATCH_NOTES_URL
+from bulmaai.services.patch_notes import build_patch_notes_url
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
     register_extra_webhook_route,
@@ -177,7 +177,7 @@ def build_dev_jar_download_embeds(
     footer_text = "Downloads require Discord access authorization. Download links are one-time per user per jar."
     notes_day = _artifact_day(artifact)
     patch_notes_value = (
-        f"The **Patch Notes** button below opens the v2.1 patch notes for {notes_day} "
+        f"The **Patch Notes** button below opens the patch notes for {notes_day} "
         "with everything that changed in this update."
     )
     base_fields = _build_base_dev_jar_fields(
@@ -282,7 +282,13 @@ def build_dev_jar_review_embeds(
 
 
 class DevJarDownloadView(discord.ui.View):
-    def __init__(self, artifact: DevJarArtifact, *, is_manual: bool = False):
+    def __init__(
+        self,
+        artifact: DevJarArtifact,
+        *,
+        patch_notes_url: str,
+        is_manual: bool = False,
+    ):
         super().__init__(timeout=None)
         prefix = MANUAL_DOWNLOAD_BUTTON_PREFIX if is_manual else DOWNLOAD_BUTTON_PREFIX
         self.add_item(
@@ -295,7 +301,7 @@ class DevJarDownloadView(discord.ui.View):
         self.add_item(
             discord.ui.Button(
                 label=f"Patch Notes – {_artifact_day(artifact)}",
-                url=PATCH_NOTES_URL,
+                url=patch_notes_url,
             )
         )
 
@@ -533,6 +539,13 @@ class DevJarDownloadsCog(commands.Cog):
             return []
         return [discord.File(io.BytesIO(overflow_text.encode("utf-8")), filename=OVERFLOW_COMMITS_FILENAME)]
 
+    def _patch_notes_url(self) -> str:
+        return build_patch_notes_url(
+            self.settings.patch_notes_repo,
+            self.settings.patch_notes_branch,
+            self.settings.patch_notes_file_path,
+        )
+
     async def _post_download_announcement(
         self,
         artifact: DevJarArtifact,
@@ -551,11 +564,14 @@ class DevJarDownloadsCog(commands.Cog):
             workflow_run_url=workflow_run_url,
             previous_size_bytes=previous_size_bytes,
         )
+        patch_notes_url = self._patch_notes_url()
         target_channels = [channel] if channel is not None else await self._resolve_announcement_channels()
         for target_channel in target_channels:
             await target_channel.send(
                 embeds=embeds,
-                view=DevJarDownloadView(artifact, is_manual=is_manual),
+                view=DevJarDownloadView(
+                    artifact, patch_notes_url=patch_notes_url, is_manual=is_manual
+                ),
                 allowed_mentions=discord.AllowedMentions.none(),
                 files=self._overflow_files(overflow_text),
             )

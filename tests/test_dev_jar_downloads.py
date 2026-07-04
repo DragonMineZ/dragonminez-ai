@@ -10,7 +10,7 @@ from bulmaai.cogs.dev_jar_downloads import (
     DevJarDownloadView,
     build_dev_jar_download_embed,
 )
-from bulmaai.services.patch_notes import PATCH_NOTES_URL
+from bulmaai.services.patch_notes import build_patch_notes_url
 from bulmaai.services.dev_jar_downloads import (
     DevJarCommit,
     DevJarUploadPayload,
@@ -264,14 +264,17 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_download_view_includes_dated_patch_notes_link_button(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+        patch_notes_url = build_patch_notes_url(
+            "dragonminez", "v2.1.x", "PATCH_NOTES-v2.1.1.md"
+        )
 
-        view = DevJarDownloadView(artifact)
+        view = DevJarDownloadView(artifact, patch_notes_url=patch_notes_url)
 
         labels = [getattr(child, "label", "") for child in view.children]
         urls = [getattr(child, "url", None) for child in view.children]
         self.assertIn("Get download link", labels)
         self.assertTrue(any(label.startswith("Patch Notes – ") for label in labels))
-        self.assertIn(PATCH_NOTES_URL, urls)
+        self.assertIn(patch_notes_url, urls)
 
     def test_download_embed_notes_patch_notes_day(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
@@ -992,7 +995,12 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                     1453303311330709674: testing_channel,
                 }.get(channel_id)
             )
-            cog.settings = SimpleNamespace(dev_jar_download_upload_dir=str(upload_dir))
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                patch_notes_repo="dragonminez",
+                patch_notes_branch="v2.1.x",
+                patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
+            )
             cog._pending_review_lock = asyncio.Lock()
 
             review = SimpleNamespace(

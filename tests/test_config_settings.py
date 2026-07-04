@@ -198,5 +198,37 @@ class ConfigSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.patreon_eligible_tier_ids, ("23999392", "23999460"))
 
+    def test_patch_notes_location_is_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PATCH_NOTES_REPO": "dragonminez-notes",
+                "PATCH_NOTES_BRANCH": "main",
+                "PATCH_NOTES_FILE_PATH": "PATCH_NOTES/PATCH_NOTES-v2.1.1.md",
+            },
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.patch_notes_repo, "dragonminez-notes")
+        self.assertEqual(settings.patch_notes_branch, "main")
+        self.assertEqual(settings.patch_notes_file_path, "PATCH_NOTES/PATCH_NOTES-v2.1.1.md")
+
+    def test_patch_notes_location_defaults_to_current_v2_1_1(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.patch_notes_repo, "dragonminez")
+        self.assertEqual(settings.patch_notes_branch, "v2.1.x")
+        self.assertEqual(settings.patch_notes_file_path, "PATCH_NOTES-v2.1.1.md")
+
 if __name__ == "__main__":
     unittest.main()

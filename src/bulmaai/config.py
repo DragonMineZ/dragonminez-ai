@@ -161,6 +161,12 @@ DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR = "/var/www/dragonminez/dev-jars"
 DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH = "/dmz-dev-jar"
 DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH = "/dev-download"
 DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
+# Patch notes location moves per release (e.g. v2.1.x/PATCH_NOTES-v2.1.1.md now,
+# later main/PATCH_NOTES/..., then v2.2/PATCH_NOTES-v2.2.md). These are runtime
+# settings so the file can be repointed with /settings set without a redeploy.
+DEFAULT_PATCH_NOTES_REPO = DEFAULT_GITHUB_DEFAULT_REPO
+DEFAULT_PATCH_NOTES_BRANCH = "v2.1.x"
+DEFAULT_PATCH_NOTES_FILE_PATH = "PATCH_NOTES-v2.1.1.md"
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
 DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
@@ -299,6 +305,9 @@ class Settings:
     dev_jar_download_webhook_path: str
     dev_jar_download_download_path: str
     dev_jar_download_token_ttl_seconds: int
+    patch_notes_repo: str
+    patch_notes_branch: str
+    patch_notes_file_path: str
     ai_support_enabled: bool
     ai_ticket_category_id: int | None
     ai_support_allowed_role_ids: Sequence[int]
@@ -568,6 +577,18 @@ def _build_settings_from_env() -> Settings:
                 DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS,
             )
             or DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS
+        ),
+        patch_notes_repo=(
+            _get_env("PATCH_NOTES_REPO", DEFAULT_PATCH_NOTES_REPO)
+            or DEFAULT_PATCH_NOTES_REPO
+        ),
+        patch_notes_branch=(
+            _get_env("PATCH_NOTES_BRANCH", DEFAULT_PATCH_NOTES_BRANCH)
+            or DEFAULT_PATCH_NOTES_BRANCH
+        ),
+        patch_notes_file_path=(
+            _get_env("PATCH_NOTES_FILE_PATH", DEFAULT_PATCH_NOTES_FILE_PATH)
+            or DEFAULT_PATCH_NOTES_FILE_PATH
         ),
         ai_support_enabled=_get_env_bool("AI_SUPPORT_ENABLED", DEFAULT_AI_SUPPORT_ENABLED),
         ai_ticket_category_id=_get_env_int("AI_TICKET_CATEGORY_ID", DEFAULT_AI_TICKET_CATEGORY_ID),

@@ -5,13 +5,13 @@ from datetime import datetime
 from bulmaai.database.db import get_pool
 
 
-PATCH_NOTES_REPO = "dragonminez"
-PATCH_NOTES_BRANCH = "claude/v2.1-main-patch-notes-JO139"
-PATCH_NOTES_FILE_PATH = "PATCH_NOTES_2.1.md"
-PATCH_NOTES_URL = (
-    f"https://github.com/DragonMineZ/{PATCH_NOTES_REPO}"
-    f"/blob/{PATCH_NOTES_BRANCH}/{PATCH_NOTES_FILE_PATH}"
-)
+def build_patch_notes_url(repo: str, branch: str, file_path: str) -> str:
+    """Build the human-facing GitHub blob URL for the patch notes file.
+
+    Repo/branch/file path are runtime settings (they move per release), so the
+    URL is derived on demand rather than pinned to a module constant.
+    """
+    return f"https://github.com/DragonMineZ/{repo}/blob/{branch}/{file_path}"
 
 
 @dataclass(frozen=True, slots=True)

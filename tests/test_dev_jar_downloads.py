@@ -1197,5 +1197,75 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             any("no longer pending" in content.lower() for content, _ in staff_stale.response.messages)
         )
 
+    async def test_discard_reports_when_jar_delete_fails(self) -> None:
+        class FakeResponse:
+            async def defer(self, **kwargs) -> None:
+                return None
+
+        class FakeFollowup:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, dict]] = []
+
+            async def send(self, content: str, **kwargs) -> None:
+                self.messages.append((content, kwargs))
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.edits: list[dict] = []
+
+            async def edit(self, **kwargs) -> None:
+                self.edits.append(kwargs)
+
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        cog._pending_review_lock = asyncio.Lock()
+        # Simulate the bot user lacking permission to delete the jar file.
+        cog._delete_artifact_file = lambda artifact: False
+
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+        review = SimpleNamespace(
+            artifact=artifact,
+            commits=(
+                DevJarCommit(
+                    sha="222222222222",
+                    title="fix: race selection screen fix",
+                    description=None,
+                    author="Shokkoh",
+                    url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                ),
+            ),
+            sha256=None,
+            workflow_run_url=None,
+        )
+        interaction = SimpleNamespace(
+            response=FakeResponse(),
+            followup=FakeFollowup(),
+            message=FakeMessage(),
+            user="StaffUser#0001",
+        )
+
+        with (
+            patch(
+                "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                new=AsyncMock(return_value=review),
+            ),
+            patch(
+                "bulmaai.cogs.dev_jar_downloads.clear_pending_dev_jar_review_message",
+                new=AsyncMock(),
+            ),
+        ):
+            await cog._discard_pending_review(interaction, review)
+
+        # The build is still discarded (record edited, commits kept), but the
+        # message must not falsely claim the file was deleted.
+        self.assertTrue(
+            any(
+                "could not be deleted" in content.lower()
+                for content, _ in interaction.followup.messages
+            )
+        )
+        self.assertTrue(
+            any("remain queued" in content.lower() for content, _ in interaction.followup.messages)
+        )
+
 if __name__ == "__main__":
     unittest.main()

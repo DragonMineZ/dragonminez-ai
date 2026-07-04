@@ -667,19 +667,26 @@ class DevJarDownloadsCog(commands.Cog):
         except discord.HTTPException:
             log.exception("Failed to delete prior dev jar review message %s", message_id)
 
-    def _delete_artifact_file(self, artifact: DevJarArtifact) -> None:
-        """Best-effort delete of a dev jar file from the upload directory."""
+    def _delete_artifact_file(self, artifact: DevJarArtifact) -> bool:
+        """Best-effort delete of a dev jar file from the upload directory.
+
+        Returns True if the file is gone (deleted or already absent), False if
+        deletion failed (e.g. the bot user lacks write access to the upload
+        directory) so callers can report the outcome truthfully.
+        """
         try:
             path = artifact.resolve_path(self._upload_dir())
         except Exception:
             log.exception(
                 "Failed to resolve discarded dev jar path for %s", artifact.file_name
             )
-            return
+            return False
         try:
             path.unlink(missing_ok=True)
+            return True
         except OSError:
             log.exception("Failed to delete discarded dev jar %s", artifact.file_name)
+            return False
 
     async def _review_still_current(self, review: PendingDevJarReview) -> bool:
         """True if the pending review still matches this build (not already
@@ -761,7 +768,7 @@ class DevJarDownloadsCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            self._delete_artifact_file(review.artifact)
+            deleted = self._delete_artifact_file(review.artifact)
             if interaction.message is not None:
                 embeds, _ = build_dev_jar_review_embeds(
                     review.artifact,
@@ -773,9 +780,16 @@ class DevJarDownloadsCog(commands.Cog):
                 )
                 await interaction.message.edit(embeds=embeds, view=None, attachments=[])
             await clear_pending_dev_jar_review_message()
+        if deleted:
+            outcome = "and deleted from disk"
+        else:
+            outcome = (
+                "but the .jar could not be deleted from disk (check the bot logs / "
+                "upload-directory permissions)"
+            )
         await interaction.followup.send(
-            "Dev jar build discarded and deleted from disk. Accumulated commits "
-            "remain queued for the next push.",
+            f"Dev jar build discarded {outcome}. Accumulated commits remain queued "
+            "for the next push.",
             ephemeral=True,
         )
 

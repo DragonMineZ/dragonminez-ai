@@ -69,6 +69,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.rules",
     "bulmaai.cogs.support_us",
     "bulmaai.cogs.log_parser",
+    "bulmaai.cogs.dmzdebug",
     "bulmaai.cogs.moderation",
     "bulmaai.cogs.patreon_announcements",
     "bulmaai.cogs.curseforge_updates",

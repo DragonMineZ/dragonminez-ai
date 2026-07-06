@@ -4,6 +4,7 @@ import re
 import discord
 from discord.ext import commands
 
+from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
 from bulmaai.utils.log_parser import parse_log, LogReport
 from bulmaai.utils.permissions import is_admin
 
@@ -236,6 +237,12 @@ class LogParserCog(commands.Cog):
                 text = raw_bytes.decode("utf-8", errors="replace")
             except Exception:
                 log.exception("Failed to read attachment %s", attachment.filename)
+                continue
+
+            # A dmzdebug dump is handled by DmzDebugCog; skip it here so a player
+            # state file (whose VisitedDimensions can contain "minecraft:...")
+            # doesn't also get parsed as a Minecraft log.
+            if looks_like_dmzdebug(text):
                 continue
 
             if not _looks_like_mc_log(text):

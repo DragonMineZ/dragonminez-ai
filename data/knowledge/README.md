@@ -4,6 +4,12 @@ DragonMineZ support knowledge is stored in the OpenAI vector store configured by
 database. Curated FAQ entries should be maintained as text-native knowledge files
 and uploaded to the OpenAI Dashboard Storage vector store.
 
+The primary documentation source is the GitHub wiki, mirrored automatically into
+the vector store as `wiki--<PageSlug>.md` files by `scripts/sync_wiki_knowledge.py`
+(see `docs/wiki-sync.md`). Do not hand-edit `wiki--` files in the store — edit the
+wiki instead; the sync replaces them. The legacy Trello PDF export is obsolete and
+should not be re-uploaded.
+
 Recommended vector stores:
 
 - `dragonminez-faq-prod` for short, approved FAQ answers generated from support traces

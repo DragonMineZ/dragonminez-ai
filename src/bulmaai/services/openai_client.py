@@ -22,6 +22,10 @@ from bulmaai.services.support_traces import (
     record_support_ai_trace,
     upsert_support_session,
 )
+from bulmaai.services.wiki_knowledge import (
+    DEFAULT_WIKI_BASE_URL,
+    wiki_url_for_citation_filename,
+)
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils import tools_registry
 
@@ -169,6 +173,56 @@ def _extract_output_text(response: Any) -> str:
             if getattr(part, "type", None) == "output_text":
                 reply_text += getattr(part, "text", "")
     return reply_text.strip()
+
+
+def _extract_file_citations(response: Any) -> list[str]:
+    """Collect cited knowledge filenames from file_search annotations, in order."""
+    filenames: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        for part in getattr(item, "content", []) or []:
+            if getattr(part, "type", None) != "output_text":
+                continue
+            for annotation in getattr(part, "annotations", []) or []:
+                if getattr(annotation, "type", None) != "file_citation":
+                    continue
+                filename = getattr(annotation, "filename", None)
+                if filename and filename not in filenames:
+                    filenames.append(str(filename))
+    return filenames
+
+
+MAX_WIKI_SOURCE_LINKS = 3
+
+
+def _append_wiki_sources(
+    reply_text: str,
+    cited_filenames: list[str],
+    *,
+    base_url: str,
+) -> str:
+    if not reply_text or reply_text == "(no reply)":
+        return reply_text
+
+    links: list[str] = []
+    seen_urls: set[str] = set()
+    for filename in cited_filenames:
+        mapped = wiki_url_for_citation_filename(filename, base_url=base_url)
+        if mapped is None:
+            continue
+        title, url = mapped
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        # <...> suppresses Discord link embeds; -# renders as subtext.
+        links.append(f"[{title}](<{url}>)")
+        if len(links) >= MAX_WIKI_SOURCE_LINKS:
+            break
+
+    if not links:
+        return reply_text
+    return f"{reply_text}\n-# 📖 {' · '.join(links)}"
 
 
 def _hydrate_tool_args(
@@ -536,6 +590,11 @@ async def _handle_tools_and_final_reply(
         )
 
     reply_text = _extract_output_text(response) or "(no reply)"
+    reply_text = _append_wiki_sources(
+        reply_text,
+        _extract_file_citations(response),
+        base_url=getattr(settings, "wiki_base_url", DEFAULT_WIKI_BASE_URL),
+    )
     lowered = reply_text.lower()
     suggested_close = any(
         phrase in lowered

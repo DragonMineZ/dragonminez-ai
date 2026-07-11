@@ -27,3 +27,6 @@ data/evals/*.jsonl
 
 # Otras cositas
 .ai/
+
+# Claude-authored local notes/instructions (never pushed)
+docs/

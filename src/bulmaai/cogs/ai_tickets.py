@@ -19,6 +19,10 @@ from bulmaai.services.support_intent import (
     SupportIntent,
     classify_support_intent,
 )
+from bulmaai.services.ticket_ai_state import (
+    get_ai_disabled_ticket_channels,
+    set_ticket_ai_disabled,
+)
 from bulmaai.utils.permissions import can_use_ai_support, is_staff
 
 log = logging.getLogger(__name__)
@@ -188,6 +192,17 @@ class AITicketsCog(commands.Cog):
         self._channel_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._pending_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
         self._escalated_ticket_channels: set[int] = set()
+        self._disabled_channels_loaded = False
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if self._disabled_channels_loaded:
+            return
+        self._disabled_channels_loaded = True
+        try:
+            self._escalated_ticket_channels |= await get_ai_disabled_ticket_channels()
+        except Exception:
+            log.exception("Failed to load persisted AI ticket disabled channels")
 
     def cog_unload(self) -> None:
         for pending_key in list(self._pending_tasks):
@@ -208,9 +223,13 @@ class AITicketsCog(commands.Cog):
     ) -> None:
         self._cancel_pending_task(_pending_key(message, in_ticket=in_ticket))
 
-    def _mark_ticket_escalated(self, channel_id: int) -> None:
+    async def _mark_ticket_escalated(self, channel_id: int) -> None:
         self._escalated_ticket_channels.add(channel_id)
         self._cancel_pending_task((channel_id, 0))
+        try:
+            await set_ticket_ai_disabled(channel_id, True)
+        except Exception:
+            log.exception("Failed to persist AI ticket disabled state for channel %s", channel_id)
 
     @discord.slash_command(name="aisupport", description="Toggle AI support on or off in this ticket channel.")
     async def aisupport(self, ctx: discord.ApplicationContext):
@@ -223,9 +242,13 @@ class AITicketsCog(commands.Cog):
 
         if channel.id in self._escalated_ticket_channels:
             self._escalated_ticket_channels.discard(channel.id)
+            try:
+                await set_ticket_ai_disabled(channel.id, False)
+            except Exception:
+                log.exception("Failed to persist AI ticket enabled state for channel %s", channel.id)
             await ctx.respond("AI support is now **on** in this channel.")
         else:
-            self._mark_ticket_escalated(channel.id)
+            await self._mark_ticket_escalated(channel.id)
             await ctx.respond("AI support is now **off** in this channel.")
 
     async def _resolve_member_for_user(self, user: discord.abc.User) -> discord.Member | None:
@@ -510,7 +533,7 @@ class AITicketsCog(commands.Cog):
                         channel,
                         ["I ran into an error while processing this. A staff member should take a look."],
                     ):
-                        self._mark_ticket_escalated(channel.id)
+                        await self._mark_ticket_escalated(channel.id)
                 elif mention_request:
                     await self._send_messages_with_typing(
                         channel,
@@ -547,7 +570,7 @@ class AITicketsCog(commands.Cog):
                 )
 
             if await self._send_messages_with_typing(channel, outgoing_messages) and should_mark_escalated:
-                self._mark_ticket_escalated(channel.id)
+                await self._mark_ticket_escalated(channel.id)
 
     async def _process_message_after_debounce(
         self,

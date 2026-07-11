@@ -234,3 +234,8 @@ CREATE INDEX IF NOT EXISTS idx_bug_reports_status
 
 CREATE INDEX IF NOT EXISTS idx_bug_reports_issue
     ON bug_reports (repo, issue_number);
+
+CREATE TABLE IF NOT EXISTS ai_ticket_disabled_channels (
+    channel_id   BIGINT PRIMARY KEY,
+    disabled_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

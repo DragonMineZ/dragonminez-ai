@@ -212,6 +212,22 @@ class AITicketsCog(commands.Cog):
         self._escalated_ticket_channels.add(channel_id)
         self._cancel_pending_task((channel_id, 0))
 
+    @discord.slash_command(name="aisupport", description="Toggle AI support on or off in this ticket channel.")
+    async def aisupport(self, ctx: discord.ApplicationContext):
+        settings = self.bot.settings
+        channel = ctx.channel
+        if not isinstance(ctx.author, discord.Member) or not is_staff(ctx.author, settings=settings):
+            return await ctx.respond("Only staff can toggle AI support.", ephemeral=True)
+        if not _is_ticket_channel(channel, settings=settings):
+            return await ctx.respond("This isn't an AI support ticket channel.", ephemeral=True)
+
+        if channel.id in self._escalated_ticket_channels:
+            self._escalated_ticket_channels.discard(channel.id)
+            await ctx.respond("AI support is now **on** in this channel.")
+        else:
+            self._mark_ticket_escalated(channel.id)
+            await ctx.respond("AI support is now **off** in this channel.")
+
     async def _resolve_member_for_user(self, user: discord.abc.User) -> discord.Member | None:
         for guild in self.bot.guilds:
             member = guild.get_member(user.id)

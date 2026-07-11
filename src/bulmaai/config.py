@@ -387,7 +387,7 @@ def _settings_overrides_path() -> Path:
 
 def _build_settings_from_env() -> Settings:
     token = _require_env("DISCORD_TOKEN")
-    openai_key = _require_env("OPENAI_KEY")
+    openai_key = _get_env("OPENAI_KEY") or _require_env("OPENAI_API_KEY")
 
     PGDSN = _get_env("PGDSN")
     PGPASSWORD = _get_env("PGPASSWORD")

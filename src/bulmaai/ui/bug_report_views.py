@@ -99,18 +99,19 @@ class BugTriageView(discord.ui.View):
     """Persistent triage actions. Interactions are routed via the cog's on_interaction
     handler keyed on the custom_id, so this view survives bot restarts."""
 
-    def __init__(self, thread_id: int, *, active: bool = True):
+    def __init__(self, thread_id: int, *, active: bool = True, show_create_issue: bool = True):
         super().__init__(timeout=None)
         if not active:
             return
-        self.add_item(
-            discord.ui.Button(
-                label="Create issue",
-                style=discord.ButtonStyle.success,
-                custom_id=f"bug_issue:{thread_id}",
-                emoji="🛠️",
+        if show_create_issue:
+            self.add_item(
+                discord.ui.Button(
+                    label="Create issue",
+                    style=discord.ButtonStyle.success,
+                    custom_id=f"bug_issue:{thread_id}",
+                    emoji="🛠️",
+                )
             )
-        )
         self.add_item(
             discord.ui.Button(
                 label="Close as Duplicate",

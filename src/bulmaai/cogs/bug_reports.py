@@ -145,14 +145,24 @@ class BugReportsCog(commands.Cog):
 
         duplicate = await self._assess_duplicate(triage)
 
+        issue = None
+        if triage.is_bug and duplicate is None:
+            issue = await self._try_auto_create_issue(
+                triage, thread=thread, reporter_id=reporter_id
+            )
+
+        status = "tracked" if issue is not None else "triaged"
         embed = build_triage_embed(
             triage,
-            status="triaged",
+            status=status,
             reporter_id=reporter_id,
             duplicate=duplicate,
         )
         try:
-            message = await thread.send(embed=embed, view=BugTriageView(thread.id))
+            message = await thread.send(
+                embed=embed,
+                view=BugTriageView(thread.id, show_create_issue=issue is None),
+            )
         except Exception:
             log.exception("Failed to post bug triage in thread %s", thread.id)
             return
@@ -165,7 +175,40 @@ class BugReportsCog(commands.Cog):
             ai_title=triage.title,
             ai_summary=triage.summary,
         )
-        log.info("Triaged bug report thread %s (is_bug=%s)", thread.id, triage.is_bug)
+        if issue is not None:
+            await set_tracked(
+                thread.id, repo=self.settings.bug_report_repo, issue_number=issue["number"]
+            )
+        log.info(
+            "Triaged bug report thread %s (is_bug=%s, auto_issue=%s)",
+            thread.id,
+            triage.is_bug,
+            issue["number"] if issue is not None else None,
+        )
+
+    async def _try_auto_create_issue(
+        self,
+        triage: BugTriage,
+        *,
+        thread: discord.Thread,
+        reporter_id: int | None,
+    ) -> dict | None:
+        repo = self.settings.bug_report_repo
+        if not repo:
+            return None
+        service = _get_github_service(self.settings, repo)
+        body = _build_issue_body(
+            triage,
+            guild_id=thread.guild.id if thread.guild else None,
+            thread_id=thread.id,
+            reporter_id=reporter_id,
+        )
+        labels = await self._resolve_bug_labels(service)
+        try:
+            return await service.create_issue(title=triage.title, body=body, labels=labels)
+        except Exception:
+            log.exception("Failed to auto-create issue for bug thread %s", thread.id)
+            return None
 
     async def _fetch_starter_message(self, thread: discord.Thread) -> discord.Message | None:
         if thread.starting_message is not None:

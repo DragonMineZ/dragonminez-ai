@@ -26,7 +26,7 @@ class BugReportConfigTests(unittest.TestCase):
             settings = load_settings(include_overrides=False)
 
         self.assertTrue(settings.bug_reports_enabled)
-        self.assertEqual(settings.bug_report_forum_channel_id, 1484275827146363061)
+        self.assertEqual(settings.bug_report_forum_channel_id, 1526421736336265377)
         self.assertEqual(settings.bug_report_repo, "dragonminez")
         self.assertEqual(settings.bug_report_poll_minutes, 10)
         self.assertEqual(settings.openai_bugreport_model, "gpt-5-mini")

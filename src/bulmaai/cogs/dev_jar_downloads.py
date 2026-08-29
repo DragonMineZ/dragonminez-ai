@@ -157,6 +157,23 @@ def _append_fields_across_embeds(
         current_field_count += 1
 
 
+def _build_changelog_embeds(
+    descriptions: Iterable[str],
+    *,
+    colour: discord.Colour,
+) -> list[discord.Embed]:
+    """One embed per changelog chunk. Only the first carries the
+    "Commits Changelog" title; continuation chunks are untitled."""
+    return [
+        discord.Embed(
+            title="Commits Changelog" if index == 0 else None,
+            description=text,
+            colour=colour,
+        )
+        for index, text in enumerate(descriptions)
+    ]
+
+
 def build_dev_jar_download_embeds(
     artifact: DevJarArtifact,
     *,
@@ -207,8 +224,7 @@ def build_dev_jar_download_embeds(
     for name, value, inline in base_fields:
         primary.add_field(name=name, value=value, inline=inline)
 
-    embeds = [primary]
-    _append_fields_across_embeds(embeds, layout.fields, colour=DEV_JAR_EMBED_COLOR)
+    embeds = [primary, *_build_changelog_embeds(layout.descriptions, colour=DEV_JAR_EMBED_COLOR)]
     _append_fields_across_embeds(
         embeds, [("Patch Notes", patch_notes_value)], colour=DEV_JAR_EMBED_COLOR
     )
@@ -275,8 +291,10 @@ def build_dev_jar_review_embeds(
     for name, value, inline in base_fields:
         primary.add_field(name=name, value=value, inline=inline)
 
-    embeds = [primary]
-    _append_fields_across_embeds(embeds, layout.fields, colour=DEV_JAR_REVIEW_EMBED_COLOR)
+    embeds = [
+        primary,
+        *_build_changelog_embeds(layout.descriptions, colour=DEV_JAR_REVIEW_EMBED_COLOR),
+    ]
 
     if actor:
         embeds[-1].set_footer(text=actor)

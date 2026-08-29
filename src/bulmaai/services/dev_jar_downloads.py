@@ -63,13 +63,16 @@ class DevJarUploadPayload:
     workflow_run_url: str | None = None
 
 
-COMMIT_FIELD_VALUE_LIMIT = 1024
+# Safety cap on a single commit line, well under Discord's 4096-char description limit.
+COMMIT_LINE_CHAR_LIMIT = 1024
+# Discord caps a single embed description at 4096 characters.
+COMMIT_DESCRIPTION_LIMIT = 4096
 # Discord caps the combined character count of every embed in a message at 6000;
 # leave headroom for the base fields (version/artifact/size/etc.) built around the commits.
 COMMIT_EMBED_CHAR_BUDGET = 5300
-# Discord caps embeds at 25 fields each; leave a little headroom for trailing fields
-# (Patch Notes, footer note) appended after the commit fields.
-MAX_COMMIT_FIELDS = 20
+# Discord caps messages at 10 embeds; leave headroom for the primary card and
+# trailing embeds (Patch Notes, etc.).
+MAX_COMMIT_EMBEDS = 8
 
 
 def merge_dev_jar_commits(
@@ -90,17 +93,15 @@ def merge_dev_jar_commits(
 def format_dev_jar_commit_line(commit: DevJarCommit) -> str:
     short_sha = commit.sha[:7]
     line = f"[{short_sha}]({commit.url}) {commit.title} - {commit.author}"
-    if commit.description:
-        line = f"{line}\n{commit.description}"
-    if len(line) > COMMIT_FIELD_VALUE_LIMIT:
-        line = line[: COMMIT_FIELD_VALUE_LIMIT - 1].rstrip() + "…"
+    if len(line) > COMMIT_LINE_CHAR_LIMIT:
+        line = line[: COMMIT_LINE_CHAR_LIMIT - 1].rstrip() + "…"
     return line
 
 
 def chunk_dev_jar_commit_lines(
     lines: Iterable[str],
     *,
-    limit: int = COMMIT_FIELD_VALUE_LIMIT,
+    limit: int = COMMIT_DESCRIPTION_LIMIT,
 ) -> list[str]:
     chunks: list[str] = []
     current: list[str] = []
@@ -121,7 +122,9 @@ def chunk_dev_jar_commit_lines(
 
 @dataclass(frozen=True, slots=True)
 class DevJarCommitLayout:
-    fields: tuple[tuple[str, str], ...]
+    # One embed description per chunk. Only the first is shown with the
+    # "Commits Changelog" title; the rest are untitled continuations.
+    descriptions: tuple[str, ...]
     overflowed: bool
     full_changelog_text: str
 
@@ -130,14 +133,13 @@ def build_dev_jar_commit_layout(
     commits: Iterable[DevJarCommit],
     *,
     base_char_count: int,
-    field_name: str = "Commits Changelog",
     char_budget: int = COMMIT_EMBED_CHAR_BUDGET,
-    max_fields: int = MAX_COMMIT_FIELDS,
+    max_embeds: int = MAX_COMMIT_EMBEDS,
 ) -> DevJarCommitLayout:
     commits = tuple(commits)
     if not commits:
         return DevJarCommitLayout(
-            fields=((field_name, "No commits recorded."),),
+            descriptions=("No commits recorded.",),
             overflowed=False,
             full_changelog_text="",
         )
@@ -146,28 +148,24 @@ def build_dev_jar_commit_layout(
     full_changelog_text = "\n".join(lines)
     chunks = chunk_dev_jar_commit_lines(lines)
 
-    fields: list[tuple[str, str]] = []
+    descriptions: list[str] = []
     used = base_char_count
     overflowed = False
-    for index, chunk in enumerate(chunks):
-        name = field_name if index == 0 else f"{field_name} (cont. {index + 1})"
-        cost = len(name) + len(chunk)
-        if len(fields) >= max_fields or used + cost > char_budget:
+    for chunk in chunks:
+        if len(descriptions) >= max_embeds or used + len(chunk) > char_budget:
             overflowed = True
             break
-        fields.append((name, chunk))
-        used += cost
+        descriptions.append(chunk)
+        used += len(chunk)
 
     if overflowed:
-        note_name = field_name if not fields else f"{field_name} (cont.)"
-        note_value = (
+        descriptions.append(
             f"Too many commits to show inline ({len(commits)} total). "
             "See the attached `dev-jar-commits.md` for the complete list."
         )
-        fields.append((note_name, note_value))
 
     return DevJarCommitLayout(
-        fields=tuple(fields),
+        descriptions=tuple(descriptions),
         overflowed=overflowed,
         full_changelog_text=full_changelog_text,
     )

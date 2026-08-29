@@ -9,6 +9,7 @@ from bulmaai.cogs.dev_jar_downloads import (
     DevJarDownloadsCog,
     DevJarDownloadView,
     build_dev_jar_download_embed,
+    build_dev_jar_download_embeds,
 )
 from bulmaai.services.patch_notes import build_patch_notes_url
 from bulmaai.services.dev_jar_downloads import (
@@ -170,7 +171,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(long_title, line)
 
-    def test_build_dev_jar_commit_layout_spills_into_continuation_fields(self) -> None:
+    def test_build_dev_jar_commit_layout_spills_into_continuation_descriptions(self) -> None:
         commits = tuple(
             DevJarCommit(
                 sha=f"{i:012x}",
@@ -179,14 +180,14 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 author="Shokkoh",
                 url=f"https://github.com/DragonMineZ/dragonminez/commit/{i:012x}",
             )
-            for i in range(20)
+            for i in range(40)
         )
 
-        layout = build_dev_jar_commit_layout(commits, base_char_count=0)
+        layout = build_dev_jar_commit_layout(commits, base_char_count=0, char_budget=10000)
 
         self.assertFalse(layout.overflowed)
-        self.assertGreater(len(layout.fields), 1)
-        combined = "\n".join(value for _, value in layout.fields)
+        self.assertGreater(len(layout.descriptions), 1)
+        combined = "\n".join(layout.descriptions)
         for commit in commits:
             self.assertIn(commit.title, combined)
 
@@ -231,10 +232,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         field_values = [field.value for field in embed.fields]
         self.assertIn("`222222222222`", field_values)
 
-    def test_download_embed_includes_commit_summary_links_titles_descriptions_and_authors(self) -> None:
+    def test_download_embed_includes_commit_summary_links_and_titles_but_not_descriptions(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__086afb963f2c.jar")
 
-        embed = build_dev_jar_download_embed(
+        embeds, _ = build_dev_jar_download_embeds(
             artifact,
             commits=(
                 DevJarCommit(
@@ -254,13 +255,17 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        field_values = {field.name: field.value for field in embed.fields}
-        self.assertIn("[9306605](https://github.com/DragonMineZ/dragonminez/commit/93066058a79b)", field_values["Commits Changelog"])
-        self.assertIn("feat: changed form drains", field_values["Commits Changelog"])
-        self.assertIn("Adds support for new drain behavior.", field_values["Commits Changelog"])
-        self.assertIn("- Shokkoh", field_values["Commits Changelog"])
-        self.assertIn("[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)", field_values["Commits Changelog"])
-        self.assertIn("fix: race selection screen fix", field_values["Commits Changelog"])
+        changelog_embed = next(embed for embed in embeds if embed.title == "Commits Changelog")
+        changelog_text = changelog_embed.description
+        self.assertIn("[9306605](https://github.com/DragonMineZ/dragonminez/commit/93066058a79b)", changelog_text)
+        self.assertIn("feat: changed form drains", changelog_text)
+        self.assertIn("- Shokkoh", changelog_text)
+        self.assertIn("[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)", changelog_text)
+        self.assertIn("fix: race selection screen fix", changelog_text)
+        self.assertNotIn("Adds support for new drain behavior.", changelog_text)
+        self.assertEqual(
+            sum(1 for embed in embeds if embed.title == "Commits Changelog"), 1
+        )
 
     async def test_download_view_includes_dated_patch_notes_link_button(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
@@ -279,9 +284,9 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
     def test_download_embed_notes_patch_notes_day(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
 
-        embed = build_dev_jar_download_embed(artifact, commits=())
+        embeds, _ = build_dev_jar_download_embeds(artifact, commits=())
 
-        field_values = {field.name: field.value for field in embed.fields}
+        field_values = {field.name: field.value for embed in embeds for field in embed.fields}
         self.assertIn("patch notes", field_values["Patch Notes"].lower())
 
     def test_cog_direct_token_download_consumes_token_after_successful_stream(self) -> None:
@@ -722,7 +727,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         embeds = review_channel.sent[1]["embeds"]
         field_values = {field.name: field.value for field in embeds[0].fields}
         self.assertEqual(field_values["Commits since last decision"], "2")
-        all_field_text = "\n".join(field.value for embed in embeds for field in embed.fields)
+        all_field_text = "\n".join(
+            [field.value for embed in embeds for field in embed.fields]
+            + [embed.description or "" for embed in embeds]
+        )
         self.assertIn("feat: first commit", all_field_text)
         self.assertIn("fix: second commit", all_field_text)
 
@@ -910,7 +918,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requeue_fields["Status"], "Pending review")
         self.assertEqual(requeue_fields["Commits since last decision"], "2")
         all_field_text = "\n".join(
-            field.value for embed in requeue_embeds for field in embed.fields
+            [field.value for embed in requeue_embeds for field in embed.fields]
+            + [embed.description or "" for embed in requeue_embeds]
         )
         self.assertIn("feat: first commit", all_field_text)
         self.assertIn("fix: second commit", all_field_text)

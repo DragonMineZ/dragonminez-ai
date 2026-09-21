@@ -11,6 +11,7 @@ from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
     ReleaseWebhookServer,
     clear_extra_webhook_routes,
+    handle_release_webhook_get,
     handle_release_webhook_post,
     register_extra_get_route,
     register_extra_raw_webhook_route,
@@ -194,6 +195,65 @@ class ReleaseWebhookTests(unittest.TestCase):
                     connection.close()
                 server.stop()
                 loop.close()
+
+    def test_get_route_with_secret_rejects_missing_header(self) -> None:
+        register_extra_get_route(
+            path_prefix="/dmz-dev-jar/protected",
+            handle_request=lambda path, query: ReleaseWebhookHttpResponse(status=200, body=b"secret-data"),
+            secret="protected-secret",
+            secret_header="X-DMZ-Release-Bot-Secret",
+        )
+
+        response = handle_release_webhook_get(
+            path="/dmz-dev-jar/protected",
+            headers={},
+        )
+
+        self.assertIn(response.status, (401, 403))
+        self.assertNotEqual(response.body, b"secret-data")
+
+    def test_get_route_with_secret_rejects_wrong_header(self) -> None:
+        register_extra_get_route(
+            path_prefix="/dmz-dev-jar/protected",
+            handle_request=lambda path, query: ReleaseWebhookHttpResponse(status=200, body=b"secret-data"),
+            secret="protected-secret",
+            secret_header="X-DMZ-Release-Bot-Secret",
+        )
+
+        response = handle_release_webhook_get(
+            path="/dmz-dev-jar/protected",
+            headers={"X-DMZ-Release-Bot-Secret": "wrong"},
+        )
+
+        self.assertIn(response.status, (401, 403))
+        self.assertNotEqual(response.body, b"secret-data")
+
+    def test_get_route_with_secret_accepts_matching_header(self) -> None:
+        register_extra_get_route(
+            path_prefix="/dmz-dev-jar/protected",
+            handle_request=lambda path, query: ReleaseWebhookHttpResponse(status=200, body=b"secret-data"),
+            secret="protected-secret",
+            secret_header="X-DMZ-Release-Bot-Secret",
+        )
+
+        response = handle_release_webhook_get(
+            path="/dmz-dev-jar/protected",
+            headers={"X-DMZ-Release-Bot-Secret": "protected-secret"},
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body, b"secret-data")
+
+    def test_get_route_without_secret_stays_public(self) -> None:
+        register_extra_get_route(
+            path_prefix="/beta-access/",
+            handle_request=lambda path, query: ReleaseWebhookHttpResponse(status=200, body=b"public-data"),
+        )
+
+        response = handle_release_webhook_get(path="/beta-access/start", headers={})
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body, b"public-data")
 
     def test_invalid_json_is_rejected(self) -> None:
         response = handle_release_webhook_post(

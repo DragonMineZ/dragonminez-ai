@@ -365,6 +365,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_download_path="/dev-download",
                 dev_jar_download_token_ttl_seconds=300,
+                dev_jar_patreon_role_ids=(1287877272224665640, 1287877305259130900),
+                dev_jar_tester_role_ids=(1286814599215317034,),
             )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
             response = FakeResponse()
@@ -413,6 +415,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_download_path="/dev-download",
                 dev_jar_download_token_ttl_seconds=300,
+                dev_jar_patreon_role_ids=(1287877272224665640, 1287877305259130900),
+                dev_jar_tester_role_ids=(1286814599215317034,),
             )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
             response = FakeResponse()
@@ -452,6 +456,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 dev_jar_download_public_base_url="https://downloads.example.test",
                 dev_jar_download_download_path="/dev-download",
                 dev_jar_download_token_ttl_seconds=300,
+                dev_jar_patreon_role_ids=(1287877272224665640, 1287877305259130900),
+                dev_jar_tester_role_ids=(1286814599215317034,),
             )
             cog.token_store = OneTimeDownloadTokenStore(now=lambda: 1999)
             response = FakeResponse()
@@ -1006,6 +1012,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             )
             cog.settings = SimpleNamespace(
                 dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_announcement_channel_ids=(1516564287210913932, 1453303311330709674),
                 patch_notes_repo="dragonminez",
                 patch_notes_branch="v2.1.x",
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
@@ -1275,6 +1282,125 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("remain queued" in content.lower() for content, _ in interaction.followup.messages)
         )
+
+    async def test_changelog_show_rejects_non_staff(self) -> None:
+        class FakeContext:
+            def __init__(self, author) -> None:
+                self.author = author
+                self.responses: list[tuple[str, dict]] = []
+
+            async def respond(self, content: str, **kwargs) -> None:
+                self.responses.append((content, kwargs))
+
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
+        ctx = FakeContext(
+            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False), roles=[])
+        )
+
+        await cog.changelog_show.callback(cog, ctx)
+
+        self.assertEqual(len(ctx.responses), 1)
+        content, kwargs = ctx.responses[0]
+        self.assertIn("Only staff", content)
+        self.assertTrue(kwargs["ephemeral"])
+
+    async def test_changelog_show_reports_cached_commit_count_for_staff(self) -> None:
+        class FakeContext:
+            def __init__(self, author) -> None:
+                self.author = author
+                self.responses: list[tuple[str, dict]] = []
+
+            async def respond(self, content: str, **kwargs) -> None:
+                self.responses.append((content, kwargs))
+
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
+        ctx = FakeContext(
+            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=True), roles=[])
+        )
+        review = SimpleNamespace(
+            commits=(
+                DevJarCommit(
+                    sha="111111111111",
+                    title="feat: first commit",
+                    description=None,
+                    author="Shokkoh",
+                    url="https://github.com/DragonMineZ/dragonminez/commit/111111111111",
+                ),
+                DevJarCommit(
+                    sha="222222222222",
+                    title="fix: second commit",
+                    description=None,
+                    author="Shokkoh",
+                    url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                ),
+            )
+        )
+
+        with patch(
+            "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+            new=AsyncMock(return_value=review),
+        ):
+            await cog.changelog_show.callback(cog, ctx)
+
+        self.assertEqual(len(ctx.responses), 1)
+        content, kwargs = ctx.responses[0]
+        self.assertIn("2 commit", content)
+        self.assertIn("feat: first commit", content)
+        self.assertTrue(kwargs["ephemeral"])
+
+    async def test_changelog_reset_rejects_non_staff_and_does_not_clear(self) -> None:
+        class FakeContext:
+            def __init__(self, author) -> None:
+                self.author = author
+                self.responses: list[tuple[str, dict]] = []
+
+            async def respond(self, content: str, **kwargs) -> None:
+                self.responses.append((content, kwargs))
+
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
+        ctx = FakeContext(
+            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False), roles=[])
+        )
+
+        with patch(
+            "bulmaai.cogs.dev_jar_downloads.reset_pending_dev_jar_commits",
+            new=AsyncMock(),
+        ) as reset_mock:
+            await cog.changelog_reset.callback(cog, ctx)
+
+        reset_mock.assert_not_awaited()
+        content, kwargs = ctx.responses[0]
+        self.assertIn("Only staff", content)
+        self.assertTrue(kwargs["ephemeral"])
+
+    async def test_changelog_reset_clears_commits_for_staff(self) -> None:
+        class FakeContext:
+            def __init__(self, author) -> None:
+                self.author = author
+                self.responses: list[tuple[str, dict]] = []
+
+            async def respond(self, content: str, **kwargs) -> None:
+                self.responses.append((content, kwargs))
+
+        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
+        ctx = FakeContext(
+            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=True), roles=[])
+        )
+
+        with patch(
+            "bulmaai.cogs.dev_jar_downloads.reset_pending_dev_jar_commits",
+            new=AsyncMock(),
+        ) as reset_mock:
+            await cog.changelog_reset.callback(cog, ctx)
+
+        reset_mock.assert_awaited_once()
+        content, kwargs = ctx.responses[0]
+        self.assertIn("cleared", content.lower())
+        self.assertTrue(kwargs["ephemeral"])
 
 if __name__ == "__main__":
     unittest.main()

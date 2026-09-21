@@ -1,6 +1,6 @@
 # Privacy Policy — BulmaAI (DragonMineZ Support Bot)
 
-**Last updated:** July 1, 2026
+**Last updated:** September 21, 2026
 
 This Privacy Policy explains what information the BulmaAI Discord bot ("the Bot",
 "we", "us") collects, how it is used, how long it is kept, and the choices you
@@ -29,10 +29,22 @@ We collect only the data needed to operate the Bot's features:
 - **Patreon supporter data.** If you link a Patreon account or receive supporter
   perks, we store your Discord user ID together with your Patreon link status,
   granted roles, and beta-access/whitelist records.
+- **Message counts and timestamps (leveling).** To power the server's
+  message-based leveling and leaderboard feature, the Bot counts the messages
+  you send and records the timestamp of your most recent qualifying message,
+  per server. It does **not** store the content of those messages for this
+  purpose, and it does not track voice activity or presence.
+- **Showcase highlights.** In designated showcase channels, the Bot counts
+  reactions on messages to identify popular community content and repost it to
+  a highlights channel. Reaction counts are read live from Discord and are not
+  stored; the Bot records only the message IDs it has already highlighted, so
+  the same post is not reposted twice. It does not store who reacted.
 
 We do **not** collect message content outside of the specific support and
-moderation contexts described above, and we do not track your presence, activity,
-or online status.
+moderation contexts described above. Message content is never stored for
+leveling or showcase-highlight purposes — only counts and timestamps, as
+described above — and we do not track your presence, voice activity, or
+online status.
 
 ---
 
@@ -45,6 +57,10 @@ We use the information we collect to:
 - Moderate the community by removing phishing links and invite spam.
 - Translate staff announcements into additional languages.
 - Manage Patreon supporter perks, welcome messages, and beta access.
+- Track message counts to power server leveling, leaderboards, and
+  level-based role rewards.
+- Identify and repost popular messages in showcase channels based on
+  reaction counts.
 - Debug issues and evaluate the quality of the Bot's responses.
 
 ---
@@ -68,6 +84,10 @@ train any model.
 We retain support interaction logs and Patreon supporter records for as long as
 needed to operate and improve the Bot. Moderation and translation content is
 processed in memory and is not retained beyond what is required to act on it.
+Leveling data (message counts, level, and timestamps) is retained for as long
+as you remain part of the community, so your level and leaderboard standing are
+preserved. Showcase highlight records store only message IDs and are kept for
+as long as the highlights channel exists.
 
 You may request deletion of your stored data at any time (see Section 7).
 
@@ -95,7 +115,8 @@ We do not sell your data. We do not share your data with third parties except:
 ## 7. Your Choices and Deletion Requests
 
 You can request deletion of the data we store about you (support AI logs, session
-data, and Patreon link records). To do so, contact us via:
+data, Patreon link records, and leveling/message-count records). To do so,
+contact us via:
 
 - Our Discord community support channel: https://discord.dragonminez.com/
 - Email: contact@dragonminez.com

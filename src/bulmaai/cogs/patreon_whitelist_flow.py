@@ -61,10 +61,6 @@ from bulmaai.utils.permissions import has_patreon_access_role
 
 log = logging.getLogger(__name__)
 
-ADMIN_PING_ROLE_ID = 1309022450671161476
-STAFF_CHANNEL_ID = 1493390527004147876
-CONTRIBUTOR_ROLE_ID = 1287877272224665640
-BENEFACTOR_ROLE_ID = 1287877305259130900
 PATREON_OAUTH_TTL_SECONDS = 10 * 60
 PATREON_WEBHOOK_PATH = "/patreon/webhook"
 BETA_ACCESS_ROUTE_PREFIX = "/beta-access/"
@@ -96,11 +92,13 @@ def _eligible_tier_ids(settings) -> tuple[str, ...]:
     return tuple(str(tier_id) for tier_id in settings.patreon_eligible_tier_ids)
 
 
-def _gift_limit_for_member(member: discord.Member) -> int:
+def _gift_limit_for_member(
+    member: discord.Member, *, contributor_role_id: int | None, benefactor_role_id: int | None
+) -> int:
     role_ids = {role.id for role in getattr(member, "roles", [])}
-    if BENEFACTOR_ROLE_ID in role_ids:
+    if benefactor_role_id in role_ids:
         return 2
-    if CONTRIBUTOR_ROLE_ID in role_ids:
+    if contributor_role_id in role_ids:
         return 1
     return 0
 
@@ -190,14 +188,16 @@ class BrowserFlowDestination:
 async def _pick_staff_channel(
     bot: discord.Bot,
     ctx_or_inter: discord.Interaction | discord.ApplicationContext | None = None,
+    *,
+    staff_channel_id: int | None = None,
 ) -> discord.abc.Messageable | None:
-    if STAFF_CHANNEL_ID:
-        channel = bot.get_channel(STAFF_CHANNEL_ID)
+    if staff_channel_id:
+        channel = bot.get_channel(staff_channel_id)
         if channel is None:
             try:
-                channel = await bot.fetch_channel(STAFF_CHANNEL_ID)
+                channel = await bot.fetch_channel(staff_channel_id)
             except Exception:
-                log.exception("Failed to fetch Patreon staff log channel %s", STAFF_CHANNEL_ID)
+                log.exception("Failed to fetch Patreon staff log channel %s", staff_channel_id)
                 channel = None
         if channel is not None and hasattr(channel, "send"):
             return channel
@@ -1369,7 +1369,11 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
-        gift_limit = _gift_limit_for_member(ctx.author)
+        gift_limit = _gift_limit_for_member(
+            ctx.author,
+            contributor_role_id=self.bot.settings.patreon_contributor_role_id,
+            benefactor_role_id=self.bot.settings.patreon_benefactor_role_id,
+        )
         used_gifts = await count_active_gifts_for_owner(ctx.author.id)
         if used_gifts >= gift_limit:
             await ctx.followup.send(
@@ -1425,7 +1429,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
             return
         pr_number = pr_data["number"]
         pr_url = pr_data["html_url"]
-        staff_channel = await _pick_staff_channel(self.bot)
+        staff_channel = await _pick_staff_channel(
+            self.bot, staff_channel_id=self.bot.settings.patreon_staff_channel_id
+        )
         if staff_channel is None:
             raise RuntimeError("Patreon staff channel unavailable")
 
@@ -1491,7 +1497,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         )
 
         await staff_channel.send(
-            f"<@&{ADMIN_PING_ROLE_ID}>\n\n"
+            f"<@&{self.bot.settings.patreon_admin_ping_role_id}>\n\n"
             f"{owner.mention} wants to gift Patreon beta access to {recipient.mention} as `{nickname}`.\n"
             f"PR: {pr_url}",
             view=admin_view,
@@ -1499,7 +1505,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
         )
 
     async def _log_staff_info(self, content: str) -> None:
-        channel = await _pick_staff_channel(self.bot)
+        channel = await _pick_staff_channel(
+            self.bot, staff_channel_id=self.bot.settings.patreon_staff_channel_id
+        )
         if channel is None:
             log.warning("Patreon staff log channel unavailable: %s", content)
             return
@@ -1777,7 +1785,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
         pr_number = pr_data["number"]
         pr_url = pr_data["html_url"]
 
-        staff_channel = await _pick_staff_channel(self.bot, interaction)
+        staff_channel = await _pick_staff_channel(
+            self.bot, interaction, staff_channel_id=self.bot.settings.patreon_staff_channel_id
+        )
         if staff_channel is None:
             await _edit_user_interaction_status(
                 interaction,
@@ -1793,9 +1803,10 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 },
             )
             return
+        admin_ping_role_id = self.bot.settings.patreon_admin_ping_role_id
         staff_guild = getattr(staff_channel, "guild", None)
-        admin_role = staff_guild.get_role(ADMIN_PING_ROLE_ID) if staff_guild else None
-        mention = admin_role.mention if admin_role else f"<@&{ADMIN_PING_ROLE_ID}>"
+        admin_role = staff_guild.get_role(admin_ping_role_id) if staff_guild else None
+        mention = admin_role.mention if admin_role else f"<@&{admin_ping_role_id}>"
 
         admin_view: AdminPRView | None = None
 

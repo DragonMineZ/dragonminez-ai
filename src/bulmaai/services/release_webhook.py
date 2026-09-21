@@ -53,6 +53,8 @@ class ExtraWebhookRoute:
 class ExtraGetRoute:
     path_prefix: str
     handle_request: Callable[[str, dict[str, list[str]]], ReleaseWebhookHttpResponse]
+    secret: str | None = None
+    secret_header: str = WEBHOOK_SECRET_HEADER
 
 
 @dataclass(frozen=True)
@@ -122,12 +124,19 @@ def register_extra_get_route(
     *,
     path_prefix: str,
     handle_request: Callable[[str, dict[str, list[str]]], ReleaseWebhookHttpResponse],
+    secret: str | None = None,
+    secret_header: str = WEBHOOK_SECRET_HEADER,
 ) -> None:
     _extra_get_routes[:] = [
         route for route in _extra_get_routes if route.path_prefix != path_prefix
     ]
     _extra_get_routes.append(
-        ExtraGetRoute(path_prefix=path_prefix, handle_request=handle_request)
+        ExtraGetRoute(
+            path_prefix=path_prefix,
+            handle_request=handle_request,
+            secret=secret,
+            secret_header=secret_header,
+        )
     )
 
 
@@ -137,9 +146,15 @@ def unregister_extra_get_route(path_prefix: str) -> None:
     ]
 
 
-def handle_release_webhook_get(*, path: str, query: str = "") -> ReleaseWebhookHttpResponse:
+def handle_release_webhook_get(
+    *, path: str, query: str = "", headers: Any = None
+) -> ReleaseWebhookHttpResponse:
     for route in sorted(_extra_get_routes, key=lambda item: len(item.path_prefix), reverse=True):
         if path.startswith(route.path_prefix):
+            if route.secret and not _has_valid_named_secret(
+                headers, secret=route.secret, header_name=route.secret_header
+            ):
+                return text_http_response(401, "Unauthorized")
             return route.handle_request(path, parse_qs(query))
     return text_http_response(403, "Forbidden")
 
@@ -348,6 +363,7 @@ class ReleaseWebhookServer:
                 response = handle_release_webhook_get(
                     path=parsed.path,
                     query=parsed.query,
+                    headers=self.headers,
                 )
                 self._send_http_response(response)
 

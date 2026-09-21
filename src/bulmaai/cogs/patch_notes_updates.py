@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.cogs.dev_jar_downloads import DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
 from bulmaai.services.patch_notes import (
@@ -145,7 +144,7 @@ class PatchNotesUpdatesCog(commands.Cog):
             updated_at=datetime.now(timezone.utc),
             patch_notes_url=patch_notes_url,
         )
-        for channel_id in DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS:
+        for channel_id in self.bot.settings.dev_jar_announcement_channel_ids:
             try:
                 channel = self.bot.get_channel(channel_id)
                 if channel is None:

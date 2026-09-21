@@ -135,3 +135,21 @@ async def clear_pending_dev_jar_review() -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM dev_jar_pending_review WHERE id = 1")
+
+
+async def reset_pending_dev_jar_commits() -> None:
+    """Empty the cached commit changelog without touching the artifact columns.
+
+    Must stay an UPDATE: a DELETE would also drop the artifact_* columns,
+    dropping this jar from the /dmz-dev-jar/protected list and exposing it to
+    VPS-side pruning.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE dev_jar_pending_review
+            SET commits = '[]', updated_at = now()
+            WHERE id = 1
+            """
+        )

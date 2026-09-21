@@ -83,7 +83,7 @@ class ConfigSettingsTests(unittest.TestCase):
                 "DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL": "https://downloads.example.test",
                 "DEV_JAR_DOWNLOAD_WEBHOOK_PATH": "/dmz-dev-jar",
                 "DEV_JAR_DOWNLOAD_DOWNLOAD_PATH": "/dev-download",
-                "DEV_JAR_DOWNLOAD_UPLOAD_DIR": "/ignored/env/dev-jars",
+                "DEV_JAR_DOWNLOAD_UPLOAD_DIR": "/custom/env/dev-jars",
             },
             clear=False,
         ):
@@ -91,7 +91,7 @@ class ConfigSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.dev_jar_download_channel_id, 1223439164121419838)
         self.assertEqual(settings.dev_jar_download_public_base_url, "https://downloads.example.test")
-        self.assertEqual(settings.dev_jar_download_upload_dir, "/var/www/dragonminez/dev-jars")
+        self.assertEqual(settings.dev_jar_download_upload_dir, "/custom/env/dev-jars")
         self.assertEqual(settings.dev_jar_download_webhook_path, "/dmz-dev-jar")
         self.assertEqual(settings.dev_jar_download_download_path, "/dev-download")
 
@@ -213,6 +213,99 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.patch_notes_repo, "dragonminez-notes")
         self.assertEqual(settings.patch_notes_branch, "main")
         self.assertEqual(settings.patch_notes_file_path, "PATCH_NOTES/PATCH_NOTES-v2.1.1.md")
+
+    def test_dev_jar_announcement_and_role_ids_are_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS": "111111111111111111,222222222222222222",
+                "DEV_JAR_PATREON_ROLE_IDS": "333333333333333333",
+                "DEV_JAR_TESTER_ROLE_IDS": "444444444444444444,555555555555555555",
+            },
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(
+            settings.dev_jar_announcement_channel_ids,
+            (111111111111111111, 222222222222222222),
+        )
+        self.assertEqual(settings.dev_jar_patreon_role_ids, (333333333333333333,))
+        self.assertEqual(
+            settings.dev_jar_tester_role_ids,
+            (444444444444444444, 555555555555555555),
+        )
+
+    def test_dev_jar_announcement_and_role_ids_default_to_current_values(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(
+            settings.dev_jar_announcement_channel_ids,
+            (1516564287210913932, 1453303311330709674),
+        )
+        self.assertEqual(
+            settings.dev_jar_patreon_role_ids,
+            (1287877272224665640, 1287877305259130900),
+        )
+        self.assertEqual(settings.dev_jar_tester_role_ids, (1286814599215317034,))
+
+    def test_dev_jar_download_upload_dir_defaults_when_env_missing(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.dev_jar_download_upload_dir, "/var/www/dragonminez/dev-jars")
+
+    def test_patreon_staff_and_role_ids_are_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "PATREON_STAFF_CHANNEL_ID": "666666666666666666",
+                "PATREON_ADMIN_PING_ROLE_ID": "777777777777777777",
+                "PATREON_CONTRIBUTOR_ROLE_ID": "888888888888888888",
+                "PATREON_BENEFACTOR_ROLE_ID": "999999999999999999",
+            },
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.patreon_staff_channel_id, 666666666666666666)
+        self.assertEqual(settings.patreon_admin_ping_role_id, 777777777777777777)
+        self.assertEqual(settings.patreon_contributor_role_id, 888888888888888888)
+        self.assertEqual(settings.patreon_benefactor_role_id, 999999999999999999)
+
+    def test_patreon_staff_and_role_ids_default_to_current_values(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TOKEN": "dummy-discord-token",
+                "OPENAI_KEY": "dummy-openai-key",
+                "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+            },
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.patreon_staff_channel_id, 1493390527004147876)
+        self.assertEqual(settings.patreon_admin_ping_role_id, 1309022450671161476)
+        self.assertEqual(settings.patreon_contributor_role_id, 1287877272224665640)
+        self.assertEqual(settings.patreon_benefactor_role_id, 1287877305259130900)
 
     def test_patch_notes_location_defaults_to_current_v2_1_1(self) -> None:
         with patch.dict(

@@ -239,3 +239,21 @@ CREATE TABLE IF NOT EXISTS ai_ticket_disabled_channels (
     channel_id   BIGINT PRIMARY KEY,
     disabled_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS member_activity (
+    guild_id       BIGINT NOT NULL,
+    user_id        BIGINT NOT NULL,
+    xp             BIGINT NOT NULL DEFAULT 0,
+    level          INTEGER NOT NULL DEFAULT 0,
+    last_award_at  TIMESTAMPTZ,
+    PRIMARY KEY (guild_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_member_activity_guild_xp
+    ON member_activity (guild_id, xp DESC);
+
+CREATE TABLE IF NOT EXISTS showcase_highlights (
+    message_id            BIGINT PRIMARY KEY,
+    highlight_message_id  BIGINT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);

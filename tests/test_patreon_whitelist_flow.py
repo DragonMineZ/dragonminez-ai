@@ -263,6 +263,10 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             patreon_oauth_redirect_uri="https://downloads.dragonminez.com/patreon/oauth/callback",
             PATREON_CAMPAIGN_ID="12861895",
             PATREON_CREATOR_TOKEN="creator-token",
+            patreon_staff_channel_id=1493390527004147876,
+            patreon_admin_ping_role_id=1309022450671161476,
+            patreon_contributor_role_id=1287877272224665640,
+            patreon_benefactor_role_id=1287877305259130900,
         )
 
     def test_beta_access_start_redirects_to_discord_oauth(self) -> None:
@@ -487,7 +491,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel.sent, [])
 
     async def test_admin_without_patreon_role_cannot_bypass_beta_access_role_check(self) -> None:
-        bot = SimpleNamespace(settings=SimpleNamespace(patreon_access_role_ids=(123,)))
+        bot = SimpleNamespace(settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ))
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
         cog.gh = FakeGitHub()
@@ -1219,7 +1229,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cog.gh.removed_branches, ["patreon/remove-456"])
 
     async def test_beta_access_rejects_invalid_minecraft_username_immediately(self) -> None:
-        bot = SimpleNamespace(settings=SimpleNamespace(patreon_access_role_ids=(123,)))
+        bot = SimpleNamespace(settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ))
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
         cog.gh = FakeGitHub()
@@ -1242,7 +1258,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Invalid Minecraft username", request_channel.sent[0][0][0])
 
     async def test_start_flow_rejects_missing_minecraft_username_safely(self) -> None:
-        bot = SimpleNamespace(settings=SimpleNamespace(patreon_access_role_ids=(123,)))
+        bot = SimpleNamespace(settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ))
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
         cog.gh = FakeGitHub()
@@ -1267,7 +1289,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_user_confirm_uses_user_id_branch_and_branch_file_sha(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(
-            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ),
             get_channel=lambda channel_id: staff_channel,
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
@@ -1293,7 +1321,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_user_confirm_skips_branch_write_when_retry_branch_already_has_nick(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(
-            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ),
             get_channel=lambda channel_id: staff_channel,
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
@@ -1314,7 +1348,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_whitelisted_user_edits_prompt_instead_of_followup(self) -> None:
         bot = SimpleNamespace(
-            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ),
             get_channel=lambda channel_id: FakeChannel(),
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
@@ -1344,7 +1384,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_submitted_request_edits_prompt_instead_of_followup(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(
-            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ),
             get_channel=lambda channel_id: staff_channel,
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
@@ -1374,7 +1420,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_approval_updates_user_message_and_dms_requester(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(
-            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ),
             get_channel=lambda channel_id: staff_channel,
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
@@ -1411,7 +1463,13 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_rejection_updates_user_message_and_dms_requester(self) -> None:
         staff_channel = FakeChannel()
         bot = SimpleNamespace(
-            settings=SimpleNamespace(patreon_access_role_ids=(123,)),
+            settings=SimpleNamespace(
+                patreon_access_role_ids=(123,),
+                patreon_staff_channel_id=1493390527004147876,
+                patreon_admin_ping_role_id=1309022450671161476,
+                patreon_contributor_role_id=1287877272224665640,
+                patreon_benefactor_role_id=1287877305259130900,
+            ),
             get_channel=lambda channel_id: staff_channel,
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)

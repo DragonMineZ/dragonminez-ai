@@ -389,7 +389,7 @@ class PatreonAnnouncementsCog(commands.Cog):
                 view=PatreonWelcomeView(
                     downloads_channel_url=_downloads_channel_url(
                         member,
-                        self.bot.settings.patreon_welcome_channel_id,
+                        self.bot.settings.dev_jar_download_channel_id,
                     ),
                 ),
                 allowed_mentions=discord.AllowedMentions.none(),

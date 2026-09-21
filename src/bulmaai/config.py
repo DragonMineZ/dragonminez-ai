@@ -77,6 +77,9 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.dev_jar_downloads",
     "bulmaai.cogs.patch_notes_updates",
     "bulmaai.cogs.bug_reports",
+    "bulmaai.cogs.power_level",
+    "bulmaai.cogs.ask",
+    "bulmaai.cogs.showcase",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -132,6 +135,10 @@ DEFAULT_PATREON_ELIGIBLE_TIER_IDS: Sequence[str] = (
     "23999392",
     "23999460",
 )
+DEFAULT_PATREON_STAFF_CHANNEL_ID = 1493390527004147876
+DEFAULT_PATREON_ADMIN_PING_ROLE_ID = 1309022450671161476
+DEFAULT_PATREON_CONTRIBUTOR_ROLE_ID = 1287877272224665640
+DEFAULT_PATREON_BENEFACTOR_ROLE_ID = 1287877305259130900
 DEFAULT_PATREON_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/patreon/oauth/callback"
 DEFAULT_DISCORD_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/beta-access/discord/callback"
 DEFAULT_DISCORD_OAUTH_CLIENTID = 1336867824815312906
@@ -166,6 +173,15 @@ DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR = "/var/www/dragonminez/dev-jars"
 DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH = "/dmz-dev-jar"
 DEFAULT_DEV_JAR_DOWNLOAD_DOWNLOAD_PATH = "/dev-download"
 DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
+DEFAULT_DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS: Sequence[int] = (
+    1516564287210913932,
+    1453303311330709674,
+)
+DEFAULT_DEV_JAR_PATREON_ROLE_IDS: Sequence[int] = (
+    1287877272224665640,
+    1287877305259130900,
+)
+DEFAULT_DEV_JAR_TESTER_ROLE_IDS: Sequence[int] = (1286814599215317034,)
 # Patch notes location moves per release (e.g. v2.1.x/PATCH_NOTES-v2.1.1.md now,
 # later main/PATCH_NOTES/..., then v2.2/PATCH_NOTES-v2.2.md). These are runtime
 # settings so the file can be repointed with /settings set without a redeploy.
@@ -212,6 +228,22 @@ DEFAULT_PHISHDESTROY_TIMEOUT_SECONDS = 5
 DEFAULT_PHISHDESTROY_SAFE_TTL_SECONDS = 6 * 3600
 DEFAULT_PHISHDESTROY_THREAT_TTL_SECONDS = 24 * 3600
 DEFAULT_PHISHDESTROY_RECOVERY_INTERVAL_SECONDS = 300
+
+# Power Level (message-based leveling).
+DEFAULT_POWER_LEVEL_ENABLED = True
+DEFAULT_POWER_LEVEL_EXCLUDED_CHANNEL_IDS: Sequence[int] = ()
+# Level -> role id as a JSON object; Settings has no map type, so it rides as a string.
+DEFAULT_POWER_LEVEL_ROLE_REWARDS = "{}"
+DEFAULT_POWER_LEVEL_LEADERBOARD_SIZE = 10
+# Public /ask. Empty allowlist means nowhere, so the command is opt-in per channel.
+DEFAULT_ASK_ALLOWED_CHANNEL_IDS: Sequence[int] = ()
+DEFAULT_ASK_RATE_LIMIT_WINDOW_SECONDS = 300
+DEFAULT_ASK_RATE_LIMIT_MAX_CALLS = 3
+# Showcase highlight board.
+DEFAULT_SHOWCASE_THRESHOLD = 5
+DEFAULT_SHOWCASE_SOURCE_CHANNEL_IDS: Sequence[int] = ()
+DEFAULT_SHOWCASE_TARGET_CHANNEL_ID: int | None = None
+DEFAULT_SHOWCASE_REACTION_EMOJI = "⭐"
 DEFAULT_BUG_REPORTS_ENABLED = True
 DEFAULT_BUG_REPORT_FORUM_CHANNEL_ID = 1526421736336265377
 DEFAULT_BUG_REPORT_REPO = DEFAULT_GITHUB_DEFAULT_REPO
@@ -299,6 +331,10 @@ class Settings:
     patreon_oauth_client_secret: str | None
     patreon_oauth_redirect_uri: str
     patreon_webhook_secret: str | None
+    patreon_staff_channel_id: int | None
+    patreon_admin_ping_role_id: int | None
+    patreon_contributor_role_id: int | None
+    patreon_benefactor_role_id: int | None
     bot_restart_channel_id: int | None
     release_webhook_enabled: bool
     release_webhook_host: str
@@ -313,6 +349,9 @@ class Settings:
     dev_jar_download_webhook_path: str
     dev_jar_download_download_path: str
     dev_jar_download_token_ttl_seconds: int
+    dev_jar_announcement_channel_ids: Sequence[int]
+    dev_jar_patreon_role_ids: Sequence[int]
+    dev_jar_tester_role_ids: Sequence[int]
     patch_notes_repo: str
     patch_notes_branch: str
     patch_notes_file_path: str
@@ -362,6 +401,17 @@ class Settings:
     phishdestroy_safe_ttl_seconds: int
     phishdestroy_threat_ttl_seconds: int
     phishdestroy_recovery_interval_seconds: int
+    power_level_enabled: bool
+    power_level_excluded_channel_ids: Sequence[int]
+    power_level_role_rewards: str
+    power_level_leaderboard_size: int
+    ask_allowed_channel_ids: Sequence[int]
+    ask_rate_limit_window_seconds: int
+    ask_rate_limit_max_calls: int
+    showcase_threshold: int
+    showcase_source_channel_ids: Sequence[int]
+    showcase_target_channel_id: int | None
+    showcase_reaction_emoji: str
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
                                              1309022450671161476, # DMZ Author
@@ -541,6 +591,22 @@ def _build_settings_from_env() -> Settings:
         patreon_oauth_client_secret=PATREON_OAUTH_CLIENT_SECRET,
         patreon_oauth_redirect_uri=DEFAULT_PATREON_OAUTH_REDIRECT_URI,
         patreon_webhook_secret=PATREON_WEBHOOK_SECRET,
+        patreon_staff_channel_id=_get_env_int(
+            "PATREON_STAFF_CHANNEL_ID",
+            DEFAULT_PATREON_STAFF_CHANNEL_ID,
+        ),
+        patreon_admin_ping_role_id=_get_env_int(
+            "PATREON_ADMIN_PING_ROLE_ID",
+            DEFAULT_PATREON_ADMIN_PING_ROLE_ID,
+        ),
+        patreon_contributor_role_id=_get_env_int(
+            "PATREON_CONTRIBUTOR_ROLE_ID",
+            DEFAULT_PATREON_CONTRIBUTOR_ROLE_ID,
+        ),
+        patreon_benefactor_role_id=_get_env_int(
+            "PATREON_BENEFACTOR_ROLE_ID",
+            DEFAULT_PATREON_BENEFACTOR_ROLE_ID,
+        ),
         bot_restart_channel_id=_get_env_int(
             "BOT_RESTART_CHANNEL_ID",
             DEFAULT_BOT_RESTART_CHANNEL_ID,
@@ -578,7 +644,10 @@ def _build_settings_from_env() -> Settings:
             "DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL",
             DEFAULT_DEV_JAR_DOWNLOAD_PUBLIC_BASE_URL,
         ),
-        dev_jar_download_upload_dir=DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR,
+        dev_jar_download_upload_dir=(
+            _get_env("DEV_JAR_DOWNLOAD_UPLOAD_DIR", DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR)
+            or DEFAULT_DEV_JAR_DOWNLOAD_UPLOAD_DIR
+        ),
         dev_jar_download_webhook_path=(
             _get_env("DEV_JAR_DOWNLOAD_WEBHOOK_PATH", DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH)
             or DEFAULT_DEV_JAR_DOWNLOAD_WEBHOOK_PATH
@@ -593,6 +662,18 @@ def _build_settings_from_env() -> Settings:
                 DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS,
             )
             or DEFAULT_DEV_JAR_DOWNLOAD_TOKEN_TTL_SECONDS
+        ),
+        dev_jar_announcement_channel_ids=_get_env_int_list(
+            "DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS",
+            DEFAULT_DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS,
+        ),
+        dev_jar_patreon_role_ids=_get_env_int_list(
+            "DEV_JAR_PATREON_ROLE_IDS",
+            DEFAULT_DEV_JAR_PATREON_ROLE_IDS,
+        ),
+        dev_jar_tester_role_ids=_get_env_int_list(
+            "DEV_JAR_TESTER_ROLE_IDS",
+            DEFAULT_DEV_JAR_TESTER_ROLE_IDS,
         ),
         patch_notes_repo=(
             _get_env("PATCH_NOTES_REPO", DEFAULT_PATCH_NOTES_REPO)
@@ -786,6 +867,47 @@ def _build_settings_from_env() -> Settings:
                 DEFAULT_PHISHDESTROY_RECOVERY_INTERVAL_SECONDS,
             )
             or DEFAULT_PHISHDESTROY_RECOVERY_INTERVAL_SECONDS
+        ),
+        power_level_enabled=_get_env_bool("POWER_LEVEL_ENABLED", DEFAULT_POWER_LEVEL_ENABLED),
+        power_level_excluded_channel_ids=_get_env_int_list(
+            "POWER_LEVEL_EXCLUDED_CHANNEL_IDS",
+            DEFAULT_POWER_LEVEL_EXCLUDED_CHANNEL_IDS,
+        ),
+        power_level_role_rewards=(
+            _get_env("POWER_LEVEL_ROLE_REWARDS", DEFAULT_POWER_LEVEL_ROLE_REWARDS)
+            or DEFAULT_POWER_LEVEL_ROLE_REWARDS
+        ),
+        power_level_leaderboard_size=(
+            _get_env_int("POWER_LEVEL_LEADERBOARD_SIZE", DEFAULT_POWER_LEVEL_LEADERBOARD_SIZE)
+            or DEFAULT_POWER_LEVEL_LEADERBOARD_SIZE
+        ),
+        ask_allowed_channel_ids=_get_env_int_list(
+            "ASK_ALLOWED_CHANNEL_IDS",
+            DEFAULT_ASK_ALLOWED_CHANNEL_IDS,
+        ),
+        ask_rate_limit_window_seconds=(
+            _get_env_int("ASK_RATE_LIMIT_WINDOW_SECONDS", DEFAULT_ASK_RATE_LIMIT_WINDOW_SECONDS)
+            or DEFAULT_ASK_RATE_LIMIT_WINDOW_SECONDS
+        ),
+        ask_rate_limit_max_calls=(
+            _get_env_int("ASK_RATE_LIMIT_MAX_CALLS", DEFAULT_ASK_RATE_LIMIT_MAX_CALLS)
+            or DEFAULT_ASK_RATE_LIMIT_MAX_CALLS
+        ),
+        showcase_threshold=(
+            _get_env_int("SHOWCASE_THRESHOLD", DEFAULT_SHOWCASE_THRESHOLD)
+            or DEFAULT_SHOWCASE_THRESHOLD
+        ),
+        showcase_source_channel_ids=_get_env_int_list(
+            "SHOWCASE_SOURCE_CHANNEL_IDS",
+            DEFAULT_SHOWCASE_SOURCE_CHANNEL_IDS,
+        ),
+        showcase_target_channel_id=_get_env_int(
+            "SHOWCASE_TARGET_CHANNEL_ID",
+            DEFAULT_SHOWCASE_TARGET_CHANNEL_ID,
+        ),
+        showcase_reaction_emoji=(
+            _get_env("SHOWCASE_REACTION_EMOJI", DEFAULT_SHOWCASE_REACTION_EMOJI)
+            or DEFAULT_SHOWCASE_REACTION_EMOJI
         ),
     )
 

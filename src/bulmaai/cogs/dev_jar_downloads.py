@@ -34,6 +34,7 @@ from bulmaai.services.dev_jar_pending_review import (
     clear_pending_dev_jar_review,
     clear_pending_dev_jar_review_message,
     get_pending_dev_jar_review,
+    reset_pending_dev_jar_commits,
     set_pending_dev_jar_review_message,
     upsert_pending_dev_jar_review,
 )
@@ -67,31 +68,28 @@ DEV_JAR_REVIEW_EMBED_COLOR = discord.Colour.blurple()
 # after the commit changelog (e.g. Patch Notes).
 MAX_FIELDS_PER_EMBED = 24
 OVERFLOW_COMMITS_FILENAME = "dev-jar-commits.md"
-# Local-only endpoint (bound to 127.0.0.1) the VPS-side cleanup script polls to learn
-# which dev jar files must survive pruning: the currently published build (its public
-# download button is live) and the currently pending-review build (staff haven't
-# decided on it yet).
+# Bound to 0.0.0.0 (see config.py RELEASE_WEBHOOK_HOST) and gated behind the same
+# X-DMZ-Release-Bot-Secret header as the dev jar upload webhook. The VPS-side
+# cleanup script polls it to learn which dev jar files must survive pruning: the
+# currently published build (its public download button is live) and the
+# currently pending-review build (staff haven't decided on it yet).
 PROTECTED_ARTIFACTS_PATH = "/dmz-dev-jar/protected"
-DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS = (
-    1516564287210913932,
-    1453303311330709674,
-)
-DEV_JAR_PATREON_ROLE_IDS = (
-    1287877272224665640,
-    1287877305259130900,
-)
-DEV_JAR_TESTER_ROLE_IDS = (1286814599215317034,)
 
 
 def can_post_download_announcement(member: object, *, staff_role_ids: tuple[int, ...]) -> bool:
     return is_admin(member) or has_any_allowed_role(member, staff_role_ids)  # type: ignore[arg-type]
 
 
-def can_download_dev_jar(member: object) -> bool:
+def can_download_dev_jar(
+    member: object,
+    *,
+    patreon_role_ids: tuple[int, ...],
+    tester_role_ids: tuple[int, ...],
+) -> bool:
     return (
         is_admin(member)  # type: ignore[arg-type]
-        or has_any_allowed_role(member, DEV_JAR_PATREON_ROLE_IDS)  # type: ignore[arg-type]
-        or has_any_allowed_role(member, DEV_JAR_TESTER_ROLE_IDS)  # type: ignore[arg-type]
+        or has_any_allowed_role(member, patreon_role_ids)  # type: ignore[arg-type]
+        or has_any_allowed_role(member, tester_role_ids)  # type: ignore[arg-type]
     )
 
 
@@ -432,9 +430,16 @@ class DevJarDownloadsCog(commands.Cog):
             path_prefix=direct_prefix,
             handle_request=handle_direct_download,
         )
+        if not self.settings.release_webhook_secret:
+            log.error(
+                "DMZ_RELEASE_BOT_WEBHOOK_SECRET is missing; dev jar protected-artifacts route skipped."
+            )
+            return
         register_extra_get_route(
             path_prefix=PROTECTED_ARTIFACTS_PATH,
             handle_request=self._handle_protected_artifacts_request,
+            secret=self.settings.release_webhook_secret,
+            secret_header="X-DMZ-Release-Bot-Secret",
         )
 
     def _handle_protected_artifacts_request(
@@ -519,7 +524,7 @@ class DevJarDownloadsCog(commands.Cog):
 
     async def _resolve_announcement_channels(self) -> list[discord.abc.Messageable]:
         channels: list[discord.abc.Messageable] = []
-        for channel_id in DEV_JAR_ANNOUNCEMENT_CHANNEL_IDS:
+        for channel_id in self.settings.dev_jar_announcement_channel_ids:
             channel = self.bot.get_channel(channel_id)
             if channel is None:
                 channel = await self.bot.fetch_channel(channel_id)
@@ -866,6 +871,46 @@ class DevJarDownloadsCog(commands.Cog):
 
         await ctx.followup.send("Dev jar download announcement posted.", ephemeral=True)
 
+    devjar = discord.SlashCommandGroup("devjar", "Dev jar administration commands")
+    changelog = devjar.create_subgroup("changelog", "Pending dev jar review commit cache")
+
+    def _is_devjar_staff(self, member: object) -> bool:
+        return can_post_download_announcement(
+            member,
+            staff_role_ids=tuple(self.settings.discord_staff_role_ids),
+        )
+
+    @changelog.command(name="show", description="Show the commits cached in the pending dev jar review")
+    async def changelog_show(self, ctx: discord.ApplicationContext) -> None:
+        if not self._is_devjar_staff(ctx.author):
+            await ctx.respond("Only staff can view the pending dev jar changelog.", ephemeral=True)
+            return
+
+        review = await get_pending_dev_jar_review()
+        if review is None or not review.commits:
+            await ctx.respond("No commits are cached in the pending dev jar review.", ephemeral=True)
+            return
+
+        preview_limit = 10
+        preview = "\n".join(
+            f"`{commit.sha[:7]}` {commit.title}" for commit in review.commits[:preview_limit]
+        )
+        if len(review.commits) > preview_limit:
+            preview += f"\n... and {len(review.commits) - preview_limit} more"
+        await ctx.respond(
+            f"{len(review.commits)} commit(s) cached in the pending dev jar review:\n{preview}",
+            ephemeral=True,
+        )
+
+    @changelog.command(name="reset", description="Empty the cached commit changelog for the pending dev jar review")
+    async def changelog_reset(self, ctx: discord.ApplicationContext) -> None:
+        if not self._is_devjar_staff(ctx.author):
+            await ctx.respond("Only staff can reset the pending dev jar changelog.", ephemeral=True)
+            return
+
+        await reset_pending_dev_jar_commits()
+        await ctx.respond("Pending dev jar changelog cleared.", ephemeral=True)
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type != discord.InteractionType.component:
@@ -929,7 +974,11 @@ class DevJarDownloadsCog(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            if not can_download_dev_jar(interaction.user):
+            if not can_download_dev_jar(
+                interaction.user,
+                patreon_role_ids=tuple(self.settings.dev_jar_patreon_role_ids),
+                tester_role_ids=tuple(self.settings.dev_jar_tester_role_ids),
+            ):
                 await interaction.response.send_message(
                     "Your Discord account is not authorized for this download.",
                     ephemeral=True,

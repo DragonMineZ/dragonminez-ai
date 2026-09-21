@@ -189,6 +189,9 @@ class OneTimeDownloadTokenStore:
         ttl_seconds: int,
         is_manual: bool = False,
     ) -> str:
+        # ponytail: sweep on issue instead of a task loop; grants are in-memory
+        # and issue rate is low. Move to a loop if that ever stops being true.
+        self.cleanup_expired()
         token = secrets.token_urlsafe(32)
         self._grants[self._hash_token(token)] = DevJarDownloadGrant(
             artifact=artifact,

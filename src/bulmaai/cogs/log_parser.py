@@ -4,6 +4,7 @@ import re
 import discord
 from discord.ext import commands
 
+from bulmaai.utils.dmz_addons import check_addons
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
 from bulmaai.utils.log_parser import parse_log, LogReport
 from bulmaai.utils.permissions import is_admin
@@ -156,6 +157,23 @@ def _build_embed(report: LogReport, filename: str) -> discord.Embed:
         embed.add_field(
             name="ℹ️ DragonMineZ",
             value="Not detected among the loaded mods.",
+            inline=False,
+        )
+
+    # ── DMZ addons ────────────────────────────────────────────────────────────
+    addons = check_addons(report.mods, report.dragonminez_version)
+    if addons:
+        lines = []
+        for a in addons:
+            if a.compatible is False:
+                lines.append(
+                    f"⚠️ `{a.mod_id}` — {a.version} *(needs DMZ ≥ {a.min_dmz_version})*"
+                )
+            else:
+                lines.append(f"✅ `{a.mod_id}` — {a.version}")
+        embed.add_field(
+            name=f"🐉 DMZ Addons ({len(addons)})",
+            value=_truncate("\n".join(lines), 900),
             inline=False,
         )
 

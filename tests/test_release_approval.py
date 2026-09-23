@@ -36,7 +36,6 @@ VALID_PAYLOAD = {
         "forge_version": "47.4.10",
         "commit_sha": "approved-main-commit",
         "artifact_name": "dragonminez-2.1.2.jar",
-        "artifact_sha256": "sha256-from-prepare-build",
         "targets": ["modrinth", "curseforge"],
         "workflow_run_url": "https://github.com/DragonMineZ/dragonminez/actions/runs/123",
     },
@@ -70,7 +69,6 @@ class ReleaseApprovalTests(unittest.TestCase):
 
         self.assertEqual(candidate.version, "2.1.2")
         self.assertEqual(candidate.commit_sha, "approved-main-commit")
-        self.assertEqual(candidate.artifact_sha256, "sha256-from-prepare-build")
         self.assertEqual(candidate.targets, ("modrinth", "curseforge"))
         self.assertEqual(
             candidate.workflow_run_url,
@@ -83,18 +81,6 @@ class ReleaseApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseCandidateError, "event_type"):
             parse_release_candidate_payload(payload)
 
-    def test_parse_release_candidate_payload_requires_artifact_sha256(self) -> None:
-        payload = {
-            **VALID_PAYLOAD,
-            "client_payload": {
-                **VALID_PAYLOAD["client_payload"],
-                "artifact_sha256": "",
-            },
-        }
-
-        with self.assertRaisesRegex(ReleaseCandidateError, "artifact_sha256"):
-            parse_release_candidate_payload(payload)
-
     def test_build_approval_dispatch_payload_includes_required_publish_args(self) -> None:
         candidate = ReleaseCandidate(
             version="2.1.2",
@@ -103,7 +89,6 @@ class ReleaseApprovalTests(unittest.TestCase):
             forge_version="47.4.10",
             commit_sha="abc123",
             artifact_name="dragonminez-2.1.2.jar",
-            artifact_sha256="sha256",
             targets=("modrinth", "curseforge"),
             workflow_run_url=None,
         )
@@ -121,7 +106,6 @@ class ReleaseApprovalTests(unittest.TestCase):
             {
                 "version": "2.1.2",
                 "commit_sha": "abc123",
-                "artifact_sha256": "sha256",
                 "approved_by": "Bruno#0001",
                 "changelog": "Release notes",
                 "update_description": "Short update text",
@@ -182,7 +166,6 @@ class ReleaseApprovalTests(unittest.TestCase):
 
         self.assertIn("DragonMineZ 2.1.2", embed.title)
         self.assertEqual(field_values["Commit"], "`approved-main-commit`")
-        self.assertEqual(field_values["Artifact SHA-256"], "`sha256-from-prepare-build`")
         self.assertIn("modrinth", field_values["Targets"])
         self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
 
@@ -235,7 +218,6 @@ class GitHubDispatchTests(unittest.IsolatedAsyncioTestCase):
             client_payload={
                 "version": "2.1.2",
                 "commit_sha": "approved-main-commit",
-                "artifact_sha256": "sha256-from-prepare-build",
                 "approved_by": "AdminUser",
                 "changelog": "Release notes",
                 "update_description": "Update text",

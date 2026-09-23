@@ -28,7 +28,6 @@ VALID_PAYLOAD = {
         "forge_version": "47.4.10",
         "commit_sha": "approved-main-commit",
         "artifact_name": "dragonminez-2.1.2.jar",
-        "artifact_sha256": "sha256-from-prepare-build",
         "targets": ["modrinth", "curseforge"],
         "workflow_run_url": "https://github.com/DragonMineZ/dragonminez/actions/runs/123",
     },

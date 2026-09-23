@@ -37,7 +37,6 @@ def build_release_candidate_embed(
     embed.add_field(name="Forge", value=candidate.forge_version, inline=True)
     embed.add_field(name="Commit", value=f"`{candidate.commit_sha}`", inline=False)
     embed.add_field(name="Artifact", value=f"`{candidate.artifact_name}`", inline=False)
-    embed.add_field(name="Artifact SHA-256", value=f"`{candidate.artifact_sha256}`", inline=False)
     embed.add_field(name="Targets", value=", ".join(candidate.targets), inline=True)
 
     if candidate.changelog:

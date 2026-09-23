@@ -22,7 +22,6 @@ class ReleaseCandidate:
     forge_version: str
     commit_sha: str
     artifact_name: str
-    artifact_sha256: str
     targets: tuple[str, ...]
     workflow_run_url: str | None
     changelog: str | None = None
@@ -113,7 +112,6 @@ def parse_release_candidate_payload(payload: dict[str, Any]) -> ReleaseCandidate
         forge_version=_required_string(client_payload, "forge_version"),
         commit_sha=_required_string(client_payload, "commit_sha"),
         artifact_name=_required_string(client_payload, "artifact_name"),
-        artifact_sha256=_required_string(client_payload, "artifact_sha256"),
         targets=targets,
         workflow_run_url=workflow_run_url,
     )
@@ -142,7 +140,6 @@ def build_approval_dispatch_payload(
     client_payload: dict[str, Any] = {
         "version": candidate.version,
         "commit_sha": candidate.commit_sha,
-        "artifact_sha256": candidate.artifact_sha256,
         "approved_by": approved_by,
     }
 

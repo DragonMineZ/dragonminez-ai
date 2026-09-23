@@ -87,7 +87,6 @@ class ReleaseApprovalCog(commands.Cog):
     @release.command(name="candidate", description="Post a DragonMineZ release candidate for approval")
     @discord.option("version", description="Release version", required=True)
     @discord.option("commit_sha", description="Approved main commit SHA", required=True)
-    @discord.option("artifact_sha256", description="Candidate artifact SHA-256", required=True)
     @discord.option("artifact_name", description="Candidate jar artifact name", required=True)
     @discord.option("changelog", description="Markdown changelog for Modrinth and CurseForge", required=True)
     @discord.option("update_description", description="Forge update.json description", required=True)
@@ -101,7 +100,6 @@ class ReleaseApprovalCog(commands.Cog):
         ctx: discord.ApplicationContext,
         version: str,
         commit_sha: str,
-        artifact_sha256: str,
         artifact_name: str,
         changelog: str | None = None,
         update_description: str | None = None,
@@ -122,7 +120,6 @@ class ReleaseApprovalCog(commands.Cog):
             forge_version=forge_version.strip(),
             commit_sha=commit_sha.strip(),
             artifact_name=artifact_name.strip(),
-            artifact_sha256=artifact_sha256.strip(),
             targets=_parse_targets(targets),
             workflow_run_url=workflow_run_url.strip() if workflow_run_url else None,
             changelog=changelog.strip() if changelog and changelog.strip() else None,

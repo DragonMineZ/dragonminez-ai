@@ -4,13 +4,13 @@ import io
 import json
 import logging
 import time
-from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 import discord
 from discord.ext import commands
+from openai import AsyncOpenAI
 
 from bulmaai.services.dev_jar_download_records import (
     has_completed_dev_jar_download,
@@ -22,7 +22,6 @@ from bulmaai.services.dev_jar_downloads import (
     DevJarDownloadClaim,
     DevJarUploadPayload,
     OneTimeDownloadTokenStore,
-    build_dev_jar_commit_layout,
     find_latest_dev_jar,
     iter_dev_jars,
     merge_dev_jar_commits,
@@ -42,6 +41,7 @@ from bulmaai.services.dev_jar_published_state import (
     get_published_dev_jar_file_name,
     set_published_dev_jar_file_name,
 )
+from bulmaai.services.dev_jar_release_notes import generate_dev_jar_release_notes
 from bulmaai.services.patch_notes import build_patch_notes_url
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
@@ -50,6 +50,11 @@ from bulmaai.services.release_webhook import (
     text_http_response,
     unregister_extra_webhook_route,
     unregister_extra_get_route,
+)
+from bulmaai.ui.dev_jar_views import (
+    artifact_day,
+    build_dev_jar_download_embeds,
+    build_dev_jar_review_embeds,
 )
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 
@@ -62,12 +67,9 @@ DOWNLOAD_FILE_SUFFIX = "/file"
 # Stable custom_ids for the staff review prompt so its buttons survive restarts.
 DEV_JAR_REVIEW_PUBLISH_ID = "dev_jar_review:publish"
 DEV_JAR_REVIEW_DISCARD_ID = "dev_jar_review:discard"
-DEV_JAR_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
-DEV_JAR_REVIEW_EMBED_COLOR = discord.Colour.blurple()
-# Discord caps embeds at 25 fields; leave headroom for trailing fields appended
-# after the commit changelog (e.g. Patch Notes).
-MAX_FIELDS_PER_EMBED = 24
-OVERFLOW_COMMITS_FILENAME = "dev-jar-commits.md"
+# Sent alongside every review/announcement message carrying commits, not just
+# when the inline changelog overflows.
+COMMITS_FILENAME = "dev-jar-commits.md"
 # Bound to 0.0.0.0 (see config.py RELEASE_WEBHOOK_HOST) and gated behind the same
 # X-DMZ-Release-Bot-Secret header as the dev jar upload webhook. The VPS-side
 # cleanup script polls it to learn which dev jar files must survive pruning: the
@@ -93,13 +95,6 @@ def can_download_dev_jar(
     )
 
 
-def _format_size(size_bytes: int | None) -> str:
-    if size_bytes is None:
-        return "Unknown"
-    size_mb = size_bytes / (1024 * 1024)
-    return f"{size_mb:.3f} MB"
-
-
 def _manual_artifact_commit(artifact: DevJarArtifact, *, author: object) -> DevJarCommit:
     return DevJarCommit(
         sha=artifact.commit_sha,
@@ -108,197 +103,6 @@ def _manual_artifact_commit(artifact: DevJarArtifact, *, author: object) -> DevJ
         author=str(author),
         url=f"https://github.com/DragonMineZ/dragonminez/commit/{artifact.commit_sha}",
     )
-
-
-def _artifact_day(artifact: DevJarArtifact) -> str:
-    moment = artifact.modified_at or datetime.now(timezone.utc)
-    return f"{moment:%B %d, %Y}"
-
-
-def _build_base_dev_jar_fields(
-    artifact: DevJarArtifact,
-    *,
-    sha256: str | None,
-    previous_size_bytes: int | None,
-) -> list[tuple[str, str, bool]]:
-    fields: list[tuple[str, str, bool]] = [
-        ("Version", f"`{artifact.version}`", True),
-        ("Commit .jar", f"`{artifact.commit_sha}`", True),
-        ("Artifact", f"`{artifact.file_name}`", False),
-    ]
-    size_str = _format_size(artifact.size_bytes)
-    if previous_size_bytes is not None:
-        size_str = f"{_format_size(previous_size_bytes)} → {size_str}"
-    fields.append(("Size", size_str, True))
-    if sha256:
-        fields.append(("SHA-256", f"`{sha256}`", False))
-    return fields
-
-
-def _append_fields_across_embeds(
-    embeds: list[discord.Embed],
-    fields: Iterable[tuple[str, str]],
-    *,
-    colour: discord.Colour,
-    inline: bool = False,
-) -> None:
-    """Append (name, value) fields to the last embed, spilling into new embeds
-    once the 25-fields-per-embed limit is hit."""
-    current = embeds[-1]
-    current_field_count = len(current.fields)
-    for name, value in fields:
-        if current_field_count >= MAX_FIELDS_PER_EMBED:
-            current = discord.Embed(colour=colour)
-            embeds.append(current)
-            current_field_count = 0
-        current.add_field(name=name, value=value, inline=inline)
-        current_field_count += 1
-
-
-def _build_changelog_embeds(
-    descriptions: Iterable[str],
-    *,
-    colour: discord.Colour,
-) -> list[discord.Embed]:
-    """One embed per changelog chunk. Only the first carries the
-    "Commits Changelog" title; continuation chunks are untitled."""
-    return [
-        discord.Embed(
-            title="Commits Changelog" if index == 0 else None,
-            description=text,
-            colour=colour,
-        )
-        for index, text in enumerate(descriptions)
-    ]
-
-
-def build_dev_jar_download_embeds(
-    artifact: DevJarArtifact,
-    *,
-    commits: tuple[DevJarCommit, ...],
-    sha256: str | None = None,
-    workflow_run_url: str | None = None,
-    previous_size_bytes: int | None = None,
-) -> tuple[list[discord.Embed], str | None]:
-    """Build the public dev jar announcement embed(s).
-
-    Returns the embeds to send plus the full, untruncated commit changelog
-    text when the commit list is too large to fit inside Discord's embed
-    character budget (to be attached as a file so nothing gets dropped).
-    """
-    description = (
-        "A push has been detected in GitHub and a .jar has successfully passed tests and is ready to be "
-        "downloaded! These versions are automatically built by the latest commits, meaning they can be "
-        "unstable or not run at all on your machine. For stable (and mostly tested) beta/alpha releases, "
-        "look for them in Discord. Click the button to download the latest dev jar, and check the "
-        "changelog for details on what changed."
-    )
-    footer_text = "Downloads require Discord access authorization. Download links are one-time per user per jar."
-    notes_day = _artifact_day(artifact)
-    patch_notes_value = (
-        f"The **Patch Notes** button below opens the patch notes for {notes_day} "
-        "with everything that changed in this update."
-    )
-    base_fields = _build_base_dev_jar_fields(
-        artifact, sha256=sha256, previous_size_bytes=previous_size_bytes
-    )
-    base_char_count = (
-        len("DragonMineZ Dev Update")
-        + len(description)
-        + len(footer_text)
-        + len("Patch Notes")
-        + len(patch_notes_value)
-        + sum(len(name) + len(value) for name, value, _ in base_fields)
-    )
-    layout = build_dev_jar_commit_layout(commits, base_char_count=base_char_count)
-
-    primary = discord.Embed(
-        title="DragonMineZ Dev Update",
-        description=description,
-        url=workflow_run_url,
-        colour=DEV_JAR_EMBED_COLOR,
-        timestamp=artifact.modified_at,
-    )
-    for name, value, inline in base_fields:
-        primary.add_field(name=name, value=value, inline=inline)
-
-    embeds = [primary, *_build_changelog_embeds(layout.descriptions, colour=DEV_JAR_EMBED_COLOR)]
-    _append_fields_across_embeds(
-        embeds, [("Patch Notes", patch_notes_value)], colour=DEV_JAR_EMBED_COLOR
-    )
-    embeds[-1].set_footer(text=footer_text)
-
-    overflow_text = layout.full_changelog_text if layout.overflowed else None
-    return embeds, overflow_text
-
-
-def build_dev_jar_download_embed(
-    artifact: DevJarArtifact,
-    *,
-    commits: tuple[DevJarCommit, ...],
-    sha256: str | None = None,
-    workflow_run_url: str | None = None,
-    previous_size_bytes: int | None = None,
-) -> discord.Embed:
-    """Convenience wrapper returning just the primary embed (single-embed case)."""
-    embeds, _ = build_dev_jar_download_embeds(
-        artifact,
-        commits=commits,
-        sha256=sha256,
-        workflow_run_url=workflow_run_url,
-        previous_size_bytes=previous_size_bytes,
-    )
-    return embeds[0]
-
-
-def build_dev_jar_review_embeds(
-    artifact: DevJarArtifact,
-    *,
-    commits: tuple[DevJarCommit, ...],
-    sha256: str | None = None,
-    workflow_run_url: str | None = None,
-    status: str = "Pending review",
-    actor: str | None = None,
-) -> tuple[list[discord.Embed], str | None]:
-    """Build the staff review embed(s) posted to the dev jar review channel."""
-    description = (
-        "A push has been detected on GitHub and the dev jar built and uploaded successfully. "
-        "Review the accumulated commits below, then **Publish** to announce it to the download "
-        "channels, or **Discard** to drop this build without publishing."
-    )
-    base_fields = _build_base_dev_jar_fields(artifact, sha256=sha256, previous_size_bytes=None)
-    status_field = ("Status", status)
-    commit_count_field = ("Commits since last decision", str(len(commits)))
-    base_char_count = (
-        len("DragonMineZ Dev Jar Review")
-        + len(description)
-        + len(status_field[0]) + len(status_field[1])
-        + len(commit_count_field[0]) + len(commit_count_field[1])
-        + sum(len(name) + len(value) for name, value, _ in base_fields)
-    )
-    layout = build_dev_jar_commit_layout(commits, base_char_count=base_char_count)
-
-    primary = discord.Embed(
-        title="DragonMineZ Dev Jar Review",
-        description=description,
-        url=workflow_run_url,
-        colour=DEV_JAR_REVIEW_EMBED_COLOR,
-    )
-    primary.add_field(name=status_field[0], value=status_field[1], inline=True)
-    primary.add_field(name=commit_count_field[0], value=commit_count_field[1], inline=True)
-    for name, value, inline in base_fields:
-        primary.add_field(name=name, value=value, inline=inline)
-
-    embeds = [
-        primary,
-        *_build_changelog_embeds(layout.descriptions, colour=DEV_JAR_REVIEW_EMBED_COLOR),
-    ]
-
-    if actor:
-        embeds[-1].set_footer(text=actor)
-
-    overflow_text = layout.full_changelog_text if layout.overflowed else None
-    return embeds, overflow_text
 
 
 class DevJarDownloadView(discord.ui.View):
@@ -320,7 +124,7 @@ class DevJarDownloadView(discord.ui.View):
         )
         self.add_item(
             discord.ui.Button(
-                label=f"Patch Notes – {_artifact_day(artifact)}",
+                label=f"Patch Notes – {artifact_day(artifact)}",
                 url=patch_notes_url,
             )
         )
@@ -358,6 +162,7 @@ class DevJarDownloadsCog(commands.Cog):
         self.bot = bot
         self.settings = bot.settings
         self.token_store = OneTimeDownloadTokenStore(now=time.time)
+        self._openai_client = AsyncOpenAI(api_key=self.settings.openai_key)
         self._release_webhook_route_registered = False
         self._release_get_routes_registered = False
         self._pending_review_lock = asyncio.Lock()
@@ -511,10 +316,7 @@ class DevJarDownloadsCog(commands.Cog):
             raise FileNotFoundError(artifact.file_name)
         return path
 
-    async def _resolve_channel(self) -> discord.abc.Messageable:
-        channel_id = self.settings.dev_jar_download_channel_id
-        if channel_id is None:
-            raise RuntimeError("dev_jar_download_channel_id is not configured")
+    async def _resolve_messageable_channel(self, channel_id: int) -> discord.abc.Messageable:
         channel = self.bot.get_channel(channel_id)
         if channel is None:
             channel = await self.bot.fetch_channel(channel_id)
@@ -522,32 +324,28 @@ class DevJarDownloadsCog(commands.Cog):
             raise RuntimeError(f"Configured dev jar channel {channel_id} is not messageable")
         return channel
 
+    async def _resolve_channel(self) -> discord.abc.Messageable:
+        channel_id = self.settings.dev_jar_download_channel_id
+        if channel_id is None:
+            raise RuntimeError("dev_jar_download_channel_id is not configured")
+        return await self._resolve_messageable_channel(channel_id)
+
     async def _resolve_announcement_channels(self) -> list[discord.abc.Messageable]:
-        channels: list[discord.abc.Messageable] = []
-        for channel_id in self.settings.dev_jar_announcement_channel_ids:
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                channel = await self.bot.fetch_channel(channel_id)
-            if not hasattr(channel, "send"):
-                raise RuntimeError(f"Configured dev jar channel {channel_id} is not messageable")
-            channels.append(channel)
-        return channels
+        return [
+            await self._resolve_messageable_channel(channel_id)
+            for channel_id in self.settings.dev_jar_announcement_channel_ids
+        ]
 
     async def _resolve_review_channel(self) -> discord.abc.Messageable:
         channel_id = self.settings.dev_jar_review_channel_id
         if channel_id is None:
             raise RuntimeError("dev_jar_review_channel_id is not configured")
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            channel = await self.bot.fetch_channel(channel_id)
-        if not hasattr(channel, "send"):
-            raise RuntimeError(f"Configured dev jar review channel {channel_id} is not messageable")
-        return channel
+        return await self._resolve_messageable_channel(channel_id)
 
-    def _overflow_files(self, overflow_text: str | None) -> list[discord.File]:
-        if not overflow_text:
+    def _commit_list_files(self, commit_list_text: str | None) -> list[discord.File]:
+        if not commit_list_text:
             return []
-        return [discord.File(io.BytesIO(overflow_text.encode("utf-8")), filename=OVERFLOW_COMMITS_FILENAME)]
+        return [discord.File(io.BytesIO(commit_list_text.encode("utf-8")), filename=COMMITS_FILENAME)]
 
     def _patch_notes_url(self) -> str:
         return build_patch_notes_url(
@@ -555,6 +353,22 @@ class DevJarDownloadsCog(commands.Cog):
             self.settings.patch_notes_branch,
             self.settings.patch_notes_file_path,
         )
+
+    async def _create_feedback_thread(
+        self, message: discord.Message | None, artifact: DevJarArtifact
+    ) -> None:
+        """Best-effort per-build feedback thread on the announcement message.
+        Crash logs posted in it are already auto-parsed by LogParserCog. The
+        announcement has already gone out, so a missing permission or a
+        thread limit must not raise."""
+        if message is None:
+            return
+        try:
+            await message.create_thread(name=f"Build {artifact.version}")
+        except discord.HTTPException:
+            log.exception(
+                "Failed to create feedback thread for dev jar build %s", artifact.version
+            )
 
     async def _post_download_announcement(
         self,
@@ -567,9 +381,13 @@ class DevJarDownloadsCog(commands.Cog):
         previous_size_bytes: int | None = None,
         is_manual: bool = False,
     ) -> None:
-        embeds, overflow_text = build_dev_jar_download_embeds(
+        release_notes = await generate_dev_jar_release_notes(
+            commits, client=self._openai_client, model=self.settings.openai_model
+        )
+        embeds, commit_list_text = build_dev_jar_download_embeds(
             artifact,
             commits=commits,
+            release_notes=release_notes,
             sha256=sha256,
             workflow_run_url=workflow_run_url,
             previous_size_bytes=previous_size_bytes,
@@ -577,29 +395,37 @@ class DevJarDownloadsCog(commands.Cog):
         patch_notes_url = self._patch_notes_url()
         target_channels = [channel] if channel is not None else await self._resolve_announcement_channels()
         for target_channel in target_channels:
-            await target_channel.send(
+            sent = await target_channel.send(
                 embeds=embeds,
                 view=DevJarDownloadView(
                     artifact, patch_notes_url=patch_notes_url, is_manual=is_manual
                 ),
                 allowed_mentions=discord.AllowedMentions.none(),
-                files=self._overflow_files(overflow_text),
+                files=self._commit_list_files(commit_list_text),
             )
+            await self._create_feedback_thread(sent, artifact)
         # Record this as the live public download so the VPS-side cleanup script
         # (via the /dmz-dev-jar/protected endpoint) never prunes it out from under
         # the download button we just posted.
         await set_published_dev_jar_file_name(artifact.file_name)
 
-    async def _handle_upload_payload(self, payload: DevJarUploadPayload) -> None:
-        path = self._artifact_path(payload.artifact)
+    def _refresh_artifact_stat(self, artifact: DevJarArtifact) -> DevJarArtifact:
+        """Rebuild `artifact` with fresh size/mtime read from disk.
+
+        Raises FileNotFoundError (via `_artifact_path`) if the file is gone.
+        """
+        path = self._artifact_path(artifact)
         stat = path.stat()
-        artifact = DevJarArtifact(
-            file_name=payload.artifact.file_name,
-            version=payload.artifact.version,
-            commit_sha=payload.artifact.commit_sha,
+        return DevJarArtifact(
+            file_name=artifact.file_name,
+            version=artifact.version,
+            commit_sha=artifact.commit_sha,
             size_bytes=stat.st_size,
             modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
+
+    async def _handle_upload_payload(self, payload: DevJarUploadPayload) -> None:
+        artifact = self._refresh_artifact_stat(payload.artifact)
         await self._queue_for_review(
             artifact=artifact,
             commits=payload.commits,
@@ -615,20 +441,6 @@ class DevJarDownloadsCog(commands.Cog):
         sha256: str | None,
         workflow_run_url: str | None,
     ) -> None:
-        if self.settings.dev_jar_review_channel_id is None:
-            log.error(
-                "dev_jar_review_channel_id is not configured; publishing dev jar directly "
-                "without staff review."
-            )
-            await self._post_download_announcement(
-                artifact,
-                commits=commits,
-                sha256=sha256,
-                workflow_run_url=workflow_run_url,
-                previous_size_bytes=self._get_previous_artifact_size(artifact.file_name),
-            )
-            return
-
         async with self._pending_review_lock:
             existing = await get_pending_dev_jar_review()
             merged_commits = merge_dev_jar_commits(
@@ -637,7 +449,9 @@ class DevJarDownloadsCog(commands.Cog):
             )
             # Persist the merged commit cache up front (still pointing at the old
             # message, if any) so a later Discord failure can never drop commits;
-            # the message link is refreshed after the fresh post below.
+            # the message link is refreshed after the fresh post below. This also
+            # keeps the build's artifact + commits alive (and the jar protected
+            # from VPS pruning) even if there's nowhere to post the review below.
             await upsert_pending_dev_jar_review(
                 artifact=artifact,
                 sha256=sha256,
@@ -646,6 +460,20 @@ class DevJarDownloadsCog(commands.Cog):
                 channel_id=existing.channel_id if existing is not None else None,
                 message_id=existing.message_id if existing is not None else None,
             )
+
+            if self.settings.dev_jar_review_channel_id is None:
+                # No staff review gate configured: refuse to publish rather than
+                # skip straight to the public channels. The build stays queued
+                # (persisted above) so nothing is lost once a review channel is
+                # set. log.error is already forwarded to Discord (see
+                # discord_log_forwarding.py), so this doubles as the staff alert.
+                log.error(
+                    "dev_jar_review_channel_id is not configured; refusing to publish dev jar "
+                    "%s to the public channels. %d commit(s) remain queued for staff review.",
+                    artifact.file_name,
+                    len(merged_commits),
+                )
+                return
 
             channel = await self._resolve_review_channel()
 
@@ -662,7 +490,7 @@ class DevJarDownloadsCog(commands.Cog):
                 workflow_run_url=workflow_run_url,
             )
             view = DevJarReviewView()
-            files = self._overflow_files(overflow_text)
+            files = self._commit_list_files(overflow_text)
 
             sent = await channel.send(
                 embeds=embeds,
@@ -732,15 +560,7 @@ class DevJarDownloadsCog(commands.Cog):
                 )
                 return
             try:
-                path = self._artifact_path(review.artifact)
-                stat = path.stat()
-                artifact = DevJarArtifact(
-                    file_name=review.artifact.file_name,
-                    version=review.artifact.version,
-                    commit_sha=review.artifact.commit_sha,
-                    size_bytes=stat.st_size,
-                    modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                )
+                artifact = self._refresh_artifact_stat(review.artifact)
             except FileNotFoundError:
                 await interaction.followup.send(
                     f"Cannot publish: `{review.artifact.file_name}` is no longer on disk.",
@@ -844,16 +664,7 @@ class DevJarDownloadsCog(commands.Cog):
         await ctx.defer(ephemeral=True)
         try:
             if file_name:
-                artifact = parse_dev_jar_filename(file_name.strip())
-                path = self._artifact_path(artifact)
-                stat = path.stat()
-                artifact = DevJarArtifact(
-                    file_name=artifact.file_name,
-                    version=artifact.version,
-                    commit_sha=artifact.commit_sha,
-                    size_bytes=stat.st_size,
-                    modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                )
+                artifact = self._refresh_artifact_stat(parse_dev_jar_filename(file_name.strip()))
             else:
                 artifact = find_latest_dev_jar(self._upload_dir())
             target_channel = channel or await self._resolve_channel()

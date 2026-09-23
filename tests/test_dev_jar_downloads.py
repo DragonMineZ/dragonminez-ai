@@ -5,11 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import discord
+
 from bulmaai.cogs.dev_jar_downloads import (
     DevJarDownloadsCog,
     DevJarDownloadView,
-    build_dev_jar_download_embed,
-    build_dev_jar_download_embeds,
 )
 from bulmaai.services.patch_notes import build_patch_notes_url
 from bulmaai.services.dev_jar_downloads import (
@@ -22,6 +22,11 @@ from bulmaai.services.dev_jar_downloads import (
     merge_dev_jar_commits,
     parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
+)
+from bulmaai.ui.dev_jar_views import (
+    build_dev_jar_download_embed,
+    build_dev_jar_download_embeds,
+    build_dev_jar_review_embeds,
 )
 
 
@@ -232,11 +237,12 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         field_values = [field.value for field in embed.fields]
         self.assertIn("`222222222222`", field_values)
 
-    def test_download_embed_includes_commit_summary_links_and_titles_but_not_descriptions(self) -> None:
+    def test_download_embed_shows_release_notes_not_raw_changelog(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__086afb963f2c.jar")
 
-        embeds, _ = build_dev_jar_download_embeds(
+        embeds, commit_list_text = build_dev_jar_download_embeds(
             artifact,
+            release_notes="Big balance changes and a shiny new form!",
             commits=(
                 DevJarCommit(
                     sha="93066058a79b",
@@ -255,17 +261,26 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        changelog_embed = next(embed for embed in embeds if embed.title == "Commits Changelog")
-        changelog_text = changelog_embed.description
-        self.assertIn("[9306605](https://github.com/DragonMineZ/dragonminez/commit/93066058a79b)", changelog_text)
-        self.assertIn("feat: changed form drains", changelog_text)
-        self.assertIn("- Shokkoh", changelog_text)
-        self.assertIn("[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)", changelog_text)
-        self.assertIn("fix: race selection screen fix", changelog_text)
-        self.assertNotIn("Adds support for new drain behavior.", changelog_text)
-        self.assertEqual(
-            sum(1 for embed in embeds if embed.title == "Commits Changelog"), 1
+        # The public embed shows the short blurb, not a raw commit dump.
+        field_values = {field.name: field.value for embed in embeds for field in embed.fields}
+        self.assertEqual(field_values["What's New"], "Big balance changes and a shiny new form!")
+        self.assertNotIn("Commits Changelog", [embed.title for embed in embeds])
+
+        # The full commit list is still available in full, unconditionally, as
+        # the text handed back for the always-attached commits file.
+        assert commit_list_text is not None
+        self.assertIn(
+            "[9306605](https://github.com/DragonMineZ/dragonminez/commit/93066058a79b)",
+            commit_list_text,
         )
+        self.assertIn("feat: changed form drains", commit_list_text)
+        self.assertIn("- Shokkoh", commit_list_text)
+        self.assertIn(
+            "[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)",
+            commit_list_text,
+        )
+        self.assertIn("fix: race selection screen fix", commit_list_text)
+        self.assertNotIn("Adds support for new drain behavior.", commit_list_text)
 
     async def test_download_view_includes_dated_patch_notes_link_button(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
@@ -1016,7 +1031,9 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch_notes_repo="dragonminez",
                 patch_notes_branch="v2.1.x",
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
+                openai_model="gpt-5-mini",
             )
+            cog._openai_client = None
             cog._pending_review_lock = asyncio.Lock()
 
             review = SimpleNamespace(
@@ -1066,6 +1083,201 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("published" in content.lower() for content, _ in interaction.followup.messages)
         )
+
+    async def test_queue_for_review_refuses_to_publish_when_review_channel_unset(self) -> None:
+        class FakeChannel:
+            def __init__(self, channel_id: int) -> None:
+                self.id = channel_id
+                self.sent: list[dict] = []
+
+            async def send(self, **kwargs) -> None:
+                self.sent.append(kwargs)
+
+        class FakeBot:
+            def __init__(self, channels: dict[int, FakeChannel]) -> None:
+                self._channels = channels
+
+            def get_channel(self, channel_id: int):
+                return self._channels.get(channel_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+
+            announcement_channel = FakeChannel(1516564287210913932)
+
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.bot = FakeBot({1516564287210913932: announcement_channel})
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_review_channel_id=None,
+                dev_jar_announcement_channel_ids=(1516564287210913932,),
+            )
+            cog._pending_review_lock = asyncio.Lock()
+
+            upsert_calls: list[dict] = []
+
+            async def fake_upsert(**kwargs) -> None:
+                upsert_calls.append(kwargs)
+
+            with (
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch(
+                    "bulmaai.cogs.dev_jar_downloads.upsert_pending_dev_jar_review",
+                    new=fake_upsert,
+                ),
+                self.assertLogs("bulmaai.cogs.dev_jar_downloads", level="ERROR") as log_capture,
+            ):
+                await cog._handle_upload_payload(
+                    DevJarUploadPayload(
+                        artifact=artifact,
+                        sha256="a" * 64,
+                        workflow_run_url=None,
+                        commits=(
+                            DevJarCommit(
+                                sha="222222222222",
+                                title="fix: race selection screen fix",
+                                description=None,
+                                author="Shokkoh",
+                                url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                            ),
+                        ),
+                    )
+                )
+
+        # With no staff review channel configured, this must refuse to publish
+        # rather than silently bypass review and post to the public channel.
+        self.assertEqual(announcement_channel.sent, [])
+        # But the build and its commits are still persisted, protecting the
+        # jar from VPS pruning until a review channel is configured.
+        self.assertEqual(len(upsert_calls), 1)
+        self.assertEqual(upsert_calls[0]["artifact"].file_name, artifact.file_name)
+        self.assertEqual(len(upsert_calls[0]["commits"]), 1)
+        self.assertTrue(any("refusing to publish" in message for message in log_capture.output))
+
+    async def test_post_download_announcement_creates_feedback_thread_per_channel(self) -> None:
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.threads: list[str] = []
+
+            async def create_thread(self, *, name: str) -> None:
+                self.threads.append(name)
+
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.sent_messages: list[FakeMessage] = []
+
+            async def send(self, **kwargs) -> "FakeMessage":
+                message = FakeMessage()
+                self.sent_messages.append(message)
+                return message
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+
+            patreon_channel = FakeChannel()
+            testing_channel = FakeChannel()
+
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.bot = SimpleNamespace(
+                get_channel=lambda channel_id: {
+                    1516564287210913932: patreon_channel,
+                    1453303311330709674: testing_channel,
+                }.get(channel_id)
+            )
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_announcement_channel_ids=(1516564287210913932, 1453303311330709674),
+                patch_notes_repo="dragonminez",
+                patch_notes_branch="v2.1.x",
+                patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
+                openai_model="gpt-5-mini",
+            )
+            cog._openai_client = None
+
+            with patch(
+                "bulmaai.cogs.dev_jar_downloads.set_published_dev_jar_file_name",
+                new=AsyncMock(),
+            ):
+                await cog._post_download_announcement(
+                    artifact,
+                    commits=(
+                        DevJarCommit(
+                            sha="222222222222",
+                            title="fix: race selection screen fix",
+                            description=None,
+                            author="Shokkoh",
+                            url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                        ),
+                    ),
+                )
+
+        # Both announcement channels get a feedback thread, since a player
+        # might only have access to one of them.
+        self.assertEqual(patreon_channel.sent_messages[0].threads, [f"Build {artifact.version}"])
+        self.assertEqual(testing_channel.sent_messages[0].threads, [f"Build {artifact.version}"])
+
+    async def test_post_download_announcement_thread_failure_does_not_raise(self) -> None:
+        class FakeMessage:
+            async def create_thread(self, *, name: str) -> None:
+                raise discord.HTTPException(
+                    SimpleNamespace(status=403, reason="Forbidden"), "Missing Permissions"
+                )
+
+        class FakeChannel:
+            async def send(self, **kwargs) -> "FakeMessage":
+                return FakeMessage()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            upload_dir = Path(tmp)
+            artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+            (upload_dir / artifact.file_name).write_bytes(b"jar")
+
+            channel = FakeChannel()
+
+            cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
+            cog.bot = SimpleNamespace(get_channel=lambda channel_id: channel)
+            cog.settings = SimpleNamespace(
+                dev_jar_download_upload_dir=str(upload_dir),
+                dev_jar_announcement_channel_ids=(1516564287210913932,),
+                patch_notes_repo="dragonminez",
+                patch_notes_branch="v2.1.x",
+                patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
+                openai_model="gpt-5-mini",
+            )
+            cog._openai_client = None
+
+            published: list[str] = []
+
+            async def fake_set_published(file_name: str) -> None:
+                published.append(file_name)
+
+            with patch(
+                "bulmaai.cogs.dev_jar_downloads.set_published_dev_jar_file_name",
+                new=fake_set_published,
+            ):
+                # Must not raise even though thread creation fails (missing
+                # permission / thread limit): the announcement already went out.
+                await cog._post_download_announcement(
+                    artifact,
+                    commits=(
+                        DevJarCommit(
+                            sha="222222222222",
+                            title="fix: race selection screen fix",
+                            description=None,
+                            author="Shokkoh",
+                            url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
+                        ),
+                    ),
+                )
+
+        self.assertEqual(published, [artifact.file_name])
 
     async def test_discard_pending_review_keeps_commits_queued(self) -> None:
         class FakeResponse:

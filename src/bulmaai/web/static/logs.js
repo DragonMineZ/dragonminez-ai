@@ -7,6 +7,7 @@
 
   i18n({
     "Actor": "Autor",
+    "Moderator": "Moderador",
     "Filter text…": "Filtrar texto…",
     "Pause": "Pausar",
     "Resume": "Reanudar",
@@ -262,6 +263,7 @@
     perm: "mod.cases.view",
     async render(view, args) {
       const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: args[0] || "" });
+      const modInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22" });
       const actionInput = h("input", { type: "text", placeholder: t("All actions"), size: "22" });
       const sourceSelect = h("select", {}, h("option", { value: "" }, t("All sources")),
         h("option", { value: "panel" }, "panel"), h("option", { value: "automod" }, "automod"),
@@ -279,6 +281,7 @@
       const load = async (append) => {
         const params = new URLSearchParams();
         if (userInput.value.trim()) params.set("user_id", userInput.value.trim());
+        if (modInput.value.trim()) params.set("moderator_id", modInput.value.trim());
         if (actionInput.value.trim()) params.set("action", actionInput.value.trim());
         if (sourceSelect.value) params.set("source", sourceSelect.value);
         if (append && nextBefore) params.set("before_id", String(nextBefore));
@@ -291,7 +294,7 @@
 
       more.addEventListener("click", () => run(more, () => load(true)));
       const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(false)); } },
-        field(t("User"), userField), field(t("Action"), actionField), field(t("Source"), sourceSelect), apply);
+        field(t("User"), userField), field(t("Moderator"), userSuggest(modInput)), field(t("Action"), actionField), field(t("Source"), sourceSelect), apply);
       view.append(
         h("h1", {}, t("Audit log")),
         h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));

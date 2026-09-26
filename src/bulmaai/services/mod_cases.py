@@ -59,6 +59,7 @@ async def list_cases(
     guild_id: int,
     *,
     user_id: int | None = None,
+    moderator_id: int | None = None,
     action: str | None = None,
     source: str | None = None,
     before_id: int | None = None,
@@ -67,7 +68,7 @@ async def list_cases(
     """Newest first. Optional filters are ANDed; before_id pages backwards."""
     conditions = ["guild_id = $1"]
     args: list[object] = [guild_id]
-    for column, value in (("user_id", user_id), ("action", action), ("source", source)):
+    for column, value in (("user_id", user_id), ("moderator_id", moderator_id), ("action", action), ("source", source)):
         if value is not None:
             args.append(value)
             conditions.append(f"{column} = ${len(args)}")

@@ -34,6 +34,7 @@ const Panel = (() => {
     lang = LANGS[next] ? next : "en";
     try { localStorage.setItem(LANG_KEY, lang); } catch { /* private mode */ }
     translateStatic();
+    labelLangDock();
     if (me) {
       document.getElementById("me-tier").textContent = t(me.tier);
       route();
@@ -214,6 +215,11 @@ const Panel = (() => {
     return r ? `@${r.name}` : String(id);
   }
 
+  // Discord users aren't in guild() (that's channels/roles only), so this hits /api/users/{id} directly.
+  async function userName(id) {
+    try { return `@${(await api(`/api/users/${id}`)).user.display_name}`; } catch { return String(id); }
+  }
+
   function channelSelect(selected, { types = ["text", "news", "forum"], includeNone = false } = {}) {
     const select = h("select", {}, includeNone ? h("option", { value: "" }, t("— none —")) : null);
     guild().then((g) => {
@@ -284,11 +290,43 @@ const Panel = (() => {
     if (view.isConnected) main.focus({ preventScroll: true });
   }
 
+  // Floating language switch: parked mostly off-screen bottom-right, slides in when the pointer
+  // gets near (or it gets focus/tapped). Both flags show; the current language's half is dimmed.
+  const langDock = h("div", { class: "lang-dock" },
+    h("span", { class: "lang-tip", "aria-hidden": "true" }),
+    h("button", { class: "lang-fab", type: "button" }, h("span", { class: "flag us" }), h("span", { class: "flag es" })));
+  const LANG_NEAR_PX = 150;
+
+  function labelLangDock() {
+    const text = lang === "es" ? "Cambia a inglés" : "Change to Spanish";
+    langDock.dataset.lang = lang;
+    langDock.firstChild.textContent = text;
+    langDock.lastChild.setAttribute("aria-label", text);
+  }
+
+  function mountLangDock() {
+    labelLangDock();
+    const near = (on) => langDock.classList.toggle("near", on);
+    const fab = langDock.lastChild;
+    document.addEventListener("pointermove", (e) => {
+      if (e.pointerType !== "mouse") return;
+      near(Math.hypot(innerWidth - e.clientX, innerHeight - e.clientY) < LANG_NEAR_PX);
+    }, { passive: true });
+    fab.addEventListener("focus", () => { if (fab.matches(":focus-visible")) near(true); });
+    fab.addEventListener("blur", () => near(false));
+    document.addEventListener("pointerdown", (e) => {
+      if (e.pointerType !== "mouse" && !langDock.contains(e.target)) near(false);
+    });
+    // Touch has no hover: the first tap on the peeking half pulls it out, the second switches.
+    fab.addEventListener("click", () => {
+      if (!langDock.classList.contains("near")) { near(true); return; }
+      setLang(lang === "es" ? "en" : "es");
+    });
+    document.body.append(langDock);
+  }
+
   async function boot() {
-    const langSelect = document.getElementById("lang");
-    langSelect.replaceChildren(...Object.entries(LANGS).map(([code, name]) => h("option", { value: code }, name)));
-    langSelect.value = lang;
-    langSelect.addEventListener("change", () => setLang(langSelect.value));
+    mountLangDock();
     translateStatic();
     try {
       me = await api("/api/me");
@@ -324,7 +362,6 @@ const Panel = (() => {
     "Log out": "Cerrar sesión",
     "Log in with Discord": "Iniciar sesión con Discord",
     "DragonMineZ staff only.": "Solo para el staff de DragonMineZ.",
-    "Language": "Idioma",
     "owner": "dueño",
     "admin": "admin",
     "moderator": "moderador",
@@ -336,7 +373,7 @@ const Panel = (() => {
 
   return {
     h, api, toast, run, can, time, user, badge, table, field, dialog, guild, suggest, userSuggest,
-    channelName, roleName, channelSelect, page, go, me: () => me, refresh: route,
+    channelName, roleName, userName, channelSelect, page, go, me: () => me, refresh: route,
     t, i18n, locale, lang: () => lang,
   };
 })();

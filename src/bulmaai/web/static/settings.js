@@ -1,7 +1,7 @@
 "use strict";
 
 (() => {
-  const { h, api, run, can, badge, channelName, roleName, t } = Panel;
+  const { h, api, run, can, badge, channelName, roleName, userName, t } = Panel;
 
   Panel.i18n({
     "Settings": "Configuración",
@@ -38,7 +38,8 @@
   function resolvedNames(setting) {
     const span = h("div", { class: "muted small" });
     const ids = Array.isArray(setting.value) ? setting.value : setting.value ? [setting.value] : [];
-    const resolve = setting.hint === "channel" ? channelName : setting.hint === "role" ? roleName : null;
+    const resolve = setting.hint === "channel" ? channelName : setting.hint === "role" ? roleName
+      : setting.hint === "user" ? userName : null;
     if (resolve && ids.length) Promise.all(ids.map(resolve)).then((names) => { span.textContent = names.join(", "); });
     return span;
   }

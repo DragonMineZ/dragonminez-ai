@@ -206,6 +206,14 @@ class CaseFilterTests(LogsApiTestCase):
         self.assertEqual(response.status, 200, await response.text())
         self.assertEqual(lister.await_args.kwargs["user_id"], 0)
 
+    async def test_moderator_filter_accepts_a_name(self):
+        self.login(MOD_ID)
+        with patch("bulmaai.web.routes_logs.mod_cases.list_cases", AsyncMock(return_value=[])) as lister:
+            response = await self.client.get("/api/cases?moderator_id=user777")
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(lister.await_args.kwargs["moderator_id"], STAFF_ID)
+        self.assertIsNone(lister.await_args.kwargs["user_id"])
+
 
 class WebsiteAuditFilterTests(LogsApiTestCase):
     async def test_audit_actions_lists_distinct_actions(self):

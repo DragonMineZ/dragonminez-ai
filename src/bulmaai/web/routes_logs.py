@@ -39,24 +39,25 @@ def _match_member(guild: discord.Guild, query: str) -> discord.Member | None:
 async def list_cases(request: web.Request, actor: Actor) -> web.Response:
     bot = request.app[BOT]
     guild = actor.member.guild
-    raw_user = request.query.get("user_id", "").strip()
     action = request.query.get("action", "").strip() or None
     source = request.query.get("source", "").strip() or None
     if (action and len(action) > 32) or (source and len(source) > 32):
         raise api_error(400, "Invalid filter.")
 
-    user_id = None
-    if raw_user:
-        if raw_user.isdigit():
-            user_id = _snowflake(raw_user)
-        else:
-            member = _match_member(guild, raw_user)
-            user_id = member.id if member else 0  # no match -> guaranteed-empty result, not an error
+    def _person(param: str) -> int | None:
+        raw = request.query.get(param, "").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            return _snowflake(raw)
+        member = _match_member(guild, raw)
+        return member.id if member else 0  # no match -> guaranteed-empty result, not an error
 
     limit = _query_int(request, "limit", 50, 100)
     cases = await mod_cases.list_cases(
         guild.id,
-        user_id=user_id,
+        user_id=_person("user_id"),
+        moderator_id=_person("moderator_id"),
         action=action,
         source=source,
         before_id=_query_int(request, "before_id", None, 2**63 - 1),

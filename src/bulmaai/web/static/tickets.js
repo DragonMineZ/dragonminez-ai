@@ -75,7 +75,7 @@
       { label: t("Channel"), render: (t) => discordLink(t.url, `#${t.name}`) },
       { label: t("Requester"), render: (t) => user(t.requester) },
       { label: t("Opened"), render: (t) => time(t.created_at) },
-      { label: t("AI"), render: (t) => (t.ai_enabled ? badge(t("on"), "ok") : badge(t("off"), "danger")) },
+      { label: t("AI"), render: (row) => (row.ai_enabled ? badge(t("on"), "ok") : badge(t("off"), "danger")) },
     ];
     if (can("tickets.manage")) columns.push({ label: "", render: toggle });
     const notes = [];
@@ -84,7 +84,7 @@
     card.replaceChildren(
       h("div", { class: "row spread" }, h("h2", {}, t("Open tickets ({count})", { count: data.tickets.length })),
         h("button", { class: "btn small ghost", type: "button", onclick: reload }, t("Refresh"))),
-      notes.map((n) => h("p", { class: "muted small" }, n)),
+      ...notes.map((n) => h("p", { class: "muted small" }, n)),
       table(columns, data.tickets, { empty: t("No open tickets.") }));
   }
 

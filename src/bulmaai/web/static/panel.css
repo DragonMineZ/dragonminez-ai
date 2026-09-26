@@ -61,8 +61,6 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .nav-group[open] summary::before { transform: rotate(90deg); }
 .nav-group summary:hover { color: var(--text); }
 .nav-group a { margin-left: 10px; }
-.lang { padding: 0 16px 12px; }
-.lang select { width: 100%; }
 #nav a[aria-current="page"] { background: var(--surface-2); color: var(--accent); font-weight: 600; }
 .me { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .me > div { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -134,6 +132,38 @@ tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -
 
 dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: min(520px, calc(100vw - 32px)); }
 dialog::backdrop { background: rgba(0,0,0,.5); }
+
+/* Floating language switch (panel.js mountLangDock). Parked with ~18px of the circle showing. */
+.lang-dock {
+  position: fixed; right: 18px; bottom: 18px; z-index: 50; display: flex; align-items: center; gap: 10px;
+  transform: translateX(52px); /* circle width: leaves its left 18px on screen */ transition: transform .35s cubic-bezier(.34, 1.56, .64, 1);
+}
+.lang-dock.near { transform: none; }
+.lang-fab {
+  position: relative; width: 52px; height: 52px; padding: 0; border-radius: 50%; overflow: hidden; cursor: pointer;
+  border: 2px solid var(--surface); box-shadow: 0 4px 14px rgba(0, 0, 0, .35), 0 0 0 1px var(--border);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.lang-dock.near .lang-fab:hover { transform: scale(1.08); box-shadow: 0 6px 18px rgba(0, 0, 0, .4), 0 0 0 2px var(--accent); }
+.lang-fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.flag { position: absolute; inset: 0; transition: filter .2s ease; }
+.flag.us { background: repeating-linear-gradient(#b22234 0 7.69%, #fff 7.69% 15.38%); }
+.flag.us::before {
+  content: ""; position: absolute; left: 0; top: 0; width: 50%; height: 54%;
+  background: radial-gradient(circle, #fff 22%, transparent 30%) 0 0 / 25% 25% #3c3b6e;
+}
+.flag.es { background: linear-gradient(#aa151b 0 25%, #f1bf00 25% 75%, #aa151b 75%); clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+.lang-dock[data-lang="en"] .flag.us, .lang-dock[data-lang="es"] .flag.es { filter: grayscale(.7) brightness(.75); }
+.lang-tip {
+  position: relative; padding: 6px 12px; border-radius: 999px; white-space: nowrap; font-size: 13px; font-weight: 600;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, .25);
+  opacity: 0; transform: translateX(8px) scale(.9); transition: opacity .2s ease, transform .2s ease; pointer-events: none;
+}
+.lang-tip::after {
+  content: ""; position: absolute; right: -5px; top: 50%; width: 8px; height: 8px; margin-top: -4px; transform: rotate(45deg);
+  background: var(--surface); border-top: 1px solid var(--border); border-right: 1px solid var(--border);
+}
+.lang-dock.near .lang-tip { opacity: 1; transform: none; transition-delay: .1s; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

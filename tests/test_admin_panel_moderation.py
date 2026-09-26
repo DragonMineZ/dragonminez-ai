@@ -204,7 +204,7 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         cases = [ModCase(i, 1, RANDOM_ID, HELPER_ID, "warn", "x", None, "panel", NOW) for i in (5, 4)]
         with patch("bulmaai.web.routes_moderation.mod_cases.list_cases", AsyncMock(return_value=cases)) as lister:
             data = await (await self.client.get(f"/api/cases?user_id={RANDOM_ID}&source=panel&limit=2")).json()
-        lister.assert_awaited_once_with(1, user_id=RANDOM_ID, action=None, source="panel", before_id=None, limit=2)
+        lister.assert_awaited_once_with(1, user_id=RANDOM_ID, moderator_id=None, action=None, source="panel", before_id=None, limit=2)
         self.assertEqual(data["next_before_id"], 4)
         self.assertEqual(data["cases"][0]["moderator"]["id"], str(HELPER_ID))
         self.assertEqual((await self.client.get("/api/cases?limit=abc")).status, 400)

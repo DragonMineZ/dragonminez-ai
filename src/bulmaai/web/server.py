@@ -1,7 +1,9 @@
 """aiohttp app for the admin panel. Runs on the bot's event loop; cloudflared terminates TLS in front."""
 
+import hashlib
 import hmac
 import logging
+import re
 import secrets
 from pathlib import Path
 from urllib.parse import urlparse
@@ -87,6 +89,8 @@ def _harden(request: web.Request, response: web.StreamResponse) -> None:
     response.headers["X-Frame-Options"] = "DENY"
     if request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    elif request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"  # revalidate via ETag; index.html versions URLs
 
 
 def _cookie_secure(bot: discord.Bot) -> bool:
@@ -97,8 +101,23 @@ def _redirect_uri(bot: discord.Bot) -> str:
     return bot.settings.panel_public_url.rstrip("/") + "/auth/callback"
 
 
+def _versioned_index() -> str:
+    # Stamp every /static/ URL with a content hash so a CDN or browser can never pair a cached old
+    # panel.js with newer module files. Computed once per process; a deploy restarts the bot.
+    digest = hashlib.sha256()
+    for path in sorted(STATIC_DIR.iterdir()):
+        if path.is_file():
+            digest.update(path.name.encode() + path.read_bytes())
+    version = digest.hexdigest()[:12]
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return re.sub(r'((?:src|href)="/static/[^"?]+)"', lambda m: f'{m[1]}?v={version}"', html)
+
+
+INDEX_HTML = _versioned_index()
+
+
 async def index(request: web.Request) -> web.StreamResponse:
-    return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    return web.Response(text=INDEX_HTML, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
 async def login(request: web.Request) -> web.StreamResponse:

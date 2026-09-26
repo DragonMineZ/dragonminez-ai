@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 from openai import AsyncOpenAI
 
+from bulmaai.cogs.ai_tickets import DISCORD_MESSAGE_LIMIT, _chunk_discord_message
 from bulmaai.utils.permissions import is_admin
 
 log = logging.getLogger(__name__)
@@ -18,8 +19,26 @@ Translate the announcement naturally and engagingly while preserving:
 - Any links, mentions, or Discord formatting exactly as they appear.
 
 Do NOT add any extra commentary, just provide the translation.
-Be AWARE of the 2000 character limit for Discord messages and truncate if necessary, but try to keep the full content if possible.
+Translate the whole announcement. Never truncate, summarise, or drop content: long
+translations are split across several messages by the caller.
 """
+
+
+def build_announcement_sends(
+    text: str,
+    files: list[discord.File],
+    *,
+    limit: int = DISCORD_MESSAGE_LIMIT,
+) -> list[tuple[str | None, list[discord.File]]]:
+    """Split a translation into sendable messages, attachments riding the last one.
+
+    Romance-language translations run 15-25% longer than the English source, so an
+    announcement that fits in one message often does not once translated.
+    """
+    chunks = [chunk for chunk in _chunk_discord_message(text, limit) if chunk.strip()]
+    if not chunks:
+        return [(None, files)] if files else []
+    return [(chunk, [] if index < len(chunks) - 1 else files) for index, chunk in enumerate(chunks)]
 
 
 def swap_role_mentions(text: str, target_language: str, cog: "AiAnnTranslation") -> str:
@@ -55,8 +74,30 @@ class AiAnnTranslation(commands.Cog):
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
-        self.client = AsyncOpenAI(api_key=self.settings.openai_key)
+        self.client = AsyncOpenAI(api_key=bot.settings.openai_key)
+
+    @property
+    def settings(self):
+        # Read through to the bot so /settings set takes effect without a restart.
+        return self.bot.settings
+
+    async def _send_translation(
+        self,
+        channel_id: int | None,
+        text: str,
+        files: list[discord.File],
+        *,
+        language: str,
+    ) -> None:
+        channel = self.bot.get_channel(channel_id) if channel_id is not None else None
+        if channel is None:
+            log.warning("%s announcement channel %s not found", language, channel_id)
+            return
+
+        allowed_mentions = discord.AllowedMentions(roles=True, users=False, everyone=False)
+        for content, chunk_files in build_announcement_sends(text, files):
+            await channel.send(content, files=chunk_files, allowed_mentions=allowed_mentions)
+        log.info("%s translation sent successfully", language)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -97,32 +138,20 @@ class AiAnnTranslation(commands.Cog):
                 spanish_text = ""
                 portuguese_text = ""
 
-            spanish_channel = self.bot.get_channel(self.settings.announcement_spanish_channel_id)
-            portuguese_channel = self.bot.get_channel(self.settings.announcement_portuguese_channel_id)
-
-            role_mentions_only = discord.AllowedMentions(roles=True, users=False, everyone=False)
-
-            if spanish_channel:
-                await spanish_channel.send(
-                    spanish_text or None, files=files_for_spanish, allowed_mentions=role_mentions_only
-                )
-                log.info("Spanish translation sent successfully")
-            else:
-                log.warning(
-                    "Spanish channel %s not found",
-                    self.settings.announcement_spanish_channel_id,
-                )
-
-            if portuguese_channel:
-                await portuguese_channel.send(
-                    portuguese_text or None, files=files_for_portuguese, allowed_mentions=role_mentions_only
-                )
-                log.info("Portuguese translation sent successfully")
-            else:
-                log.warning(
-                    "Portuguese channel %s not found",
+            # Sent independently: a failure posting one language must not cost the other.
+            for channel_id, text, files, language in (
+                (self.settings.announcement_spanish_channel_id, spanish_text, files_for_spanish, "Spanish"),
+                (
                     self.settings.announcement_portuguese_channel_id,
-                )
+                    portuguese_text,
+                    files_for_portuguese,
+                    "Portuguese",
+                ),
+            ):
+                try:
+                    await self._send_translation(channel_id, text, files, language=language)
+                except Exception:
+                    log.exception("Failed to send %s announcement translation", language)
 
         except Exception as e:
             log.error(f"Failed to translate announcement: {e}", exc_info=True)

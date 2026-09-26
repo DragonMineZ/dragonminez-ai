@@ -1,7 +1,24 @@
 "use strict";
 
 (() => {
-  const { h, api, run, can, badge, channelName, roleName } = Panel;
+  const { h, api, run, can, badge, channelName, roleName, t } = Panel;
+
+  Panel.i18n({
+    "Settings": "Configuración",
+    "Filter settings…": "Filtrar configuraciones…",
+    "Filter settings": "Filtrar configuraciones",
+    "Runtime overrides saved to data/settings_overrides.json. Lists are comma-separated. Some components only pick up changes after a cog reload or restart.": "Sobrescrituras de tiempo de ejecución guardadas en data/settings_overrides.json. Las listas están separadas por comas. Algunos componentes solo recogen cambios después de una recarga de cog o reinicio.",
+    "Only overridden": "Solo sobrescritos",
+    "Setting": "Configuración",
+    "Value": "Valor",
+    "Save": "Guardar",
+    "Reset": "Restablecer",
+    "Saved {name}": "Se guardó {name}",
+    "Reset {name}": "Se restableció {name}",
+    "overridden": "sobrescrito",
+    "owner only": "solo propietario",
+    "Default: {value}": "Predeterminado: {value}",
+  });
 
   function asText(value) {
     if (value === null || value === undefined) return "";
@@ -32,36 +49,36 @@
     input.disabled = locked;
     const raw = () => (setting.kind === "bool" ? String(input.checked) : input.value);
 
-    const save = h("button", { class: "btn small primary", type: "button", disabled: locked }, "Save");
+    const save = h("button", { class: "btn small primary", type: "button", disabled: locked }, t("Save"));
     save.addEventListener("click", () => run(save, async () => {
       await api(`/api/settings/${encodeURIComponent(setting.name)}`, { method: "PUT", body: { value: raw() } });
       await reload();
-    }, `Saved ${setting.name}`));
+    }, t("Saved {name}", { name: setting.name })));
 
-    const reset = h("button", { class: "btn small ghost", type: "button", disabled: locked || !setting.overridden }, "Reset");
+    const reset = h("button", { class: "btn small ghost", type: "button", disabled: locked || !setting.overridden }, t("Reset"));
     reset.addEventListener("click", () => run(reset, async () => {
       await api(`/api/settings/${encodeURIComponent(setting.name)}`, { method: "DELETE" });
       await reload();
-    }, `Reset ${setting.name}`));
+    }, t("Reset {name}", { name: setting.name })));
 
     return h("tr", {},
       h("td", {},
         h("div", { class: "mono" }, setting.name),
         h("div", { class: "row" },
           badge(setting.kind),
-          setting.overridden ? badge("overridden", "accent") : null,
-          setting.owner_only ? badge("owner only", "warn") : null)),
+          setting.overridden ? badge(t("overridden"), "accent") : null,
+          setting.owner_only ? badge(t("owner only"), "warn") : null)),
       h("td", {}, input, setting.hint ? resolvedNames(setting) : null,
-        setting.overridden ? h("div", { class: "muted small" }, `Default: ${asText(setting.default) || "—"}`) : null),
+        setting.overridden ? h("div", { class: "muted small" }, t("Default: {value}", { value: asText(setting.default) || "—" })) : null),
       h("td", {}, h("div", { class: "row" }, save, reset)));
   }
 
   Panel.page({
     id: "settings",
-    title: "Settings",
+    title: t("Settings"),
     perm: "settings.view",
     async render(view) {
-      const search = h("input", { type: "search", placeholder: "Filter settings…", "aria-label": "Filter settings" });
+      const search = h("input", { type: "search", placeholder: t("Filter settings…"), "aria-label": t("Filter settings") });
       const onlyOverridden = h("input", { type: "checkbox", id: "only-overridden" });
       const body = h("tbody");
       let settings = [];
@@ -77,12 +94,12 @@
       search.addEventListener("input", draw);
       onlyOverridden.addEventListener("change", draw);
       view.append(
-        h("h1", {}, "Settings"),
-        h("p", { class: "muted" }, "Runtime overrides saved to data/settings_overrides.json. Lists are comma-separated. Some components only pick up changes after a cog reload or restart."),
+        h("h1", {}, t("Settings")),
+        h("p", { class: "muted" }, t("Runtime overrides saved to data/settings_overrides.json. Lists are comma-separated. Some components only pick up changes after a cog reload or restart.")),
         h("div", { class: "card" },
-          h("div", { class: "row" }, search, h("label", { for: "only-overridden", class: "row" }, onlyOverridden, "Only overridden")),
+          h("div", { class: "row" }, search, h("label", { for: "only-overridden", class: "row" }, onlyOverridden, t("Only overridden"))),
           h("div", { class: "table-wrap" }, h("table", {},
-            h("thead", {}, h("tr", {}, h("th", {}, "Setting"), h("th", {}, "Value"), h("th", {}, ""))),
+            h("thead", {}, h("tr", {}, h("th", {}, t("Setting")), h("th", {}, t("Value")), h("th", {}, ""))),
             body))));
       await reload();
     },

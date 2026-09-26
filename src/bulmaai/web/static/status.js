@@ -1,7 +1,45 @@
 "use strict";
 
 (() => {
-  const { h, api, run, can, time, user, badge, table, field, roleName } = Panel;
+  const { h, api, run, can, time, user, badge, table, field, roleName, t } = Panel;
+
+  Panel.i18n({
+    " · plus anyone with Discord Administrator": " · además de cualquiera con Administrador en Discord",
+    "Overview": "Resumen",
+    "Staff": "Staff",
+    "Bot": "Bot",
+    "not connected": "no conectado",
+    "Websocket latency": "Latencia de Websocket",
+    "Uptime": "Tiempo de actividad",
+    "Guild members": "Miembros del servidor",
+    "Database": "Base de datos",
+    "ok": "ok",
+    "AI budget": "Presupuesto de IA",
+    "AI paused: small pool spent": "IA pausada: pool pequeño agotado",
+    "Pools reset ": "Los pools se reinician ",
+    "since ": "desde ",
+    "guild not available": "servidor no disponible",
+    "AI tokens today · {pool}": "Tokens de IA hoy · {pool}",
+    "no limit": "sin límite",
+    "disabled": "deshabilitado",
+    "Refresh": "Actualizar",
+    "Extensions ({count})": "Extensiones ({count})",
+    "Extension": "Extensión",
+    "Reload": "Recargar",
+    "hosts the panel": "aloja el panel",
+    "Reloaded {name}": "Se recargó {name}",
+    "No extensions loaded.": "Sin extensiones cargadas.",
+    "Guild owner and Bruno.": "Propietario del servidor y Bruno.",
+    "Discord Administrator permission (no roles configured).": "Permiso de Administrador de Discord (sin roles configurados).",
+    "No roles configured.": "Sin roles configurados.",
+    "{tier} ({count})": "{tier} ({count})",
+    "Nobody.": "Nadie.",
+    "Permission": "Permiso",
+    "yes": "sí",
+    "Permission matrix": "Matriz de permisos",
+    "Permissions for staff in this panel website.": "Permisos para el staff en este sitio del panel.",
+    "Each permission is shared with the discord Bot in the app.": "Cada permiso se comparte con el bot de Discord en la app.",
+  });
 
   const TIER_ORDER = ["owner", "admin", "moderator", "helper"];
 
@@ -21,9 +59,9 @@
   }
 
   function budgetCard(pool) {
-    const label = `AI tokens today · ${pool.pool}`;
-    if (pool.limit === null || pool.limit === undefined) return stat(label, num(pool.used), h("div", { class: "muted small" }, "no limit"));
-    if (pool.limit === 0) return stat(label, num(pool.used), badge("disabled", "warn"));
+    const label = t("AI tokens today · {pool}", { pool: pool.pool });
+    if (pool.limit === null || pool.limit === undefined) return stat(label, num(pool.used), h("div", { class: "muted small" }, t("no limit")));
+    if (pool.limit === 0) return stat(label, num(pool.used), badge(t("disabled"), "warn"));
     const pct = Math.round((pool.used / pool.limit) * 100);
     return stat(label, `${pct}%`,
       h("meter", { min: "0", max: String(pool.limit), value: String(Math.min(pool.used, pool.limit)), low: String(pool.limit * 0.7), high: String(pool.limit * 0.9), optimum: "0", "aria-label": label }),
@@ -34,28 +72,28 @@
     const canReload = can("bot.reload");
     const rows = data.extensions.map((name) => ({ name }));
     return h("div", { class: "card" },
-      h("h2", {}, `Extensions (${data.extensions.length})`),
+      h("h2", {}, t("Extensions ({count})", { count: data.extensions.length })),
       table([
-        { label: "Extension", render: (r) => h("span", { class: "mono" }, r.name) },
+        { label: t("Extension"), render: (r) => h("span", { class: "mono" }, r.name) },
         {
           label: "",
           render: (r) => {
             if (!canReload) return "";
-            if (r.name === data.panel_extension) return h("span", { class: "muted small" }, "hosts the panel");
-            const button = h("button", { class: "btn small", type: "button" }, "Reload");
+            if (r.name === data.panel_extension) return h("span", { class: "muted small" }, t("hosts the panel"));
+            const button = h("button", { class: "btn small", type: "button" }, t("Reload"));
             button.addEventListener("click", () => run(button, async () => {
               await api(`/api/status/extensions/${encodeURIComponent(r.name)}/reload`, { method: "POST" });
               await reload();
-            }, `Reloaded ${r.name}`));
+            }, t("Reloaded {name}", { name: r.name })));
             return button;
           },
         },
-      ], rows, { empty: "No extensions loaded." }));
+      ], rows, { empty: t("No extensions loaded.") }));
   }
 
   Panel.page({
     id: "overview",
-    title: "Overview",
+    title: t("Overview"),
     perm: "status.view",
     async render(view) {
       const body = h("div");
@@ -64,161 +102,29 @@
         const b = data.ai_budget;
         body.replaceChildren(
           h("div", { class: "grid" },
-            stat("Bot", data.bot ? data.bot.display_name : "not connected", data.bot ? h("div", { class: "muted small mono" }, data.bot.id) : null),
-            stat("Websocket latency", data.latency_ms === null ? "—" : `${data.latency_ms} ms`),
-            stat("Uptime", duration(data.uptime_seconds), h("div", { class: "muted small" }, "since ", time(data.started_at))),
-            stat("Guild members", data.guild && data.guild.member_count !== null ? num(data.guild.member_count) : "—",
-              h("div", { class: "muted small" }, data.guild ? data.guild.name : "guild not available")),
-            stat("Database", data.db.ok ? badge("ok", "ok") : badge("error", "danger"),
+            stat(t("Bot"), data.bot ? data.bot.display_name : t("not connected"), data.bot ? h("div", { class: "muted small mono" }, data.bot.id) : null),
+            stat(t("Websocket latency"), data.latency_ms === null ? "—" : `${data.latency_ms} ms`),
+            stat(t("Uptime"), duration(data.uptime_seconds), h("div", { class: "muted small" }, t("since "), time(data.started_at))),
+            stat(t("Guild members"), data.guild && data.guild.member_count !== null ? num(data.guild.member_count) : "—",
+              h("div", { class: "muted small" }, data.guild ? data.guild.name : t("guild not available"))),
+            stat(t("Database"), data.db.ok ? badge(t("ok"), "ok") : badge(t("error"), "danger"),
               data.db.error ? h("div", { class: "error small" }, data.db.error) : null)),
-          h("h2", {}, "AI budget"),
+          h("h2", {}, t("AI budget")),
           h("p", { class: "muted small" },
-            b.paused ? badge("AI paused: small pool spent", "danger") : null, " Pools reset ", time(b.resets_at), " (00:00 UTC)."),
+            b.paused ? badge(t("AI paused: small pool spent"), "danger") : null, " ", t("Pools reset "), time(b.resets_at), t(" (00:00 UTC).")),
           h("div", { class: "grid" }, b.pools.map(budgetCard)),
           extensionsCard(data, reload));
       };
-      const refresh = h("button", { class: "btn small ghost", type: "button" }, "Refresh");
+      const refresh = h("button", { class: "btn small ghost", type: "button" }, t("Refresh"));
       refresh.addEventListener("click", () => run(refresh, reload));
-      view.append(h("div", { class: "row spread" }, h("h1", {}, "Overview"), refresh), body);
+      view.append(h("div", { class: "row spread" }, h("h1", {}, t("Overview")), refresh), body);
       await reload();
-    },
-  });
-
-  const MAX_LINES = 1500;
-
-  Panel.page({
-    id: "logs",
-    title: "Logs",
-    perm: "logs.view",
-    async render(view) {
-      const level = h("select", {}, ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].map((l) => h("option", { value: l }, l)));
-      level.value = "INFO";
-      const filter = h("input", { type: "search", placeholder: "Filter text…" });
-      const pause = h("button", { class: "btn small", type: "button" }, "Pause");
-      const status = h("span", { class: "muted small" });
-      const log = h("div", { class: "log", role: "log", "aria-live": "off" });
-      let lines = [];
-      let after = 0;
-      let paused = false;
-      let busy = false;
-      let gen = 0;  // bumped when the level changes so stale responses are dropped
-
-      const matches = (r) => {
-        const q = filter.value.trim().toLowerCase();
-        return !q || r.message.toLowerCase().includes(q) || r.logger.toLowerCase().includes(q);
-      };
-      const lineFor = (r) => h("pre", { class: r.levelno >= 40 ? "error" : r.levelno < 20 ? "muted" : null },
-        `${new Date(r.time).toLocaleTimeString()} ${r.level.padEnd(8)} ${r.logger} | ${r.message}`);
-      const redraw = () => {
-        log.replaceChildren(...lines.filter((l) => matches(l.record)).map((l) => l.node));
-        log.scrollTop = log.scrollHeight;
-      };
-
-      const poll = async () => {
-        if (busy) return;
-        busy = true;
-        const mine = gen;
-        try {
-          const data = await api(`/api/logs?after=${after}&level=${encodeURIComponent(level.value)}`);
-          if (mine !== gen) return;
-          if (data.last_id < after) { lines = []; log.replaceChildren(); }  // bot restarted
-          after = data.last_id;
-          const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
-          for (const record of data.records) {
-            const entry = { record, node: lineFor(record) };
-            lines.push(entry);
-            if (matches(record)) log.append(entry.node);
-          }
-          while (lines.length > MAX_LINES) lines.shift().node.remove();
-          if (atBottom) log.scrollTop = log.scrollHeight;
-          status.textContent = `${lines.length} lines · updated ${new Date().toLocaleTimeString()}`;
-        } catch (error) {
-          status.textContent = error.message;
-        } finally {
-          busy = false;
-        }
-      };
-
-      const timer = setInterval(() => {
-        if (!log.isConnected) { clearInterval(timer); return; }  // navigated away
-        if (!paused) poll();
-      }, 3000);
-      level.addEventListener("change", () => { gen += 1; lines = []; after = 0; log.replaceChildren(); poll(); });
-      filter.addEventListener("input", redraw);
-      pause.addEventListener("click", () => {
-        paused = !paused;
-        pause.textContent = paused ? "Resume" : "Pause";
-        if (!paused) poll();
-      });
-
-      view.append(
-        h("h1", {}, "Logs"),
-        h("p", { class: "muted" }, "Recent bot log records kept in memory (last ~2000); cleared on restart."),
-        h("div", { class: "card stack" },
-          h("div", { class: "row" }, field("Minimum level", level), field("Filter", filter), pause, status),
-          log));
-      await poll();
-    },
-  });
-
-  function detailsText(details) {
-    if (!details || (typeof details === "object" && !Object.keys(details).length)) return "";
-    return JSON.stringify(details, null, 1);
-  }
-
-  Panel.page({
-    id: "audit",
-    title: "Audit log",
-    perm: "audit.view",
-    async render(view) {
-      const actorInput = h("input", { type: "text", placeholder: "Discord user ID", inputmode: "numeric", size: "22" });
-      const actionInput = h("input", { type: "text", placeholder: "e.g. mod. or settings.set", size: "22" });
-      const apply = h("button", { class: "btn primary", type: "button" }, "Apply");
-      const more = h("button", { class: "btn", type: "button" }, "Load more");
-      const body = h("div");
-      let entries = [];
-
-      const draw = (hasMore) => {
-        body.replaceChildren(table([
-          { label: "When", render: (e) => time(e.created_at) },
-          { label: "Actor", render: (e) => user(e.actor) },
-          { label: "Action", render: (e) => badge(e.action) },
-          { label: "Target", render: (e) => (e.target ? h("span", { class: "mono" }, e.target) : "") },
-          { label: "Details", render: (e) => h("pre", { class: "small" }, detailsText(e.details)) },
-        ], entries, { empty: "No audit entries match." }));
-        more.hidden = !hasMore;
-      };
-
-      const load = async (reset) => {
-        const params = new URLSearchParams({ limit: "50" });
-        if (actorInput.value.trim()) params.set("actor_id", actorInput.value.trim());
-        if (actionInput.value.trim()) params.set("action", actionInput.value.trim());
-        if (!reset && entries.length) params.set("before_id", String(entries[entries.length - 1].id));
-        const data = await api(`/api/audit?${params}`);
-        entries = reset ? data.entries : entries.concat(data.entries);
-        draw(data.has_more);
-      };
-
-      apply.addEventListener("click", () => run(apply, () => load(true)));
-      more.addEventListener("click", () => run(more, () => load(false)));
-      for (const input of [actorInput, actionInput]) {
-        input.addEventListener("keydown", (e) => { if (e.key === "Enter") apply.click(); });
-      }
-
-      view.append(
-        h("h1", {}, "Audit log"),
-        h("p", { class: "muted" }, "Every change made through this panel. Action filter matches by prefix."),
-        h("div", { class: "card stack" },
-          h("div", { class: "row" }, field("Actor", actorInput), field("Action", actionInput), apply),
-          body,
-          h("div", { class: "row" }, more)));
-      await load(true);
     },
   });
 
   Panel.page({
     id: "staff",
-    title: "Staff",
+    title: t("Staff"),
     perm: "audit.view",
     async render(view) {
       const data = await api("/api/staff");
@@ -227,10 +133,10 @@
       const rolesLine = (tier) => {
         const ids = data.role_ids[tier] || [];
         const span = h("div", { class: "muted small" });
-        if (tier === "owner") span.textContent = "Guild owner and Bruno.";
-        else if (!ids.length) span.textContent = tier === "admin" ? "Discord Administrator permission (no roles configured)." : "No roles configured.";
+        if (tier === "owner") span.textContent = t("Guild owner and Bruno.");
+        else if (!ids.length) span.textContent = tier === "admin" ? t("Discord Administrator permission (no roles configured).") : t("No roles configured.");
         else Promise.all(ids.map(roleName)).then((names) => {
-          span.textContent = `Roles: ${names.join(", ")}${tier === "admin" ? " · plus anyone with Discord Administrator" : ""}`;
+          span.textContent = t("Roles: {roles}", { roles: names.join(", ") + (tier === "admin" ? t(" · plus anyone with Discord Administrator") : "") });
         });
         return span;
       };
@@ -238,29 +144,27 @@
       const groups = tiers.map((tier) => {
         const members = data.members.filter((m) => m.tier === tier);
         return h("div", { class: "card" },
-          h("h2", {}, `${tier[0].toUpperCase()}${tier.slice(1)} (${members.length})`),
+          h("h2", {}, t("{tier} ({count})", { tier: tier[0].toUpperCase() + tier.slice(1), count: members.length })),
           rolesLine(tier),
           members.length
             ? h("div", { class: "row" }, members.map((m) => user(m.user)))
-            : h("div", { class: "muted small" }, "Nobody."));
+            : h("div", { class: "muted small" }, t("Nobody.")));
       });
 
       const levels = { helper: 1, moderator: 2, admin: 3, owner: 4 };
-      const columns = [{ label: "Permission", render: (p) => h("span", { class: "mono" }, p.name) }].concat(
+      const columns = [{ label: t("Permission"), render: (p) => h("span", { class: "mono" }, p.name) }].concat(
         tiers.slice().reverse().map((tier) => ({
           label: tier,
-          render: (p) => (levels[tier] >= p.tier_level ? badge("yes", p.tier === tier ? "accent" : "ok") : h("span", { class: "muted" }, "—")),
+          render: (p) => (levels[tier] >= p.tier_level ? badge(t("yes"), p.tier === tier ? "accent" : "ok") : h("span", { class: "muted" }, "—")),
         })));
 
       view.append(
-        h("h1", {}, "Staff"),
-        h("p", { class: "muted" },
-          "Tiers come from the panel_admin_role_ids, panel_moderator_role_ids and panel_helper_role_ids settings (the owner edits them on the Settings page). ",
-          "Anyone with Discord Administrator is admin; the guild owner and Bruno are owner. The highest matching tier wins."),
-        groups,
+        h("h1", {}, t("Staff")),
+        h("p", { class: "muted" }, t("Permissions for staff in this panel website.")),
+        ...groups,
         h("div", { class: "card" },
-          h("h2", {}, "Permission matrix"),
-          h("p", { class: "muted small" }, "Highlighted cell = minimum tier for that permission."),
+          h("h2", {}, t("Permission matrix")),
+          h("p", { class: "muted small" }, t("Each permission is shared with the discord Bot in the app.")),
           table(columns, data.permissions)));
     },
   });

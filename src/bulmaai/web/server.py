@@ -1,4 +1,4 @@
-"""aiohttp app for the admin panel. Runs on the bot's event loop; nginx terminates TLS in front."""
+"""aiohttp app for the admin panel. Runs on the bot's event loop; cloudflared terminates TLS in front."""
 
 import hmac
 import logging
@@ -11,6 +11,8 @@ from aiohttp import web
 
 from bulmaai.services.discord_oauth import DiscordOAuthClient, build_discord_authorization_url
 from bulmaai.web import (
+    routes_announce,
+    routes_logs,
     routes_moderation,
     routes_patreon,
     routes_presets,
@@ -39,7 +41,16 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATE_COOKIE = "panel_oauth_state"
-MODULES = (routes_status, routes_settings, routes_moderation, routes_tickets, routes_patreon, routes_presets)
+MODULES = (
+    routes_status,
+    routes_logs,
+    routes_settings,
+    routes_moderation,
+    routes_tickets,
+    routes_patreon,
+    routes_presets,
+    routes_announce,
+)
 
 CSP = (
     "default-src 'self'; img-src 'self' data: https://cdn.discordapp.com https://media.discordapp.net; "

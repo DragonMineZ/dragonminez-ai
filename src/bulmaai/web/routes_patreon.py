@@ -8,6 +8,7 @@ from aiohttp import web
 
 from bulmaai.cogs.patreon_whitelist_flow import _active_self_grant
 from bulmaai.database.db import get_pool
+from bulmaai.services.patreon_access import PatreonCreatorClient
 from bulmaai.services.patreon_grants import (
     PatreonGrantKind,
     deactivate_gift_grant,
@@ -117,6 +118,29 @@ async def list_links(request: web.Request, actor: Actor) -> web.Response:
     return web.json_response({"links": links, "page": page, "has_more": has_more})
 
 
+_GRANT_COLUMNS = (
+    "id, owner_discord_user_id, beneficiary_discord_user_id, beneficiary_discord_username, "
+    "minecraft_username, kind, active, source_pr_url, created_at, updated_at"
+)
+
+
+def _grant_json(guild: discord.Guild, row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "owner_id": str(row["owner_discord_user_id"]),
+        "owner": _person(guild, row["owner_discord_user_id"]),
+        "beneficiary_id": str(row["beneficiary_discord_user_id"]),
+        "beneficiary": _person(guild, row["beneficiary_discord_user_id"]),
+        "beneficiary_username": row["beneficiary_discord_username"],
+        "minecraft_username": row["minecraft_username"],
+        "kind": row["kind"],
+        "active": row["active"],
+        "source_pr_url": row["source_pr_url"],
+        "created_at": _iso(row["created_at"]),
+        "updated_at": _iso(row["updated_at"]),
+    }
+
+
 @routes.get("/api/patreon/grants")
 @requires("patreon.view")
 async def list_grants(request: web.Request, actor: Actor) -> web.Response:
@@ -124,31 +148,107 @@ async def list_grants(request: web.Request, actor: Actor) -> web.Response:
     rows, page, has_more = await _search(
         request,
         table="patreon_whitelist_grants",
-        columns="id, owner_discord_user_id, beneficiary_discord_user_id, beneficiary_discord_username, "
-        "minecraft_username, kind, active, source_pr_url, created_at, updated_at",
+        columns=_GRANT_COLUMNS,
         id_filter="(owner_discord_user_id = $1 OR beneficiary_discord_user_id = $1)",
         text_filter="(minecraft_username ILIKE '%' || $1 || '%' OR beneficiary_discord_username ILIKE '%' || $1 || '%')",
         active_column="active",
         order="updated_at DESC, id DESC",
     )
-    grants = [
-        {
-            "id": row["id"],
-            "owner_id": str(row["owner_discord_user_id"]),
-            "owner": _person(guild, row["owner_discord_user_id"]),
-            "beneficiary_id": str(row["beneficiary_discord_user_id"]),
-            "beneficiary": _person(guild, row["beneficiary_discord_user_id"]),
-            "beneficiary_username": row["beneficiary_discord_username"],
-            "minecraft_username": row["minecraft_username"],
-            "kind": row["kind"],
-            "active": row["active"],
-            "source_pr_url": row["source_pr_url"],
-            "created_at": _iso(row["created_at"]),
-            "updated_at": _iso(row["updated_at"]),
-        }
-        for row in rows
-    ]
+    grants = [_grant_json(guild, row) for row in rows]
     return web.json_response({"grants": grants, "page": page, "has_more": has_more})
+
+
+async def _grants_for_person(user_id: int) -> list[Any]:
+    """Every grant (active or not) where the person is owner or beneficiary."""
+    pool = await get_pool()
+    return await pool.fetch(
+        f"""
+        SELECT {_GRANT_COLUMNS}
+        FROM patreon_whitelist_grants
+        WHERE owner_discord_user_id = $1 OR beneficiary_discord_user_id = $1
+        ORDER BY updated_at DESC, id DESC
+        """,
+        user_id,
+    )
+
+
+async def _link_for_person(user_id: int) -> Any | None:
+    """Raw row (not the patreon_grants.PatreonLink dataclass) so linked_at/updated_at come along too."""
+    pool = await get_pool()
+    return await pool.fetchrow(
+        """
+        SELECT patreon_full_name, patron_status, tier_ids, last_charge_date, entitlement_active,
+               patreon_member_id, linked_at, updated_at
+        FROM patreon_links
+        WHERE discord_user_id = $1
+        """,
+        user_id,
+    )
+
+
+def _link_json(row: Any) -> dict[str, Any]:
+    return {
+        "patreon_full_name": row["patreon_full_name"],
+        "patron_status": row["patron_status"],
+        "entitlement_active": row["entitlement_active"],
+        "tier_ids": list(row["tier_ids"] or []),
+        "last_charge_date": _iso(row["last_charge_date"]),
+        "linked_at": _iso(row["linked_at"]),
+        "updated_at": _iso(row["updated_at"]),
+    }
+
+
+@routes.get("/api/patreon/people/{user_id}")
+@requires("patreon.view")
+async def person(request: web.Request, actor: Actor) -> web.Response:
+    guild = require_guild(request)
+    user_id = _snowflake(request.match_info["user_id"], "user_id")
+    link = await _link_for_person(user_id)
+    grant_rows = await _grants_for_person(user_id)
+
+    live: dict[str, Any] | None = None
+    live_error: str | None = None
+    member_id = link["patreon_member_id"] if link is not None else None
+    if link is None:
+        pass  # no Patreon link at all: nothing to fetch live data for
+    elif not member_id:
+        live_error = "This link has no stored Patreon member ID."
+    else:
+        settings = request.app[BOT].settings
+        if not settings.PATREON_CREATOR_TOKEN:
+            live_error = "No Patreon creator token is configured on the bot."
+        else:
+            client = PatreonCreatorClient(
+                creator_token=settings.PATREON_CREATOR_TOKEN, campaign_id=settings.PATREON_CAMPAIGN_ID
+            )
+            try:
+                details = await client.fetch_member_details(member_id)
+            except Exception as error:
+                log.warning("Live Patreon lookup failed for member %s: %s", member_id, error)
+                live_error = f"{type(error).__name__}: {error}"
+            else:
+                live = {
+                    "patron_status": details.patron_status,
+                    "tier_ids": list(details.tier_ids),
+                    "tier_names": details.tier_names,
+                    "currently_entitled_amount_cents": details.currently_entitled_amount_cents,
+                    "lifetime_support_cents": details.lifetime_support_cents,
+                    "pledge_relationship_start": _iso(details.pledge_relationship_start),
+                    "last_charge_date": _iso(details.last_charge_date),
+                    "last_charge_status": details.last_charge_status,
+                    "next_charge_date": _iso(details.next_charge_date),
+                    "pledge_cadence": details.pledge_cadence,
+                }
+
+    return web.json_response(
+        {
+            "user": _person(guild, user_id),
+            "link": _link_json(link) if link is not None else None,
+            "live": live,
+            "live_error": live_error,
+            "grants": [_grant_json(guild, row) for row in grant_rows],
+        }
+    )
 
 
 @routes.post("/api/patreon/grant")

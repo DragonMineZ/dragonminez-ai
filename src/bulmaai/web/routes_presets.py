@@ -1,8 +1,6 @@
-"""Message presets (rules / support-us embeds) and announcements sent as the bot."""
+"""Message presets: the rules and support-us embeds posted by /rules setup and /supportus setup."""
 
-import re
 from typing import Any
-from urllib.parse import urlparse
 
 import discord
 from aiohttp import web
@@ -10,7 +8,7 @@ from aiohttp import web
 from bulmaai.services.message_presets import DEFAULT_MESSAGE_PRESETS, load_message_presets, replace_preset, reset_preset
 from bulmaai.ui.rules_views import build_rules_embeds
 from bulmaai.ui.support_views import build_support_embeds
-from bulmaai.web.core import BOT, Actor, api_error, audit, read_json, require_guild, requires
+from bulmaai.web.core import Actor, api_error, audit, read_json, requires
 
 
 routes = web.RouteTableDef()
@@ -20,10 +18,6 @@ routes = web.RouteTableDef()
 BUILDERS = {"rules": build_rules_embeds, "support": build_support_embeds}
 SUPPORT_KEYS = tuple(DEFAULT_MESSAGE_PRESETS["support"]["en"])
 SUPPORT_BUTTON_KEYS = ("patreon_label", "github_label")
-EMBED_KEYS = ("title", "description", "color", "url", "image_url", "thumbnail_url", "footer")
-EDITABLE_EMBED_PARTS = {"type", "title", "description", "color", "url", "image", "thumbnail", "footer", "fields"}
-MESSAGE_LINK = re.compile(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)")
-HEX_COLOR = re.compile(r"#?([0-9a-fA-F]{6})")
 
 
 # ---------- shared validation ----------
@@ -124,7 +118,8 @@ def _preset_json(kind: str, language: str, data: dict[str, Any]) -> dict[str, An
     }
 
 
-def _all_presets() -> list[dict[str, Any]]:
+def all_presets() -> list[dict[str, Any]]:
+    """All presets rendered to JSON; also used by the Announce page's "fill from preset" picker."""
     presets = load_message_presets()
     return [
         _preset_json(kind, language, presets[kind][language])
@@ -136,7 +131,7 @@ def _all_presets() -> list[dict[str, Any]]:
 @routes.get("/api/presets")
 @requires("presets.edit")
 async def list_presets(request: web.Request, actor: Actor) -> web.Response:
-    return web.json_response({"presets": _all_presets()})
+    return web.json_response({"presets": all_presets()})
 
 
 @routes.post("/api/presets/{kind}/{language}/preview")
@@ -166,181 +161,3 @@ async def reset_preset_route(request: web.Request, actor: Actor) -> web.Response
     saved = reset_preset(kind, language)
     await audit(actor, "presets.reset", f"{kind}/{language}", before=before)
     return web.json_response(_preset_json(kind, language, saved))
-
-
-# ---------- announcements ----------
-
-
-def _url(value: str | None, label: str) -> str | None:
-    if value is None:
-        return None
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or len(value) > 2048:
-        raise api_error(400, f"{label} must be an http(s) link.")
-    return value
-
-
-def _build_message(payload: dict[str, Any]) -> tuple[str | None, discord.Embed | None]:
-    content = _text(payload.get("content"), "Content", optional=True, strip=False)
-    _limit(content, 2000, "Content")
-    raw = payload.get("embed") or {}
-    if not isinstance(raw, dict) or set(raw) - set(EMBED_KEYS):
-        raise api_error(400, f"embed may only contain: {', '.join(EMBED_KEYS)}.")
-    values = {
-        key: _text(raw.get(key), f"Embed {key}", optional=True, strip=key != "description") for key in EMBED_KEYS
-    }
-    if not content and not (values["title"] or values["description"]):
-        raise api_error(400, "Write some content or give the embed a title or description.")
-    if not any(values.values()):
-        return content, None
-
-    color = None
-    if values["color"]:
-        match = HEX_COLOR.fullmatch(values["color"])
-        if not match:
-            raise api_error(400, "Embed color must be a hex code like #F39C12.")
-        color = int(match[1], 16)
-    embed = discord.Embed(
-        title=values["title"],
-        description=values["description"],
-        url=_url(values["url"], "Embed URL"),
-        color=color,
-    )
-    if values["image_url"]:
-        embed.set_image(url=_url(values["image_url"], "Image URL"))
-    if values["thumbnail_url"]:
-        embed.set_thumbnail(url=_url(values["thumbnail_url"], "Thumbnail URL"))
-    if values["footer"]:
-        embed.set_footer(text=values["footer"])
-    _check_embeds([embed])
-    return content, embed
-
-
-def _mentions(payload: dict[str, Any]) -> tuple[discord.AllowedMentions, bool]:
-    allow = payload.get("allow_pings", False)
-    if not isinstance(allow, bool):
-        raise api_error(400, "allow_pings must be true or false.")
-    return (discord.AllowedMentions.all() if allow else discord.AllowedMentions.none()), allow
-
-
-def _channel(guild: discord.Guild, channel_id: Any) -> Any:
-    try:
-        channel = guild.get_channel(int(channel_id))
-    except (TypeError, ValueError):
-        raise api_error(400, "Pick a channel.")
-    if channel is None or str(channel.type) not in {"text", "news"}:
-        raise api_error(400, "Pick a text or announcement channel in this server.")
-    return channel
-
-
-def _check_bot_can(guild: discord.Guild, channel: Any, *, embed: bool, edit: bool) -> None:
-    perms = channel.permissions_for(guild.me)
-    needed = [("View Channel", perms.view_channel)]
-    needed.append(("Read Message History", perms.read_message_history) if edit else ("Send Messages", perms.send_messages))
-    if embed:
-        needed.append(("Embed Links", perms.embed_links))
-    missing = [name for name, ok in needed if not ok]
-    if missing:
-        raise api_error(403, f"The bot is missing {', '.join(missing)} in #{channel.name}.")
-
-
-def _embed_form(embed: discord.Embed) -> dict[str, str]:
-    raw = embed.to_dict()
-    return {
-        "title": raw.get("title", ""),
-        "description": raw.get("description", ""),
-        "color": f"#{raw['color']:06X}" if raw.get("color") is not None else "",
-        "url": raw.get("url", ""),
-        "image_url": raw.get("image", {}).get("url", ""),
-        "thumbnail_url": raw.get("thumbnail", {}).get("url", ""),
-        "footer": raw.get("footer", {}).get("text", ""),
-    }
-
-
-async def _own_message(request: web.Request, channel: Any, message_id: int) -> tuple[discord.Message, dict | None]:
-    try:
-        message = await channel.fetch_message(message_id)
-    except discord.NotFound:
-        raise api_error(404, "No message with that ID in that channel.")
-    except discord.HTTPException as error:
-        raise api_error(502, f"Discord refused to fetch the message: {error.text or error}")
-    if message.author.id != request.app[BOT].user.id:
-        raise api_error(403, "Only messages the bot sent can be edited.")
-    rich = [embed for embed in message.embeds if embed.type == "rich"]
-    # Anything the form can't show would be silently dropped by the PATCH, so refuse up front.
-    if len(rich) > 1 or any(embed.fields or set(embed.to_dict()) - EDITABLE_EMBED_PARTS for embed in rich):
-        raise api_error(409, "This message has several embeds or embed fields the editor can't keep; edit it where it was posted from.")
-    return message, (_embed_form(rich[0]) if rich else None)
-
-
-def _message_id(value: Any) -> int:
-    if not isinstance(value, str) or not value.isdigit():
-        raise api_error(400, "Paste a message link or ID.")
-    return int(value)
-
-
-@routes.get("/api/announce/presets")
-@requires("announce.send")
-async def announce_presets(request: web.Request, actor: Actor) -> web.Response:
-    return web.json_response({"presets": _all_presets()})
-
-
-@routes.post("/api/announce")
-@requires("announce.send")
-async def send_announcement(request: web.Request, actor: Actor) -> web.Response:
-    guild = require_guild(request)
-    payload = await read_json(request)
-    channel = _channel(guild, payload.get("channel_id"))
-    content, embed = _build_message(payload)
-    mentions, pings = _mentions(payload)
-    _check_bot_can(guild, channel, embed=embed is not None, edit=False)
-    try:
-        message = await channel.send(content=content, embed=embed, allowed_mentions=mentions)
-    except discord.HTTPException as error:
-        raise api_error(502, f"Discord rejected the message: {error.text or error}")
-    await audit(actor, "announce.send", str(channel.id), message_id=str(message.id), pings=pings)
-    return web.json_response({"channel_id": str(channel.id), "message_id": str(message.id), "jump_url": message.jump_url})
-
-
-@routes.get("/api/announce/message")
-@requires("announce.send")
-async def load_announcement(request: web.Request, actor: Actor) -> web.Response:
-    guild = require_guild(request)
-    ref = request.query.get("ref", "").strip()
-    channel_id: Any = request.query.get("channel_id")
-    link = MESSAGE_LINK.search(ref)
-    if link:
-        if int(link[1]) != guild.id:
-            raise api_error(400, "That link points to another server.")
-        channel_id, ref = link[2], link[3]
-    channel = _channel(guild, channel_id)
-    _check_bot_can(guild, channel, embed=False, edit=True)
-    message, embed = await _own_message(request, channel, _message_id(ref))
-    return web.json_response(
-        {
-            "channel_id": str(channel.id),
-            "message_id": str(message.id),
-            "jump_url": message.jump_url,
-            "content": message.content or "",
-            "embed": embed,
-        }
-    )
-
-
-@routes.patch("/api/announce/{channel_id}/{message_id}")
-@requires("announce.send")
-async def edit_announcement(request: web.Request, actor: Actor) -> web.Response:
-    guild = require_guild(request)
-    channel = _channel(guild, request.match_info["channel_id"])
-    message_id = _message_id(request.match_info["message_id"])
-    payload = await read_json(request)
-    content, embed = _build_message(payload)
-    mentions, pings = _mentions(payload)
-    _check_bot_can(guild, channel, embed=embed is not None, edit=True)
-    message, _ = await _own_message(request, channel, message_id)
-    try:
-        await message.edit(content=content, embeds=[embed] if embed else [], allowed_mentions=mentions)
-    except discord.HTTPException as error:
-        raise api_error(502, f"Discord rejected the edit: {error.text or error}")
-    await audit(actor, "announce.edit", str(channel.id), message_id=str(message.id), pings=pings)
-    return web.json_response({"channel_id": str(channel.id), "message_id": str(message.id), "jump_url": message.jump_url})

@@ -1,9 +1,93 @@
 "use strict";
 
 (() => {
-  const { h, api, run, can, time, user, badge, table, field, dialog } = Panel;
+  const { h, api, run, can, time, user, badge, table, field, dialog, t } = Panel;
+
+  Panel.i18n({
+    "Dev jar": "Jar de desarrollo",
+    "Name, display name or user ID…": "Nombre, apodo o ID de usuario…",
+    "Search members": "Buscar miembros",
+    "Search": "Buscar",
+    "Role": "Rol",
+    "Sort": "Ordenar",
+    "All roles": "Todos los roles",
+    "Newest joined": "Más recientes",
+    "Oldest joined": "Más antiguos",
+    "Name": "Nombre",
+    "Load more": "Cargar más",
+    "{n} members": "{n} miembros",
+    "No members match your search.": "Ningún miembro coincide con tu búsqueda.",
+    "Open profile for ID {id}": "Abrir perfil del ID {id}",
+    "(not in the member cache, e.g. banned or left)": "(no está en la caché de miembros, p. ej. baneado o se fue)",
+    "View profile ›": "Ver perfil ›",
+    "Bot": "Bot",
+    "Timed out": "Silenciado",
+    "Joined": "Se unió",
+    "Users": "Usuarios",
+    "← Users": "← Usuarios",
+    "Activity": "Actividad",
+    "Mod cases": "Casos de moderación",
+    "When": "Cuándo",
+    "User": "Usuario",
+    "Action": "Acción",
+    "By": "Por",
+    "Dyno (deprecated)": "Dyno (obsoleto)",
+    "via Discord": "vía Discord",
+    "View in Audit log ›": "Ver en el registro de auditoría ›",
+    "Tickets": "Tickets",
+    "Bug reports": "Reportes de errores",
+    "Patreon": "Patreon",
+    "Level": "Nivel",
+    "XP": "XP",
+    "Last XP award": "Último XP otorgado",
+    "Downloads": "Descargas",
+    "Last download": "Última descarga",
+    "Account created": "Cuenta creada",
+    "Joined server": "Se unió al servidor",
+    "Closed": "Cerrado",
+    "Title": "Título",
+    "Messages": "Mensajes",
+    "Status": "Estado",
+    "resolved": "resuelto",
+    "unresolved": "sin resolver",
+    "Created": "Creado",
+    "No cases.": "No hay casos.",
+    "No ticket transcripts.": "No hay transcripciones de tickets.",
+    "No bug reports.": "No hay reportes de errores.",
+    "bot": "bot",
+    "not a member": "no es miembro",
+    "banned": "baneado",
+    "ban status unknown": "estado de baneo desconocido",
+    "timed out until ": "silenciado hasta ",
+    "Ban reason: ": "Motivo del baneo: ",
+    "entitled": "con acceso",
+    "not entitled": "sin acceso",
+    "No Patreon account linked.": "No hay cuenta de Patreon vinculada.",
+    "Last charge: ": "Último cobro: ",
+    "View Patreon details ›": "Ver detalles de Patreon ›",
+    "Warn": "Advertir",
+    "Add note": "Agregar nota",
+    "Timeout": "Silenciar",
+    "Remove timeout": "Quitar silencio",
+    "Kick": "Expulsar",
+    "Ban": "Banear",
+    "Unban": "Desbanear",
+    "The user gets a DM with the reason.": "El usuario recibe un DM con el motivo.",
+    "Internal only; the user isn't notified.": "Solo interno; no se notifica al usuario.",
+    "Optional": "Opcional",
+    "Required": "Obligatorio",
+    "Duration in minutes (max 40320 = 28 days)": "Duración en minutos (máx. 40320 = 28 días)",
+    "Delete their messages from the last N hours (0–168)": "Eliminar sus mensajes de las últimas N horas (0–168)",
+    "Reason": "Motivo",
+    "{action}: {name}": "{action}: {name}",
+    "{action}: done": "{action}: listo",
+    "Couldn't DM the user (DMs closed); the warning is still recorded.":
+      "No se pudo enviar el DM (DMs cerrados); la advertencia quedó registrada de todas formas.",
+    "A reason is required.": "Se requiere un motivo.",
+  });
 
   const ACTION_KIND = { warn: "warn", timeout: "warn", kick: "danger", ban: "danger", delete: "danger", alert: "warn", unban: "ok", untimeout: "ok" };
+  const MEMBERS_LIMIT = 60;
 
   function duration(seconds) {
     if (!seconds) return "";
@@ -24,38 +108,134 @@
   function caseColumns({ withUser }) {
     return [
       { label: "#", render: (c) => h("span", { class: "mono" }, String(c.id)) },
-      { label: "When", render: (c) => time(c.created_at) },
-      withUser ? { label: "User", render: (c) => user(c.user || c.user_id) } : null,
-      { label: "Action", render: (c) => h("div", { class: "row" }, actionBadge(c.action), c.duration_seconds ? badge(duration(c.duration_seconds)) : null) },
-      { label: "Reason", render: (c) => c.reason || h("span", { class: "muted" }, "—") },
-      { label: "By", render: (c) => (c.source === "automod" ? badge("automod", "accent") : user(c.moderator || c.moderator_id)) },
+      { label: t("When"), render: (c) => time(c.created_at) },
+      withUser ? { label: t("User"), render: (c) => user(c.user || c.user_id) } : null,
+      { label: t("Action"), render: (c) => h("div", { class: "row" }, actionBadge(c.action), c.duration_seconds ? badge(duration(c.duration_seconds)) : null) },
+      { label: t("Reason"), render: (c) => c.reason || h("span", { class: "muted" }, "—") },
+      { label: t("By"), render: (c) => (c.source === "automod" ? badge("automod", "accent") : h("div", { class: "row" },
+        user(c.moderator || c.moderator_id),
+        c.source === "dyno" ? badge(t("Dyno (deprecated)"), "warn") : c.source === "discord" ? badge(t("via Discord")) : null)) },
     ].filter(Boolean);
   }
 
-  // ---- Users: search -------------------------------------------------------------------------
+  // ---- Users: member grid + live search -------------------------------------------------------
 
-  async function renderSearch(view) {
-    const input = h("input", { type: "search", placeholder: "Name, display name or user ID…", "aria-label": "Search users", size: "40" });
-    const results = h("div");
-    const submit = h("button", { class: "btn primary", type: "submit" }, "Search");
+  // Real SVG (not h(), which uses createElement and would render an inert tag) for the role colour
+  // dot. `fill` is an attribute, not a style="" — CSP only blocks the latter.
+  function roleDot(role) {
+    if (!role) return null;
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "role-dot");
+    svg.setAttribute("width", "10");
+    svg.setAttribute("height", "10");
+    svg.setAttribute("viewBox", "0 0 10 10");
+    svg.setAttribute("aria-hidden", "true");
+    const circle = document.createElementNS(NS, "circle");
+    circle.setAttribute("cx", "5");
+    circle.setAttribute("cy", "5");
+    circle.setAttribute("r", "5");
+    circle.setAttribute("fill", role.color);
+    svg.append(circle);
+    return svg;
+  }
 
-    const search = async () => {
-      const q = input.value.trim();
-      if (!q) { results.replaceChildren(); return; }
-      const data = await api(`/api/users/search?q=${encodeURIComponent(q)}`);
-      const byId = /^\d{15,20}$/.test(q) && !data.results.some((r) => r.id === q)
-        ? h("p", {}, h("a", { href: `#/users/${q}` }, `Open profile for ID ${q}`), h("span", { class: "muted" }, " (not in the member cache, e.g. banned or left)"))
-        : null;
-      results.replaceChildren(byId || "", table([
-        { label: "User", render: (r) => user(r) },
-        { label: "ID", render: (r) => h("span", { class: "mono" }, r.id) },
-        { label: "Joined", render: (r) => time(r.joined_at) },
-      ], data.results, { onRowClick: (r) => openProfile(r.id), empty: "No members match." }));
+  function memberTile(m) {
+    const badges = [];
+    if (m.bot) badges.push(badge(t("Bot")));
+    if (m.tier && m.tier !== "none") badges.push(badge(t("Staff: {tier}", { tier: t(m.tier) }), "accent"));
+    if (m.timed_out_until) badges.push(badge(t("Timed out"), "warn"));
+    return h("a", { class: "tile", href: `#/users/${encodeURIComponent(m.id)}`, title: `${m.display_name} (@${m.name}) — ${m.id}` },
+      h("img", { src: m.avatar, alt: "" }),
+      h("div", { class: "grow" },
+        h("div", { class: "name-row" }, roleDot(m.top_role), h("strong", {}, m.display_name)),
+        h("div", { class: "muted small" }, `@${m.name}`),
+        h("div", { class: "muted small" }, t("Joined"), " ", time(m.joined_at)),
+        badges.length ? h("div", { class: "row" }, badges) : null),
+      h("span", { class: "go" }, t("View profile ›")));
+  }
+
+  async function renderMembers(view) {
+    const search = h("input", { type: "search", placeholder: t("Name, display name or user ID…"), "aria-label": t("Search members"), size: "30" });
+    const roleSelect = h("select", {}, h("option", { value: "" }, t("All roles")));
+    const sortSelect = h("select", {},
+      h("option", { value: "joined_desc" }, t("Newest joined")),
+      h("option", { value: "joined_asc" }, t("Oldest joined")),
+      h("option", { value: "name" }, t("Name")));
+    const count = h("span", { class: "muted small members-count" });
+    const grid = h("div", { class: "tiles" });
+    const idHint = h("div");
+    const sentinel = h("div", { class: "sentinel" });
+    const loadMore = h("button", { class: "btn", type: "button", hidden: true }, t("Load more"));
+
+    let offset = 0;
+    let hasMore = false;
+    let loading = false;
+    let seq = 0;
+
+    Panel.guild().then((g) => {
+      for (const r of g.roles) roleSelect.append(h("option", { value: r.id }, r.name));
+    });
+
+    const idFallback = () => {
+      const q = search.value.trim();
+      idHint.replaceChildren(/^\d{15,20}$/.test(q)
+        ? h("p", {},
+          h("a", { href: `#/users/${q}` }, t("Open profile for ID {id}", { id: q })),
+          " ", h("span", { class: "muted" }, t("(not in the member cache, e.g. banned or left)")))
+        : "");
     };
 
-    const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(submit, search); } }, input, submit);
-    view.append(h("h1", {}, "Users"), h("div", { class: "card stack" }, form, results));
-    input.focus();
+    const load = async (reset) => {
+      if (loading) return;
+      loading = true;
+      const mine = ++seq;
+      if (reset) { offset = 0; grid.replaceChildren(); }
+      try {
+        const params = new URLSearchParams({ sort: sortSelect.value, offset: String(offset), limit: String(MEMBERS_LIMIT) });
+        const q = search.value.trim();
+        if (q) params.set("q", q);
+        if (roleSelect.value) params.set("role_id", roleSelect.value);
+        const data = await api(`/api/members?${params}`);
+        if (mine !== seq) return;
+        offset += data.members.length;
+        hasMore = data.has_more;
+        loadMore.hidden = !hasMore;
+        count.textContent = t("{n} members", { n: data.total.toLocaleString(Panel.locale()) });
+        grid.append(...data.members.map(memberTile));
+        if (!grid.children.length) grid.replaceChildren(h("div", { class: "empty" }, t("No members match your search.")));
+        idFallback();
+      } finally {
+        loading = false;
+      }
+    };
+
+    let debounceTimer;
+    const debouncedReload = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => run(null, () => load(true)), 250);
+    };
+    search.addEventListener("input", debouncedReload);
+    roleSelect.addEventListener("change", () => run(null, () => load(true)));
+    sortSelect.addEventListener("change", () => run(null, () => load(true)));
+    loadMore.addEventListener("click", () => run(loadMore, () => load(false)));
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!sentinel.isConnected) { observer.disconnect(); return; }
+      if (entries[0].isIntersecting && hasMore && !loading) load(false);
+    });
+    observer.observe(sentinel);
+
+    view.append(
+      h("h1", {}, t("Users")),
+      h("div", { class: "card stack" },
+        h("div", { class: "row members-toolbar" }, field(t("Search"), search), field(t("Role"), roleSelect), field(t("Sort"), sortSelect), count),
+        idHint,
+        grid,
+        sentinel,
+        h("div", { class: "row end" }, loadMore)));
+    search.focus();
+    await load(true);
   }
 
   // ---- Users: profile ------------------------------------------------------------------------
@@ -82,23 +262,23 @@
 
   async function runAction(button, profile, action) {
     const name = profile.user.display_name || profile.user.name;
-    const reason = h("textarea", { rows: "3", maxlength: "400", placeholder: action.optionalReason ? "Optional" : "Required" });
+    const reason = h("textarea", { rows: "3", maxlength: "400", placeholder: t(action.optionalReason ? "Optional" : "Required") });
     const minutes = action.minutes ? h("input", { type: "number", min: "1", max: "40320", value: "60" }) : null;
     const hours = action.hours ? h("input", { type: "number", min: "0", max: "168", value: "0" }) : null;
-    const ok = await dialog(`${action.label}: ${name}`, [
-      action.help ? h("p", { class: "muted" }, action.help) : null,
-      minutes ? field("Duration in minutes (max 40320 = 28 days)", minutes) : null,
-      hours ? field("Delete their messages from the last N hours (0–168)", hours) : null,
-      field("Reason", reason),
-    ], { confirmLabel: action.label, danger: Boolean(action.danger) });
+    const ok = await dialog(t("{action}: {name}", { action: t(action.label), name }), [
+      action.help ? h("p", { class: "muted" }, t(action.help)) : null,
+      minutes ? field(t("Duration in minutes (max 40320 = 28 days)"), minutes) : null,
+      hours ? field(t("Delete their messages from the last N hours (0–168)"), hours) : null,
+      field(t("Reason"), reason),
+    ], { confirmLabel: t(action.label), danger: Boolean(action.danger) });
     if (!ok) return;
     const body = { reason: reason.value.trim() };
     if (minutes) body.minutes = parseInt(minutes.value, 10);
     if (hours) body.delete_message_hours = parseInt(hours.value, 10) || 0;
-    if (!body.reason && !action.optionalReason) { Panel.toast("A reason is required.", true); return; }
-    const result = await run(button, () => api(`/api/users/${profile.user.id}/${action.id}`, { method: "POST", body }), `${action.label}: done`);
+    if (!body.reason && !action.optionalReason) { Panel.toast(t("A reason is required."), true); return; }
+    const result = await run(button, () => api(`/api/users/${profile.user.id}/${action.id}`, { method: "POST", body }), t("{action}: done", { action: t(action.label) }));
     if (!result) return;
-    if (result.dm_sent === false) Panel.toast("Couldn't DM the user (DMs closed); the warning is still recorded.", true);
+    if (result.dm_sent === false) Panel.toast(t("Couldn't DM the user (DMs closed); the warning is still recorded."), true);
     Panel.refresh();
   }
 
@@ -106,7 +286,7 @@
     const buttons = ACTIONS
       .filter((a) => can(a.perm) && (!a.member || profile.member) && (!a.show || a.show(profile)))
       .map((a) => {
-        const button = h("button", { class: a.danger ? "btn danger" : "btn", type: "button" }, a.label);
+        const button = h("button", { class: a.danger ? "btn danger" : "btn", type: "button" }, t(a.label));
         button.addEventListener("click", () => runAction(button, profile, a));
         return button;
       });
@@ -117,55 +297,65 @@
     const p = await api(`/api/users/${encodeURIComponent(id)}`);
     const s = p.sections;
     const flags = [
-      p.user.bot ? badge("bot") : null,
-      p.tier !== "none" ? badge(`staff: ${p.tier}`, "accent") : null,
-      p.member ? null : badge("not a member", "warn"),
-      p.banned === true ? badge("banned", "danger") : null,
-      p.banned === null ? badge("ban status unknown", "warn") : null,
-      p.timed_out_until ? h("span", { class: "badge warn" }, "timed out until ", time(p.timed_out_until)) : null,
+      p.user.bot ? badge(t("bot")) : null,
+      p.tier !== "none" ? badge(t("Staff: {tier}", { tier: t(p.tier) }), "accent") : null,
+      p.member ? null : badge(t("not a member"), "warn"),
+      p.banned === true ? badge(t("banned"), "danger") : null,
+      p.banned === null ? badge(t("ban status unknown"), "warn") : null,
+      p.timed_out_until ? h("span", { class: "badge warn" }, t("timed out until "), time(p.timed_out_until)) : null,
     ];
 
     view.append(
-      h("p", {}, h("a", { href: "#/users" }, "← Users")),
+      h("p", {}, h("a", { href: "#/users" }, t("← Users"))),
       h("div", { class: "card stack" },
-        h("div", { class: "row spread" }, h("h1", {}, user(p.user)), h("span", { class: "mono muted" }, p.user.id)),
+        h("div", { class: "row spread" },
+          h("div", { class: "profile-head" },
+            h("img", { class: "avatar-lg", src: p.user.avatar, alt: "" }),
+            h("div", {},
+              h("h1", {}, p.user.display_name || p.user.name),
+              h("div", { class: "muted" }, `@${p.user.name}`))),
+          h("span", { class: "mono muted" }, p.user.id)),
         h("div", { class: "row" }, flags),
         h("div", { class: "grid" },
-          stat("Account created", time(p.created_at)),
-          stat("Joined server", time(p.joined_at))),
-        p.ban_reason ? h("p", {}, h("span", { class: "muted" }, "Ban reason: "), p.ban_reason) : null,
+          stat(t("Account created"), time(p.created_at)),
+          stat(t("Joined server"), time(p.joined_at))),
+        p.ban_reason ? h("p", {}, h("span", { class: "muted" }, t("Ban reason: ")), p.ban_reason) : null,
         p.roles.length ? h("div", { class: "row" }, p.roles.map((r) => badge(r.name))) : null,
         actionBar(p)),
-      section("Activity", s.activity, (a) => h("div", { class: "grid" },
-        stat("Level", String(a.level)),
-        stat("XP", `${a.xp} / ${a.next_level_xp}`),
-        stat("Last XP award", time(a.last_award_at)))),
-      section("Dev jar", s.dev_jar, (d) => h("div", { class: "grid" },
-        stat("Downloads", String(d.downloads)),
-        stat("Last download", time(d.last_download_at)))),
-      section("Mod cases", s.cases, (cases) => table(caseColumns({ withUser: false }), cases, { empty: "No cases." })),
-      section("Tickets", s.tickets, (tickets) => table([
-        { label: "Closed", render: (t) => time(t.closed_at) },
-        { label: "Title", render: (t) => t.title || t.channel_name || "—" },
-        { label: "Messages", render: (t) => String(t.message_count) },
-        { label: "Status", render: (t) => (t.resolved ? badge("resolved", "ok") : badge("unresolved")) },
+      section(t("Activity"), s.activity, (a) => h("div", { class: "grid" },
+        stat(t("Level"), String(a.level)),
+        stat(t("XP"), `${a.xp} / ${a.next_level_xp}`),
+        stat(t("Last XP award"), time(a.last_award_at)))),
+      section(t("Dev jar"), s.dev_jar, (d) => h("div", { class: "grid" },
+        stat(t("Downloads"), String(d.downloads)),
+        stat(t("Last download"), time(d.last_download_at)))),
+      section(t("Mod cases"), s.cases, (cases) => [
+        table(caseColumns({ withUser: false }), cases, { empty: t("No cases.") }),
+        h("p", { class: "small" }, h("a", { href: `#/audit/${p.user.id}` }, t("View in Audit log ›")))]),
+      section(t("Tickets"), s.tickets, (tickets) => table([
+        { label: t("Closed"), render: (t2) => time(t2.closed_at) },
+        { label: t("Title"), render: (t2) => t2.title || t2.channel_name || "—" },
+        { label: t("Messages"), render: (t2) => String(t2.message_count) },
+        { label: t("Status"), render: (t2) => (t2.resolved ? badge(t("resolved"), "ok") : badge(t("unresolved"))) },
       ], tickets, {
-        empty: "No ticket transcripts.",
-        onRowClick: Panel.can("tickets.view") ? (t) => Panel.go(`#/tickets/transcript/${t.id}`) : undefined,
+        empty: t("No ticket transcripts."),
+        onRowClick: Panel.can("tickets.view") ? (t2) => Panel.go(`#/tickets/transcript/${t2.id}`) : undefined,
       })),
-      section("Bug reports", s.bug_reports, (bugs) => table([
-        { label: "Created", render: (b) => time(b.created_at) },
-        { label: "Title", render: (b) => b.title || h("span", { class: "mono" }, b.thread_id) },
-        { label: "Status", render: (b) => badge(b.status) },
-        { label: "Issue", render: (b) => (b.issue_number ? `${b.repo}#${b.issue_number}` : "—") },
-      ], bugs, { empty: "No bug reports." })),
-      section("Patreon", s.patreon, (link) => (link
-        ? h("div", { class: "row" },
-          link.name || "",
-          link.entitled ? badge("entitled", "ok") : badge("not entitled", "warn"),
-          link.status ? badge(link.status) : null,
-          h("span", { class: "muted small" }, "Last charge: "), time(link.last_charge_date))
-        : h("p", { class: "muted" }, "No Patreon account linked."))));
+      section(t("Bug reports"), s.bug_reports, (bugs) => table([
+        { label: t("Created"), render: (b) => time(b.created_at) },
+        { label: t("Title"), render: (b) => b.title || h("span", { class: "mono" }, b.thread_id) },
+        { label: t("Status"), render: (b) => badge(b.status) },
+        { label: t("Issue"), render: (b) => (b.issue_number ? `${b.repo}#${b.issue_number}` : "—") },
+      ], bugs, { empty: t("No bug reports.") })),
+      section(t("Patreon"), s.patreon, (link) => (link
+        ? h("div", { class: "stack" },
+          h("div", { class: "row" },
+            link.name || "",
+            link.entitled ? badge(t("entitled"), "ok") : badge(t("not entitled"), "warn"),
+            link.status ? badge(link.status) : null,
+            h("span", { class: "muted small" }, t("Last charge: ")), time(link.last_charge_date)),
+          can("patreon.view") ? h("p", {}, h("a", { href: `#/patreon/${encodeURIComponent(p.user.id)}` }, t("View Patreon details ›"))) : null)
+        : h("p", { class: "muted" }, t("No Patreon account linked.")))));
   }
 
   Panel.page({
@@ -174,48 +364,9 @@
     perm: "users.view",
     async render(view, args) {
       if (args[0]) await renderProfile(view, args[0]);
-      else await renderSearch(view);
+      else await renderMembers(view);
     },
   });
 
-  // ---- Cases ---------------------------------------------------------------------------------
-
-  Panel.page({
-    id: "cases",
-    title: "Mod cases",
-    perm: "mod.cases.view",
-    async render(view) {
-      const userInput = h("input", { type: "text", inputmode: "numeric", placeholder: "User ID", size: "22" });
-      const actionSelect = h("select", {}, h("option", { value: "" }, "All actions"),
-        ["warn", "note", "timeout", "untimeout", "kick", "ban", "unban", "alert", "delete"].map((a) => h("option", { value: a }, a)));
-      const sourceSelect = h("select", {}, h("option", { value: "" }, "All sources"),
-        h("option", { value: "panel" }, "panel"), h("option", { value: "automod" }, "automod"));
-      const apply = h("button", { class: "btn primary", type: "submit" }, "Apply");
-      const more = h("button", { class: "btn", type: "button", hidden: true }, "Load more");
-      const results = h("div");
-      let cases = [];
-      let nextBefore = null;
-
-      const load = async (append) => {
-        const params = new URLSearchParams();
-        if (userInput.value.trim()) params.set("user_id", userInput.value.trim());
-        if (actionSelect.value) params.set("action", actionSelect.value);
-        if (sourceSelect.value) params.set("source", sourceSelect.value);
-        if (append && nextBefore) params.set("before_id", String(nextBefore));
-        const data = await api(`/api/cases?${params}`);
-        cases = append ? cases.concat(data.cases) : data.cases;
-        nextBefore = data.next_before_id;
-        more.hidden = !nextBefore;
-        results.replaceChildren(table(caseColumns({ withUser: true }), cases, { onRowClick: (c) => openProfile(c.user_id), empty: "No cases match." }));
-      };
-
-      more.addEventListener("click", () => run(more, () => load(true)));
-      const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(false)); } },
-        userInput, actionSelect, sourceSelect, apply);
-      view.append(
-        h("h1", {}, "Mod cases"),
-        h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
-      await load(false);
-    },
-  });
+  Panel.caseColumns = caseColumns;  // shared with the Audit log page in logs.js
 })();

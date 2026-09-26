@@ -42,6 +42,22 @@ class PatreonIdentity:
     status: PatreonMemberStatus
 
 
+@dataclass(frozen=True, slots=True)
+class PatreonMemberDetails:
+    """Richer, admin-panel-only snapshot of a member; never includes email or tokens."""
+
+    patron_status: str | None
+    tier_ids: tuple[str, ...]
+    tier_names: dict[str, str]
+    currently_entitled_amount_cents: int | None
+    lifetime_support_cents: int | None
+    pledge_relationship_start: datetime | None
+    last_charge_date: datetime | None
+    last_charge_status: str | None
+    next_charge_date: datetime | None
+    pledge_cadence: str | None
+
+
 def _b64encode_json(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -316,3 +332,45 @@ class PatreonCreatorClient:
                     "included": [data],
                 }
         return parse_patreon_member_status(payload, campaign_id=self.campaign_id)
+
+    async def fetch_member_details(self, member_id: str, *, timeout: int = 6) -> PatreonMemberDetails:
+        """Admin-panel detail view only: pledge amount, lifetime support, charge/cadence info."""
+        response = await request(
+            "GET",
+            f"{PATREON_API_BASE}/members/{member_id}",
+            headers={"Authorization": f"Bearer {self.creator_token}"},
+            params={
+                "include": "currently_entitled_tiers,campaign",
+                "fields[member]": "patron_status,last_charge_date,last_charge_status,next_charge_date,"
+                "currently_entitled_amount_cents,lifetime_support_cents,pledge_relationship_start",
+                "fields[tier]": "title",
+                "fields[campaign]": "pay_per_name",
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") or {}
+        attrs = data.get("attributes") or {}
+        included = payload.get("included") or []
+        tier_names = {
+            str(item["id"]): item["attributes"]["title"]
+            for item in included
+            if isinstance(item, dict) and item.get("type") == "tier" and (item.get("attributes") or {}).get("title")
+        }
+        cadence = None
+        for item in included:
+            if isinstance(item, dict) and item.get("type") == "campaign":
+                cadence = (item.get("attributes") or {}).get("pay_per_name")
+        return PatreonMemberDetails(
+            patron_status=attrs.get("patron_status"),
+            tier_ids=_relationship_ids(data, "currently_entitled_tiers"),
+            tier_names=tier_names,
+            currently_entitled_amount_cents=attrs.get("currently_entitled_amount_cents"),
+            lifetime_support_cents=attrs.get("lifetime_support_cents"),
+            pledge_relationship_start=_parse_datetime(attrs.get("pledge_relationship_start")),
+            last_charge_date=_parse_datetime(attrs.get("last_charge_date")),
+            last_charge_status=attrs.get("last_charge_status"),
+            next_charge_date=_parse_datetime(attrs.get("next_charge_date")),
+            pledge_cadence=cadence,
+        )

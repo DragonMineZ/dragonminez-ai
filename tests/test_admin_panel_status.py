@@ -143,7 +143,8 @@ class StatusApiTests(unittest.IsolatedAsyncioTestCase):
         self.login(MOD_ID)
         self.assertEqual((await self.client.get("/api/audit")).status, 403)
         self.login(OWNER_ID)
-        self.assertEqual((await self.client.get("/api/audit?actor_id=abc")).status, 400)
+        # A non-digit actor_id is now a name search (see test_admin_panel_logs.py), not an error.
+        self.assertEqual((await self.client.get("/api/audit?actor_id=nobody-like-this")).status, 200)
         response = await self.client.get(f"/api/audit?limit=2&before_id=11&actor_id={OWNER_ID}&action=settings.")
         self.assertEqual(response.status, 200, await response.text())
         data = await response.json()

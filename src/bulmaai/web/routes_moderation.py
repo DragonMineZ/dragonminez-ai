@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -37,6 +37,9 @@ MAX_TIMEOUT_MINUTES = 28 * 24 * 60
 MAX_BAN_DELETE_HOURS = 168
 MEMBER_ONLY_ACTIONS = {"warn", "timeout", "untimeout", "kick"}
 PANEL_ONLY_ACTIONS = {"warn", "note"}  # no Discord permission involved, so the bot's role doesn't matter
+MEMBERS_DEFAULT_LIMIT = 60
+MEMBERS_MAX_LIMIT = 100
+MEMBER_SORTS = ("joined_desc", "joined_asc", "name")
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -97,6 +100,86 @@ async def search_users(request: web.Request, actor: Actor) -> web.Response:
                 if len(results) >= SEARCH_LIMIT:
                     break
     return web.json_response({"results": results})
+
+
+def _query_offset(request: web.Request) -> int:
+    raw = request.query.get("offset", "0").strip() or "0"
+    if not raw.isdigit():
+        raise api_error(400, "offset must be a non-negative whole number.")
+    return int(raw)
+
+
+def _role_id_param(request: web.Request) -> int | None:
+    raw = request.query.get("role_id", "").strip()
+    if not raw:
+        return None
+    if not raw.isdigit() or len(raw) > 20:
+        raise api_error(400, "Invalid role id.")
+    return int(raw)
+
+
+def _top_colored_role(member: discord.Member) -> dict[str, Any] | None:
+    """The highest-position role with a non-default colour, for the member grid's colour dot."""
+    for role in sorted(member.roles, key=lambda r: r.position, reverse=True):
+        if not role.is_default() and role.colour.value:
+            return {"id": str(role.id), "name": role.name, "color": str(role.colour)}
+    return None
+
+
+def _member_list_json(bot: discord.Bot, member: discord.Member) -> dict[str, Any]:
+    return {
+        **user_json(member),
+        "avatar": member.display_avatar.with_size(64).url,
+        "joined_at": _iso(member.joined_at),
+        "top_role": _top_colored_role(member),
+        "tier": tier_for(member, bot.settings).name.lower(),
+        "timed_out_until": _iso(member.communication_disabled_until) if member.timed_out else None,
+    }
+
+
+@routes.get("/api/members")
+@requires("users.view")
+async def list_members(request: web.Request, actor: Actor) -> web.Response:
+    """The member grid: filter/sort the guild's cached members, paged for infinite scroll."""
+    bot = request.app[BOT]
+    guild = actor.member.guild
+    query = request.query.get("q", "").strip().lower()
+    if len(query) > 100:
+        raise api_error(400, "Search is too long.")
+    role_id = _role_id_param(request)
+    sort = request.query.get("sort", "joined_desc")
+    if sort not in MEMBER_SORTS:
+        raise api_error(400, f"sort must be one of {', '.join(MEMBER_SORTS)}.")
+    offset = _query_offset(request)
+    limit = _query_int(request, "limit", MEMBERS_DEFAULT_LIMIT, MEMBERS_MAX_LIMIT)
+
+    members = guild.members
+    if query:
+        def _matches(m: discord.Member) -> bool:
+            names = (m.name, m.display_name, m.global_name or "")
+            return query == str(m.id) or any(query in name.lower() for name in names)
+
+        members = [m for m in members if _matches(m)]
+    if role_id is not None:
+        members = [m for m in members if any(r.id == role_id for r in m.roles)]
+
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    if sort == "name":
+        members = sorted(members, key=lambda m: (m.display_name.lower(), m.id))
+    elif sort == "joined_asc":
+        members = sorted(members, key=lambda m: (m.joined_at or epoch, m.id))
+    else:
+        members = sorted(members, key=lambda m: (m.joined_at or epoch, m.id), reverse=True)
+
+    total = len(members)
+    page = members[offset : offset + limit]
+    return web.json_response(
+        {
+            "members": [_member_list_json(bot, m) for m in page],
+            "total": total,
+            "has_more": offset + limit < total,
+        }
+    )
 
 
 async def _fetch_user(bot: discord.Bot, user_id: int) -> discord.abc.User | None:
@@ -404,33 +487,3 @@ async def ban_user(request: web.Request, actor: Actor) -> web.Response:
 @requires("mod.ban")
 async def unban_user(request: web.Request, actor: Actor) -> web.Response:
     return await _moderate(request, actor, "unban")
-
-
-# --- Case log ---------------------------------------------------------------------------------
-
-
-@routes.get("/api/cases")
-@requires("mod.cases.view")
-async def list_cases(request: web.Request, actor: Actor) -> web.Response:
-    bot = request.app[BOT]
-    guild = actor.member.guild
-    raw_user = request.query.get("user_id", "").strip()
-    action = request.query.get("action", "").strip() or None
-    source = request.query.get("source", "").strip() or None
-    if (action and len(action) > 32) or (source and len(source) > 32):
-        raise api_error(400, "Invalid filter.")
-    limit = _query_int(request, "limit", 50, 100)
-    cases = await mod_cases.list_cases(
-        guild.id,
-        user_id=_snowflake(raw_user) if raw_user else None,
-        action=action,
-        source=source,
-        before_id=_query_int(request, "before_id", None, 2**63 - 1),
-        limit=limit,
-    )
-    return web.json_response(
-        {
-            "cases": [_case_json(bot, guild, case) for case in cases],
-            "next_before_id": cases[-1].id if len(cases) == limit else None,
-        }
-    )

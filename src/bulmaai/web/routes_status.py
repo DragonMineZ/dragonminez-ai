@@ -132,22 +132,38 @@ async def logs(request: web.Request, actor: Actor) -> web.Response:
     return web.json_response({"records": records, "last_id": last_id})
 
 
+def _match_member_ids(guild: discord.Guild, query: str) -> list[int]:
+    """Same matching as /api/users/search, but every hit (used for a SQL = ANY(...) filter)."""
+    q = query.lower()
+    return [
+        m.id
+        for m in guild.members
+        if q in m.name.lower() or q in m.display_name.lower() or q in (getattr(m, "global_name", None) or "").lower()
+    ]
+
+
 @routes.get("/api/audit")
 @requires("audit.view")
 async def audit_log(request: web.Request, actor: Actor) -> web.Response:
     limit = min(_int_param(request, "limit", 50, minimum=1), AUDIT_PAGE_MAX)
     before_id = _int_param(request, "before_id", minimum=1)
-    actor_id = _int_param(request, "actor_id", minimum=1)
+    raw_actor = request.query.get("actor_id", "").strip()
     action = request.query.get("action", "").strip()
+    guild = panel_guild(request.app[BOT])
 
     conditions: list[str] = []
     args: list[Any] = []
     if before_id is not None:
         args.append(before_id)
         conditions.append(f"id < ${len(args)}")
-    if actor_id is not None:
-        args.append(actor_id)
-        conditions.append(f"actor_id = ${len(args)}")
+    if raw_actor:
+        if raw_actor.isdigit():
+            args.append(int(raw_actor))
+            conditions.append(f"actor_id = ${len(args)}")
+        else:
+            # Not a snowflake: treat it as a name and match any guild member it could refer to.
+            args.append(_match_member_ids(guild, raw_actor) if guild else [])
+            conditions.append(f"actor_id = ANY(${len(args)}::bigint[])")
     if action:
         args.append(action)  # prefix match, so "mod." finds every moderation action
         conditions.append(f"left(action, length(${len(args)}::text)) = ${len(args)}::text")
@@ -160,7 +176,6 @@ async def audit_log(request: web.Request, actor: Actor) -> web.Response:
         *args,
     )
 
-    guild = panel_guild(request.app[BOT])
     entries = []
     for row in rows[:limit]:
         member = guild.get_member(row["actor_id"]) if guild else None
@@ -177,6 +192,14 @@ async def audit_log(request: web.Request, actor: Actor) -> web.Response:
             }
         )
     return web.json_response({"entries": entries, "has_more": len(rows) > limit})
+
+
+@routes.get("/api/audit/actions")
+@requires("audit.view")
+async def audit_actions(request: web.Request, actor: Actor) -> web.Response:
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT DISTINCT action FROM panel_audit_log ORDER BY 1")
+    return web.json_response({"actions": [row["action"] for row in rows]})
 
 
 @routes.get("/api/staff")

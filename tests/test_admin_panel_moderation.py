@@ -24,7 +24,17 @@ OWNER_ID, HELPER_ID, MOD_ID, MOD2_ID, RANDOM_ID, HIGH_ID, BOT_ID = 111, 222, 444
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def make_member(user_id, guild, role_ids=(), position=0):
+class FakeAvatar(SimpleNamespace):
+    def with_size(self, _size):
+        return self
+
+
+class FakeColour(SimpleNamespace):
+    def __str__(self):
+        return f"#{self.value:06x}"
+
+
+def make_member(user_id, guild, role_ids=(), position=0, joined_at=NOW):
     member = SimpleNamespace(
         id=user_id,
         name=f"user{user_id}",
@@ -32,11 +42,11 @@ def make_member(user_id, guild, role_ids=(), position=0):
         global_name=None,
         bot=user_id == BOT_ID,
         guild=guild,
-        roles=[SimpleNamespace(id=r) for r in role_ids],
+        roles=[SimpleNamespace(id=r, position=1, is_default=lambda: False, colour=SimpleNamespace(value=0)) for r in role_ids],
         top_role=SimpleNamespace(position=position),
         guild_permissions=SimpleNamespace(administrator=False),
-        display_avatar=SimpleNamespace(url="https://cdn.discordapp.com/x.png"),
-        joined_at=NOW,
+        display_avatar=FakeAvatar(url="https://cdn.discordapp.com/x.png"),
+        joined_at=joined_at,
         created_at=NOW,
         timed_out=False,
         communication_disabled_until=None,
@@ -54,13 +64,14 @@ def make_bot():
     object.__setattr__(settings, "panel_public_url", "http://127.0.0.1")
     guild = SimpleNamespace(id=1, name="DMZ", icon=None, owner_id=OWNER_ID, channels=[], roles=[])
     members = {
-        OWNER_ID: make_member(OWNER_ID, guild, position=100),
-        HELPER_ID: make_member(HELPER_ID, guild, [HELPER_ROLE], position=10),
-        MOD_ID: make_member(MOD_ID, guild, [MOD_ROLE], position=20),
-        MOD2_ID: make_member(MOD2_ID, guild, [MOD_ROLE], position=20),
-        RANDOM_ID: make_member(RANDOM_ID, guild, position=1),
-        HIGH_ID: make_member(HIGH_ID, guild, position=60),  # no staff tier, but role above the bot's
-        BOT_ID: make_member(BOT_ID, guild, position=50),
+        # joined_at spread out (oldest to newest) so /api/members sort order is unambiguous.
+        OWNER_ID: make_member(OWNER_ID, guild, position=100, joined_at=NOW - timedelta(days=400)),
+        HELPER_ID: make_member(HELPER_ID, guild, [HELPER_ROLE], position=10, joined_at=NOW - timedelta(days=300)),
+        MOD_ID: make_member(MOD_ID, guild, [MOD_ROLE], position=20, joined_at=NOW - timedelta(days=200)),
+        MOD2_ID: make_member(MOD2_ID, guild, [MOD_ROLE], position=20, joined_at=NOW - timedelta(days=100)),
+        RANDOM_ID: make_member(RANDOM_ID, guild, position=1, joined_at=NOW - timedelta(days=50)),
+        HIGH_ID: make_member(HIGH_ID, guild, position=60, joined_at=NOW - timedelta(days=10)),  # no staff tier, but role above the bot's
+        BOT_ID: make_member(BOT_ID, guild, position=50, joined_at=NOW),
     }
     guild.members = list(members.values())
     guild.get_member = members.get
@@ -197,6 +208,64 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["next_before_id"], 4)
         self.assertEqual(data["cases"][0]["moderator"]["id"], str(HELPER_ID))
         self.assertEqual((await self.client.get("/api/cases?limit=abc")).status, 400)
+
+    async def test_members_list_sort_and_total(self):
+        self.login(HELPER_ID)
+        data = await (await self.client.get("/api/members")).json()
+        self.assertEqual(data["total"], len(self.members))
+        self.assertFalse(data["has_more"])
+        self.assertEqual(data["members"][0]["id"], str(BOT_ID))  # joined_desc (default): most recent first
+        self.assertEqual(data["members"][-1]["id"], str(OWNER_ID))
+
+        data = await (await self.client.get("/api/members?sort=joined_asc")).json()
+        self.assertEqual(data["members"][0]["id"], str(OWNER_ID))
+        self.assertEqual(data["members"][-1]["id"], str(BOT_ID))
+
+        data = await (await self.client.get("/api/members?sort=name")).json()
+        names = [m["display_name"] for m in data["members"]]
+        self.assertEqual(names, sorted(names, key=str.lower))
+
+    async def test_members_filters_by_query_and_role(self):
+        self.login(HELPER_ID)
+        data = await (await self.client.get(f"/api/members?q=user{MOD_ID}")).json()
+        self.assertEqual([m["id"] for m in data["members"]], [str(MOD_ID)])
+
+        data = await (await self.client.get(f"/api/members?role_id={MOD_ROLE}")).json()
+        self.assertEqual(sorted(m["id"] for m in data["members"]), sorted([str(MOD_ID), str(MOD2_ID)]))
+
+    async def test_members_paging(self):
+        self.login(HELPER_ID)
+        first = await (await self.client.get("/api/members?limit=3&offset=0")).json()
+        self.assertEqual(len(first["members"]), 3)
+        self.assertTrue(first["has_more"])
+        second = await (await self.client.get("/api/members?limit=3&offset=3")).json()
+        self.assertEqual(len(second["members"]), 3)
+        self.assertTrue(second["has_more"])
+        third = await (await self.client.get("/api/members?limit=3&offset=6")).json()
+        self.assertEqual(len(third["members"]), 1)
+        self.assertFalse(third["has_more"])
+        seen = {m["id"] for page in (first, second, third) for m in page["members"]}
+        self.assertEqual(seen, {str(uid) for uid in self.members})
+
+    async def test_members_top_role_and_tier(self):
+        self.login(HELPER_ID)
+        self.members[MOD_ID].roles = [
+            SimpleNamespace(id=MOD_ROLE, name="Mod", position=5, is_default=lambda: False, colour=FakeColour(value=0x3498DB))
+        ]
+        data = await (await self.client.get(f"/api/members?q=user{MOD_ID}")).json()
+        entry = data["members"][0]
+        self.assertEqual(entry["tier"], "moderator")
+        self.assertEqual(entry["top_role"], {"id": str(MOD_ROLE), "name": "Mod", "color": "#3498db"})
+        self.assertIsNone(data["members"][0].get("timed_out_until"))
+
+    async def test_members_bad_params(self):
+        self.login(HELPER_ID)
+        self.assertEqual((await self.client.get("/api/members?sort=bogus")).status, 400)
+        self.assertEqual((await self.client.get("/api/members?role_id=abc")).status, 400)
+        self.assertEqual((await self.client.get("/api/members?offset=-1")).status, 400)
+        self.assertEqual((await self.client.get("/api/members?limit=0")).status, 400)
+        self.assertEqual((await self.client.get("/api/members?limit=101")).status, 400)
+        self.assertEqual((await self.client.get(f"/api/members?q={'x' * 101}")).status, 400)
 
 
 if __name__ == "__main__":

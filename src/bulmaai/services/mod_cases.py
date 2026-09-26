@@ -17,6 +17,7 @@ class ModCase:
     duration_seconds: int | None
     source: str
     created_at: datetime
+    external_id: str | None = None
 
 
 async def record_case(
@@ -28,12 +29,18 @@ async def record_case(
     reason: str | None = None,
     duration_seconds: int | None = None,
     source: str = "panel",
-) -> int:
+    external_id: str | None = None,
+    created_at: datetime | None = None,
+) -> int | None:
+    """Returns the new case id, or None if external_id was already recorded (idempotent sync)."""
     pool = await get_pool()
     return await pool.fetchval(
         """
-        INSERT INTO mod_cases (guild_id, user_id, moderator_id, action, reason, duration_seconds, source)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO mod_cases (
+            guild_id, user_id, moderator_id, action, reason, duration_seconds, source, external_id, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()))
+        ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING
         RETURNING id
         """,
         guild_id,
@@ -43,6 +50,8 @@ async def record_case(
         reason,
         duration_seconds,
         source,
+        external_id,
+        created_at,
     )
 
 
@@ -82,6 +91,7 @@ async def list_cases(
             duration_seconds=row["duration_seconds"],
             source=row["source"],
             created_at=row["created_at"],
+            external_id=row["external_id"],
         )
         for row in rows
     ]

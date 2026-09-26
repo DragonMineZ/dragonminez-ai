@@ -81,6 +81,9 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.ask",
     "bulmaai.cogs.showcase",
     "bulmaai.cogs.admin_panel",
+    "bulmaai.cogs.self_update",
+    "bulmaai.cogs.mod_log_sync",
+    "bulmaai.cogs.scheduled_announcements",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -197,12 +200,12 @@ DEFAULT_DEV_JAR_PATREON_ROLE_IDS: Sequence[int] = (
     1287877305259130900,
 )
 DEFAULT_DEV_JAR_TESTER_ROLE_IDS: Sequence[int] = (1286814599215317034,)
-# Patch notes location moves per release (e.g. v2.1.x/PATCH_NOTES-v2.1.1.md now,
-# later main/PATCH_NOTES/..., then v2.2/PATCH_NOTES-v2.2.md). These are runtime
-# settings so the file can be repointed with /settings set without a redeploy.
+# Patch notes location moves per release. PATCH_NOTES_FILE_PATH may be a folder
+# (the highest-versioned .md inside is used, e.g. PATCH_NOTES-v2.2.md) or a
+# specific .md file. Runtime settings, so /settings set repoints without a redeploy.
 DEFAULT_PATCH_NOTES_REPO = DEFAULT_GITHUB_DEFAULT_REPO
-DEFAULT_PATCH_NOTES_BRANCH = "v2.1.x"
-DEFAULT_PATCH_NOTES_FILE_PATH = "PATCH_NOTES-v2.1.1.md"
+DEFAULT_PATCH_NOTES_BRANCH = "v2.2"
+DEFAULT_PATCH_NOTES_FILE_PATH = "PATCH_NOTES"
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
 DEFAULT_ANNOUNCEMENT_ROLE_PT_ID = 1469153940749680821
@@ -457,6 +460,10 @@ class Settings:
     panel_admin_role_ids: Sequence[int] = (1216431257660035132, 1309022450671161476)  # DMZ Owner, DMZ Author
     panel_moderator_role_ids: Sequence[int] = (1352882775304175668, 1341596685339725885)  # DMZ Dev, Staff
     panel_helper_role_ids: Sequence[int] = (1341595261960589343,)  # DMZ Helper
+    # Dyno (being phased out): its bans/kicks/timeouts come from the Discord audit log; warns and the
+    # real moderator come from its mod-log channel embeds when this channel is set.
+    dyno_user_id: int = 155149108183695360
+    dyno_modlog_channel_id: int | None = 1501735528356118528
 
 
 def _get_env(name: str, default: str | None = None) -> str | None:

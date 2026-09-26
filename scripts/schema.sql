@@ -319,3 +319,36 @@ CREATE TABLE IF NOT EXISTS mod_cases (
 
 CREATE INDEX IF NOT EXISTS idx_mod_cases_user
     ON mod_cases (guild_id, user_id, created_at DESC);
+
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS external_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mod_cases_external_id
+    ON mod_cases (external_id) WHERE external_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS panel_announcements (
+    id            BIGSERIAL PRIMARY KEY,
+    author_id     BIGINT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'draft',
+    channel_id    BIGINT,
+    payload       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    send_at       TIMESTAMPTZ,
+    message_ids   JSONB,
+    error         TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at       TIMESTAMPTZ,
+    CONSTRAINT panel_announcements_status_check
+        CHECK (status IN ('draft', 'scheduled', 'sending', 'sent', 'failed', 'cancelled'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_panel_announcements_due
+    ON panel_announcements (send_at)
+    WHERE status = 'scheduled';
+
+CREATE INDEX IF NOT EXISTS idx_panel_announcements_history
+    ON panel_announcements (created_at DESC)
+    WHERE status NOT IN ('draft', 'scheduled');
+
+CREATE INDEX IF NOT EXISTS idx_panel_announcements_drafts
+    ON panel_announcements (updated_at DESC)
+    WHERE status = 'draft';

@@ -331,8 +331,8 @@ class ConfigSettingsTests(unittest.TestCase):
             settings = load_settings(include_overrides=False)
 
         self.assertEqual(settings.patch_notes_repo, "dragonminez")
-        self.assertEqual(settings.patch_notes_branch, "v2.1.x")
-        self.assertEqual(settings.patch_notes_file_path, "PATCH_NOTES-v2.1.1.md")
+        self.assertEqual(settings.patch_notes_branch, "v2.2")
+        self.assertEqual(settings.patch_notes_file_path, "PATCH_NOTES")
 
     def test_ticket_close_settings_are_environment_configurable(self) -> None:
         with patch.dict(

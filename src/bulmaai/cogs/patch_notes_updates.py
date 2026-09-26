@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands, tasks
+from requests import HTTPError
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
@@ -12,6 +13,7 @@ from bulmaai.services.patch_notes import (
     PatchNotesState,
     build_patch_notes_url,
     get_patch_notes_state,
+    pick_latest_patch_notes,
     summarize_patch_notes_update,
     upsert_patch_notes_state,
 )
@@ -109,18 +111,33 @@ class PatchNotesUpdatesCog(commands.Cog):
         # Read fresh from bot.settings so /settings set (which calls
         # reload_settings) repoints the file on the next poll without a restart.
         branch = self.bot.settings.patch_notes_branch
-        file_path = self.bot.settings.patch_notes_file_path
-        content, _blob_sha = await self.gh.get_file(file_path, ref=branch)
+        # State is keyed by the configured path (usually the PATCH_NOTES folder), so
+        # a new latest file (v2.1.1 -> v2.2) is announced as an update, not re-seeded.
+        configured_path = self.bot.settings.patch_notes_file_path
+        try:
+            if configured_path.lower().endswith(".md"):
+                latest_path = configured_path
+            else:
+                latest_path = pick_latest_patch_notes(await self.gh.list_dir(configured_path, ref=branch))
+            if latest_path is None:
+                log.info("No patch notes in %s@%s; skipping.", configured_path, branch)
+                return
+            content, _blob_sha = await self.gh.get_file(latest_path, ref=branch)
+        except HTTPError as error:
+            if error.response is not None and error.response.status_code == 404:
+                log.info("Patch notes %s@%s not found; skipping.", configured_path, branch)
+                return
+            raise
         content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-        previous = await get_patch_notes_state(branch, file_path)
+        previous = await get_patch_notes_state(branch, configured_path)
         if previous is not None and previous.content_sha == content_sha:
             return
 
         await upsert_patch_notes_state(
             PatchNotesState(
                 branch=branch,
-                file_path=file_path,
+                file_path=configured_path,
                 content_sha=content_sha,
                 content=content,
             )
@@ -131,13 +148,13 @@ class PatchNotesUpdatesCog(commands.Cog):
             return
 
         summary = summarize_patch_notes_update(previous.content, content)
-        await self._announce_update(summary)
+        await self._announce_update(summary, latest_path)
 
-    async def _announce_update(self, summary: str) -> None:
+    async def _announce_update(self, summary: str, file_path: str) -> None:
         patch_notes_url = build_patch_notes_url(
             self.bot.settings.patch_notes_repo,
             self.bot.settings.patch_notes_branch,
-            self.bot.settings.patch_notes_file_path,
+            file_path,
         )
         embed = build_patch_notes_update_embed(
             summary=summary,

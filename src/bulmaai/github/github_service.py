@@ -177,6 +177,12 @@ class GitHubService:
         content = base64.b64decode(j["content"]).decode("utf-8", errors="replace")
         return content, j["sha"]
 
+    async def list_dir(self, path: str, ref: str) -> list[str]:
+        r = await request("GET", f"{self.api}/contents/{path}", headers=await self._headers(), params={"ref": ref})
+        r.raise_for_status()
+        j = r.json()
+        return [item["path"] for item in j if item.get("type") == "file"] if isinstance(j, list) else []
+
     async def put_file(self, *, path: str, branch: str, new_text: str, sha: str, message: str) -> None:
         payload = {
             "message": message,

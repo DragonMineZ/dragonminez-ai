@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from requests import HTTPError
+
 from bulmaai.cogs.patch_notes_updates import (
     PatchNotesUpdatesCog,
     build_patch_notes_update_embed,
@@ -10,6 +12,7 @@ from bulmaai.cogs.patch_notes_updates import (
 from bulmaai.services.patch_notes import (
     PatchNotesState,
     build_patch_notes_url,
+    pick_latest_patch_notes,
     summarize_patch_notes_update,
 )
 
@@ -49,6 +52,20 @@ class PatchNotesSummaryTests(unittest.TestCase):
         self.assertIn("revised", summary)
 
 
+class PickLatestPatchNotesTests(unittest.TestCase):
+    def test_picks_highest_version_and_ignores_non_markdown(self) -> None:
+        paths = [
+            "PATCH_NOTES/PATCH_NOTES-v2.1.1.md",
+            "PATCH_NOTES/PATCH_NOTES_V2.1_final.md",
+            "PATCH_NOTES/PATCH_NOTES-v2.2.md",
+            "PATCH_NOTES/PATCH_NOTES-v9.9.png",
+        ]
+        self.assertEqual(pick_latest_patch_notes(paths), "PATCH_NOTES/PATCH_NOTES-v2.2.md")
+
+    def test_empty_folder_returns_none(self) -> None:
+        self.assertIsNone(pick_latest_patch_notes([]))
+
+
 class PatchNotesEmbedTests(unittest.TestCase):
     def test_embed_links_patch_notes_and_mentions_day(self) -> None:
         updated_at = datetime(2026, 6, 10, 9, 5, tzinfo=timezone.utc)
@@ -77,7 +94,7 @@ class PatchNotesPollTests(unittest.IsolatedAsyncioTestCase):
         cog.gh = SimpleNamespace(get_file=AsyncMock(return_value=(file_content, "blobsha")))
         cog._announced: list[str] = []
 
-        async def fake_announce(summary: str) -> None:
+        async def fake_announce(summary: str, file_path: str) -> None:
             cog._announced.append(summary)
 
         cog._announce_update = fake_announce
@@ -157,6 +174,31 @@ class PatchNotesPollTests(unittest.IsolatedAsyncioTestCase):
 
         upsert.assert_not_awaited()
         self.assertEqual(cog._announced, [])
+
+    async def test_folder_setting_reads_latest_file(self) -> None:
+        cog = self._cog(file_content="# v2.2\n")
+        cog.bot.settings.patch_notes_file_path = "PATCH_NOTES"
+        cog.gh.list_dir = AsyncMock(return_value=["PATCH_NOTES/PATCH_NOTES-v2.1.1.md", "PATCH_NOTES/PATCH_NOTES-v2.2.md"])
+        stored: list[PatchNotesState] = []
+
+        with (
+            patch("bulmaai.cogs.patch_notes_updates.get_patch_notes_state", new=AsyncMock(return_value=None)),
+            patch("bulmaai.cogs.patch_notes_updates.upsert_patch_notes_state", new=AsyncMock(side_effect=stored.append)),
+        ):
+            await cog._poll_once()
+
+        cog.gh.get_file.assert_awaited_once_with("PATCH_NOTES/PATCH_NOTES-v2.2.md", ref=TEST_BRANCH)
+        self.assertEqual(stored[0].file_path, "PATCH_NOTES")
+
+    async def test_missing_patch_notes_are_skipped(self) -> None:
+        cog = self._cog(file_content="")
+        cog.gh.get_file = AsyncMock(side_effect=HTTPError(response=SimpleNamespace(status_code=404)))
+        upsert = AsyncMock()
+
+        with patch("bulmaai.cogs.patch_notes_updates.upsert_patch_notes_state", new=upsert):
+            await cog._poll_once()
+
+        upsert.assert_not_awaited()
 
 
 if __name__ == "__main__":

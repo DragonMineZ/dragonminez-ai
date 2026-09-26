@@ -3,12 +3,33 @@ import unittest
 
 from bulmaai.services.discord_log_forwarding import (
     build_log_embed_payload,
+    payload_to_embed,
+    payload_to_files,
     sanitize_log_text,
     should_forward_record,
 )
 
 
 class DiscordLogForwardingTests(unittest.TestCase):
+    def test_long_traceback_keeps_tail_and_attaches_full_text(self) -> None:
+        def deep(n: int) -> None:
+            if n == 0:
+                raise RuntimeError("404 Client Error: Not Found for url: https://example.test/END")
+            deep(n - 1)
+
+        try:
+            deep(30)
+        except RuntimeError:
+            import sys
+            record = logging.LogRecord("bulmaai.test", logging.ERROR, __file__, 1, "boom", (), sys.exc_info())
+
+        payload = build_log_embed_payload(record)
+        traceback_field = payload_to_embed(payload).fields[-1].value
+
+        self.assertIn("https://example.test/END", traceback_field)
+        self.assertLessEqual(len(traceback_field), 1024)
+        self.assertEqual(len(payload_to_files(payload)), 1)
+
     def test_warning_and_marked_info_records_are_forwarded(self) -> None:
         warning_record = logging.LogRecord("bulmaai.test", logging.WARNING, __file__, 1, "warn", (), None)
         info_record = logging.LogRecord("bulmaai.test", logging.INFO, __file__, 1, "info", (), None)

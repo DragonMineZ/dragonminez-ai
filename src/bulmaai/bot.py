@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -121,6 +122,7 @@ class BulmaAI(discord.Bot):
 
         self.settings = settings
         self._restart_announcement_sent = False
+        self.restart_requested = False
         self._discord_log_forwarder: DiscordLogForwarder | None = None
         BulmaAI.instance = self
 
@@ -315,3 +317,6 @@ def run() -> None:
     bot.load_pr_extensions()
 
     bot.run(settings.discord_token)
+    if bot.restart_requested:
+        # Non-zero so systemd restarts us under Restart=on-failure as well as Restart=always.
+        sys.exit(1)

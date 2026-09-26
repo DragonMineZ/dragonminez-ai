@@ -32,8 +32,11 @@ def has_patreon_access_role(
     return has_any_allowed_role(member, active_settings.patreon_access_role_ids)
 
 
+BRUNO_ID = 348174141121101824
+
+
 def is_bruno(member: discord.Member) -> bool:
-    return member.id == 348174141121101824
+    return member.id == BRUNO_ID
 
 
 def can_use_ai_support(

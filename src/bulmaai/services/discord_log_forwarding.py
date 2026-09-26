@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import re
 import traceback
@@ -101,8 +102,7 @@ def _level_color(levelno: int) -> int:
 def _record_traceback(record: logging.LogRecord) -> str | None:
     if not record.exc_info:
         return None
-    text = "".join(traceback.format_exception(*record.exc_info))
-    return _truncate(sanitize_log_text(text), MAX_TRACEBACK_CHARS)
+    return sanitize_log_text("".join(traceback.format_exception(*record.exc_info)))
 
 
 def _is_sensitive_extra_key(key: str) -> bool:
@@ -161,12 +161,19 @@ def payload_to_embed(payload: LogEmbedPayload) -> discord.Embed:
     for name, value in payload.fields.items():
         embed.add_field(name=name, value=value or "-", inline=True)
     if payload.traceback_text:
-        embed.add_field(
-            name="Traceback",
-            value=f"```py\n{payload.traceback_text}\n```",
-            inline=False,
-        )
+        # Keep the tail: the exception type/message (e.g. the 404 URL) is at the end.
+        text = payload.traceback_text
+        if len(text) > MAX_TRACEBACK_CHARS:
+            text = "..." + text[-(MAX_TRACEBACK_CHARS - 3):]
+        embed.add_field(name="Traceback", value=f"```py\n{text}\n```", inline=False)
     return embed
+
+
+def payload_to_files(payload: LogEmbedPayload) -> list[discord.File]:
+    """Attach the full traceback when the embed field had to cut it."""
+    if not payload.traceback_text or len(payload.traceback_text) <= MAX_TRACEBACK_CHARS:
+        return []
+    return [discord.File(io.BytesIO(payload.traceback_text.encode("utf-8")), filename="traceback.txt")]
 
 
 class DiscordLogHandler(logging.Handler):
@@ -319,6 +326,7 @@ class DiscordLogForwarder:
                 else:
                     await channel.send(
                         embed=payload_to_embed(payload),
+                        files=payload_to_files(payload),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
             except asyncio.CancelledError:

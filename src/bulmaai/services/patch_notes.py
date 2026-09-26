@@ -1,4 +1,5 @@
 import difflib
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -12,6 +13,19 @@ def build_patch_notes_url(repo: str, branch: str, file_path: str) -> str:
     URL is derived on demand rather than pinned to a module constant.
     """
     return f"https://github.com/DragonMineZ/{repo}/blob/{branch}/{file_path}"
+
+
+_VERSION_RE = re.compile(r"v(\d+(?:\.\d+)*)", re.IGNORECASE)
+
+
+def _version_key(path: str) -> tuple[int, ...]:
+    match = _VERSION_RE.search(path.rsplit("/", 1)[-1])
+    return tuple(int(part) for part in match.group(1).split(".")) if match else ()
+
+
+def pick_latest_patch_notes(paths: list[str]) -> str | None:
+    """Pick the highest-versioned .md file (PATCH_NOTES-v2.2.md beats PATCH_NOTES-v2.1.1.md)."""
+    return max((p for p in paths if p.lower().endswith(".md")), key=_version_key, default=None)
 
 
 @dataclass(frozen=True, slots=True)

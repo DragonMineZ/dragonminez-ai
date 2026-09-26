@@ -85,10 +85,7 @@ def read_session(secret: str, value: str | None, *, now: float | None = None) ->
 
 
 def panel_guild(bot: discord.Bot) -> discord.Guild | None:
-    guild_id = bot.settings.panel_guild_id
-    if guild_id:
-        return bot.get_guild(guild_id)
-    return bot.guilds[0] if bot.guilds else None
+    return bot.get_guild(bot.settings.panel_guild_id)
 
 
 def tier_for(member: discord.Member, settings: Any) -> Tier:

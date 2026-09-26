@@ -452,7 +452,7 @@ class Settings:
     panel_host: str = "127.0.0.1"
     panel_port: int = 8090
     panel_public_url: str = "https://panel.dragonminez.com"
-    panel_guild_id: int | None = None  # None = the bot's first guild
+    panel_guild_id: int = 1216429657273012415  # official DragonMineZ server; the panel only manages this one
     panel_session_secret: str | None = None
     panel_admin_role_ids: Sequence[int] = (1216431257660035132, 1309022450671161476)  # DMZ Owner, DMZ Author
     panel_moderator_role_ids: Sequence[int] = (1352882775304175668, 1341596685339725885)  # DMZ Dev, Staff

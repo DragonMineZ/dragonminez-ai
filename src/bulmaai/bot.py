@@ -15,8 +15,10 @@ from .services.discord_log_forwarding import (
     DiscordLogForwarder,
     install_discord_log_forwarder,
 )
+from .services import ai_budget
 from .services.db_schema import ensure_schema
 from .services.message_presets import ensure_message_presets_file
+from .services.support_traces import sum_tokens_by_model_since
 
 log = logging.getLogger("bulmaai")
 
@@ -122,17 +124,32 @@ class BulmaAI(discord.Bot):
         self._discord_log_forwarder: DiscordLogForwarder | None = None
         BulmaAI.instance = self
 
+    async def start(self, token: str, *, reconnect: bool = True) -> None:
+        # py-cord has no discord.py-style setup_hook; run() goes through start(), so hook in here.
+        await self.setup_hook()
+        await super().start(token, reconnect=reconnect)
+
     async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""
-        await init_db_pool()
-        await ensure_schema()
-        ensure_message_presets_file()
+        # Forwarder first so a failing DB/schema step below still reaches the log channel.
         if self.settings.discord_log_forwarding_enabled and self.settings.discord_log_channel_id:
             self._discord_log_forwarder = install_discord_log_forwarder(
                 bot=self,
                 channel_id=self.settings.discord_log_channel_id,
                 min_level_name=self.settings.discord_log_min_level,
             )
+        try:
+            await init_db_pool()
+            await ensure_schema()
+        except Exception:
+            # Non-fatal: get_pool() retries lazily, same as before this hook actually ran.
+            log.exception("Database setup failed (pool or scripts/schema.sql); continuing")
+        try:
+            midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            ai_budget.seed(await sum_tokens_by_model_since(midnight))
+        except Exception:
+            log.exception("Failed to seed today's OpenAI token budget from traces")
+        ensure_message_presets_file()
 
     def reload_settings(self) -> Settings:
         self.settings = load_settings()

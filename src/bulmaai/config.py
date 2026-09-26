@@ -80,12 +80,19 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.power_level",
     "bulmaai.cogs.ask",
     "bulmaai.cogs.showcase",
+    "bulmaai.cogs.admin_panel",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
-# Ticket help uses tools, which are excluded from the data-sharing incentive program,
-# so default to the higher-capability model there.
-DEFAULT_OPENAI_SUPPORT_MODEL = "gpt-5.4"
+# First pass is tool-free on a mini model so it draws from the free data-sharing pool;
+# unsure answers escalate to the big model with tools (tool traffic is billed).
+DEFAULT_OPENAI_SUPPORT_MODEL = "gpt-5-mini"
+DEFAULT_OPENAI_SUPPORT_ESCALATION_MODEL = "gpt-5"
+DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE = 0.7
+# 90% of the Tier 1-2 free pools (2.5M mini / 250k big per UTC day); billed = tool traffic cap.
+DEFAULT_OPENAI_DAILY_SMALL_TOKEN_LIMIT = 2_250_000
+DEFAULT_OPENAI_DAILY_BIG_TOKEN_LIMIT = 225_000
+DEFAULT_OPENAI_DAILY_BILLED_TOKEN_LIMIT = 300_000
 DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT = "medium"
 DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT = "low"
 DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS = 1500
@@ -104,6 +111,9 @@ DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
 DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini-2025-04-14"
 # Bug-report triage runs on a cheap model to keep token usage low.
 DEFAULT_OPENAI_BUGREPORT_MODEL = "gpt-5-mini"
+DEFAULT_OPENAI_TICKET_SUMMARY_MODEL = "gpt-5-mini"
+# Falls back to the first OPENAI_SUPPORT_VECTOR_STORE_IDS entry so closed tickets feed file_search.
+DEFAULT_OPENAI_TICKET_VECTOR_STORE_ID: str | None = None
 
 DEFAULT_PGHOST = "localhost"
 DEFAULT_PGPORT = 5432
@@ -149,10 +159,15 @@ DEFAULT_AI_SUPPORT_ALLOWED_ROLE_IDS: Sequence[int] = (
     *DEFAULT_PATREON_ACCESS_ROLE_IDS,
     1286814599215317034,
 )
-DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 12
+DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 20
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 70
 DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 0
 DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS = 1.5
+DEFAULT_AI_TICKET_TRANSCRIPT_CHANNEL_ID: int | None = 1493390527004147876
+DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE = 0.6
+DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT = 3.0
+DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS = 10
+DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS: Sequence[int] = (1472821034418962573, 1341595261960589343)
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
 DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
@@ -263,6 +278,7 @@ NON_OVERRIDABLE_SETTINGS = {
     "curseforge_api_key",
     "release_webhook_secret",
     "dev_jar_download_upload_dir",
+    "panel_session_secret",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -283,6 +299,11 @@ class Settings:
     openai_key: str
     openai_model: str
     openai_support_model: str
+    openai_support_escalation_model: str
+    ai_support_escalation_confidence: float
+    openai_daily_small_token_limit: int
+    openai_daily_big_token_limit: int
+    openai_daily_billed_token_limit: int
     openai_support_reasoning_effort: str
     openai_support_fast_reasoning_effort: str
     openai_support_max_output_tokens: int
@@ -362,6 +383,13 @@ class Settings:
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
     ai_support_debounce_seconds: float
+    ai_ticket_transcript_channel_id: int | None
+    ai_ticket_resolve_min_confidence: float
+    ai_ticket_resolve_prompt_exponent: float
+    ai_ticket_close_delay_seconds: int
+    ai_ticket_escalation_role_ids: Sequence[int]
+    openai_ticket_summary_model: str
+    openai_ticket_vector_store_id: str | None
     message_presets_path: str
     announcement_source_channel_id: int | None
     announcement_spanish_channel_id: int | None
@@ -419,6 +447,17 @@ class Settings:
                                              1341595261960589343, # DMZ Helper
                                              1341596685339725885) # Staff role
 
+    # Admin web panel. Owner tier = Bruno or the guild owner; Discord "Administrator" = admin tier.
+    panel_enabled: bool = True
+    panel_host: str = "127.0.0.1"
+    panel_port: int = 8090
+    panel_public_url: str = "https://panel.dragonminez.com"
+    panel_guild_id: int | None = None  # None = the bot's first guild
+    panel_session_secret: str | None = None
+    panel_admin_role_ids: Sequence[int] = (1216431257660035132, 1309022450671161476)  # DMZ Owner, DMZ Author
+    panel_moderator_role_ids: Sequence[int] = (1352882775304175668, 1341596685339725885)  # DMZ Dev, Staff
+    panel_helper_role_ids: Sequence[int] = (1341595261960589343,)  # DMZ Helper
+
 
 def _get_env(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name, default)
@@ -454,6 +493,7 @@ def _build_settings_from_env() -> Settings:
         discord_token=token,
         discord_oauth_client_id=_get_env("DISCORD_OAUTH_CLIENT_ID") or DEFAULT_DISCORD_OAUTH_CLIENTID,
         discord_oauth_client_secret=DISCORD_OAUTH_CLIENT_SECRET,
+        panel_session_secret=_get_env("PANEL_SESSION_SECRET"),
         discord_oauth_redirect_uri=(
             _get_env("DISCORD_OAUTH_REDIRECT_URI", DEFAULT_DISCORD_OAUTH_REDIRECT_URI)
             or DEFAULT_DISCORD_OAUTH_REDIRECT_URI
@@ -466,6 +506,23 @@ def _build_settings_from_env() -> Settings:
         openai_support_model=(
             _get_env("OPENAI_SUPPORT_MODEL", DEFAULT_OPENAI_SUPPORT_MODEL)
             or DEFAULT_OPENAI_SUPPORT_MODEL
+        ),
+        openai_support_escalation_model=(
+            _get_env("OPENAI_SUPPORT_ESCALATION_MODEL", DEFAULT_OPENAI_SUPPORT_ESCALATION_MODEL)
+            or DEFAULT_OPENAI_SUPPORT_ESCALATION_MODEL
+        ),
+        ai_support_escalation_confidence=_get_env_float_default(
+            "AI_SUPPORT_ESCALATION_CONFIDENCE",
+            DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE,
+        ),
+        openai_daily_small_token_limit=_get_env_int(
+            "OPENAI_DAILY_SMALL_TOKEN_LIMIT", DEFAULT_OPENAI_DAILY_SMALL_TOKEN_LIMIT
+        ),
+        openai_daily_big_token_limit=_get_env_int(
+            "OPENAI_DAILY_BIG_TOKEN_LIMIT", DEFAULT_OPENAI_DAILY_BIG_TOKEN_LIMIT
+        ),
+        openai_daily_billed_token_limit=_get_env_int(
+            "OPENAI_DAILY_BILLED_TOKEN_LIMIT", DEFAULT_OPENAI_DAILY_BILLED_TOKEN_LIMIT
         ),
         openai_support_reasoning_effort=(
             _get_env(
@@ -700,6 +757,13 @@ def _build_settings_from_env() -> Settings:
             "AI_SUPPORT_DEBOUNCE_SECONDS",
             DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS,
         ),
+        ai_ticket_transcript_channel_id=_get_env_int("AI_TICKET_TRANSCRIPT_CHANNEL_ID", DEFAULT_AI_TICKET_TRANSCRIPT_CHANNEL_ID),
+        ai_ticket_resolve_min_confidence=_get_env_float_default("AI_TICKET_RESOLVE_MIN_CONFIDENCE", DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE),
+        ai_ticket_resolve_prompt_exponent=_get_env_float_default("AI_TICKET_RESOLVE_PROMPT_EXPONENT", DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT),
+        ai_ticket_close_delay_seconds=_get_env_int("AI_TICKET_CLOSE_DELAY_SECONDS", DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS),
+        ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
+        openai_ticket_summary_model=_get_env("OPENAI_TICKET_SUMMARY_MODEL", DEFAULT_OPENAI_TICKET_SUMMARY_MODEL) or DEFAULT_OPENAI_TICKET_SUMMARY_MODEL,
+        openai_ticket_vector_store_id=_get_env("OPENAI_TICKET_VECTOR_STORE_ID", DEFAULT_OPENAI_TICKET_VECTOR_STORE_ID),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
         announcement_source_channel_id=_get_env_int(
             "ANNOUNCEMENT_SOURCE_CHANNEL_ID",
@@ -1002,6 +1066,8 @@ def _coerce_setting_value(field_name: str, raw_value: str) -> Any:
         return _parse_bool(raw_value)
     if target_type is int:
         return int(raw_value.strip())
+    if target_type is float:
+        return float(raw_value.strip())
     return raw_value.strip()
 
 

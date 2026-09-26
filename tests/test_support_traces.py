@@ -8,6 +8,7 @@ from bulmaai.services.support_traces import (
     SupportSession,
     get_support_session,
     record_support_ai_trace,
+    sum_tokens_by_model_since,
     support_trace_to_eval_row,
     upsert_support_session,
     write_eval_jsonl,
@@ -39,6 +40,10 @@ class FakeConnection:
         self.execute_calls.append((sql, args))
         return "OK"
 
+    async def fetch(self, sql: str, *args):
+        self.fetchrow_calls.append((sql, args))
+        return self.fetchrow_result or []
+
 
 class FakeAcquire:
     def __init__(self, conn: FakeConnection) -> None:
@@ -60,6 +65,18 @@ class FakePool:
 
 
 class SupportTraceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sums_todays_tokens_per_model_and_tool_use(self) -> None:
+        conn = FakeConnection()
+        conn.fetchrow_result = [
+            {"model": "gpt-5-mini", "used_tools": False, "tokens": 1200},
+            {"model": "gpt-5", "used_tools": True, "tokens": 300},
+        ]
+
+        rows = await sum_tokens_by_model_since("2026-09-26", pool=FakePool(conn))
+
+        self.assertEqual(rows, [("gpt-5-mini", False, 1200), ("gpt-5", True, 300)])
+        self.assertEqual(conn.fetchrow_calls[0][1], ("2026-09-26",))
+
     async def test_get_support_session_maps_row(self) -> None:
         conn = FakeConnection()
         conn.fetchrow_result = {

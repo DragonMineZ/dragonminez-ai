@@ -257,3 +257,65 @@ CREATE TABLE IF NOT EXISTS showcase_highlights (
     highlight_message_id  BIGINT,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE support_ai_traces ADD COLUMN IF NOT EXISTS confidence REAL;
+
+CREATE TABLE IF NOT EXISTS ticket_image_analyses (
+    attachment_id            BIGINT PRIMARY KEY,
+    channel_id               BIGINT NOT NULL,
+    analysis                 TEXT NOT NULL,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_image_analyses_channel
+    ON ticket_image_analyses (channel_id);
+
+CREATE TABLE IF NOT EXISTS ticket_transcripts (
+    id                       SERIAL PRIMARY KEY,
+    channel_id               BIGINT NOT NULL,
+    guild_id                 BIGINT,
+    channel_name             TEXT,
+    requester_id             BIGINT,
+    closed_by_id             BIGINT,
+    resolved                 BOOLEAN NOT NULL DEFAULT FALSE,
+    ai_confidence            REAL,
+    message_count            INTEGER NOT NULL DEFAULT 0,
+    title                    TEXT,
+    problem                  TEXT,
+    resolution               TEXT,
+    tags                     TEXT[] NOT NULL DEFAULT '{}',
+    knowledge_worthy         BOOLEAN NOT NULL DEFAULT FALSE,
+    transcript               TEXT NOT NULL DEFAULT '',
+    openai_file_id           TEXT,
+    closed_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_transcripts_closed_at
+    ON ticket_transcripts (closed_at DESC);
+
+CREATE TABLE IF NOT EXISTS panel_audit_log (
+    id          BIGSERIAL PRIMARY KEY,
+    actor_id    BIGINT NOT NULL,
+    action      TEXT NOT NULL,
+    target      TEXT,
+    details     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_panel_audit_log_created_at
+    ON panel_audit_log (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS mod_cases (
+    id                BIGSERIAL PRIMARY KEY,
+    guild_id          BIGINT NOT NULL,
+    user_id           BIGINT NOT NULL,
+    moderator_id      BIGINT,
+    action            TEXT NOT NULL,
+    reason            TEXT,
+    duration_seconds  INTEGER,
+    source            TEXT NOT NULL DEFAULT 'panel',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mod_cases_user
+    ON mod_cases (guild_id, user_id, created_at DESC);

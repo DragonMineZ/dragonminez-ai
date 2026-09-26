@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>BulmaAI Panel</title>
+  <link rel="stylesheet" href="/static/panel.css">
+  <!-- panel.js first; each module script registers its pages with Panel.page(), nav follows this order. -->
+  <script defer src="/static/panel.js"></script>
+  <script defer src="/static/status.js"></script>
+  <script defer src="/static/moderation.js"></script>
+  <script defer src="/static/tickets.js"></script>
+  <script defer src="/static/patreon.js"></script>
+  <script defer src="/static/presets.js"></script>
+  <script defer src="/static/settings.js"></script>
+</head>
+<body>
+  <div id="login" class="login" hidden>
+    <div class="login-card">
+      <h1>BulmaAI Panel</h1>
+      <p class="muted">DragonMineZ staff only.</p>
+      <a class="btn primary" href="/auth/login">Log in with Discord</a>
+    </div>
+  </div>
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <div class="brand"><img id="guild-icon" alt=""><span id="guild-name">BulmaAI</span></div>
+      <nav id="nav"></nav>
+      <div class="me">
+        <img id="me-avatar" alt="">
+        <div><div id="me-name"></div><div id="me-tier" class="muted small"></div></div>
+        <button id="logout" class="btn ghost small" type="button">Log out</button>
+      </div>
+    </aside>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

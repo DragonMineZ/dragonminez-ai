@@ -262,6 +262,30 @@ async def list_active_grants_for_owner(owner_discord_user_id: int) -> list[Patre
     return [_row_to_grant(row) for row in rows]
 
 
+async def list_active_gifts_for_beneficiary(beneficiary_discord_user_id: int) -> list[PatreonGrant]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                owner_discord_user_id,
+                beneficiary_discord_user_id,
+                beneficiary_discord_username,
+                minecraft_username,
+                kind,
+                active,
+                source_pr_url
+            FROM patreon_whitelist_grants
+            WHERE beneficiary_discord_user_id = $1
+              AND kind = 'gift'
+              AND active = TRUE
+            ORDER BY created_at ASC
+            """,
+            int(beneficiary_discord_user_id),
+        )
+    return [_row_to_grant(row) for row in rows]
+
+
 async def deactivate_gift_grant(
     owner_discord_user_id: int,
     beneficiary_discord_user_id: int,

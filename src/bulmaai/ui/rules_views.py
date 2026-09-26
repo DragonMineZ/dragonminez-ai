@@ -15,9 +15,10 @@ class RulesLanguageData(TypedDict):
     sections: list[RuleSection]
 
 
-def build_rules_embeds(language: str = "en") -> list[discord.Embed]:
-    content = get_rules_content()
-    data: RulesLanguageData = content.get(language, content["en"])
+def build_rules_embeds(language: str = "en", data: RulesLanguageData | None = None) -> list[discord.Embed]:
+    if data is None:
+        content = get_rules_content()
+        data = content.get(language, content["en"])
     embeds: list[discord.Embed] = []
 
     colors = [

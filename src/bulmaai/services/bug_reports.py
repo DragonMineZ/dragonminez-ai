@@ -103,6 +103,17 @@ async def set_status(thread_id: int, status: str) -> None:
         )
 
 
+async def list_bug_reports_by_reporter(reporter_id: int, *, limit: int = 5) -> list[BugReport]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM bug_reports WHERE reporter_id = $1 ORDER BY created_at DESC LIMIT $2",
+            reporter_id,
+            limit,
+        )
+    return [_row_to_bug_report(row) for row in rows]
+
+
 async def list_tracked() -> list[BugReport]:
     pool = await get_pool()
     async with pool.acquire() as conn:

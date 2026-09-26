@@ -5,19 +5,16 @@ from typing import Any, Callable, TYPE_CHECKING
 if TYPE_CHECKING:
     from bulmaai.bot import BulmaAI
 
+from bulmaai.services import ai_tools
+
 log = logging.getLogger(__name__)
 
 ToolFunc = Callable[..., Any]
 
 # Responses API tools format (no nested "function" key)
-TOOLS_SCHEMAS: dict[str, dict] = {}
+TOOLS_SCHEMAS: dict[str, dict] = dict(ai_tools.TOOL_SCHEMAS)
 
-# Bind tool names to Python functions (lazy loaded to avoid import-time issues)
-TOOLS_FUNCS: dict[str, ToolFunc] = {}
-
-
-def _init_tools_funcs() -> None:
-    return
+TOOLS_FUNCS: dict[str, ToolFunc] = dict(ai_tools.TOOL_FUNCS)
 
 
 def _normalize_schema(name: str) -> dict[str, Any]:
@@ -43,7 +40,6 @@ def get_func(name: str, bot_context: "BulmaAI | None" = None) -> ToolFunc:
     If bot_context is provided, returns a wrapper that injects it.
     Raises KeyError if unknown.
     """
-    _init_tools_funcs()
     func = TOOLS_FUNCS[name]
 
     # If bot_context is provided, wrap the function to inject it

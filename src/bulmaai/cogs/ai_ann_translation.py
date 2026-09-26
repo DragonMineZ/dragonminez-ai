@@ -6,6 +6,7 @@ from discord.ext import commands
 from openai import AsyncOpenAI
 
 from bulmaai.cogs.ai_tickets import DISCORD_MESSAGE_LIMIT, _chunk_discord_message
+from bulmaai.services import ai_budget
 from bulmaai.utils.permissions import is_admin
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ async def translate_text(cog: "AiAnnTranslation", text: str, target_language: st
         input=text,
         text={"verbosity": "medium"},
     )
+    ai_budget.record_response(response)
 
     return response.output_text.strip()
 

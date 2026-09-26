@@ -8,12 +8,14 @@ import discord
 from discord.ext import commands
 
 from bulmaai.cogs.ai_tickets import _chunk_discord_message
+from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.openai_client import (
     ConversationMessage,
     is_transient_ai_error,
     run_support_agent,
 )
+from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
 
@@ -94,14 +96,19 @@ class AskCog(commands.Cog):
         try:
             result = await run_support_agent(
                 messages=messages,
-                enabled_tools=[],
+                enabled_tools=SUPPORT_TOOL_NAMES,
                 language_hint=None,
-                model_override=settings.openai_model,
                 user_id=ctx.author.id,
                 channel_id=channel_id,
                 ticket_conversation=False,
                 bot=self.bot,
                 settings=settings,
+                context_lines=[
+                    f"channel: /ask slash command in #{getattr(ctx.channel, 'name', '?')} (single question, no history)",
+                    f"requester: {getattr(ctx.author, 'display_name', ctx.author.name)}",
+                ],
+                requester_is_staff=isinstance(ctx.author, discord.Member) and is_staff(ctx.author, settings=settings),
+                channel_kind="public",
             )
         except Exception as error:
             transient = is_transient_ai_error(error)
@@ -118,6 +125,13 @@ class AskCog(commands.Cog):
             )
             await ctx.followup.send(
                 "I ran into an error answering that. Please try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
+        if result.get("paused"):
+            await ctx.followup.send(
+                "My AI circuits are recharging for today ⚡ Try again after 00:00 UTC.",
                 ephemeral=True,
             )
             return

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
 
+from bulmaai.services import ai_budget
+
 log = logging.getLogger(__name__)
 
 VALID_SEVERITIES = ("low", "medium", "high", "critical")
@@ -138,6 +140,7 @@ async def analyze_bug_report(
         request_kwargs["reasoning"] = {"effort": "low"}
 
     response = await client.responses.create(**request_kwargs)
+    ai_budget.record_response(response)
     raw = (response.output_text or "").strip()
     try:
         data = json.loads(raw)
@@ -197,6 +200,7 @@ async def assess_duplicate(
 
     try:
         response = await client.responses.create(**request_kwargs)
+        ai_budget.record_response(response)
         data = json.loads((response.output_text or "").strip())
     except (json.JSONDecodeError, TypeError):
         log.warning("Duplicate assessment returned non-JSON output")

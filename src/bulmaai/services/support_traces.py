@@ -37,6 +37,7 @@ class SupportAITrace:
     reply_text: str
     input_json: Any
     request_metadata: dict[str, Any]
+    confidence: float | None = None
 
 
 async def get_support_session(
@@ -125,12 +126,13 @@ async def record_support_ai_trace(
                 reply_text,
                 input_json,
                 request_metadata,
+                confidence,
                 created_at
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18,
-                $19, $20::jsonb, $21::jsonb, now()
+                $19, $20::jsonb, $21::jsonb, $22, now()
             )
             """,
             trace.workflow,
@@ -154,7 +156,24 @@ async def record_support_ai_trace(
             trace.reply_text,
             json.dumps(trace.input_json, ensure_ascii=False),
             json.dumps(trace.request_metadata, ensure_ascii=False, sort_keys=True),
+            trace.confidence,
         )
+
+
+async def sum_tokens_by_model_since(since: Any, *, pool: Any | None = None) -> list[tuple[str, bool, int]]:
+    """(model, used_tools, tokens) spent since `since`; tool traffic is billed outside the free pool."""
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT model, cardinality(tool_names) > 0 AS used_tools, COALESCE(SUM(total_tokens), 0) AS tokens
+            FROM support_ai_traces
+            WHERE created_at >= $1
+            GROUP BY 1, 2
+            """,
+            since,
+        )
+    return [(str(row["model"]), bool(row["used_tools"]), int(row["tokens"])) for row in rows]
 
 
 async def list_support_eval_trace_rows(
@@ -169,7 +188,7 @@ async def list_support_eval_trace_rows(
             SELECT id, created_at, response_id, model, language, channel_id, user_id,
                    tool_names, reply_text, input_json
             FROM support_ai_traces
-            WHERE workflow = 'support_question'
+            WHERE workflow IN ('support_question', 'support_escalation')
               AND coalesce(reply_text, '') <> ''
               AND coalesce(reply_text, '') <> '(no reply)'
             ORDER BY created_at DESC

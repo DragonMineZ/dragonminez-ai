@@ -1,0 +1,203 @@
+import os
+import unittest
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
+os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
+
+import discord
+from aiohttp.test_utils import TestClient, TestServer
+
+from bulmaai.config import load_settings
+from bulmaai.services.member_activity import MemberActivity
+from bulmaai.services.mod_cases import ModCase
+from bulmaai.web.core import SESSION_COOKIE, sign_session
+from bulmaai.web.server import create_app
+
+SECRET = "test-secret"
+HELPER_ROLE = 1341595261960589343
+MOD_ROLE = 1341596685339725885
+OWNER_ID, HELPER_ID, MOD_ID, MOD2_ID, RANDOM_ID, HIGH_ID, BOT_ID = 111, 222, 444, 445, 333, 555, 999
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def make_member(user_id, guild, role_ids=(), position=0):
+    member = SimpleNamespace(
+        id=user_id,
+        name=f"user{user_id}",
+        display_name=f"User {user_id}",
+        global_name=None,
+        bot=user_id == BOT_ID,
+        guild=guild,
+        roles=[SimpleNamespace(id=r) for r in role_ids],
+        top_role=SimpleNamespace(position=position),
+        guild_permissions=SimpleNamespace(administrator=False),
+        display_avatar=SimpleNamespace(url="https://cdn.discordapp.com/x.png"),
+        joined_at=NOW,
+        created_at=NOW,
+        timed_out=False,
+        communication_disabled_until=None,
+        timeout_for=AsyncMock(),
+        remove_timeout=AsyncMock(),
+        kick=AsyncMock(),
+        send=AsyncMock(),
+    )
+    return member
+
+
+def make_bot():
+    settings = load_settings(include_overrides=False)
+    object.__setattr__(settings, "panel_session_secret", SECRET)
+    object.__setattr__(settings, "panel_public_url", "http://127.0.0.1")
+    guild = SimpleNamespace(id=1, name="DMZ", icon=None, owner_id=OWNER_ID, channels=[], roles=[])
+    members = {
+        OWNER_ID: make_member(OWNER_ID, guild, position=100),
+        HELPER_ID: make_member(HELPER_ID, guild, [HELPER_ROLE], position=10),
+        MOD_ID: make_member(MOD_ID, guild, [MOD_ROLE], position=20),
+        MOD2_ID: make_member(MOD2_ID, guild, [MOD_ROLE], position=20),
+        RANDOM_ID: make_member(RANDOM_ID, guild, position=1),
+        HIGH_ID: make_member(HIGH_ID, guild, position=60),  # no staff tier, but role above the bot's
+        BOT_ID: make_member(BOT_ID, guild, position=50),
+    }
+    guild.members = list(members.values())
+    guild.get_member = members.get
+    guild.me = members[BOT_ID]
+    guild.fetch_member = AsyncMock(side_effect=discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "unknown"))
+    guild.ban = AsyncMock()
+    guild.unban = AsyncMock()
+    bot = SimpleNamespace(
+        settings=settings,
+        guilds=[guild],
+        get_guild=lambda _id: guild,
+        user=SimpleNamespace(id=BOT_ID),
+        get_user=lambda _id: None,
+        fetch_user=AsyncMock(return_value=SimpleNamespace(
+            id=777, name="gone", display_name="gone", bot=False, created_at=NOW,
+            display_avatar=SimpleNamespace(url="https://cdn.discordapp.com/x.png"))),
+    )
+    bot.reload_settings = lambda: bot.settings
+    return bot, guild, members
+
+
+class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.bot, self.guild, self.members = make_bot()
+        self.client = TestClient(TestServer(create_app(self.bot)))
+        await self.client.start_server()
+        self.origin = f"http://{self.client.host}:{self.client.port}"
+        self.record = AsyncMock(return_value=42)
+        for target, value in (
+            ("bulmaai.web.core.get_pool", AsyncMock(return_value=SimpleNamespace(execute=AsyncMock()))),
+            ("bulmaai.web.routes_moderation.mod_cases.record_case", self.record),
+        ):
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    def login(self, user_id):
+        self.client.session.cookie_jar.update_cookies({SESSION_COOKIE: sign_session(SECRET, user_id)})
+
+    async def post(self, path, body):
+        return await self.client.post(path, json=body, headers={"Origin": self.origin})
+
+    async def test_helper_can_warn_but_not_kick(self):
+        self.login(HELPER_ID)
+        response = await self.post(f"/api/users/{RANDOM_ID}/warn", {"reason": "spam"})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual((await response.json())["case_id"], 42)
+        self.members[RANDOM_ID].send.assert_awaited_once()
+        self.assertEqual(self.record.await_args.kwargs["action"], "warn")
+        self.assertEqual(self.record.await_args.kwargs["moderator_id"], HELPER_ID)
+
+        response = await self.post(f"/api/users/{RANDOM_ID}/kick", {"reason": "spam"})
+        self.assertEqual(response.status, 403)
+        self.members[RANDOM_ID].kick.assert_not_awaited()
+
+    async def test_reason_required(self):
+        self.login(MOD_ID)
+        response = await self.post(f"/api/users/{RANDOM_ID}/kick", {"reason": "  "})
+        self.assertEqual(response.status, 400)
+        response = await self.post(f"/api/users/{RANDOM_ID}/untimeout", {})
+        self.assertEqual(response.status, 200, await response.text())
+
+    async def test_hierarchy_rules(self):
+        self.login(MOD_ID)
+        cases = {
+            MOD_ID: 403,  # self
+            OWNER_ID: 403,  # guild owner
+            BOT_ID: 403,  # the bot
+            MOD2_ID: 403,  # same panel tier
+            HELPER_ID: 200,  # lower tier and role
+            HIGH_ID: 403,  # role above the actor's
+        }
+        for target, status in cases.items():
+            response = await self.post(f"/api/users/{target}/note", {"reason": "x"})
+            self.assertEqual(response.status, status, f"target {target}: {await response.text()}")
+
+    async def test_bot_role_must_be_above_target(self):
+        self.login(OWNER_ID)  # guild owner skips the actor role check, but Discord still needs the bot above
+        response = await self.post(f"/api/users/{HIGH_ID}/kick", {"reason": "x"})
+        self.assertEqual(response.status, 409)
+        response = await self.post(f"/api/users/{HIGH_ID}/note", {"reason": "x"})
+        self.assertEqual(response.status, 200)
+
+    async def test_timeout_is_clamped_to_28_days(self):
+        self.login(MOD_ID)
+        response = await self.post(f"/api/users/{RANDOM_ID}/timeout", {"reason": "cool off", "minutes": 10**6})
+        self.assertEqual(response.status, 200, await response.text())
+        duration = self.members[RANDOM_ID].timeout_for.await_args.args[0]
+        self.assertEqual(duration, timedelta(days=28))
+        reason = self.members[RANDOM_ID].timeout_for.await_args.kwargs["reason"]
+        self.assertEqual(reason, f"cool off (via panel by user{MOD_ID})")
+        self.assertEqual(self.record.await_args.kwargs["duration_seconds"], 28 * 86400)
+
+    async def test_ban_non_member_validates_hours(self):
+        self.login(OWNER_ID)
+        response = await self.post("/api/users/777/ban", {"reason": "raid", "delete_message_hours": 200})
+        self.assertEqual(response.status, 400)
+        response = await self.post("/api/users/777/ban", {"reason": "raid", "delete_message_hours": 24})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.guild.ban.await_args.kwargs["delete_message_seconds"], 24 * 3600)
+
+    async def test_search_and_profile_degrade_per_section(self):
+        self.login(HELPER_ID)
+        data = await (await self.client.get("/api/users/search?q=user33")).json()
+        self.assertEqual([r["id"] for r in data["results"]], [str(RANDOM_ID)])
+
+        case = ModCase(1, 1, RANDOM_ID, None, "delete", "phish", None, "automod", NOW)
+        with (
+            patch("bulmaai.web.routes_moderation.get_pool", AsyncMock(side_effect=OSError("db down"))),
+            patch("bulmaai.web.routes_moderation.get_member_activity", AsyncMock(return_value=MemberActivity(60, 1, NOW))),
+            patch("bulmaai.web.routes_moderation.list_bug_reports_by_reporter", AsyncMock(return_value=[])),
+            patch("bulmaai.web.routes_moderation.mod_cases.list_cases", AsyncMock(return_value=[case])),
+            self.assertLogs("bulmaai.web.routes_moderation", "ERROR"),
+        ):
+            response = await self.client.get(f"/api/users/{RANDOM_ID}")
+        self.assertEqual(response.status, 200, await response.text())
+        profile = await response.json()
+        sections = profile["sections"]
+        self.assertEqual(sections["activity"]["data"]["level"], 1)
+        self.assertIn("error", sections["tickets"])
+        self.assertIn("error", sections["dev_jar"])
+        self.assertEqual(sections["cases"]["data"][0]["source"], "automod")
+        self.assertNotIn("patreon", sections)  # helpers can't see Patreon
+
+    async def test_cases_list_filters_and_paging(self):
+        self.login(HELPER_ID)
+        cases = [ModCase(i, 1, RANDOM_ID, HELPER_ID, "warn", "x", None, "panel", NOW) for i in (5, 4)]
+        with patch("bulmaai.web.routes_moderation.mod_cases.list_cases", AsyncMock(return_value=cases)) as lister:
+            data = await (await self.client.get(f"/api/cases?user_id={RANDOM_ID}&source=panel&limit=2")).json()
+        lister.assert_awaited_once_with(1, user_id=RANDOM_ID, action=None, source="panel", before_id=None, limit=2)
+        self.assertEqual(data["next_before_id"], 4)
+        self.assertEqual(data["cases"][0]["moderator"]["id"], str(HELPER_ID))
+        self.assertEqual((await self.client.get("/api/cases?limit=abc")).status, 400)
+
+
+if __name__ == "__main__":
+    unittest.main()

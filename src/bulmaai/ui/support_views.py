@@ -33,9 +33,10 @@ class SupportLanguageData(TypedDict):
     github_label: str
 
 
-def build_support_embeds(language: str = "en") -> list[discord.Embed]:
-    content = get_support_content()
-    data: SupportLanguageData = content.get(language, content["en"])
+def build_support_embeds(language: str = "en", data: SupportLanguageData | None = None) -> list[discord.Embed]:
+    if data is None:
+        content = get_support_content()
+        data = content.get(language, content["en"])
 
     embed = discord.Embed(color=discord.Color.from_rgb(88, 101, 242))
     embed.title = f"{data['flag']} {data['title']}"

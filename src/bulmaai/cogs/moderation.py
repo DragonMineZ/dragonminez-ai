@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands, tasks
 
 from bulmaai.config import Settings
+from bulmaai.services import mod_cases
 from bulmaai.services.phishdestroy import PhishDestroyClient, PhishDestroyUnavailable, PhishDestroyVerdict
 from bulmaai.services.moderation import (
     AttachmentInfo,
@@ -202,9 +203,10 @@ class ModerationCog(commands.Cog):
                 },
             )
 
-    async def _apply_decision(self, message: discord.Message, decision: ModerationDecision) -> None:
+    async def _apply_decision(self, message: discord.Message, decision: ModerationDecision) -> bool:
+        """Returns whether the author was timed out."""
         if decision.action is ModerationAction.ALLOW:
-            return
+            return False
 
         deleted = False
         if decision.action in (ModerationAction.DELETE, ModerationAction.TIMEOUT):
@@ -247,6 +249,24 @@ class ModerationCog(commands.Cog):
             timed_out=timed_out,
             purged_count=purged_count,
         )
+        return timed_out
+
+    async def _record_case(self, message: discord.Message, decision: ModerationDecision, *, timed_out: bool) -> None:
+        """Best-effort entry in the panel's case log; automod keeps working if the DB is down."""
+        try:
+            await mod_cases.record_case(
+                guild_id=message.guild.id,
+                user_id=message.author.id,
+                action=decision.action.value,
+                reason=(decision.details or decision.reason)[:500],
+                duration_seconds=self._settings().moderation_image_burst_timeout_seconds if timed_out else None,
+                source="automod",
+            )
+        except Exception:
+            log.exception(
+                "Failed to record automod case",
+                extra={"event": "moderation_case_record_failed", "user_id": message.author.id},
+            )
 
     async def _timeout_member(self, message: discord.Message, decision: ModerationDecision) -> bool:
         member = message.author
@@ -380,7 +400,9 @@ class ModerationCog(commands.Cog):
             phishdestroy_decision = await self._evaluate_phishdestroy(signal)
             if phishdestroy_decision is not None:
                 decision = phishdestroy_decision
-        await self._apply_decision(message, decision)
+        timed_out = await self._apply_decision(message, decision)
+        if decision.action is not ModerationAction.ALLOW:
+            await self._record_case(message, decision, timed_out=timed_out)
 
     async def _evaluate_phishdestroy(self, signal: MessageSignal) -> ModerationDecision | None:
         if self._phishdestroy is None or self._phishdestroy_down:

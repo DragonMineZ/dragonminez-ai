@@ -781,17 +781,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 )
                 return
 
-            await upsert_whitelist_grant(
-                PatreonGrant(
-                    owner_discord_user_id=member.id,
-                    beneficiary_discord_user_id=member.id,
-                    beneficiary_discord_username=str(member),
-                    minecraft_username=nickname,
-                    kind=PatreonGrantKind.SELF,
-                    active=True,
-                    source_pr_url=approval.pr_url,
-                )
-            )
+            await self._record_self_grant(member, nickname, approval.pr_url)
             await _send_message(
                 destination,
                 f"`{nickname}` was approved automatically for Patreon beta access.",
@@ -904,17 +894,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 )
                 return
 
-            await upsert_whitelist_grant(
-                PatreonGrant(
-                    owner_discord_user_id=member.id,
-                    beneficiary_discord_user_id=member.id,
-                    beneficiary_discord_username=str(member),
-                    minecraft_username=new_nickname,
-                    kind=PatreonGrantKind.SELF,
-                    active=True,
-                    source_pr_url=approval.pr_url,
-                )
-            )
+            await self._record_self_grant(member, new_nickname, approval.pr_url)
             await interaction.followup.send(
                 f"Your Patreon beta whitelist username was updated from `{old_nickname}` to `{new_nickname}`.",
                 ephemeral=True,
@@ -922,6 +902,20 @@ class PatreonWhitelistFlowCog(commands.Cog):
             await self._log_staff_info(
                 f"{member.mention} updated Patreon beta access from `{old_nickname}` to `{new_nickname}`.\nPR: {approval.pr_url}"
             )
+
+    async def _record_self_grant(self, member: discord.Member, nickname: str, pr_url: str | None) -> None:
+        """DB bookkeeping after a self whitelist PR merged; shared with the admin panel."""
+        await upsert_whitelist_grant(
+            PatreonGrant(
+                owner_discord_user_id=member.id,
+                beneficiary_discord_user_id=member.id,
+                beneficiary_discord_username=str(member),
+                minecraft_username=nickname,
+                kind=PatreonGrantKind.SELF,
+                active=True,
+                source_pr_url=pr_url,
+            )
+        )
 
     async def _auto_approve_beta_access(self, member: discord.Member, nickname: str) -> AutoApprovalResult:
         branch = _patreon_branch_name(member.id)

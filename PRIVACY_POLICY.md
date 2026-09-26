@@ -1,6 +1,6 @@
 # Privacy Policy — BulmaAI (DragonMineZ Support Bot)
 
-**Last updated:** September 21, 2026
+**Last updated:** September 26, 2026
 
 This Privacy Policy explains what information the BulmaAI Discord bot ("the Bot",
 "we", "us") collects, how it is used, how long it is kept, and the choices you
@@ -20,7 +20,9 @@ We collect only the data needed to operate the Bot's features:
   and roles relevant to the features you use.
 - **Message content.** In designated support channels, the Bot reads the content
   of messages so it can answer support questions, detect and parse crash/log
-  files, and provide translations. The Bot's moderation feature also inspects
+  files, and provide translations. When you mention the Bot in a public channel,
+  it also reads the recent messages around yours (up to 15 from the last 30
+  minutes, from anyone) so it understands the conversation. The Bot's moderation feature also inspects
   message content to detect phishing links and unsolicited server invites.
 - **Support interaction logs.** When you use the AI support feature, we store the
   text of your question and the Bot's reply, together with technical metadata
@@ -69,13 +71,29 @@ We use the information we collect to:
 
 To generate AI support answers, translations, and log analysis, message content
 is transmitted to the OpenAI API for processing at the time of your request.
-OpenAI processes this data to return a response. This content is **not** used to
-train or fine-tune any machine learning or AI model. OpenAI's handling of API
-data is governed by its own policies: https://openai.com/policies/
+This includes the recent conversation around your request (see Section 1).
+When your question is about your own account, the Bot also sends the relevant
+account data to OpenAI: your Patreon link and role status, your beta whitelist
+entries (Minecraft usernames), your dev jar access, and your bug report status.
+It never sends your Patreon name, Patreon IDs, or billing details, and it only
+looks up the account of the person asking.
+
+We participate in OpenAI's data sharing program, so inputs and outputs sent to
+the OpenAI API **may be used by OpenAI to train and improve its models**. Do not
+share passwords, personal contact details, or other sensitive information with
+the Bot. OpenAI's handling of API data is governed by its own policies:
+https://openai.com/policies/
 
 We run internal quality evaluations on stored support questions and answers to
 measure the accuracy of the Bot's responses. This tests our prompts and does not
 train any model.
+
+When a support ticket is closed, the text messages from the ticket (no images;
+only previously generated text descriptions of screenshots) are summarized by
+OpenAI and the transcript is stored in our database. Tickets with a reusable
+problem/solution are uploaded to an OpenAI vector store (file storage used for
+search, not model training) with the requester's name replaced by "Requester",
+so the Bot can answer similar questions later.
 
 ---
 
@@ -87,7 +105,9 @@ processed in memory and is not retained beyond what is required to act on it.
 Leveling data (message counts, level, and timestamps) is retained for as long
 as you remain part of the community, so your level and leaderboard standing are
 preserved. Showcase highlight records store only message IDs and are kept for
-as long as the highlights channel exists.
+as long as the highlights channel exists. Closed ticket transcripts and
+screenshot descriptions are retained to improve support answers and can be
+deleted on request (Section 7).
 
 You may request deletion of your stored data at any time (see Section 7).
 

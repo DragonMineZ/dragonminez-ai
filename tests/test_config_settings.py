@@ -37,6 +37,17 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.openai_faq_vector_store_id, "vs_faq")
         self.assertEqual(settings.openai_faq_generated_path, "data/knowledge/generated/faq.md")
 
+    def test_escalation_and_budget_settings_default_to_free_pools(self) -> None:
+        with patch.dict(os.environ, {"OPENAI_DAILY_BILLED_TOKEN_LIMIT": "5000"}, clear=False):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.openai_support_model, "gpt-5-mini")
+        self.assertEqual(settings.openai_support_escalation_model, "gpt-5")
+        self.assertEqual(settings.ai_support_escalation_confidence, 0.7)
+        self.assertEqual(settings.openai_daily_small_token_limit, 2_250_000)
+        self.assertEqual(settings.openai_daily_big_token_limit, 225_000)
+        self.assertEqual(settings.openai_daily_billed_token_limit, 5000)
+
     def test_phishdestroy_settings_are_environment_configurable(self) -> None:
         with patch.dict(
             os.environ,
@@ -322,6 +333,28 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.patch_notes_repo, "dragonminez")
         self.assertEqual(settings.patch_notes_branch, "v2.1.x")
         self.assertEqual(settings.patch_notes_file_path, "PATCH_NOTES-v2.1.1.md")
+
+    def test_ticket_close_settings_are_environment_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AI_TICKET_TRANSCRIPT_CHANNEL_ID": "123",
+                "AI_TICKET_RESOLVE_MIN_CONFIDENCE": "0.7",
+                "AI_TICKET_RESOLVE_PROMPT_EXPONENT": "2.5",
+                "AI_TICKET_CLOSE_DELAY_SECONDS": "0",
+                "OPENAI_TICKET_SUMMARY_MODEL": "gpt-test",
+                "OPENAI_TICKET_VECTOR_STORE_ID": "vs_tickets",
+            },
+            clear=False,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(settings.ai_ticket_transcript_channel_id, 123)
+        self.assertEqual(settings.ai_ticket_resolve_min_confidence, 0.7)
+        self.assertEqual(settings.ai_ticket_resolve_prompt_exponent, 2.5)
+        self.assertEqual(settings.ai_ticket_close_delay_seconds, 0)
+        self.assertEqual(settings.openai_ticket_summary_model, "gpt-test")
+        self.assertEqual(settings.openai_ticket_vector_store_id, "vs_tickets")
 
 if __name__ == "__main__":
     unittest.main()

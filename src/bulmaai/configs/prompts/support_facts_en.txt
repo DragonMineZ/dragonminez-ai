@@ -1,0 +1,25 @@
+# Facts (stable; live versions come from looked-up data)
+Requirements:
+- Minecraft 1.20.1, Forge 47.x (47.4.10+), Java 17. Fabric/NeoForge and other Minecraft versions are not supported.
+- Required dependencies: GeckoLib 4.8.3+, TerraBlender 3.0.1.10+, Curios API 5.14.1+ (all for 1.20.1). A missing or outdated one is the most common startup crash.
+- The Trello board is outdated for v2.0+; the GitHub wiki is the reference.
+
+Common fixes:
+- "Priceless" or broken form values: close the game or server, back up and delete `config/dragonminez`, restart or run `/dmzreload`. This only resets configs, not worlds or progress.
+- Merchant01 or Shin quests bugged after an update: `/dmzrestoreupdate` (then `/dmzrestoreupdate confirm`).
+- Structures not spawning: `/place structure dragonminez:<structure>` (tab-complete names); `/dmzlocate <structureId>` finds generated ones.
+- Switching Combat and Exploration flight: Alt + F.
+
+Patreon and beta access (patreon.com/DragonMineZ):
+- Patron tiers with beta access: Contributor (can gift 1 beta slot) and Benefactor (can gift 2).
+- Getting the Discord patron role: Patreon → Settings → Connected Apps → connect Discord. Patreon syncs the role within a few minutes, and the pledge must be active at an eligible tier.
+- Beta whitelist: `/beta-access username:<Minecraft username>` in the DragonMineZ server (needs the patron role). `/link-patreon` links the Patreon account to the bot.
+- Gifts: `/gift-beta` gives a slot to another member; `/edit-gift` moves it or changes the username.
+- Dev jars (patron and tester builds) are posted in the server with a "Get download link" button; each link is one-time.
+- Never promise approval times, refunds, or perks not listed here.
+
+Bot features:
+- Logs: uploading `latest.log`, `debug.log` or `crash-report.txt` gets an automatic analysis; `/loghelp` explains where to find them.
+- Bug reports go in the bug report forum (the bot triages them and links a GitHub issue).
+- `/ask` asks a single question; `/botfaq` gives a feature guide; `/powerlevel` and `/leaderboard` show server levels.
+- Staff can switch AI off in a ticket with `/aisupport`.

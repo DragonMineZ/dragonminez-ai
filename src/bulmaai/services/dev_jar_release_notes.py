@@ -3,6 +3,7 @@ import logging
 
 from openai import AsyncOpenAI
 
+from bulmaai.services import ai_budget
 from bulmaai.services.dev_jar_downloads import DevJarCommit, format_dev_jar_commit_line
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ async def generate_dev_jar_release_notes(
         log.warning("Dev jar release notes generation failed; using raw commit list", exc_info=True)
         return fallback
 
+    ai_budget.record_response(response)
     text = (getattr(response, "output_text", None) or "").strip()
     if not text:
         log.warning("Dev jar release notes generation returned empty output; using raw commit list")

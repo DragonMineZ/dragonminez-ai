@@ -334,6 +334,18 @@ def get_support_content() -> dict[str, Any]:
     return load_message_presets()["support"]
 
 
+def replace_preset(kind: str, language: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Overwrite one preset (e.g. rules/en) wholesale. Callers validate the shape first."""
+    presets = load_message_presets()
+    presets[kind][language] = deepcopy(data)
+    save_message_presets(presets)
+    return presets[kind][language]
+
+
+def reset_preset(kind: str, language: str) -> dict[str, Any]:
+    return replace_preset(kind, language, DEFAULT_MESSAGE_PRESETS[kind][language])
+
+
 def update_rules_section(language: str, section_index: int, *, title: str | None, content: str) -> dict[str, Any]:
     presets = load_message_presets()
     rules = presets["rules"].setdefault(language, deepcopy(DEFAULT_MESSAGE_PRESETS["rules"]["en"]))

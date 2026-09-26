@@ -7,6 +7,7 @@ from typing import Any
 
 import discord
 
+log = logging.getLogger(__name__)
 
 SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"(?i)\b(authorization\s*:\s*bearer)\s+[\w.\-]+"),
@@ -313,7 +314,9 @@ class DiscordLogForwarder:
             payload = await self._queue.get()
             try:
                 channel = await self._resolve_channel()
-                if channel is not None:
+                if channel is None:
+                    log.warning("Log channel %s is not a sendable channel", self._channel_id)
+                else:
                     await channel.send(
                         embed=payload_to_embed(payload),
                         allowed_mentions=discord.AllowedMentions.none(),
@@ -321,7 +324,8 @@ class DiscordLogForwarder:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                # Records from this module are never forwarded, so this can't loop; it only hits stdout.
+                log.warning("Failed to forward log to channel %s", self._channel_id, exc_info=True)
             finally:
                 self._queue.task_done()
 

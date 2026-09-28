@@ -34,6 +34,7 @@ def fake_settings(**overrides):
         panel_admin_role_ids=(ADMIN_ROLE,),
         panel_moderator_role_ids=(MOD_ROLE,),
         panel_helper_role_ids=(HELPER_ROLE,),
+        panel_owner_role_ids=(),
         moderation_digest_enabled=True,
         moderation_digest_channel_id=None,
         panel_guild_id=1,

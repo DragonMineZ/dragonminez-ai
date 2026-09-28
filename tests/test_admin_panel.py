@@ -16,6 +16,10 @@ from bulmaai.web.server import create_app
 
 SECRET = "test-secret"
 HELPER_ROLE = 1341595261960589343
+STAFF_ROLE = 1341596685339725885
+MODERATOR_ROLE = 1472821034418962573
+FOUNDER_ROLE = 1216431257660035132
+COMMUNITY_ADMIN_ROLE = 1309022450671161476
 OWNER_ID = 111
 HELPER_ID = 222
 RANDOM_ID = 333
@@ -38,7 +42,10 @@ def make_bot():
     settings = load_settings(include_overrides=False)
     object.__setattr__(settings, "panel_session_secret", SECRET)
     object.__setattr__(settings, "panel_public_url", "http://127.0.0.1")
-    guild = SimpleNamespace(id=1, name="DMZ", icon=None, owner_id=OWNER_ID, channels=[], roles=[])
+    guild = SimpleNamespace(
+        id=1, name="DMZ", icon=None, owner_id=OWNER_ID, channels=[], roles=[],
+        get_role={HELPER_ROLE: SimpleNamespace(id=HELPER_ROLE, name="DMZ Helper")}.get,
+    )
     members = {
         OWNER_ID: make_member(OWNER_ID, guild),
         HELPER_ID: make_member(HELPER_ID, guild, [HELPER_ROLE]),
@@ -65,7 +72,14 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(tier_for(guild.get_member(OWNER_ID), bot.settings), Tier.OWNER)
         self.assertEqual(tier_for(guild.get_member(HELPER_ID), bot.settings), Tier.HELPER)
         self.assertEqual(tier_for(guild.get_member(RANDOM_ID), bot.settings), Tier.NONE)
-        self.assertEqual(tier_for(make_member(9, guild, admin=True), bot.settings), Tier.ADMIN)
+        self.assertEqual(tier_for(make_member(9, guild, admin=True), bot.settings), Tier.NONE)
+        self.assertEqual(tier_for(make_member(9, guild, [STAFF_ROLE], admin=True), bot.settings), Tier.HELPER)
+        self.assertEqual(tier_for(make_member(9, guild, [STAFF_ROLE, MODERATOR_ROLE]), bot.settings), Tier.MODERATOR)
+        self.assertEqual(tier_for(make_member(9, guild, [HELPER_ROLE, STAFF_ROLE]), bot.settings), Tier.HELPER)
+        founder = make_member(9, guild)
+        founder.roles = [SimpleNamespace(id=FOUNDER_ROLE)]
+        self.assertEqual(tier_for(founder, bot.settings), Tier.OWNER)
+        self.assertEqual(tier_for(make_member(9, guild, [COMMUNITY_ADMIN_ROLE]), bot.settings), Tier.ADMIN)
 
 
 class PanelApiTests(unittest.IsolatedAsyncioTestCase):

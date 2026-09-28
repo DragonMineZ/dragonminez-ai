@@ -88,6 +88,7 @@ class Base(unittest.IsolatedAsyncioTestCase):  # py-cord Views/Modals need a run
             panel_admin_role_ids=(ADMIN_ROLE,),
             panel_moderator_role_ids=(MOD_ROLE,),
             panel_helper_role_ids=(HELPER_ROLE,),
+            panel_owner_role_ids=(),
             moderation_appeals_enabled=True,
             moderation_appeals_channel_id=None,
             moderation_reports_channel_id=None,

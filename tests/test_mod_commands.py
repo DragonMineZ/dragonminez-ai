@@ -73,6 +73,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             panel_admin_role_ids=(ADMIN_ROLE,),
             panel_moderator_role_ids=(MOD_ROLE,),
             panel_helper_role_ids=(HELPER_ROLE,),
+            panel_owner_role_ids=(),
             moderation_warn_ladder="2/7d=24h, 5/30d=3d, 7/30d=ban",
         )
         self.guild = SimpleNamespace(id=1, owner_id=OWNER_ID)

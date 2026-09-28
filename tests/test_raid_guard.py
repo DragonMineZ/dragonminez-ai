@@ -41,6 +41,7 @@ def make_settings(**overrides):
         panel_admin_role_ids=(),
         panel_moderator_role_ids=(200,),
         panel_helper_role_ids=(100,),
+        panel_owner_role_ids=(),
     )
     base.update(overrides)
     return SimpleNamespace(**base)

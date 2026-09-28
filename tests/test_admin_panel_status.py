@@ -165,6 +165,9 @@ class StatusApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tiers, {str(OWNER_ID): "owner", str(MOD_ID): "moderator", str(HELPER_ID): "helper"})
         self.assertEqual(data["members"][0]["tier"], "owner")
         self.assertIn({"name": "bot.reload", "tier": "admin", "tier_level": 3}, data["permissions"])
+        self.assertEqual(data["roles"]["owner"], [{"id": "1216431257660035132", "name": None}])
+        helper_roles = {r["id"]: r["name"] for r in data["roles"]["helper"]}
+        self.assertEqual(helper_roles, {"1341595261960589343": "DMZ Helper", "1341596685339725885": None})
 
 
 if __name__ == "__main__":

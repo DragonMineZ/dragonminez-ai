@@ -19,7 +19,7 @@ from bulmaai.web.server import create_app
 
 SECRET = "test-secret"
 HELPER_ROLE = 1341595261960589343
-MOD_ROLE = 1341596685339725885
+MOD_ROLE = 1472821034418962573
 OWNER_ID, HELPER_ID, MOD_ID, MOD2_ID, RANDOM_ID, HIGH_ID, BOT_ID = 111, 222, 444, 445, 333, 555, 999
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

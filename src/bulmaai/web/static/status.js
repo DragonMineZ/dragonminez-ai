@@ -1,10 +1,11 @@
 "use strict";
 
 (() => {
-  const { h, api, run, can, time, user, badge, table, field, roleName, t } = Panel;
+  const { h, api, run, can, time, user, badge, table, field, t } = Panel;
 
   Panel.i18n({
-    " · plus anyone with Discord Administrator": " · además de cualquiera con Administrador en Discord",
+    "unknown role ({id})": "rol desconocido ({id})",
+    "guild owner": "propietario del servidor",
     "Overview": "Resumen",
     "Staff": "Staff",
     "Bot": "Bot",
@@ -29,8 +30,6 @@
     "hosts the panel": "aloja el panel",
     "Reloaded {name}": "Se recargó {name}",
     "No extensions loaded.": "Sin extensiones cargadas.",
-    "Guild owner and Bruno.": "Propietario del servidor y Bruno.",
-    "Discord Administrator permission (no roles configured).": "Permiso de Administrador de Discord (sin roles configurados).",
     "No roles configured.": "Sin roles configurados.",
     "{tier} ({count})": "{tier} ({count})",
     "Nobody.": "Nadie.",
@@ -133,14 +132,9 @@
       const tiers = TIER_ORDER.filter((t) => data.tiers.includes(t));
 
       const rolesLine = (tier) => {
-        const ids = data.role_ids[tier] || [];
-        const span = h("div", { class: "muted small" });
-        if (tier === "owner") span.textContent = t("Guild owner and Bruno.");
-        else if (!ids.length) span.textContent = tier === "admin" ? t("Discord Administrator permission (no roles configured).") : t("No roles configured.");
-        else Promise.all(ids.map(roleName)).then((names) => {
-          span.textContent = t("Roles: {roles}", { roles: names.join(", ") + (tier === "admin" ? t(" · plus anyone with Discord Administrator") : "") });
-        });
-        return span;
+        const roles = (data.roles[tier] || []).map((r) => (r.name ? `@${r.name}` : t("unknown role ({id})", { id: r.id })));
+        const all = tier === "owner" ? roles.concat(t("guild owner"), "Bruno") : roles;
+        return h("div", { class: "muted small" }, all.length ? t("Roles: {roles}", { roles: all.join(", ") }) : t("No roles configured."));
       };
 
       const groups = tiers.map((tier) => {

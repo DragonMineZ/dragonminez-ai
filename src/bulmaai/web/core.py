@@ -90,12 +90,12 @@ def panel_guild(bot: discord.Bot) -> discord.Guild | None:
 
 
 def tier_for(member: discord.Member, settings: Any) -> Tier:
+    """Tiers come only from configured roles; Discord's Administrator permission grants nothing here."""
     if is_bruno(member) or member.id == member.guild.owner_id:
         return Tier.OWNER
-    if member.guild_permissions.administrator:
-        return Tier.ADMIN
     role_ids = {role.id for role in member.roles}
     for tier, configured in (
+        (Tier.OWNER, settings.panel_owner_role_ids),
         (Tier.ADMIN, settings.panel_admin_role_ids),
         (Tier.MODERATOR, settings.panel_moderator_role_ids),
         (Tier.HELPER, settings.panel_helper_role_ids),

@@ -451,21 +451,23 @@ class Settings:
     showcase_reaction_emoji: str
 
     discord_staff_role_ids: Sequence[int] = (1352882775304175668, # DMZ Dev
-                                             1309022450671161476, # DMZ Author
-                                             1216431257660035132, # DMZ Owner
+                                             1309022450671161476, # Community Admin (was DMZ Author)
+                                             1216431257660035132, # Founder (was DMZ Owner)
                                              1341595261960589343, # DMZ Helper
                                              1341596685339725885) # Staff role
 
-    # Admin web panel. Owner tier = Bruno or the guild owner; Discord "Administrator" = admin tier.
+    # Admin web panel. Owner tier = Bruno, the guild owner or the Founder role. Tiers come from roles only
+    # (Discord "Administrator" grants nothing); the Staff role alone is helper, Moderator adds moderator.
     panel_enabled: bool = True
     panel_host: str = "127.0.0.1"
     panel_port: int = 8090
     panel_public_url: str = "https://panel.dragonminez.com"
     panel_guild_id: int = 1216429657273012415  # official DragonMineZ server; the panel only manages this one
     panel_session_secret: str | None = None
-    panel_admin_role_ids: Sequence[int] = (1216431257660035132, 1309022450671161476)  # DMZ Owner, DMZ Author
-    panel_moderator_role_ids: Sequence[int] = (1352882775304175668, 1341596685339725885)  # DMZ Dev, Staff
-    panel_helper_role_ids: Sequence[int] = (1341595261960589343,)  # DMZ Helper
+    panel_owner_role_ids: Sequence[int] = (1216431257660035132,)  # Founder
+    panel_admin_role_ids: Sequence[int] = (1309022450671161476,)  # Community Admin
+    panel_moderator_role_ids: Sequence[int] = (1352882775304175668, 1472821034418962573)  # DMZ Dev, Moderator
+    panel_helper_role_ids: Sequence[int] = (1341595261960589343, 1341596685339725885)  # DMZ Helper, Staff
     # Dyno (being phased out): its bans/kicks/timeouts come from the Discord audit log; warns and the
     # real moderator come from its mod-log channel embeds when this channel is set.
     dyno_user_id: int = 155149108183695360

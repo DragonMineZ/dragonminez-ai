@@ -202,6 +202,11 @@ async def audit_actions(request: web.Request, actor: Actor) -> web.Response:
     return web.json_response({"actions": [row["action"] for row in rows]})
 
 
+def _role_json(guild: discord.Guild, role_id: int) -> dict[str, Any]:
+    role = guild.get_role(role_id)
+    return {"id": str(role_id), "name": role.name if role else None}
+
+
 @routes.get("/api/staff")
 @requires("audit.view")
 async def staff(request: web.Request, actor: Actor) -> web.Response:
@@ -222,10 +227,14 @@ async def staff(request: web.Request, actor: Actor) -> web.Response:
             "permissions": [
                 {"name": name, "tier": tier.name.lower(), "tier_level": int(tier)} for name, tier in PERMISSIONS.items()
             ],
-            "role_ids": {
-                "admin": [str(r) for r in settings.panel_admin_role_ids],
-                "moderator": [str(r) for r in settings.panel_moderator_role_ids],
-                "helper": [str(r) for r in settings.panel_helper_role_ids],
+            "roles": {
+                tier: [_role_json(guild, role_id) for role_id in role_ids]
+                for tier, role_ids in (
+                    ("owner", settings.panel_owner_role_ids),
+                    ("admin", settings.panel_admin_role_ids),
+                    ("moderator", settings.panel_moderator_role_ids),
+                    ("helper", settings.panel_helper_role_ids),
+                )
             },
         }
     )

@@ -168,6 +168,15 @@ class GitHubService:
         r = await request("DELETE", f"{self.api}/git/refs/heads/{branch}", headers=await self._headers())
         r.raise_for_status()
 
+    async def reset_branch(self, branch: str, sha: str) -> None:
+        r = await request(
+            "PATCH",
+            f"{self.api}/git/refs/heads/{branch}",
+            headers=await self._headers(),
+            json={"sha": sha, "force": True},
+        )
+        r.raise_for_status()
+
     # ==================== FILE OPERATIONS ====================
 
     async def get_file(self, path: str, ref: str) -> tuple[str, str]:

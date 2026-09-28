@@ -63,6 +63,25 @@ class GitHubServiceTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(HTTPError):
                     await service.create_branch("patreon/bad/name", "main")
 
+    async def test_reset_branch_sends_force_update(self) -> None:
+        service = GitHubService(
+            auth=SimpleNamespace(get_installation_token=AsyncMock(return_value="token")),
+            owner="DragonMineZ",
+            repo=".github",
+        )
+
+        with patch(
+            "bulmaai.github.github_service.request",
+            AsyncMock(return_value=FakeResponse(200, {})),
+        ) as request_mock:
+            await service.reset_branch("patreon/user-1", "abc123")
+
+        request_mock.assert_awaited_once()
+        args, kwargs = request_mock.await_args
+        self.assertEqual(args[0], "PATCH")
+        self.assertTrue(args[1].endswith("/git/refs/heads/patreon/user-1"))
+        self.assertEqual(kwargs["json"], {"sha": "abc123", "force": True})
+
     async def test_create_or_get_pr_returns_existing_open_pr_on_duplicate_422(self) -> None:
         service = GitHubService(
             auth=SimpleNamespace(get_installation_token=AsyncMock(return_value="token")),

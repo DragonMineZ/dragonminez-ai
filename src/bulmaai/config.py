@@ -154,6 +154,7 @@ DEFAULT_PATREON_ELIGIBLE_TIER_IDS: Sequence[str] = (
 )
 DEFAULT_PATREON_STAFF_CHANNEL_ID = 1493390527004147876
 DEFAULT_PATREON_ADMIN_PING_ROLE_ID = 1309022450671161476
+DEFAULT_PATREON_AI_LOG_CHANNEL_ID = DEFAULT_PATREON_STAFF_CHANNEL_ID
 DEFAULT_PATREON_CONTRIBUTOR_ROLE_ID = 1287877272224665640
 DEFAULT_PATREON_BENEFACTOR_ROLE_ID = 1287877305259130900
 DEFAULT_PATREON_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/patreon/oauth/callback"
@@ -360,6 +361,7 @@ class Settings:
     patreon_oauth_redirect_uri: str
     patreon_webhook_secret: str | None
     patreon_staff_channel_id: int | None
+    patreon_ai_log_channel_id: int | None
     patreon_admin_ping_role_id: int | None
     patreon_contributor_role_id: int | None
     patreon_benefactor_role_id: int | None
@@ -699,6 +701,10 @@ def _build_settings_from_env() -> Settings:
         patreon_staff_channel_id=_get_env_int(
             "PATREON_STAFF_CHANNEL_ID",
             DEFAULT_PATREON_STAFF_CHANNEL_ID,
+        ),
+        patreon_ai_log_channel_id=_get_env_int(
+            "PATREON_AI_LOG_CHANNEL_ID",
+            DEFAULT_PATREON_AI_LOG_CHANNEL_ID,
         ),
         patreon_admin_ping_role_id=_get_env_int(
             "PATREON_ADMIN_PING_ROLE_ID",

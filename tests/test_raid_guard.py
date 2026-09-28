@@ -19,7 +19,11 @@ from bulmaai.cogs.raid_guard import (
     is_raid,
     offense_breakdown,
 )
-from bulmaai.services import mod_actions
+from bulmaai.services import joiner_alerts, mod_actions
+
+JOINER_ALERTS_RECORD = "bulmaai.services.joiner_alerts.record"
+JOINER_ALERTS_DUE = "bulmaai.services.joiner_alerts.due"
+JOINER_ALERTS_SET_OUTCOME = "bulmaai.services.joiner_alerts.set_outcome"
 
 
 def make_settings(**overrides):
@@ -207,6 +211,12 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
         self.resolve_channel_patch.start()
         self.addCleanup(self.resolve_channel_patch.stop)
 
+        # Posting an alert also records it to joiner_alerts (for the durable 1h sweep); not what these
+        # tests are about, so it's mocked out here and exercised on its own below.
+        self.record_alert_patch = patch(JOINER_ALERTS_RECORD, AsyncMock(return_value=1))
+        self.record_alert = self.record_alert_patch.start()
+        self.addCleanup(self.record_alert_patch.stop)
+
     async def test_no_alert_when_no_active_cases(self):
         with patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=[])):
             await self.cog._handle_join(make_member(1, guild=self.guild))
@@ -229,6 +239,15 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("timeout", history_field.value)
         self.assertIn("warn", history_field.value)
 
+    async def test_alert_is_recorded_to_joiner_alerts_for_the_durable_sweep(self):
+        cases = [SimpleNamespace(active=True, action="warn")]
+        with patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=cases)):
+            await self.cog._handle_join(make_member(3, guild=self.guild))
+        self.record_alert.assert_awaited_once()
+        kwargs = self.record_alert.await_args.kwargs
+        self.assertEqual(kwargs["reason"], "returning_offender")
+        self.assertEqual(kwargs["alert_message_id"], self.channel.send.return_value.id)
+
     async def test_db_failure_is_logged_and_join_handling_continues(self):
         with (
             patch("bulmaai.services.mod_cases.list_cases", AsyncMock(side_effect=OSError("db down"))),
@@ -236,6 +255,54 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.cog._handle_join(make_member(4, guild=self.guild))
         self.channel.send.assert_not_awaited()
+
+    def make_alert(self, alert_id=1, **overrides):
+        base = dict(
+            id=alert_id, guild_id=1, user_id=7, reason="new_account", action_taken="alert",
+            alert_message_id=111, expires_at=discord.utils.utcnow(), outcome=None,
+            reviewed_by=None, reviewed_at=None, created_at=discord.utils.utcnow(),
+        )
+        base.update(overrides)
+        return joiner_alerts.JoinerAlert(**base)
+
+    async def test_auto_dismiss_deletes_and_logs_an_untouched_alert(self):
+        cog = make_cog(self.settings)
+        partial = SimpleNamespace(delete=AsyncMock())
+        channel = SimpleNamespace(get_partial_message=lambda message_id: partial if message_id == 111 else None)
+        with (
+            patch(JOINER_ALERTS_SET_OUTCOME, AsyncMock(return_value=True)) as set_outcome,
+            patch("bulmaai.services.mod_cases.record_case", AsyncMock()) as record_case,
+            patch("bulmaai.services.mod_actions.resolve_channel", AsyncMock(return_value=channel)),
+        ):
+            await cog._auto_dismiss_joiner_alert(self.make_alert())
+        set_outcome.assert_awaited_once_with(1, joiner_alerts.AUTO_DISMISSED, None)
+        record_case.assert_awaited_once()
+        self.assertEqual(record_case.await_args.kwargs["action"], "note")
+        self.assertEqual(record_case.await_args.kwargs["source"], "antiraid")
+        partial.delete.assert_awaited_once()
+
+    async def test_auto_dismiss_skips_an_alert_a_moderator_already_claimed(self):
+        # set_outcome's WHERE outcome IS NULL means a concurrent staff click wins the race.
+        cog = make_cog(self.settings)
+        with (
+            patch(JOINER_ALERTS_SET_OUTCOME, AsyncMock(return_value=False)) as set_outcome,
+            patch("bulmaai.services.mod_cases.record_case", AsyncMock()) as record_case,
+            patch("bulmaai.services.mod_actions.resolve_channel", AsyncMock()) as resolve_channel,
+        ):
+            await cog._auto_dismiss_joiner_alert(self.make_alert())
+        set_outcome.assert_awaited_once()
+        record_case.assert_not_awaited()
+        resolve_channel.assert_not_awaited()
+
+    async def test_sweep_resolves_every_due_alert(self):
+        cog = make_cog(self.settings)
+        due = [self.make_alert(1), self.make_alert(2, user_id=8)]
+        with (
+            patch(JOINER_ALERTS_DUE, AsyncMock(return_value=due)),
+            patch.object(cog, "_auto_dismiss_joiner_alert", AsyncMock()) as dismiss,
+        ):
+            await cog.expire_joiner_alerts()
+        self.assertEqual(dismiss.await_count, 2)
 
     async def test_new_account_alert_applies_configured_action(self):
         settings = make_settings(moderation_new_account_days=3, moderation_new_account_action="timeout")

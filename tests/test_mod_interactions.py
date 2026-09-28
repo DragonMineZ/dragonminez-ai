@@ -29,6 +29,8 @@ GET_HIT = "bulmaai.services.automod_hits.get_hit"
 MARK_FALSE_POSITIVE = "bulmaai.services.automod_hits.mark_false_positive"
 MARK_CONFIRMED = "bulmaai.services.automod_hits.mark_confirmed"
 SET_SETTING_OVERRIDE = "bulmaai.cogs.mod_interactions.set_setting_override"
+JOINER_ALERT_FOR_MESSAGE = "bulmaai.services.joiner_alerts.alert_for_message"
+JOINER_ALERT_SET_OUTCOME = "bulmaai.services.joiner_alerts.set_outcome"
 NOT_FOUND = discord.NotFound(SimpleNamespace(status=404, reason=""), "")
 
 
@@ -105,6 +107,10 @@ class Base(unittest.IsolatedAsyncioTestCase):  # py-cord Views/Modals need a run
         )
         self.cog = ModInteractionsCog(self.bot)
         self.channel = SimpleNamespace(id=900, send=AsyncMock())
+        # Every modqa click checks whether it's resolving a raid_guard joiner alert; default to "no".
+        joiner_alert_patch = patch(JOINER_ALERT_FOR_MESSAGE, AsyncMock(return_value=None))
+        joiner_alert_patch.start()
+        self.addCleanup(joiner_alert_patch.stop)
 
     def member(self, user_id, role_id=None):
         return SimpleNamespace(
@@ -208,6 +214,19 @@ class QuickActionTests(Base):
             await self.cog.on_interaction(inter)
         self.assertEqual(inter.followup.send.await_args.args[0], "That user isn't in the server.")
         alert.edit.assert_not_awaited()
+
+    async def test_dismissing_a_joiner_alert_resolves_it_so_the_sweep_leaves_it_alone(self):
+        moderator = self.member(2, MOD_ROLE)
+        alert = staff_message(quick_actions_view(5))
+        inter = self.interaction("modqa:dismiss:5", moderator, guild=self.guild, message=alert)
+        record = SimpleNamespace(id=42)
+        with (
+            patch(JOINER_ALERT_FOR_MESSAGE, AsyncMock(return_value=record)) as lookup,
+            patch(JOINER_ALERT_SET_OUTCOME, AsyncMock(return_value=True)) as set_outcome,
+        ):
+            await self.cog.on_interaction(inter)
+        lookup.assert_awaited_once_with(alert.id)
+        set_outcome.assert_awaited_once_with(42, "handled", moderator.id)
 
     async def test_other_custom_ids_and_types_are_ignored(self):
         admin = self.member(2, ADMIN_ROLE)

@@ -11,6 +11,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 import discord
 from aiohttp.test_utils import TestClient, TestServer
 
+from bulmaai.services.joiner_alerts import JoinerAlert
 from bulmaai.web.core import SESSION_COOKIE, sign_session
 from bulmaai.web.server import create_app
 from test_admin_panel import HELPER_ID, OWNER_ID, RANDOM_ID, SECRET, make_member
@@ -239,6 +240,63 @@ class WebsiteAuditFilterTests(LogsApiTestCase):
         sql, *args = self.pool.fetch.await_args.args
         self.assertIn("actor_id = $1", sql)
         self.assertEqual(args[0], STAFF_ID)
+
+
+def make_joiner_alert(id_, **overrides):
+    base = dict(
+        id=id_, guild_id=1, user_id=900, reason="new_account", action_taken="alert",
+        alert_message_id=5000, expires_at=NOW + timedelta(hours=1), outcome=None,
+        reviewed_by=None, reviewed_at=None, created_at=NOW,
+    )
+    base.update(overrides)
+    return JoinerAlert(**base)
+
+
+class JoinerAlertsTests(LogsApiTestCase):
+    async def test_non_staff_is_refused(self):
+        self.login(RANDOM_ID)  # Tier.NONE: mod.cases.view is the lowest staff tier, nothing below it to 403 on
+        self.assertEqual((await self.client.get("/api/joiner-alerts")).status, 401)
+
+    async def test_lists_alerts_with_resolved_users(self):
+        self.login(MOD_ID)
+        alert = make_joiner_alert(1, outcome="handled", reviewed_by=STAFF_ID, reviewed_at=NOW)
+        with patch("bulmaai.web.routes_logs.joiner_alerts.list_alerts", AsyncMock(return_value=[alert])) as lister:
+            response = await self.client.get("/api/joiner-alerts")
+        self.assertEqual(response.status, 200, await response.text())
+        data = await response.json()
+        self.assertEqual(lister.await_args.kwargs, {"user_id": None, "before_id": None, "limit": 50})
+        entry = data["alerts"][0]
+        self.assertEqual(entry["user_id"], "900")
+        self.assertEqual(entry["reason"], "new_account")
+        self.assertEqual(entry["outcome"], "handled")
+        self.assertEqual(entry["reviewed_by"], str(STAFF_ID))
+        self.assertEqual(entry["reviewer"]["id"], str(STAFF_ID))
+        self.assertIsNone(data["next_before_id"])
+
+    async def test_pending_alert_has_no_outcome_or_reviewer(self):
+        self.login(MOD_ID)
+        alert = make_joiner_alert(2)
+        with patch("bulmaai.web.routes_logs.joiner_alerts.list_alerts", AsyncMock(return_value=[alert])):
+            response = await self.client.get("/api/joiner-alerts")
+        entry = (await response.json())["alerts"][0]
+        self.assertIsNone(entry["outcome"])
+        self.assertIsNone(entry["reviewed_by"])
+        self.assertIsNone(entry["reviewed_at"])
+
+    async def test_user_id_filter_accepts_a_name(self):
+        self.login(MOD_ID)
+        with patch("bulmaai.web.routes_logs.joiner_alerts.list_alerts", AsyncMock(return_value=[])) as lister:
+            response = await self.client.get("/api/joiner-alerts?user_id=user777")
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(lister.await_args.kwargs["user_id"], STAFF_ID)
+
+    async def test_next_before_id_set_when_page_is_full(self):
+        self.login(MOD_ID)
+        alerts = [make_joiner_alert(i) for i in (3, 2)]
+        with patch("bulmaai.web.routes_logs.joiner_alerts.list_alerts", AsyncMock(return_value=alerts)):
+            response = await self.client.get("/api/joiner-alerts?limit=2")
+        data = await response.json()
+        self.assertEqual(data["next_before_id"], 2)
 
 
 if __name__ == "__main__":

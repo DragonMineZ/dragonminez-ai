@@ -9,9 +9,9 @@ from typing import Any
 import discord
 from aiohttp import web
 
-from bulmaai.services import mod_cases
+from bulmaai.services import joiner_alerts, mod_cases
 from bulmaai.web.core import BOT, Actor, api_error, requires, user_json
-from bulmaai.web.routes_moderation import _case_json, _query_int, _snowflake
+from bulmaai.web.routes_moderation import _cached_user, _case_json, _query_int, _snowflake
 from bulmaai.database.db import get_pool
 
 
@@ -77,6 +77,50 @@ async def list_case_actions(request: web.Request, actor: Actor) -> web.Response:
     pool = await get_pool()
     rows = await pool.fetch("SELECT DISTINCT action FROM mod_cases WHERE guild_id = $1", actor.member.guild.id)
     return web.json_response({"actions": sorted(row["action"] for row in rows)})
+
+
+# --- Flagged joiners (raid_guard's new-account / returning-offender alerts) ---------------------
+
+
+def _joiner_alert_json(bot: discord.Bot, guild: discord.Guild, alert: joiner_alerts.JoinerAlert) -> dict[str, Any]:
+    return {
+        "id": alert.id,
+        "user_id": str(alert.user_id),
+        "user": user_json(_cached_user(bot, guild, alert.user_id)),
+        "reason": alert.reason,
+        "action_taken": alert.action_taken,
+        "outcome": alert.outcome,
+        "reviewed_by": str(alert.reviewed_by) if alert.reviewed_by else None,
+        "reviewer": user_json(_cached_user(bot, guild, alert.reviewed_by)),
+        "reviewed_at": alert.reviewed_at.isoformat() if alert.reviewed_at else None,
+        "expires_at": alert.expires_at.isoformat(),
+        "created_at": alert.created_at.isoformat(),
+    }
+
+
+@routes.get("/api/joiner-alerts")
+@requires("mod.cases.view")
+async def list_joiner_alerts(request: web.Request, actor: Actor) -> web.Response:
+    bot = request.app[BOT]
+    guild = actor.member.guild
+    limit = _query_int(request, "limit", 50, 100)
+    raw_user = request.query.get("user_id", "").strip()
+    user_id = None
+    if raw_user:
+        if raw_user.isdigit():
+            user_id = _snowflake(raw_user)
+        else:
+            member = _match_member(guild, raw_user)
+            user_id = member.id if member else 0  # no match -> guaranteed-empty result, not an error
+    alerts = await joiner_alerts.list_alerts(
+        guild.id, user_id=user_id, before_id=_query_int(request, "before_id", None, 2**63 - 1), limit=limit
+    )
+    return web.json_response(
+        {
+            "alerts": [_joiner_alert_json(bot, guild, alert) for alert in alerts],
+            "next_before_id": alerts[-1].id if len(alerts) == limit else None,
+        }
+    )
 
 
 # --- Server logs: Discord's audit log, live, merged with Dyno's mod_cases rows -----------------

@@ -11,7 +11,7 @@ import discord
 from discord.ext import commands
 
 from bulmaai.config import set_setting_override
-from bulmaai.services import automod_hits, mod_actions, mod_cases
+from bulmaai.services import automod_hits, joiner_alerts, mod_actions, mod_cases
 from bulmaai.ui.mod_views import (
     APPEAL,
     APPEAL_REVIEW,
@@ -315,7 +315,21 @@ class ModInteractionsCog(commands.Cog):
             if action in CONFIRM_HIT_ACTIONS:
                 await self._confirm_hit(alert, moderator.id)  # best-effort; never learns images on its own
         await _mark_handled(alert, line, None if action == "dismiss" else custom_id)
+        await self._resolve_joiner_alert(alert, moderator.id)  # best-effort; no-ops on non-joiner alerts
         await interaction.followup.send(reply, ephemeral=True, allowed_mentions=NO_MENTIONS)
+
+    async def _resolve_joiner_alert(self, alert: discord.Message | None, moderator_id: int) -> None:
+        """Marks a flagged-joiner alert (raid_guard) as staff-handled, so its 1h sweep leaves it alone."""
+        if alert is None:
+            return
+        try:
+            record = await joiner_alerts.alert_for_message(alert.id)
+            if record is not None:
+                await joiner_alerts.set_outcome(record.id, joiner_alerts.HANDLED, moderator_id)
+        except Exception:
+            log.exception(
+                "Couldn't resolve a flagged-joiner alert", extra={"event": "mod_joiner_alert_resolve_failed", "message_id": alert.id}
+            )
 
     async def _confirm_hit(self, alert: discord.Message | None, moderator_id: int, *, learn: bool = False) -> int:
         """Best-effort: confirms this alert's automod hit, if any. learn=True (Delete & learn) also teaches its

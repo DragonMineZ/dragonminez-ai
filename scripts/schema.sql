@@ -333,6 +333,31 @@ ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_mod_cases_expiring
     ON mod_cases (expires_at) WHERE active AND expires_at IS NOT NULL;
 
+-- Flagged-joiner alerts (raid_guard): recorded the moment the alert is posted, so it's visible in the
+-- web panel right away and a bot restart doesn't lose track of the 1h auto-dismiss deadline.
+CREATE TABLE IF NOT EXISTS joiner_alerts (
+    id                BIGSERIAL PRIMARY KEY,
+    guild_id          BIGINT NOT NULL,
+    user_id           BIGINT NOT NULL,
+    reason            TEXT NOT NULL,
+    action_taken      TEXT NOT NULL,
+    alert_message_id  BIGINT,
+    expires_at        TIMESTAMPTZ NOT NULL,
+    outcome           TEXT,
+    reviewed_by       BIGINT,
+    reviewed_at       TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_joiner_alerts_created
+    ON joiner_alerts (guild_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_joiner_alerts_alert
+    ON joiner_alerts (alert_message_id) WHERE alert_message_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_joiner_alerts_due
+    ON joiner_alerts (expires_at) WHERE outcome IS NULL;
+
 -- Channels locked by /lock or a lockdown, with the @everyone overwrites to restore on unlock.
 CREATE TABLE IF NOT EXISTS mod_locked_channels (
     channel_id         BIGINT PRIMARY KEY,

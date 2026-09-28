@@ -42,6 +42,20 @@
     "User": "Usuario",
     "Source": "Fuente",
     "Audit log": "Registro de auditoría",
+    "Flagged joiners": "Ingresos marcados",
+    "New-account and returning-offender alerts from raid_guard: posted the moment they're flagged, and auto-dismissed after 1h if no staff click resolves them first.":
+      "Alertas de raid_guard por cuenta nueva o infractor recurrente: publicadas en el momento en que se marcan, y descartadas automáticamente tras 1h si ningún miembro del staff las resuelve antes.",
+    "Flag": "Marca",
+    "New account": "Cuenta nueva",
+    "Returning offender": "Infractor recurrente",
+    "Action taken": "Acción tomada",
+    "Outcome": "Resultado",
+    "Pending": "Pendiente",
+    "Handled": "Resuelto",
+    "Auto-dismissed": "Descartado automáticamente",
+    "Reviewer": "Revisor",
+    "Reviewed": "Revisado",
+    "No flagged joiners match.": "Ningún ingreso marcado coincide.",
   });
 
   const MAX_LINES = 1500;
@@ -297,6 +311,67 @@
         field(t("User"), userField), field(t("Moderator"), userSuggest(modInput)), field(t("Action"), actionField), field(t("Source"), sourceSelect), apply);
       view.append(
         h("h1", {}, t("Audit log")),
+        h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
+      await load(false);
+    },
+  });
+
+  // ---- Flagged joiners (raid_guard) ---------------------------------------------------------
+
+  const JOINER_ALERT_REASONS = { new_account: t("New account"), returning_offender: t("Returning offender") };
+  const JOINER_ALERT_OUTCOMES = {
+    handled: [t("Handled"), "ok"],
+    auto_dismissed: [t("Auto-dismissed"), "danger"],
+  };
+
+  Panel.page({
+    id: "joiner-alerts",
+    title: "Flagged joiners",
+    group: "Moderation",
+    perm: "mod.cases.view",
+    async render(view, args) {
+      const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: args[0] || "" });
+      const apply = h("button", { class: "btn primary", type: "submit" }, t("Apply"));
+      const more = h("button", { class: "btn", type: "button", hidden: true }, t("Load more"));
+      const results = h("div");
+      let alerts = [];
+      let nextBefore = null;
+
+      const userField = userSuggest(userInput);
+
+      const load = async (append) => {
+        const params = new URLSearchParams();
+        if (userInput.value.trim()) params.set("user_id", userInput.value.trim());
+        if (append && nextBefore) params.set("before_id", String(nextBefore));
+        const data = await api(`/api/joiner-alerts?${params}`);
+        alerts = append ? alerts.concat(data.alerts) : data.alerts;
+        nextBefore = data.next_before_id;
+        more.hidden = !nextBefore;
+        results.replaceChildren(table([
+          { label: t("When"), render: (a) => time(a.created_at) },
+          { label: t("User"), render: (a) => user(a.user) },
+          { label: t("Flag"), render: (a) => badge(JOINER_ALERT_REASONS[a.reason] || a.reason, "accent") },
+          { label: t("Action taken"), render: (a) => a.action_taken },
+          {
+            label: t("Outcome"),
+            render: (a) => {
+              const [text, kind] = JOINER_ALERT_OUTCOMES[a.outcome] || [t("Pending"), "warn"];
+              return badge(text, kind);
+            },
+          },
+          { label: t("Reviewer"), render: (a) => user(a.reviewer) },
+          { label: t("Reviewed"), render: (a) => time(a.reviewed_at) },
+        ], alerts, { onRowClick: (a) => Panel.go(`#/users/${encodeURIComponent(a.user_id)}`), empty: t("No flagged joiners match.") }));
+      };
+
+      apply.addEventListener("click", () => run(apply, () => load(false)));
+      more.addEventListener("click", () => run(more, () => load(true)));
+      const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(false)); } },
+        field(t("User"), userField), apply);
+
+      view.append(
+        h("h1", {}, t("Flagged joiners")),
+        h("p", { class: "muted" }, t("New-account and returning-offender alerts from raid_guard: posted the moment they're flagged, and auto-dismissed after 1h if no staff click resolves them first.")),
         h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
       await load(false);
     },

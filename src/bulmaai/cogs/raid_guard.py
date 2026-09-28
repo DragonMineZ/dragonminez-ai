@@ -1,8 +1,10 @@
 """Anti-raid and join gate: replaces Dyno's raid mode. Tracks the join rate, opens raid mode when
 joins spike (applying an action to each joiner while it lasts), and outside raid mode flags new
-accounts and returning offenders. All state lives on the cog instance.
-ponytail: in-memory only — a restart silently ends raid mode, which is an acceptable trade for staying
-this simple; nothing here needs to survive a restart."""
+accounts and returning offenders.
+ponytail: raid mode itself is in-memory only — a restart silently ends it, an acceptable trade for
+staying simple. Flagged-joiner alerts are different: they're logged to joiner_alerts (services/joiner_alerts.py)
+the moment they're posted, and a tasks.loop sweep (not an in-memory timer) auto-dismisses an alert 1h after
+it's posted if no staff quick-action click resolved it first — so the deadline survives a restart."""
 
 import asyncio
 import logging
@@ -11,9 +13,9 @@ from collections import deque
 from datetime import datetime, timedelta
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-from bulmaai.services import mod_actions, mod_cases
+from bulmaai.services import joiner_alerts, mod_actions, mod_cases
 from bulmaai.ui.mod_views import RAID, parse_custom_id, quick_actions_view, raid_view
 from bulmaai.web.core import PERMISSIONS, tier_for
 
@@ -24,6 +26,7 @@ NEW_ACCOUNT_TIMEOUT_SECONDS = 86400  # ponytail: 1 day timeout for new-account j
 RAID_ALERT_DEBOUNCE_SECONDS = 5
 RAID_JOINER_LOG_CAP = 25  # the alert embed only ever shows the most recent N joiners
 OFFENSE_ACTIONS = ("warn", "timeout", "kick", "ban")
+JOINER_ALERT_TIMEOUT_SECONDS = 3600  # auto-dismiss an untouched flagged-joiner alert after 1h
 
 
 # --- pure helpers (unit tested directly) --------------------------------------------------------
@@ -199,13 +202,85 @@ class RaidGuardCog(commands.Cog):
             lines = ", ".join(f"{count}x {action}" for action, count in breakdown.items())
             embed.add_field(name="Case history", value=lines, inline=False)
         try:
-            await channel.send(
+            alert = await channel.send(
                 embed=embed,
                 view=quick_actions_view(member.id, actions=("timeout", "kick", "ban", "dismiss")),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
             log.exception("Failed to post flagged-joiner alert", extra={"event": "raid_guard_joiner_alert_send_failed"})
+            return
+        try:
+            await joiner_alerts.record(
+                guild_id=member.guild.id,
+                user_id=member.id,
+                reason="new_account" if is_new else "returning_offender",
+                action_taken=action_taken,
+                alert_message_id=alert.id,
+                expires_at=discord.utils.utcnow() + timedelta(seconds=JOINER_ALERT_TIMEOUT_SECONDS),
+            )
+        except Exception:
+            # Best-effort: the alert is still posted, it just won't be swept if no one clicks it.
+            log.exception("Couldn't record a flagged-joiner alert", extra={"event": "raid_guard_joiner_alert_record_failed"})
+
+    # --- 1h auto-dismiss sweep (durable: reads joiner_alerts, survives a restart) ---------------
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        if not self.expire_joiner_alerts.is_running():
+            self.expire_joiner_alerts.start()
+
+    def cog_unload(self) -> None:
+        self.expire_joiner_alerts.cancel()
+
+    @tasks.loop(minutes=1)
+    async def expire_joiner_alerts(self) -> None:
+        try:
+            due = await joiner_alerts.due(discord.utils.utcnow())
+        except Exception:
+            log.exception("Couldn't load due joiner alerts", extra={"event": "raid_guard_joiner_alert_sweep_failed"})
+            return
+        for alert in due:
+            await self._auto_dismiss_joiner_alert(alert)
+
+    @expire_joiner_alerts.before_loop
+    async def _before_expire_joiner_alerts(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _auto_dismiss_joiner_alert(self, alert: joiner_alerts.JoinerAlert) -> None:
+        """A moderator's quick-action click and this sweep both try to resolve the same row; set_outcome's
+        first-review-wins guard means only one of them ever actually deletes the message."""
+        if not await joiner_alerts.set_outcome(alert.id, joiner_alerts.AUTO_DISMISSED, None):
+            return
+        try:
+            await mod_cases.record_case(
+                guild_id=alert.guild_id,
+                user_id=alert.user_id,
+                action="note",
+                moderator_id=None,
+                reason="Flagged-joiner alert auto-dismissed: no staff response within 1h",
+                source="antiraid",
+            )
+        except Exception:
+            log.exception(
+                "Couldn't record the auto-dismiss of a flagged-joiner alert",
+                extra={"event": "raid_guard_joiner_alert_note_failed", "alert_id": alert.id},
+            )
+        if alert.alert_message_id is None:
+            return
+        channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self._settings()))
+        if channel is None or not hasattr(channel, "get_partial_message"):
+            return
+        try:
+            await channel.get_partial_message(alert.alert_message_id).delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            log.warning(
+                "Couldn't delete an auto-dismissed flagged-joiner alert",
+                exc_info=True,
+                extra={"event": "raid_guard_joiner_alert_delete_failed", "message_id": alert.alert_message_id},
+            )
 
     # --- the raid alert embed (one message per raid, debounced edits) ---------------------------
 

@@ -15,7 +15,6 @@ from bulmaai.services.patreon_access import (
     parse_patreon_oauth_state,
 )
 from bulmaai.services.patreon_grants import PatreonGrant, PatreonGrantKind, PatreonLink
-from bulmaai.ui.patreon_views import AdminPRView
 
 
 class FakeChannel:
@@ -121,9 +120,16 @@ class FakeGitHub:
         self.closed_prs = []
         self.removed_branches = []
         self.comments = []
+        self.reset_branches = []
 
     async def create_branch(self, new_branch, from_branch):
         self.created_branches.append((new_branch, from_branch))
+
+    async def get_ref_sha(self, branch):
+        return "base-sha"
+
+    async def reset_branch(self, branch, sha):
+        self.reset_branches.append((branch, sha))
 
     async def get_whitelist_file(self, ref):
         if ref == "main":
@@ -157,13 +163,6 @@ class FakeGitHub:
 
     async def remove_branch(self, branch):
         self.removed_branches.append(branch)
-
-
-class FakeGitHubWithExistingBranchNick(FakeGitHub):
-    async def get_whitelist_file(self, ref):
-        if ref == "main":
-            return "ExistingUser\n", "base-sha"
-        return "ExistingUser\nNewTester\n", "branch-sha"
 
 
 class FakeGitHubWithGrantNames(FakeGitHub):
@@ -220,6 +219,38 @@ class FakeGitHubMergeMethodNotAllowed(FakeGitHub):
         }
 
 
+class FakeGitHubConflictThenRebases(FakeGitHub):
+    """Base moved (another whitelist PR merged) before our first merge attempt."""
+
+    def __init__(self):
+        super().__init__()
+        self.merge_attempts = 0
+        self.base_text = "ExistingUser\nOtherGift\n"
+
+    async def get_whitelist_file(self, ref):
+        if ref == "main":
+            return self.base_text, "base-sha"
+        if self.reset_branches:
+            return self.base_text, "branch-sha-after-reset"
+        return "ExistingUser\n", "branch-sha"
+
+    async def merge_pr(self, pr_number):
+        self.merge_attempts += 1
+        self.merged_prs.append(pr_number)
+        if self.merge_attempts == 1:
+            error = HTTPError("405 Client Error: Method Not Allowed")
+            error.response = SimpleNamespace(status_code=405)
+            raise error
+
+    async def get_pr(self, pr_number):
+        return {
+            "number": pr_number,
+            "html_url": "https://example.test/pr/12",
+            "merged": False,
+            "state": "open",
+        }
+
+
 class CapturingOAuthPatreonWhitelistFlowCog(PatreonWhitelistFlowCog):
     def __init__(self):
         self.calls = []
@@ -243,14 +274,17 @@ class CapturingOAuthPatreonWhitelistFlowCog(PatreonWhitelistFlowCog):
         return self.member
 
 
-class FakeAdminMember:
-    id = 999
-
-    def __init__(self):
-        self.guild_permissions = SimpleNamespace(administrator=True)
-
-
 class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # ponytail: default every test to a resolved Mojang account so the
+        # warn-but-allow flagging path only fires in tests that opt into it.
+        mojang_patcher = patch(
+            "bulmaai.cogs.patreon_whitelist_flow.minecraft_username_exists",
+            AsyncMock(return_value=True),
+        )
+        self.mojang_lookup = mojang_patcher.start()
+        self.addCleanup(mojang_patcher.stop)
+
     def _settings(self):
         return SimpleNamespace(
             discord_oauth_client_id="discord-client-id",
@@ -264,6 +298,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             PATREON_CAMPAIGN_ID="12861895",
             PATREON_CREATOR_TOKEN="creator-token",
             patreon_staff_channel_id=1493390527004147876,
+            patreon_ai_log_channel_id=1493390527004147999,
             patreon_admin_ping_role_id=1309022450671161476,
             patreon_contributor_role_id=1287877272224665640,
             patreon_benefactor_role_id=1287877305259130900,
@@ -773,7 +808,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 ephemeral=True,
             )
 
-        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(cog.gh.merged_prs, [12, 12])
         self.assertEqual(upsert_grant.await_count, 0)
         self.assertIn(
             "Whitelist PR created, but GitHub would not auto-merge it yet.",
@@ -781,6 +816,54 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("https://example.test/pr/12", destination.sent[-1][0][0])
         self.assertIn("could not be auto-merged", staff_channel.sent[-1][0][0])
+
+    async def test_auto_approval_rebases_and_retries_after_merge_conflict(self) -> None:
+        staff_channel = FakeChannel()
+        author = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=1287877272224665640)],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        bot = SimpleNamespace(
+            settings=self._settings(),
+            get_channel=lambda channel_id: staff_channel,
+        )
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHubConflictThenRebases()
+        destination = FakeFollowup()
+        link = PatreonLink(
+            discord_user_id=456,
+            discord_username="Requester",
+            patreon_user_id="patreon-user-1",
+            patreon_member_id="member-1",
+            patreon_full_name="Patron User",
+            patron_status="active_patron",
+            tier_ids=("1287877272224665640",),
+            last_charge_date=None,
+            entitlement_active=True,
+        )
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=[])),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
+        ):
+            await cog.start_whitelist_flow_for_user(
+                author,
+                destination,
+                "NewTester",
+                ephemeral=True,
+            )
+
+        self.assertEqual(cog.gh.merged_prs, [12, 12])
+        self.assertEqual(cog.gh.reset_branches, [("patreon/user-456", "base-sha")])
+        self.assertEqual(cog.gh.put_calls[-1]["new_text"], "ExistingUser\nOtherGift\nNewTester\n")
+        self.assertEqual(cog.gh.removed_branches, ["patreon/user-456"])
+        self.assertEqual(upsert_grant.await_count, 1)
+        self.assertIn("approved automatically", destination.sent[-1][0][0])
 
     async def test_existing_self_grant_prompts_before_updating_minecraft_username(self) -> None:
         author = SimpleNamespace(
@@ -959,7 +1042,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(cog.calls), 1)
         self.assertIn("already processed", second_response.body.decode("utf-8"))
 
-    async def test_gift_beta_creates_staff_approval_pr_for_active_patron(self) -> None:
+    async def test_gift_beta_auto_merges_for_active_patron(self) -> None:
         staff_channel = FakeChannel()
         author = SimpleNamespace(
             id=456,
@@ -998,13 +1081,69 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
             patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
             patch("bulmaai.cogs.patreon_whitelist_flow.count_active_gifts_for_owner", AsyncMock(return_value=0)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
         ):
             await cog._handle_gift_beta_command(ctx, recipient, "GiftedMC")
 
         self.assertEqual(ctx.deferred, [{"ephemeral": True}])
         self.assertEqual(cog.gh.created_branches, [("patreon/gift-456-789", "main")])
-        self.assertIn("Gift submitted for staff approval", ctx.followup.sent[-1][0][0])
-        self.assertIn("view", staff_channel.sent[0][1])
+        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(cog.gh.removed_branches, ["patreon/gift-456-789"])
+        self.assertEqual(upsert_grant.await_args.args[0].kind, PatreonGrantKind.GIFT)
+        self.assertEqual(upsert_grant.await_args.args[0].beneficiary_discord_user_id, 789)
+        self.assertIn("Gift approved automatically", ctx.followup.sent[-1][0][0])
+        self.assertIn("auto-approved", staff_channel.sent[-1][0][0])
+
+    async def test_gift_beta_flags_ai_log_when_mojang_lookup_fails(self) -> None:
+        staff_channel = FakeChannel()
+        ai_log_channel = FakeChannel()
+        author = SimpleNamespace(
+            id=456,
+            name="Requester",
+            mention="<@456>",
+            roles=[SimpleNamespace(id=1287877272224665640)],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        recipient = SimpleNamespace(
+            id=789,
+            name="Gifted",
+            mention="<@789>",
+            bot=False,
+        )
+        settings = self._settings()
+
+        def get_channel(channel_id):
+            return ai_log_channel if channel_id == settings.patreon_ai_log_channel_id else staff_channel
+
+        bot = SimpleNamespace(settings=settings, get_channel=get_channel)
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = bot
+        cog.gh = FakeGitHub()
+        ctx = FakeCommandContext(author=author, channel=FakeChannel())
+        link = PatreonLink(
+            discord_user_id=456,
+            discord_username="Requester",
+            patreon_user_id="patreon-user-1",
+            patreon_member_id="member-1",
+            patreon_full_name="Patron User",
+            patron_status="active_patron",
+            tier_ids=("1287877272224665640",),
+            last_charge_date=None,
+            entitlement_active=True,
+        )
+        self.mojang_lookup.return_value = False
+
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.count_active_gifts_for_owner", AsyncMock(return_value=0)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()),
+        ):
+            await cog._handle_gift_beta_command(ctx, recipient, "GiftedMC")
+
+        self.assertIn("Gift approved automatically", ctx.followup.sent[-1][0][0])
+        self.assertEqual(len(ai_log_channel.sent), 1)
+        self.assertIn("did not resolve", ai_log_channel.sent[0][0][0])
 
     def _edit_gift_cog(self, *, gh=None):
         staff_channel = FakeChannel()
@@ -1285,264 +1424,6 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Invalid Minecraft username", request_channel.sent[0][0][0])
-
-    async def test_user_confirm_uses_user_id_branch_and_branch_file_sha(self) -> None:
-        staff_channel = FakeChannel()
-        bot = SimpleNamespace(
-            settings=SimpleNamespace(
-                patreon_access_role_ids=(123,),
-                patreon_staff_channel_id=1493390527004147876,
-                patreon_admin_ping_role_id=1309022450671161476,
-                patreon_contributor_role_id=1287877272224665640,
-                patreon_benefactor_role_id=1287877305259130900,
-            ),
-            get_channel=lambda channel_id: staff_channel,
-        )
-        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
-        cog.bot = bot
-        cog.gh = FakeGitHub()
-
-        interaction = SimpleNamespace(
-            user=SimpleNamespace(id=456, name="bad/name", mention="<@456>"),
-            message=FakeMessage(),
-            followup=FakeFollowup(),
-        )
-
-        await cog._submit_whitelist_request(
-            interaction=interaction,
-            initial_nick="NewTester",
-        )
-
-        self.assertEqual(cog.gh.created_branches, [("patreon/user-456", "main")])
-        self.assertEqual(cog.gh.put_calls[0]["branch"], "patreon/user-456")
-        self.assertEqual(cog.gh.put_calls[0]["sha"], "branch-sha")
-        self.assertEqual(cog.gh.put_calls[0]["new_text"], "ExistingUser\nNewTester\n")
-
-    async def test_user_confirm_skips_branch_write_when_retry_branch_already_has_nick(self) -> None:
-        staff_channel = FakeChannel()
-        bot = SimpleNamespace(
-            settings=SimpleNamespace(
-                patreon_access_role_ids=(123,),
-                patreon_staff_channel_id=1493390527004147876,
-                patreon_admin_ping_role_id=1309022450671161476,
-                patreon_contributor_role_id=1287877272224665640,
-                patreon_benefactor_role_id=1287877305259130900,
-            ),
-            get_channel=lambda channel_id: staff_channel,
-        )
-        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
-        cog.bot = bot
-        cog.gh = FakeGitHubWithExistingBranchNick()
-        interaction = SimpleNamespace(
-            user=FakeUser(name="Requester"),
-            message=FakeMessage(),
-            followup=FakeFollowup(),
-        )
-
-        await cog._submit_whitelist_request(
-            interaction=interaction,
-            initial_nick="NewTester",
-        )
-
-        self.assertEqual(cog.gh.put_calls, [])
-
-    async def test_existing_whitelisted_user_edits_prompt_instead_of_followup(self) -> None:
-        bot = SimpleNamespace(
-            settings=SimpleNamespace(
-                patreon_access_role_ids=(123,),
-                patreon_staff_channel_id=1493390527004147876,
-                patreon_admin_ping_role_id=1309022450671161476,
-                patreon_contributor_role_id=1287877272224665640,
-                patreon_benefactor_role_id=1287877305259130900,
-            ),
-            get_channel=lambda channel_id: FakeChannel(),
-        )
-        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
-        cog.bot = bot
-        cog.gh = FakeGitHub()
-        user_message = FakeMessage()
-        interaction = SimpleNamespace(
-            user=FakeUser(name="Requester"),
-            message=user_message,
-            followup=FakeFollowup(),
-        )
-
-        await cog._submit_whitelist_request(
-            interaction=interaction,
-            initial_nick="ExistingUser",
-        )
-
-        self.assertEqual(interaction.followup.sent, [])
-        self.assertEqual(
-            user_message.edits[-1],
-            {
-                "content": "`ExistingUser` is already whitelisted. Nothing to do.",
-                "view": None,
-            },
-        )
-
-    async def test_submitted_request_edits_prompt_instead_of_followup(self) -> None:
-        staff_channel = FakeChannel()
-        bot = SimpleNamespace(
-            settings=SimpleNamespace(
-                patreon_access_role_ids=(123,),
-                patreon_staff_channel_id=1493390527004147876,
-                patreon_admin_ping_role_id=1309022450671161476,
-                patreon_contributor_role_id=1287877272224665640,
-                patreon_benefactor_role_id=1287877305259130900,
-            ),
-            get_channel=lambda channel_id: staff_channel,
-        )
-        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
-        cog.bot = bot
-        cog.gh = FakeGitHub()
-        user_message = FakeMessage()
-        interaction = SimpleNamespace(
-            user=FakeUser(name="Requester"),
-            message=user_message,
-            followup=FakeFollowup(),
-        )
-
-        await cog._submit_whitelist_request(
-            interaction=interaction,
-            initial_nick="NewTester",
-        )
-
-        self.assertEqual(interaction.followup.sent, [])
-        self.assertEqual(
-            user_message.edits[-1],
-            {
-                "content": "Request submitted. Please wait for an administrator to approve.",
-                "view": None,
-            },
-        )
-
-    async def test_admin_approval_updates_user_message_and_dms_requester(self) -> None:
-        staff_channel = FakeChannel()
-        bot = SimpleNamespace(
-            settings=SimpleNamespace(
-                patreon_access_role_ids=(123,),
-                patreon_staff_channel_id=1493390527004147876,
-                patreon_admin_ping_role_id=1309022450671161476,
-                patreon_contributor_role_id=1287877272224665640,
-                patreon_benefactor_role_id=1287877305259130900,
-            ),
-            get_channel=lambda channel_id: staff_channel,
-        )
-        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
-        cog.bot = bot
-        cog.gh = FakeGitHub()
-        requester = FakeUser(name="Requester")
-        user_message = FakeMessage()
-        user_interaction = SimpleNamespace(
-            user=requester,
-            message=user_message,
-            followup=FakeFollowup(),
-        )
-
-        await cog._submit_whitelist_request(
-            interaction=user_interaction,
-            initial_nick="NewTester",
-        )
-        admin_view = staff_channel.sent[0][1]["view"]
-        admin_interaction = SimpleNamespace(
-            user=FakeUser(user_id=999, name="Staffer", mention="<@999>"),
-            followup=FakeFollowup(),
-        )
-
-        await admin_view.on_confirm(admin_interaction)
-
-        self.assertEqual(user_message.edits[-1], {"content": "Success", "view": None})
-        self.assertEqual(
-            requester.dms,
-            [
-                "Congratulations, Staffer has approved your request and you now have access to the latest previews!"
-            ],
-        )
-
-    async def test_admin_rejection_updates_user_message_and_dms_requester(self) -> None:
-        staff_channel = FakeChannel()
-        bot = SimpleNamespace(
-            settings=SimpleNamespace(
-                patreon_access_role_ids=(123,),
-                patreon_staff_channel_id=1493390527004147876,
-                patreon_admin_ping_role_id=1309022450671161476,
-                patreon_contributor_role_id=1287877272224665640,
-                patreon_benefactor_role_id=1287877305259130900,
-            ),
-            get_channel=lambda channel_id: staff_channel,
-        )
-        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
-        cog.bot = bot
-        cog.gh = FakeGitHub()
-        requester = FakeUser(name="Requester")
-        user_message = FakeMessage()
-        user_interaction = SimpleNamespace(
-            user=requester,
-            message=user_message,
-            followup=FakeFollowup(),
-        )
-
-        await cog._submit_whitelist_request(
-            interaction=user_interaction,
-            initial_nick="NewTester",
-        )
-        admin_view = staff_channel.sent[0][1]["view"]
-        admin_interaction = SimpleNamespace(
-            user=FakeUser(user_id=999, name="Staffer", mention="<@999>"),
-            followup=FakeFollowup(),
-        )
-
-        await admin_view.on_reject(admin_interaction)
-
-        self.assertEqual(user_message.edits[-1], {"content": "Rejected", "view": None})
-        self.assertEqual(
-            requester.dms,
-            [
-                "Your Patreon whitelist request was rejected by Staffer. Please contact staff if you think this was a mistake."
-            ],
-        )
-
-    async def test_admin_confirm_button_disables_before_callback_and_ignores_second_click(self) -> None:
-        started = asyncio.Event()
-        release = asyncio.Event()
-        confirm_calls = 0
-
-        async def on_confirm(_interaction):
-            nonlocal confirm_calls
-            confirm_calls += 1
-            started.set()
-            await release.wait()
-
-        async def on_edit(_interaction, _new_nick):
-            raise AssertionError("edit should not run")
-
-        async def on_reject(_interaction):
-            raise AssertionError("reject should not run")
-
-        view = AdminPRView(
-            pr_number=12,
-            nickname="NewTester",
-            branch="patreon/user-456",
-            on_confirm=on_confirm,
-            on_edit=on_edit,
-            on_reject=on_reject,
-        )
-        first_interaction = FakeButtonInteraction(user=FakeAdminMember())
-        second_interaction = FakeButtonInteraction(user=FakeAdminMember())
-
-        with patch("bulmaai.ui.patreon_views.discord.Member", FakeAdminMember):
-            first_task = asyncio.create_task(view.children[0].callback(first_interaction))
-            await started.wait()
-            self.assertTrue(all(child.disabled for child in view.children))
-
-            second_task = asyncio.create_task(view.children[0].callback(second_interaction))
-            await asyncio.sleep(0)
-            release.set()
-            await asyncio.gather(first_task, second_task)
-
-        self.assertEqual(confirm_calls, 1)
-        self.assertIn("already being processed", second_interaction.response.sent[0][0][0])
 
 
 if __name__ == "__main__":

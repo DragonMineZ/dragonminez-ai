@@ -19,6 +19,7 @@ from bulmaai.services.discord_oauth import (
     build_discord_oauth_state,
     parse_discord_oauth_state,
 )
+from bulmaai.services.mojang import minecraft_username_exists
 from bulmaai.services.patreon_access import (
     PatreonCreatorClient,
     PatreonOAuthClient,
@@ -51,7 +52,6 @@ from bulmaai.services.release_webhook import (
     unregister_extra_raw_webhook_route,
 )
 from bulmaai.ui.patreon_views import (
-    AdminPRView,
     BetaAccessUsernameModal,
     MC_NAME_RE,
     PATREON_WELCOME_VERIFY_CUSTOM_ID,
@@ -117,6 +117,34 @@ def _is_recoverable_merge_error(exc: HTTPError) -> bool:
     return _github_error_status(exc) in {405, 409}
 
 
+def _add_nickname_mutate(nickname: str):
+    key = nickname.casefold()
+
+    def mutate(lines: list[str]) -> list[str] | None:
+        if any(line.casefold() == key for line in lines):
+            return None
+        return lines + [nickname]
+
+    return mutate
+
+
+def _rename_nickname_mutate(old_nickname: str, new_nickname: str):
+    old_key = old_nickname.casefold()
+    new_key = new_nickname.casefold()
+
+    def mutate(lines: list[str]) -> list[str] | None:
+        has_old = any(line.casefold() == old_key for line in lines)
+        has_new = any(line.casefold() == new_key for line in lines)
+        if has_new and not has_old:
+            return None
+        updated = [line for line in lines if line.casefold() != old_key]
+        if not any(line.casefold() == new_key for line in updated):
+            updated.append(new_nickname)
+        return None if updated == lines else updated
+
+    return mutate
+
+
 def _active_self_grant(grants: list[PatreonGrant], member_id: int) -> PatreonGrant | None:
     for grant in grants:
         if (
@@ -128,47 +156,6 @@ def _active_self_grant(grants: list[PatreonGrant], member_id: int) -> PatreonGra
         ):
             return grant
     return None
-
-
-async def _edit_user_status_message(message, content: str) -> None:
-    if message is None:
-        return
-    try:
-        await message.edit(content=content, view=None)
-    except Exception:
-        log.exception("Failed to edit Patreon whitelist user status message")
-
-
-async def _edit_user_interaction_status(interaction: discord.Interaction, content: str) -> None:
-    edit_original_response = getattr(interaction, "edit_original_response", None)
-    if edit_original_response is not None:
-        try:
-            await edit_original_response(content=content, view=None)
-            return
-        except Exception:
-            log.exception("Failed to edit Patreon whitelist interaction response")
-
-    message = getattr(interaction, "message", None)
-    if message is not None:
-        await _edit_user_status_message(message, content)
-        return
-
-    followup = getattr(interaction, "followup", None)
-    if followup is not None:
-        await followup.send(content, ephemeral=True)
-
-
-async def _dm_user(user, content: str) -> None:
-    try:
-        await user.send(content)
-    except Exception:
-        log.exception(
-            "Failed to DM Patreon whitelist requester",
-            extra={
-                "event": "patreon_whitelist_dm_failed",
-                "user_id": getattr(user, "id", None),
-            },
-        )
 
 
 async def _send_message(destination, content: str, *, ephemeral: bool = False, **kwargs) -> None:
@@ -746,6 +733,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 )
                 return
 
+            mojang_ok = await self._check_mojang_username(nickname)
+
             try:
                 approval = await self._auto_approve_beta_access(member, nickname)
             except Exception:
@@ -790,6 +779,12 @@ class PatreonWhitelistFlowCog(commands.Cog):
             await self._log_staff_info(
                 f"{member.mention} linked Patreon access and `{nickname}` was approved automatically.\nPR: {approval.pr_url}"
             )
+            if mojang_ok is False:
+                await self._flag_unresolved_mojang_username(
+                    nickname=nickname,
+                    member=member,
+                    context="self beta access",
+                )
 
     async def _send_username_update_prompt(
         self,
@@ -938,6 +933,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
             pr_url=pr_url,
             success_comment=f"Automatically approved through Patreon OAuth for {member} ({member.id}).",
             pending_description="Automatic Patreon approval",
+            rebase_mutate=_add_nickname_mutate(nickname),
+            rebase_commit_message=f"Add beta tester: {nickname}",
         )
 
     async def _auto_update_beta_access(
@@ -973,6 +970,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 f"{old_nickname} -> {new_nickname}."
             ),
             pending_description="Automatic Patreon username update",
+            rebase_mutate=_rename_nickname_mutate(old_nickname, new_nickname),
+            rebase_commit_message=f"Update beta tester: {old_nickname} -> {new_nickname}",
         )
 
     async def _merge_auto_pr(
@@ -985,6 +984,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
         pr_url: str,
         success_comment: str,
         pending_description: str,
+        rebase_mutate,
+        rebase_commit_message: str,
     ) -> AutoApprovalResult:
         try:
             await self.gh.merge_pr(pr_number)
@@ -995,6 +996,20 @@ class PatreonWhitelistFlowCog(commands.Cog):
             if current_pr.get("merged"):
                 await self.gh.remove_branch(branch)
                 return AutoApprovalResult(pr_url=pr_url, approved=True)
+
+            retry_result = await self._rebase_and_retry_merge(
+                branch=branch,
+                pr_number=pr_number,
+                pr_url=pr_url,
+                mutate=rebase_mutate,
+                commit_message=rebase_commit_message,
+                success_comment=success_comment,
+                member=member,
+                nickname=nickname,
+            )
+            if retry_result is not None:
+                return retry_result
+
             await self._record_auto_merge_pending(
                 member=member,
                 nickname=nickname,
@@ -1008,6 +1023,64 @@ class PatreonWhitelistFlowCog(commands.Cog):
             pr_number,
             success_comment,
         )
+        await self.gh.remove_branch(branch)
+        return AutoApprovalResult(pr_url=pr_url, approved=True)
+
+    async def _rebase_and_retry_merge(
+        self,
+        *,
+        branch: str,
+        pr_number: int,
+        pr_url: str,
+        mutate,
+        commit_message: str,
+        success_comment: str,
+        member: discord.Member,
+        nickname: str,
+    ) -> AutoApprovalResult | None:
+        """
+        A stale-base merge conflict (405/409) means another whitelist PR merged
+        first. Our edits are single-line adds/renames, so instead of a real
+        3-way git merge we just reset the branch onto the new base and
+        reapply the same line-level edit, then retry once. Returns None if
+        the retry didn't resolve it, so the caller falls back to staff review.
+        """
+        try:
+            base_sha = await self.gh.get_ref_sha(self.gh.base_branch)
+            await self.gh.reset_branch(branch, base_sha)
+            text, sha = await self.gh.get_whitelist_file(ref=branch)
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            new_lines = mutate(lines)
+            if new_lines is None:
+                # The base already reflects the desired end state (someone
+                # else's PR already made this exact change) - nothing to merge.
+                await self.gh.close_pr(pr_number)
+                await self.gh.remove_branch(branch)
+                return AutoApprovalResult(pr_url=None, approved=True)
+            await self.gh.put_whitelist_file(
+                branch=branch,
+                new_text="\n".join(new_lines) + "\n",
+                sha=sha,
+                message=commit_message,
+            )
+            await self.gh.merge_pr(pr_number)
+        except HTTPError as exc:
+            if not _is_recoverable_merge_error(exc):
+                raise
+            return None
+        except Exception:
+            log.exception(
+                "Failed to rebase Patreon whitelist branch after merge conflict",
+                extra={
+                    "event": "patreon_whitelist_rebase_failed",
+                    "user_id": member.id,
+                    "branch": branch,
+                    "nickname": nickname,
+                },
+            )
+            return None
+
+        await self.gh.add_pr_comment(pr_number, success_comment)
         await self.gh.remove_branch(branch)
         return AutoApprovalResult(pr_url=pr_url, approved=True)
 
@@ -1052,15 +1125,16 @@ class PatreonWhitelistFlowCog(commands.Cog):
         commit_message: str,
         body: str,
     ) -> dict | None:
+        nickname_key = nickname.casefold()
         base_text, _base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
         base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
-        if nickname in base_lines:
+        if any(line.casefold() == nickname_key for line in base_lines):
             return None
 
         await self.gh.create_branch(branch, self.gh.base_branch)
         branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
         branch_lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
-        if nickname not in branch_lines:
+        if not any(line.casefold() == nickname_key for line in branch_lines):
             branch_lines.append(nickname)
             await self.gh.put_whitelist_file(
                 branch=branch,
@@ -1325,6 +1399,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 f"`{old_nickname}` -> `{new_nickname}` for {recipient} ({recipient.id})."
             ),
             pending_description="Gift username update",
+            rebase_mutate=_rename_nickname_mutate(old_nickname, new_nickname),
+            rebase_commit_message=f"Update gifted beta tester: {old_nickname} -> {new_nickname}",
         )
 
     async def _handle_gift_beta_command(
@@ -1376,8 +1452,10 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
+        mojang_ok = await self._check_mojang_username(nickname)
+
         try:
-            await self._submit_gift_request(ctx.author, recipient, nickname)
+            approval = await self._auto_approve_gift_beta_access(ctx.author, recipient, nickname)
         except Exception:
             log.exception(
                 "Failed to submit Patreon gift beta access request",
@@ -1394,17 +1472,53 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
+        if approval.pr_url is None:
+            await ctx.followup.send(
+                f"`{nickname}` is already whitelisted. Nothing to do.",
+                ephemeral=True,
+            )
+            return
+
+        if not approval.approved:
+            await ctx.followup.send(
+                "Gift PR created, but GitHub would not auto-merge it yet. "
+                f"Staff can review it here: {approval.pr_url}",
+                ephemeral=True,
+            )
+            return
+
+        await upsert_whitelist_grant(
+            PatreonGrant(
+                owner_discord_user_id=ctx.author.id,
+                beneficiary_discord_user_id=recipient.id,
+                beneficiary_discord_username=str(recipient),
+                minecraft_username=nickname,
+                kind=PatreonGrantKind.GIFT,
+                active=True,
+                source_pr_url=approval.pr_url,
+            )
+        )
         await ctx.followup.send(
-            f"Gift submitted for staff approval: {recipient.mention} as `{nickname}`.",
+            f"Gift approved automatically: {recipient.mention} as `{nickname}`.",
             ephemeral=True,
         )
+        await self._log_staff_info(
+            f"{ctx.author.mention} gifted Patreon beta access to {recipient.mention} as `{nickname}` "
+            f"(auto-approved).\nPR: {approval.pr_url}"
+        )
+        if mojang_ok is False:
+            await self._flag_unresolved_mojang_username(
+                nickname=nickname,
+                member=ctx.author,
+                context=f"gifted to {recipient.mention}",
+            )
 
-    async def _submit_gift_request(
+    async def _auto_approve_gift_beta_access(
         self,
         owner: discord.Member,
         recipient: discord.Member,
         nickname: str,
-    ) -> None:
+    ) -> AutoApprovalResult:
         branch = _patreon_gift_branch_name(owner.id, recipient.id)
         pr_data = await self._create_whitelist_add_pr(
             branch=branch,
@@ -1413,89 +1527,51 @@ class PatreonWhitelistFlowCog(commands.Cog):
             commit_message=f"Gift beta tester: {nickname}",
             body=(
                 f"Gift requested by Discord user {owner} ({owner.id}) "
-                f"for {recipient} ({recipient.id})."
+                f"for {recipient} ({recipient.id}). Automatically approved."
             ),
         )
         if pr_data is None:
-            await self._log_staff_info(
-                f"{owner.mention} tried to gift beta access to `{nickname}`, but that username is already whitelisted."
-            )
-            return
+            return AutoApprovalResult(pr_url=None, approved=False)
         pr_number = pr_data["number"]
         pr_url = pr_data["html_url"]
-        staff_channel = await _pick_staff_channel(
-            self.bot, staff_channel_id=self.bot.settings.patreon_staff_channel_id
-        )
-        if staff_channel is None:
-            raise RuntimeError("Patreon staff channel unavailable")
-
-        admin_view: AdminPRView | None = None
-
-        async def admin_confirm(admin_inter: discord.Interaction):
-            await self.gh.merge_pr(pr_number)
-            await self.gh.add_pr_comment(
-                pr_number,
-                f"Gift approved by {admin_inter.user}, PR merged.",
-            )
-            await self.gh.remove_branch(branch)
-            await upsert_whitelist_grant(
-                PatreonGrant(
-                    owner_discord_user_id=owner.id,
-                    beneficiary_discord_user_id=recipient.id,
-                    beneficiary_discord_username=str(recipient),
-                    minecraft_username=nickname,
-                    kind=PatreonGrantKind.GIFT,
-                    active=True,
-                    source_pr_url=pr_url,
-                )
-            )
-            await admin_inter.followup.send(
-                f"PR #{pr_number} merged. `{nickname}` approved as a Patreon gift."
-            )
-
-        async def admin_edit(admin_inter: discord.Interaction, new_nick: str):
-            nonlocal nickname
-            old_nick = nickname
-            branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
-            lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
-            lines = [ln for ln in lines if ln != old_nick]
-            if new_nick not in lines:
-                lines.append(new_nick)
-            await self.gh.put_whitelist_file(
-                branch=branch,
-                new_text="\n".join(lines) + "\n",
-                sha=branch_sha,
-                message=f"Update gifted beta tester: {old_nick} -> {new_nick}",
-            )
-            nickname = new_nick
-            if admin_view is not None:
-                admin_view.nickname = new_nick
-            await admin_inter.followup.send(f"Updated PR branch nickname to `{new_nick}`.")
-
-        async def admin_reject(admin_inter: discord.Interaction):
-            await self.gh.close_pr(pr_number)
-            await self.gh.add_pr_comment(
-                pr_number,
-                f"Gift rejected by {admin_inter.user}, PR closed.",
-            )
-            await self.gh.remove_branch(branch)
-            await admin_inter.followup.send(f"PR #{pr_number} closed. Gift rejected.")
-
-        admin_view = AdminPRView(
-            pr_number=pr_number,
+        return await self._merge_auto_pr(
+            member=owner,
             nickname=nickname,
             branch=branch,
-            on_confirm=admin_confirm,
-            on_edit=admin_edit,
-            on_reject=admin_reject,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            success_comment=(
+                f"Automatically approved gift from {owner} ({owner.id}) for {recipient} ({recipient.id})."
+            ),
+            pending_description="Automatic Patreon gift approval",
+            rebase_mutate=_add_nickname_mutate(nickname),
+            rebase_commit_message=f"Gift beta tester: {nickname}",
         )
 
-        await staff_channel.send(
-            f"<@&{self.bot.settings.patreon_admin_ping_role_id}>\n\n"
-            f"{owner.mention} wants to gift Patreon beta access to {recipient.mention} as `{nickname}`.\n"
-            f"PR: {pr_url}",
-            view=admin_view,
-            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+    async def _check_mojang_username(self, nickname: str) -> bool | None:
+        return await minecraft_username_exists(nickname)
+
+    async def _flag_unresolved_mojang_username(
+        self,
+        *,
+        nickname: str,
+        member: discord.Member,
+        context: str,
+    ) -> None:
+        channel = await _pick_staff_channel(
+            self.bot, staff_channel_id=self.bot.settings.patreon_ai_log_channel_id
+        )
+        if channel is None:
+            log.warning(
+                "Patreon ai-log channel unavailable; `%s` did not resolve on Mojang (%s)",
+                nickname,
+                context,
+            )
+            return
+        await channel.send(
+            f"`{nickname}` ({context} by {member.mention}) did not resolve to an official "
+            "Mojang/Minecraft account. Allowed anyway (Mojang lookup is warn-but-allow).",
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     async def _log_staff_info(self, content: str) -> None:
@@ -1725,166 +1801,6 @@ class PatreonWhitelistFlowCog(commands.Cog):
         await self._log_staff_info(
             f"Patreon access expired for <@{owner_discord_user_id}>; removed `{', '.join(nicknames)}`.\nPR: {pr_data['html_url']}"
         )
-
-    async def _submit_whitelist_request(
-        self,
-        *,
-        interaction: discord.Interaction,
-        initial_nick: str,
-    ) -> None:
-        state = {"nick": initial_nick}
-        branch = _patreon_branch_name(interaction.user.id)
-        requester = interaction.user
-        user_status_message = getattr(interaction, "message", None)
-
-        base_text, _base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
-        base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
-
-        if state["nick"] in base_lines:
-            await _edit_user_interaction_status(
-                interaction,
-                f"`{state['nick']}` is already whitelisted. Nothing to do.",
-            )
-            return
-
-        await self.gh.create_branch(branch, self.gh.base_branch)
-
-        branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
-        branch_lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
-        if state["nick"] in branch_lines:
-            log.info(
-                "Patreon whitelist branch already contains nickname; reusing PR flow",
-                extra={
-                    "event": "patreon_whitelist_branch_already_updated",
-                    "user_id": interaction.user.id,
-                    "branch": branch,
-                    "nickname": state["nick"],
-                },
-            )
-        else:
-            branch_lines.append(state["nick"])
-            new_text = "\n".join(branch_lines) + "\n"
-            await self.gh.put_whitelist_file(
-                branch=branch,
-                new_text=new_text,
-                sha=branch_sha,
-                message=f"Add beta tester: {state['nick']}",
-            )
-
-        pr_data = await self.gh.create_or_get_pr(
-            head_branch=branch,
-            title=f"Add beta tester: {state['nick']}",
-            body=f"Requested by Discord user {interaction.user} ({interaction.user.id}).",
-        )
-        pr_number = pr_data["number"]
-        pr_url = pr_data["html_url"]
-
-        staff_channel = await _pick_staff_channel(
-            self.bot, interaction, staff_channel_id=self.bot.settings.patreon_staff_channel_id
-        )
-        if staff_channel is None:
-            await _edit_user_interaction_status(
-                interaction,
-                "I created the whitelist PR, but I could not notify staff. "
-                "Please ask staff to check the bot logs.",
-            )
-            log.error(
-                "Patreon whitelist PR created but staff channel unavailable",
-                extra={
-                    "event": "patreon_whitelist_staff_channel_missing",
-                    "user_id": interaction.user.id,
-                    "pr_number": pr_number,
-                },
-            )
-            return
-        admin_ping_role_id = self.bot.settings.patreon_admin_ping_role_id
-        staff_guild = getattr(staff_channel, "guild", None)
-        admin_role = staff_guild.get_role(admin_ping_role_id) if staff_guild else None
-        mention = admin_role.mention if admin_role else f"<@&{admin_ping_role_id}>"
-
-        admin_view: AdminPRView | None = None
-
-        async def admin_confirm(admin_inter: discord.Interaction):
-            await self.gh.merge_pr(pr_number)
-            await self.gh.add_pr_comment(
-                pr_number,
-                f"Request approved by {admin_inter.user}, PR merged.",
-            )
-            await self.gh.remove_branch(branch)
-            await _edit_user_status_message(user_status_message, "Success")
-            await _dm_user(
-                requester,
-                f"Congratulations, {admin_inter.user} has approved your request and you now have access to the latest previews!",
-            )
-            await admin_inter.followup.send(
-                f"PR #{pr_number} merged. `{state['nick']}` approved."
-            )
-
-        async def admin_edit(admin_inter: discord.Interaction, new_nick: str):
-            old_nick = state["nick"]
-
-            branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
-            lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
-            lines = [ln for ln in lines if ln != old_nick]
-            if new_nick not in lines:
-                lines.append(new_nick)
-
-            updated = "\n".join(lines) + "\n"
-            await self.gh.put_whitelist_file(
-                branch=branch,
-                new_text=updated,
-                sha=branch_sha,
-                message=f"Update beta tester: {old_nick} -> {new_nick}",
-            )
-
-            state["nick"] = new_nick
-            if admin_view is not None:
-                admin_view.nickname = new_nick
-
-            await admin_inter.followup.send(
-                f"Updated PR branch nickname to `{new_nick}`."
-            )
-
-        async def admin_reject(admin_inter: discord.Interaction):
-            await self.gh.close_pr(pr_number)
-            await self.gh.add_pr_comment(
-                pr_number,
-                f"Request rejected by {admin_inter.user}, PR closed.",
-            )
-            await self.gh.remove_branch(branch)
-            await _edit_user_status_message(user_status_message, "Rejected")
-            await _dm_user(
-                requester,
-                f"Your Patreon whitelist request was rejected by {admin_inter.user}. Please contact staff if you think this was a mistake.",
-            )
-            await admin_inter.followup.send(
-                f"PR #{pr_number} closed. Request rejected."
-            )
-
-        admin_view = AdminPRView(
-            pr_number=pr_number,
-            nickname=state["nick"],
-            branch=branch,
-            on_confirm=admin_confirm,
-            on_edit=admin_edit,
-            on_reject=admin_reject,
-        )
-
-        await staff_channel.send(
-            f"{mention}\n\n"
-            f"{interaction.user.mention} has set their Patreon Minecraft nickname as "
-            f"`{state['nick']}`.\n"
-            f"\n"
-            f"PR: {pr_url}",
-            view=admin_view,
-            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
-        )
-
-        await _edit_user_interaction_status(
-            interaction,
-            "Request submitted. Please wait for an administrator to approve.",
-        )
-
 
 def setup(bot: discord.Bot):
     bot.add_cog(PatreonWhitelistFlowCog(bot))

@@ -10,7 +10,8 @@ import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
-from bulmaai.services import mod_cases
+from bulmaai.services import automod_hits, mod_actions, mod_cases
+from bulmaai.services.mod_actions import ModActionError, parse_duration_seconds
 from bulmaai.services.bug_reports import list_bug_reports_by_reporter
 from bulmaai.services.member_activity import get_member_activity, xp_threshold
 from bulmaai.services.patreon_grants import get_patreon_link
@@ -35,8 +36,6 @@ SEARCH_LIMIT = 25
 MAX_REASON_LENGTH = 400  # leaves room for the " (via panel by ...)" suffix under Discord's 512 limit
 MAX_TIMEOUT_MINUTES = 28 * 24 * 60
 MAX_BAN_DELETE_HOURS = 168
-MEMBER_ONLY_ACTIONS = {"warn", "timeout", "untimeout", "kick"}
-PANEL_ONLY_ACTIONS = {"warn", "note"}  # no Discord permission involved, so the bot's role doesn't matter
 MEMBERS_DEFAULT_LIMIT = 60
 MEMBERS_MAX_LIMIT = 100
 MEMBER_SORTS = ("joined_desc", "joined_asc", "name")
@@ -79,6 +78,8 @@ def _case_json(bot: discord.Bot, guild: discord.Guild, case: mod_cases.ModCase) 
         "duration_seconds": case.duration_seconds,
         "source": case.source,
         "created_at": _iso(case.created_at),
+        "active": case.active,
+        "expires_at": _iso(case.expires_at),
     }
 
 
@@ -338,43 +339,11 @@ async def user_profile(request: web.Request, actor: Actor) -> web.Response:
 # --- Actions ----------------------------------------------------------------------------------
 
 
-def check_hierarchy(
-    bot: discord.Bot, actor: Actor, target_id: int, target: discord.Member | None, *, discord_action: bool
-) -> None:
-    """Refuse actions staff shouldn't take against this target. Non-members only get the identity checks."""
-    guild = actor.member.guild
-    if target_id == actor.id:
-        raise api_error(403, "You can't moderate yourself.")
-    if target_id == guild.owner_id:
-        raise api_error(403, "You can't moderate the server owner.")
-    if bot.user is not None and target_id == bot.user.id:
-        raise api_error(403, "You can't moderate the bot.")
-    if target is None:
-        return
-    if tier_for(target, bot.settings) >= actor.tier:
-        raise api_error(403, "That user's panel tier is equal to or above yours.")
-    if actor.id != guild.owner_id and target.top_role.position >= actor.member.top_role.position:
-        raise api_error(403, "That user's top role is equal to or above yours.")
-    if discord_action and target.top_role.position >= guild.me.top_role.position:
-        raise api_error(409, "The bot's top role isn't above that user's, so Discord won't allow it.")
-
-
 def _whole_number(body: dict[str, Any], name: str, default: int | None = None) -> int:
     value = body.get(name, default)
     if isinstance(value, bool) or not isinstance(value, int):
         raise api_error(400, f"{name} must be a whole number.")
     return value
-
-
-async def _dm_warning(member: discord.Member, reason: str) -> bool:
-    try:
-        await member.send(
-            f"You received a warning from the **{member.guild.name}** staff: {reason}",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    except discord.HTTPException:
-        return False
-    return True
 
 
 async def _moderate(request: web.Request, actor: Actor, action: str) -> web.Response:
@@ -391,60 +360,53 @@ async def _moderate(request: web.Request, actor: Actor, action: str) -> web.Resp
     if len(reason) > MAX_REASON_LENGTH:
         raise api_error(400, f"Keep the reason under {MAX_REASON_LENGTH} characters.")
 
-    member = await resolve_member(guild, user_id)
-    if member is None and action in MEMBER_ONLY_ACTIONS:
-        raise api_error(404, "That user isn't in the server.")
-    check_hierarchy(bot, actor, user_id, member, discord_action=action not in PANEL_ONLY_ACTIONS)
-
-    audit_reason = f"{reason or 'No reason given'} (via panel by {actor.member.name})"
     details: dict[str, Any] = {"reason": reason}
     duration_seconds = None
-    try:
-        if action == "warn":
-            details["dm_sent"] = await _dm_warning(member, reason)
-        elif action == "timeout":
-            minutes = _whole_number(body, "minutes")
-            if minutes < 1:
-                raise api_error(400, "minutes must be at least 1.")
-            minutes = min(minutes, MAX_TIMEOUT_MINUTES)
-            duration_seconds = details["duration_seconds"] = minutes * 60
-            await member.timeout_for(timedelta(minutes=minutes), reason=audit_reason)
-        elif action == "untimeout":
-            await member.remove_timeout(reason=audit_reason)
-        elif action == "kick":
-            await member.kick(reason=audit_reason)
-        elif action == "ban":
-            hours = _whole_number(body, "delete_message_hours", 0)
-            if not 0 <= hours <= MAX_BAN_DELETE_HOURS:
-                raise api_error(400, f"delete_message_hours must be 0-{MAX_BAN_DELETE_HOURS}.")
-            details["delete_message_hours"] = hours
-            await guild.ban(discord.Object(id=user_id), delete_message_seconds=hours * 3600, reason=audit_reason)
-        elif action == "unban":
-            await guild.unban(discord.Object(id=user_id), reason=audit_reason)
-    except discord.NotFound:
-        raise api_error(404, "That user isn't banned." if action == "unban" else "Discord couldn't find that user.")
-    except discord.Forbidden:
-        raise api_error(409, "Discord refused: the bot is missing permissions for that.")
-    except discord.HTTPException:
-        log.exception("Panel %s on %s failed", action, user_id)
-        raise api_error(502, "Discord returned an error, try again.")
+    delete_seconds = 0
+    if action == "timeout":
+        minutes = _whole_number(body, "minutes")
+        if minutes < 1:
+            raise api_error(400, "minutes must be at least 1.")
+        duration_seconds = min(minutes, MAX_TIMEOUT_MINUTES) * 60
+    elif action in ("ban", "softban"):
+        hours = _whole_number(body, "delete_message_hours", 0 if action == "ban" else 24)
+        if not 0 <= hours <= MAX_BAN_DELETE_HOURS:
+            raise api_error(400, f"delete_message_hours must be 0-{MAX_BAN_DELETE_HOURS}.")
+        details["delete_message_hours"] = hours
+        delete_seconds = hours * 3600
+        raw_duration = body.get("duration")
+        if action == "ban" and raw_duration:
+            duration_seconds = parse_duration_seconds(raw_duration) if isinstance(raw_duration, str) else None
+            if not duration_seconds:
+                raise api_error(400, "duration must look like 12h, 7d or 2w (leave it empty for a permanent ban).")
 
     try:
-        case_id = await mod_cases.record_case(
-            guild_id=guild.id,
-            user_id=user_id,
-            moderator_id=actor.id,
+        result = await mod_actions.perform(
+            bot,
+            guild,
             action=action,
-            reason=reason or None,
+            target_id=user_id,
+            moderator=actor.member,
+            reason=reason,
             duration_seconds=duration_seconds,
+            delete_message_seconds=delete_seconds,
+            source="panel",
         )
-    except Exception:
-        log.exception("Failed to record mod case %s for %s", action, user_id)
-        if action == "note":
-            raise api_error(503, "Couldn't save the note, the database is unavailable.")
-        case_id = None
-    await audit(actor, f"mod.{action}", str(user_id), case_id=case_id, **details)
-    return web.json_response({"ok": True, "case_id": case_id, "dm_sent": details.get("dm_sent")})
+    except ModActionError as error:
+        raise api_error(error.status, str(error))
+    if duration_seconds:
+        details["duration_seconds"] = duration_seconds
+    if result.dm_sent is not None:
+        details["dm_sent"] = result.dm_sent
+    await audit(actor, f"mod.{action}", str(user_id), case_id=result.case_id, **details)
+    return web.json_response(
+        {
+            "ok": True,
+            "case_id": result.case_id,
+            "dm_sent": result.dm_sent,
+            "escalation": result.escalation.action if result.escalation else None,
+        }
+    )
 
 
 @routes.post("/api/users/{user_id}/warn")
@@ -483,7 +445,95 @@ async def ban_user(request: web.Request, actor: Actor) -> web.Response:
     return await _moderate(request, actor, "ban")
 
 
+@routes.post("/api/users/{user_id}/softban")
+@requires("mod.ban")
+async def softban_user(request: web.Request, actor: Actor) -> web.Response:
+    return await _moderate(request, actor, "softban")
+
+
 @routes.post("/api/users/{user_id}/unban")
 @requires("mod.ban")
 async def unban_user(request: web.Request, actor: Actor) -> web.Response:
     return await _moderate(request, actor, "unban")
+
+
+# --- Case edits -------------------------------------------------------------------------------
+
+
+def _case_id(request: web.Request) -> int:
+    raw = request.match_info["case_id"]
+    if not raw.isdigit() or len(raw) > 18:
+        raise api_error(400, "Invalid case id.")
+    return int(raw)
+
+
+@routes.post("/api/cases/{case_id}/reason")
+@requires("mod.cases.edit")
+async def edit_case_reason(request: web.Request, actor: Actor) -> web.Response:
+    case_id = _case_id(request)
+    reason = (await read_json(request)).get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise api_error(400, "A reason is required.")
+    reason = reason.strip()
+    if len(reason) > MAX_REASON_LENGTH:
+        raise api_error(400, f"Keep the reason under {MAX_REASON_LENGTH} characters.")
+    if not await mod_cases.update_reason(actor.member.guild.id, case_id, reason):
+        raise api_error(404, "Unknown case.")
+    await audit(actor, "mod.case_reason", str(case_id), reason=reason)
+    return web.json_response({"ok": True})
+
+
+@routes.delete("/api/cases/{case_id}")
+@requires("mod.cases.edit")
+async def remove_case(request: web.Request, actor: Actor) -> web.Response:
+    """Soft-deletes a warn or note (Dyno's delwarn/delnote): it stops counting toward the warn ladder."""
+    guild_id = actor.member.guild.id
+    case_id = _case_id(request)
+    case = await mod_cases.get_case(guild_id, case_id)
+    if case is None:
+        raise api_error(404, "Unknown case.")
+    if case.action not in ("warn", "note"):
+        raise api_error(400, "Only warnings and notes can be removed.")
+    await mod_cases.deactivate_case(guild_id, case_id)
+    await audit(actor, "mod.case_remove", str(case_id), user_id=str(case.user_id), case_action=case.action)
+    return web.json_response({"ok": True})
+
+
+# --- Automod tuning ---------------------------------------------------------------------------
+
+
+@routes.get("/api/automod/stats")
+@requires("mod.cases.view")
+async def automod_stats(request: web.Request, actor: Actor) -> web.Response:
+    """Per-filter hits and staff feedback, plus loosening suggestions (applied through /api/settings)."""
+    days = _query_int(request, "days", 30, 365)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    stats = await automod_hits.filter_stats(actor.member.guild.id, since)
+    suggestions = automod_hits.suggest(stats, request.app[BOT].settings)
+    return web.json_response(
+        {
+            "days": days,
+            "filters": [
+                {
+                    "reason": stat.reason,
+                    "hits": stat.hits,
+                    "confirmed": stat.confirmed,
+                    "false_positives": stat.false_positives,
+                    "false_positive_rate": round(stat.false_positive_rate, 3),
+                }
+                for stat in stats
+            ],
+            "suggestions": [
+                {
+                    "reason": item.reason,
+                    "hits": item.hits,
+                    "false_positives": item.false_positives,
+                    "setting": item.setting,
+                    "current": item.current,
+                    "suggested": item.suggested,
+                    "note": item.note,
+                }
+                for item in suggestions
+            ],
+        }
+    )

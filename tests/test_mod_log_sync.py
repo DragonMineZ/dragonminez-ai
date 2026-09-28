@@ -261,8 +261,9 @@ class RecordCaseExternalIdTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(case_id, 7)
         args = fetchval.await_args.args
         self.assertIn("ON CONFLICT (external_id)", args[0])
-        self.assertEqual(args[-2], "audit:123")
-        self.assertEqual(args[-1], NOW)
+        self.assertEqual(args[-3], "audit:123")
+        self.assertEqual(args[-2], NOW)
+        self.assertIsNone(args[-1])  # expires_at
 
     async def test_conflicting_external_id_returns_none(self):
         fetchval = AsyncMock(return_value=None)

@@ -325,6 +325,24 @@ ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS external_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mod_cases_external_id
     ON mod_cases (external_id) WHERE external_id IS NOT NULL;
 
+-- active = FALSE: a deleted warn/note, or a tempban that has been lifted.
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+-- Only tempbans set this; Discord lifts timeouts on its own.
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_mod_cases_expiring
+    ON mod_cases (expires_at) WHERE active AND expires_at IS NOT NULL;
+
+-- Channels locked by /lock or a lockdown, with the @everyone overwrites to restore on unlock.
+CREATE TABLE IF NOT EXISTS mod_locked_channels (
+    channel_id         BIGINT PRIMARY KEY,
+    guild_id           BIGINT NOT NULL,
+    prev_send          BOOLEAN,
+    prev_send_threads  BOOLEAN,
+    locked_by          BIGINT,
+    locked_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS panel_announcements (
     id            BIGSERIAL PRIMARY KEY,
     author_id     BIGINT NOT NULL,
@@ -352,3 +370,42 @@ CREATE INDEX IF NOT EXISTS idx_panel_announcements_history
 CREATE INDEX IF NOT EXISTS idx_panel_announcements_drafts
     ON panel_announcements (updated_at DESC)
     WHERE status = 'draft';
+
+-- One row per automod incident. Staff feedback on the alert (False positive / a punitive click)
+-- is the tuning signal: per-filter false-positive rates, threshold suggestions, learned scam images.
+CREATE TABLE IF NOT EXISTS automod_hits (
+    id                BIGSERIAL PRIMARY KEY,
+    guild_id          BIGINT NOT NULL,
+    user_id           BIGINT NOT NULL,
+    reason            TEXT NOT NULL,
+    action            TEXT NOT NULL,
+    details           TEXT,
+    domains           TEXT[] NOT NULL DEFAULT '{}',
+    image_hashes      BIGINT[] NOT NULL DEFAULT '{}',
+    scam_hash_id      BIGINT,
+    warn_case_id      BIGINT,
+    timed_out         BOOLEAN NOT NULL DEFAULT FALSE,
+    alert_message_id  BIGINT,
+    outcome           TEXT,
+    reviewed_by       BIGINT,
+    reviewed_at       TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_automod_hits_created
+    ON automod_hits (guild_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automod_hits_alert
+    ON automod_hits (alert_message_id) WHERE alert_message_id IS NOT NULL;
+
+-- Known scam images as 64-bit dHashes (stored signed).
+CREATE TABLE IF NOT EXISTS scam_image_hashes (
+    id           BIGSERIAL PRIMARY KEY,
+    hash         BIGINT NOT NULL UNIQUE,
+    source       TEXT NOT NULL,
+    added_by     BIGINT,
+    note         TEXT,
+    hits         INTEGER NOT NULL DEFAULT 0,
+    last_hit_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);

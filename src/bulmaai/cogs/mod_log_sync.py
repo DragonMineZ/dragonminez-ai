@@ -15,7 +15,8 @@ import discord
 from discord.ext import commands
 
 from bulmaai.config import Settings
-from bulmaai.services import mod_cases
+from bulmaai.services import mod_actions, mod_cases
+from bulmaai.services.mod_actions import parse_duration_seconds
 
 log = logging.getLogger(__name__)
 
@@ -114,21 +115,7 @@ _MENTION_RE = re.compile(r"<@!?(\d{15,20})>")
 _NAME_ID_RE = re.compile(r"\((\d{15,20})\)")
 _FOOTER_ID_RE = re.compile(r"(\d{15,20})")
 _CASE_NUMBER_RE = re.compile(r"case\s*#?\s*(\d+)", re.IGNORECASE)
-_DURATION_RE = re.compile(
-    r"(\d+)\s*(seconds?|secs?|minutes?|mins?|months?|mos?|hours?|hrs?|weeks?|wks?|years?|yrs?|days?|[smhdwy])\b",
-    re.IGNORECASE,
-)
-_UNIT_SECONDS = {
-    "second": 1, "seconds": 1, "sec": 1, "secs": 1, "s": 1,
-    "minute": 60, "minutes": 60, "min": 60, "mins": 60, "m": 60,
-    "hour": 3600, "hours": 3600, "hr": 3600, "hrs": 3600, "h": 3600,
-    "day": 86400, "days": 86400, "d": 86400,
-    "week": 604800, "weeks": 604800, "wk": 604800, "wks": 604800, "w": 604800,
-    "month": 2592000, "months": 2592000, "mo": 2592000, "mos": 2592000,
-    "year": 31536000, "years": 31536000, "yr": 31536000, "yrs": 31536000, "y": 31536000,
-}
 _NO_REASON = {"no reason given", "none", "n/a", ""}
-_NO_DURATION = {"permanent", "indefinite", "forever", "n/a", "none"}
 
 # Dyno's own labels normalized to our action vocabulary (untouched ones pass through lowercased).
 _ACTION_ALIASES = {
@@ -154,21 +141,6 @@ class ParsedCase:
     moderator_id: int | None
     reason: str | None
     duration_seconds: int | None
-
-
-def parse_duration_seconds(text: str | None) -> int | None:
-    """Best-effort parse of things like '1h', '30m', '2 days', '1 day, 2 hours'."""
-    if not text:
-        return None
-    lowered = text.strip().lower()
-    if lowered in _NO_DURATION:
-        return None
-    total = 0
-    found = False
-    for amount, unit in _DURATION_RE.findall(lowered):
-        total += int(amount) * _UNIT_SECONDS[unit]
-        found = True
-    return total if found else None
 
 
 def _extract_user_id(value: str | None) -> int | None:
@@ -275,7 +247,18 @@ class ModLogSyncCog(commands.Cog):
         )
         if mapped is None:
             return
-        await self._record_mapped_case(mapped, guild_id=settings.panel_guild_id)
+        case_id = await self._record_mapped_case(mapped, guild_id=settings.panel_guild_id)
+        if case_id is not None and mapped.source == "discord":  # Dyno posts its own; ours come from perform()
+            await mod_actions.post_case_log(
+                self.bot,
+                case_id=case_id,
+                action=mapped.action,
+                user_id=mapped.user_id,
+                moderator_id=mapped.moderator_id,
+                reason=mapped.reason,
+                duration_seconds=mapped.duration_seconds,
+                source="discord",
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -297,9 +280,9 @@ class ModLogSyncCog(commands.Cog):
 
     # --- recording -----------------------------------------------------------
 
-    async def _record_mapped_case(self, mapped: MappedCase, *, guild_id: int) -> None:
+    async def _record_mapped_case(self, mapped: MappedCase, *, guild_id: int) -> int | None:
         try:
-            await mod_cases.record_case(
+            return await mod_cases.record_case(
                 guild_id=guild_id,
                 user_id=mapped.user_id,
                 action=mapped.action,
@@ -315,6 +298,7 @@ class ModLogSyncCog(commands.Cog):
                 "Failed to record audit log case",
                 extra={"event": "mod_log_sync_audit_record_failed", "external_id": mapped.external_id},
             )
+            return None
 
     async def _record_dyno_embed(
         self,
@@ -390,7 +374,8 @@ class ModLogSyncCog(commands.Cog):
                 extra={"event": "mod_log_sync_audit_backfill_failed", "guild_id": guild.id},
             )
 
-    async def _backfill_dyno_modlog(self, settings: Settings) -> None:
+    async def _backfill_dyno_modlog(self, settings: Settings, *, limit: int | None = _BACKFILL_MESSAGE_LIMIT) -> None:
+        """limit=None walks the whole channel (one-off full Dyno history import); re-runs are idempotent."""
         channel_id = settings.dyno_modlog_channel_id
         if channel_id is None:
             return
@@ -411,7 +396,7 @@ class ModLogSyncCog(commands.Cog):
                 )
                 return
         try:
-            async for message in channel.history(limit=_BACKFILL_MESSAGE_LIMIT):
+            async for message in channel.history(limit=limit):
                 if message.author.id != settings.dyno_user_id:
                     continue
                 for embed in message.embeds:

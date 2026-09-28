@@ -1,7 +1,9 @@
 import re
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -86,6 +88,9 @@ class MessageSignal:
     author_id: int
     content: str
     attachments: tuple[AttachmentInfo, ...] = ()
+    # Unique user + role mentions (cog fills from raw_mentions/raw_role_mentions).
+    mention_count: int = 0
+    can_mention_everyone: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,19 @@ class ModerationConfig:
     image_burst_min_messages: int = 2
     link_burst_count: int = 5
     link_burst_window_seconds: int = 60
+    # Extra automod filters; 0 turns a count/limit off.
+    banned_words: tuple[str, ...] = ()
+    mass_mention_limit: int = 0
+    block_everyone_ping: bool = False
+    duplicate_count: int = 0
+    duplicate_window_seconds: int = 30
+    fast_message_count: int = 0
+    fast_message_window_seconds: int = 8
+    caps_percent: int = 70
+    caps_min_length: int = 20
+    emoji_limit: int = 0
+    newline_limit: int = 0
+    zalgo_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +131,10 @@ class ModerationDecision:
     defanged_domains: tuple[str, ...] = ()
     invites: tuple[DiscordInvite, ...] = ()
     image_count: int = 0
+    # None = use the caller's default timeout length (the long spam-bot one).
+    timeout_seconds: int | None = None
+    # Set for a scam_image match: the scam_image_hashes row it matched, for automod_hits.
+    scam_hash_id: int | None = None
 
     @classmethod
     def allow(cls, reason: str = "allowed") -> "ModerationDecision":
@@ -124,6 +146,11 @@ class ModerationState:
     image_events: dict[tuple[int, int], list[float]] = field(default_factory=lambda: defaultdict(list))
     image_message_events: dict[tuple[int, int], list[float]] = field(default_factory=lambda: defaultdict(list))
     link_events: dict[tuple[int, int], list[float]] = field(default_factory=lambda: defaultdict(list))
+    fast_message_events: dict[tuple[int, int], list[float]] = field(default_factory=lambda: defaultdict(list))
+    # (guild_id, author_id) -> [(posted_at, normalized_content, channel_id)] for duplicate_spam.
+    duplicate_events: dict[tuple[int, int], list[tuple[float, str, int]]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
 
     def record(
         self,
@@ -287,6 +314,194 @@ def decide_burst_threshold(
     )
 
 
+@dataclass(frozen=True)
+class ImagePost:
+    posted_at: float
+    channel_id: int
+    # (size, width, height) per image: Discord names every pasted screenshot "image.png",
+    # so the filename is useless for spotting the same picture reposted.
+    signatures: tuple[tuple[int | None, int | None, int | None], ...]
+
+
+def image_signature(attachment: AttachmentMetadata) -> tuple[int | None, int | None, int | None]:
+    return (attachment.size, attachment.width, attachment.height)
+
+
+def confirm_image_burst(
+    posts: "tuple[ImagePost, ...] | list[ImagePost]",
+    *,
+    now: float,
+    window_seconds: float,
+    min_images: int,
+) -> str | None:
+    """Second look after the settle delay. The raw threshold (3 images / 2 messages)
+    also catches people sharing a few screenshots, so only act on spam-shaped bursts.
+    Returns why the burst is confirmed, or None to let it go."""
+    recent = [post for post in posts if now - post.posted_at <= window_seconds]
+    channels = {post.channel_id for post in recent}
+    if len(channels) >= 2:
+        return f"images posted in {len(channels)} channels"
+    seen: dict[tuple[int | None, int | None, int | None], int] = defaultdict(int)
+    for post in recent:
+        for signature in set(post.signatures):
+            if signature[0] is not None:
+                seen[signature] += 1
+    if any(count >= 2 for count in seen.values()):
+        return "same image reposted"
+    total = sum(len(post.signatures) for post in recent)
+    if total >= min_images * 2 and len(recent) >= 3:
+        return f"{total} images across {len(recent)} messages"
+    return None
+
+
+_EVERYONE_OR_HERE_RE = re.compile(r"@(?:everyone|here)\b")
+_CUSTOM_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
+# Pasted logs/code in ``` fences or `inline` spans are exempt from the caps/emoji/newline checks.
+_CODE_RE = re.compile(r"```.*?(?:```|$)|`[^`\n]*`", re.DOTALL)
+_UNICODE_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "]"
+)
+
+
+def _normalize_for_duplicate(content: str) -> str:
+    value = _strip_zero_width(content).casefold()
+    return re.sub(r"\s+", " ", value).strip()
+
+
+@lru_cache(maxsize=64)
+def _compile_banned_words(words: tuple[str, ...]) -> tuple[re.Pattern, ...]:
+    """A `*` splits the word into literal parts joined by \\w*, so it only bridges
+    within one token (a comma, space, etc. still breaks the match)."""
+    patterns = []
+    for word in words:
+        parts = [re.escape(part) for part in word.strip().split("*")]
+        patterns.append(re.compile(r"(?i)\b" + r"\w*".join(parts) + r"\b"))
+    return tuple(patterns)
+
+
+def _matched_banned_word(content: str, words: tuple[str, ...]) -> str | None:
+    if not words:
+        return None
+    text = _strip_zero_width(content)
+    for word, pattern in zip(words, _compile_banned_words(words)):
+        if pattern.search(text):
+            return word
+    return None
+
+
+def _count_emoji(content: str) -> int:
+    without_custom, custom_count = _CUSTOM_EMOJI_RE.subn("", content)
+    return custom_count + len(_UNICODE_EMOJI_RE.findall(without_custom))
+
+
+def _zalgo_combining_marks(content: str) -> int:
+    return sum(1 for char in content if unicodedata.combining(char))
+
+
+def _check_content_rules(signal: MessageSignal, config: ModerationConfig) -> ModerationDecision:
+    """Static per-message filters; order here is the precedence among them."""
+    content = signal.content
+
+    banned = _matched_banned_word(content, tuple(config.banned_words))
+    if banned is not None:
+        return ModerationDecision(action=ModerationAction.DELETE, reason="banned_word", details=f"matched {banned!r}")
+
+    if config.mass_mention_limit > 0 and signal.mention_count >= config.mass_mention_limit:
+        return ModerationDecision(
+            action=ModerationAction.DELETE,
+            reason="mass_mention",
+            details=f"{signal.mention_count} mentions",
+        )
+
+    if config.block_everyone_ping and not signal.can_mention_everyone and _EVERYONE_OR_HERE_RE.search(content):
+        return ModerationDecision(action=ModerationAction.DELETE, reason="everyone_ping")
+
+    prose = _CODE_RE.sub("", content)
+    letters = [char for char in prose if char.isalpha()]
+    if config.caps_percent > 0 and len(letters) >= config.caps_min_length:
+        if letters:
+            caps_percent = sum(char.isupper() for char in letters) / len(letters) * 100
+            if caps_percent >= config.caps_percent:
+                return ModerationDecision(
+                    action=ModerationAction.DELETE,
+                    reason="excessive_caps",
+                    details=f"{caps_percent:.0f}% caps in {len(letters)} letters",
+                )
+
+    if config.emoji_limit > 0:
+        emoji_count = _count_emoji(prose)
+        if emoji_count >= config.emoji_limit:
+            return ModerationDecision(
+                action=ModerationAction.DELETE, reason="excessive_emoji", details=f"{emoji_count} emoji"
+            )
+
+    if config.newline_limit > 0:
+        newline_count = prose.count("\n")
+        if newline_count >= config.newline_limit:
+            return ModerationDecision(
+                action=ModerationAction.DELETE, reason="wall_of_text", details=f"{newline_count} newlines"
+            )
+
+    if config.zalgo_enabled:
+        combining = _zalgo_combining_marks(content)
+        base_chars = sum(1 for char in content if not char.isspace() and not unicodedata.combining(char))
+        if base_chars and combining >= 8 and combining >= base_chars * 2:
+            return ModerationDecision(
+                action=ModerationAction.DELETE, reason="zalgo", details=f"{combining} combining marks"
+            )
+
+    return ModerationDecision.allow()
+
+
+def _check_duplicate_spam(
+    signal: MessageSignal, config: ModerationConfig, state: ModerationState, *, now: float
+) -> ModerationDecision:
+    if config.duplicate_count <= 0:
+        return ModerationDecision.allow()
+    normalized = _normalize_for_duplicate(signal.content)
+    if len(normalized) < 3:
+        return ModerationDecision.allow()
+    key = (signal.guild_id, signal.author_id)
+    events = [event for event in state.duplicate_events[key] if now - event[0] <= config.duplicate_window_seconds]
+    events.append((now, normalized, signal.channel_id))
+    state.duplicate_events[key] = events
+    matches = [event for event in events if event[1] == normalized]
+    if len(matches) < config.duplicate_count:
+        return ModerationDecision.allow()
+    channels = {event[2] for event in matches}
+    # Copies spread across channels are the compromised-account/spam-bot shape; one channel is a
+    # human repeating themselves.
+    action = ModerationAction.TIMEOUT if len(channels) >= 2 else ModerationAction.DELETE
+    return ModerationDecision(
+        action=action,
+        reason="duplicate_spam",
+        details=f"{len(matches)} duplicate messages across {len(channels)} channel(s)",
+    )
+
+
+def _check_fast_messages(
+    signal: MessageSignal, config: ModerationConfig, state: ModerationState, *, now: float
+) -> ModerationDecision:
+    if config.fast_message_count <= 0:
+        return ModerationDecision.allow()
+    key = (signal.guild_id, signal.author_id)
+    events = state.record(state.fast_message_events, key, now, config.fast_message_window_seconds)
+    decision = decide_burst_threshold(
+        event_times=events,
+        now=now,
+        window_seconds=config.fast_message_window_seconds,
+        max_events=config.fast_message_count,
+        action=ModerationAction.DELETE,
+    )
+    if decision.action is ModerationAction.ALLOW:
+        return decision
+    return ModerationDecision(action=ModerationAction.DELETE, reason="fast_messages", details=decision.details)
+
+
 def evaluate_message(
     signal: MessageSignal,
     config: ModerationConfig,
@@ -325,6 +540,10 @@ def evaluate_message(
             invites=invites,
         )
 
+    content_decision = _check_content_rules(signal, config)
+    if content_decision.action is not ModerationAction.ALLOW:
+        return content_decision
+
     key = (signal.guild_id, signal.author_id)
     if urls:
         link_events = state.record(
@@ -338,6 +557,7 @@ def evaluate_message(
             now=now,
             window_seconds=config.link_burst_window_seconds,
             max_events=config.link_burst_count,
+            action=ModerationAction.TIMEOUT,
         )
         if link_decision.action is not ModerationAction.ALLOW:
             return ModerationDecision(
@@ -360,6 +580,14 @@ def evaluate_message(
                 domains=suspicious,
                 defanged_domains=tuple(defang_domain(domain) for domain in suspicious),
             )
+
+    duplicate_decision = _check_duplicate_spam(signal, config, state, now=now)
+    if duplicate_decision.action is not ModerationAction.ALLOW:
+        return duplicate_decision
+
+    fast_message_decision = _check_fast_messages(signal, config, state, now=now)
+    if fast_message_decision.action is not ModerationAction.ALLOW:
+        return fast_message_decision
 
     images = extract_image_attachments(signal.attachments)
     if images:

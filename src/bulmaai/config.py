@@ -71,6 +71,10 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.log_parser",
     "bulmaai.cogs.dmzdebug",
     "bulmaai.cogs.moderation",
+    "bulmaai.cogs.mod_commands",
+    "bulmaai.cogs.mod_interactions",
+    "bulmaai.cogs.raid_guard",
+    "bulmaai.cogs.mod_digest",
     "bulmaai.cogs.patreon_announcements",
     "bulmaai.cogs.curseforge_updates",
     "bulmaai.cogs.release_approval",
@@ -464,6 +468,43 @@ class Settings:
     # real moderator come from its mod-log channel embeds when this channel is set.
     dyno_user_id: int = 155149108183695360
     dyno_modlog_channel_id: int | None = 1501735528356118528
+
+    # Moderation suite (Dyno replacement). Durations use shorthand like 30m / 24h / 3d.
+    # Warn ladder: "<warns>/<window>=<timeout duration|kick|ban>", comma separated; highest matched step wins.
+    moderation_warn_ladder: str = "2/7d=24h, 5/30d=3d, 7/30d=ban"
+    moderation_dm_on_action: bool = True
+    moderation_appeals_enabled: bool = True
+    moderation_appeals_channel_id: int | None = None  # empty = the moderation log channel
+    moderation_reports_channel_id: int | None = None  # empty = the moderation log channel
+    moderation_lockdown_channel_ids: Sequence[int] = ()  # empty = every text channel @everyone can talk in
+    # Extra automod filters; 0 turns a count/limit off. Banned words accept * wildcards.
+    moderation_banned_words: Sequence[str] = ()
+    moderation_mass_mention_limit: int = 5
+    moderation_block_everyone_ping: bool = True
+    moderation_duplicate_count: int = 4
+    moderation_duplicate_window_seconds: int = 30
+    moderation_fast_message_count: int = 8
+    moderation_fast_message_window_seconds: int = 8
+    moderation_caps_percent: int = 70
+    moderation_caps_min_length: int = 20
+    moderation_emoji_limit: int = 15
+    moderation_newline_limit: int = 30
+    moderation_zalgo_enabled: bool = True
+    # Anti-raid and join gate. Actions: alert | timeout | kick.
+    moderation_raid_join_count: int = 10
+    moderation_raid_join_window_seconds: int = 60
+    moderation_raid_mode_minutes: int = 10
+    moderation_raid_action: str = "timeout"
+    moderation_new_account_days: int = 3
+    moderation_new_account_action: str = "alert"
+    # Scam images: known scam pictures matched by perceptual hash; distance is bits apart out of 64 (lower = stricter).
+    moderation_scam_images_enabled: bool = True
+    # Shadow mode while the list is new: a match only posts a review alert (Delete & learn / Dismiss).
+    moderation_scam_images_enforce: bool = False
+    moderation_scam_image_distance: int = 6
+    # Weekly digest, Mondays; empty channel = the text channel named staff-general.
+    moderation_digest_enabled: bool = True
+    moderation_digest_channel_id: int | None = None
 
 
 def _get_env(name: str, default: str | None = None) -> str | None:

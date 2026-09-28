@@ -118,6 +118,8 @@ class BulmaAI(discord.Bot):
             intents=intents,
             debug_guilds=debug_guilds,
             auto_sync_commands=True,
+            # Every command assumes a guild Member; hide them in DMs instead of crashing there.
+            default_command_contexts={discord.InteractionContextType.guild},
         )
 
         self.settings = settings

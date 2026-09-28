@@ -6,7 +6,8 @@ from bulmaai.config import Settings, load_settings
 
 
 def is_admin(member: discord.Member) -> bool:
-    return bool(getattr(member.guild_permissions, "administrator", False))
+    # DMs and user-installs hand us a discord.User, which has no guild_permissions.
+    return bool(getattr(getattr(member, "guild_permissions", None), "administrator", False))
 
 
 def has_any_allowed_role(member: discord.Member, role_ids: Sequence[int]) -> bool:

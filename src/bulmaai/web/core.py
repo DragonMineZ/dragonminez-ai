@@ -43,6 +43,7 @@ PERMISSIONS: dict[str, Tier] = {
     "mod.warn": Tier.HELPER,
     "mod.timeout": Tier.MODERATOR,
     "mod.kick": Tier.MODERATOR,
+    "mod.cases.edit": Tier.MODERATOR,
     "logs.view": Tier.MODERATOR,
     "tickets.manage": Tier.MODERATOR,
     "patreon.view": Tier.MODERATOR,

@@ -100,9 +100,14 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         await self.client.start_server()
         self.origin = f"http://{self.client.host}:{self.client.port}"
         self.record = AsyncMock(return_value=42)
+        self.post_case_log = AsyncMock()
+        self.warn_count = AsyncMock(return_value=0)
         for target, value in (
             ("bulmaai.web.core.get_pool", AsyncMock(return_value=SimpleNamespace(execute=AsyncMock()))),
             ("bulmaai.web.routes_moderation.mod_cases.record_case", self.record),
+            ("bulmaai.services.mod_cases.count_active_since", self.warn_count),
+            ("bulmaai.services.mod_cases.deactivate_user_cases", AsyncMock(return_value=0)),
+            ("bulmaai.services.mod_actions.post_case_log", self.post_case_log),
         ):
             patcher = patch(target, value)
             patcher.start()
@@ -175,6 +180,52 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         response = await self.post("/api/users/777/ban", {"reason": "raid", "delete_message_hours": 24})
         self.assertEqual(response.status, 200, await response.text())
         self.assertEqual(self.guild.ban.await_args.kwargs["delete_message_seconds"], 24 * 3600)
+
+    async def test_tempban_and_softban(self):
+        self.login(OWNER_ID)
+        response = await self.post(f"/api/users/{RANDOM_ID}/ban", {"reason": "raid", "duration": "soon"})
+        self.assertEqual(response.status, 400)
+        response = await self.post(f"/api/users/{RANDOM_ID}/ban", {"reason": "raid", "duration": "7d"})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.record.await_args.kwargs["duration_seconds"], 7 * 86400)
+        self.assertIsNotNone(self.record.await_args.kwargs["expires_at"])
+        dm_view = self.members[RANDOM_ID].send.await_args.kwargs["view"]
+        self.assertTrue(dm_view.children[0].custom_id.startswith("modappeal:"))
+
+        self.guild.unban.reset_mock()
+        response = await self.post(f"/api/users/{RANDOM_ID}/softban", {"reason": "spam"})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.guild.ban.await_args.kwargs["delete_message_seconds"], 24 * 3600)
+        self.guild.unban.assert_awaited_once()
+        self.post_case_log.assert_awaited()
+
+    async def test_warn_reaching_ladder_step_times_out(self):
+        self.login(MOD_ID)
+        self.warn_count.return_value = 2  # default ladder: 2 warns in 7 days -> 24h timeout
+        response = await self.post(f"/api/users/{RANDOM_ID}/warn", {"reason": "spam"})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual((await response.json())["escalation"], "timeout")
+        self.assertEqual(self.members[RANDOM_ID].timeout_for.await_args.args[0], timedelta(hours=24))
+        self.assertEqual(self.record.await_args.kwargs["source"], "escalation")
+
+    async def test_remove_case_only_for_warns_and_notes(self):
+        self.login(MOD_ID)
+        warn = ModCase(9, 1, RANDOM_ID, MOD_ID, "warn", "x", None, "panel", NOW)
+        ban = ModCase(10, 1, RANDOM_ID, MOD_ID, "ban", "x", None, "panel", NOW)
+        deactivate = AsyncMock(return_value=warn)
+        with (
+            patch("bulmaai.services.mod_cases.get_case", AsyncMock(side_effect=[warn, ban])),
+            patch("bulmaai.services.mod_cases.deactivate_case", deactivate),
+        ):
+            first = await self.client.delete("/api/cases/9", headers={"Origin": self.origin})
+            second = await self.client.delete("/api/cases/10", headers={"Origin": self.origin})
+        self.assertEqual(first.status, 200, await first.text())
+        self.assertEqual(second.status, 400)
+        deactivate.assert_awaited_once_with(1, 9)
+
+        self.login(HELPER_ID)
+        response = await self.client.delete("/api/cases/9", headers={"Origin": self.origin})
+        self.assertEqual(response.status, 403)
 
     async def test_search_and_profile_degrade_per_section(self):
         self.login(HELPER_ID)

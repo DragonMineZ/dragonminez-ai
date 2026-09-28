@@ -109,6 +109,7 @@
     id: "presets",
     title: "Presets",
     perm: "presets.edit",
+    group: "Community",
     async render(view, args) {
       if (args.length === 2) { await presetEditor(view, args[0], args[1]); return; }
       const { presets } = await api("/api/presets");

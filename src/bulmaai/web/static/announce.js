@@ -350,6 +350,7 @@
     id: "announce",
     title: "Announce",
     perm: "announce.send",
+    group: "Community",
     async render(view) {
       let composerMode = null; // null | {kind:"edit", channel_id, message_id, jump_url, panel_id} | {kind:"schedule", id}
       let draftId = null;

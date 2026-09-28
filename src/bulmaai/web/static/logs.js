@@ -51,7 +51,7 @@
   Panel.page({
     id: "bot-logs",
     title: "Bot logs",
-    group: "Logs",
+    group: "Moderation",
     perm: "logs.view",
     async render(view) {
       const level = h("select", {}, ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].map((l) => h("option", { value: l }, l)));
@@ -141,7 +141,7 @@
   Panel.page({
     id: "server-logs",
     title: "Server logs",
-    group: "Logs",
+    group: "Moderation",
     perm: "logs.view",
     async render(view) {
       const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22" });
@@ -202,7 +202,7 @@
   Panel.page({
     id: "website-logs",
     title: "Website logs",
-    group: "Logs",
+    group: "Moderation",
     perm: "audit.view",
     async render(view) {
       const actorInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22" });
@@ -259,7 +259,7 @@
   Panel.page({
     id: "audit",
     title: "Audit log",
-    group: "Logs",
+    group: "Moderation",
     perm: "mod.cases.view",
     async render(view, args) {
       const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: args[0] || "" });

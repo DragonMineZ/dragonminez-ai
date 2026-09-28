@@ -78,6 +78,7 @@
     id: "settings",
     title: t("Settings"),
     perm: "settings.view",
+    group: "Settings",
     async render(view) {
       const search = h("input", { type: "search", placeholder: t("Filter settings…"), "aria-label": t("Filter settings") });
       const onlyOverridden = h("input", { type: "checkbox", id: "only-overridden" });

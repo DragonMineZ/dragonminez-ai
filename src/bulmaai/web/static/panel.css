@@ -55,11 +55,17 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 #nav { flex: 1; overflow-y: auto; padding: 4px 8px; }
 #nav a { display: block; padding: 8px 12px; border-radius: 6px; color: var(--text); text-decoration: none; transition: background-color .15s ease, padding-left .15s ease; }
 #nav a:hover { background: var(--surface-2); padding-left: 16px; }
-.nav-group summary { padding: 8px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; list-style: none; }
-.nav-group summary::-webkit-details-marker { display: none; }
-.nav-group summary::before { content: "B8"; display: inline-block; margin-right: 6px; transition: transform .15s ease; }
-.nav-group[open] summary::before { transform: rotate(90deg); }
-.nav-group summary:hover { color: var(--text); }
+.nav-group-toggle {
+  width: 100%; display: flex; align-items: center; gap: 6px; padding: 8px 12px; margin: 0; border: 0; border-radius: 6px;
+  background: none; cursor: pointer; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; text-align: left; transition: background-color .15s ease, color .15s ease;
+}
+.nav-group-toggle::before { content: "▸"; display: inline-block; transition: transform .2s ease; }
+.nav-group-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+.nav-group-toggle:hover { color: var(--text); background: var(--surface-2); }
+.nav-group-panel { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .22s ease; }
+.nav-group-toggle[aria-expanded="true"] + .nav-group-panel { grid-template-rows: 1fr; }
+.nav-group-inner { overflow: hidden; }
 .nav-group a { margin-left: 10px; }
 #nav a[aria-current="page"] { background: var(--surface-2); color: var(--accent); font-weight: 600; }
 .me { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
@@ -174,6 +180,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
   .sidebar { position: static; height: auto; }
   #nav { display: flex; overflow-x: auto; padding: 0 8px 8px; }
   .nav-group { display: flex; align-items: center; }
+  .nav-group-panel { grid-template-rows: 1fr !important; }
   .nav-group a { margin-left: 0; }
   #nav a { white-space: nowrap; }
   .view { padding: 16px; }

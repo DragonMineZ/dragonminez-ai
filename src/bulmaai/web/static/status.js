@@ -95,6 +95,7 @@
     id: "overview",
     title: t("Overview"),
     perm: "status.view",
+    group: "Dashboard",
     async render(view) {
       const body = h("div");
       const reload = async () => {
@@ -126,6 +127,7 @@
     id: "staff",
     title: t("Staff"),
     perm: "audit.view",
+    group: "Dashboard",
     async render(view) {
       const data = await api("/api/staff");
       const tiers = TIER_ORDER.filter((t) => data.tiers.includes(t));

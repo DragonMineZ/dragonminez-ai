@@ -279,6 +279,7 @@
     id: "patreon",
     title: "Patreon",
     perm: "patreon.view",
+    group: "Community",
     async render(view, args) {
       if (args[0]) await renderPerson(view, args[0]);
       else await renderList(view);

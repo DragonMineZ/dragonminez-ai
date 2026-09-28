@@ -244,8 +244,9 @@ const Panel = (() => {
     document.getElementById("login").hidden = false;
   }
 
-  // Pages sharing a `group` fold into one expandable <details>, placed where the group's first
-  // page registered.
+  // Pages sharing a `group` fold into one dropdown, placed where the group's first page
+  // registered. The panel's height animates via CSS grid-template-rows (0fr <-> 1fr), so opening
+  // and closing both slide instead of just the browser's default instant <details> toggle.
   function renderNav(current) {
     const link = (p) => h("a", { href: `#/${p.id}`, "aria-current": p.id === current ? "page" : null }, t(p.title));
     const visible = pages.filter((p) => !p.hidden && can(p.perm));
@@ -257,11 +258,14 @@ const Panel = (() => {
       done.add(p.group);
       const members = visible.filter((x) => x.group === p.group);
       const open = members.some((x) => x.id === current) || !collapsed.has(p.group);
-      const details = h("details", { class: "nav-group", open }, h("summary", {}, t(p.group)), members.map(link));
-      details.addEventListener("toggle", () => {
-        if (details.open) collapsed.delete(p.group); else collapsed.add(p.group);
+      const panel = h("div", { class: "nav-group-panel" }, h("div", { class: "nav-group-inner" }, members.map(link)));
+      const toggle = h("button", { class: "nav-group-toggle", type: "button", "aria-expanded": String(open) }, t(p.group));
+      toggle.addEventListener("click", () => {
+        const next = toggle.getAttribute("aria-expanded") !== "true";
+        toggle.setAttribute("aria-expanded", String(next));
+        if (next) collapsed.delete(p.group); else collapsed.add(p.group);
       });
-      items.push(details);
+      items.push(h("div", { class: "nav-group" }, toggle, panel));
     }
     document.getElementById("nav").replaceChildren(...items);
   }

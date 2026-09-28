@@ -430,7 +430,7 @@
     id: "automod",
     title: "Automod",
     perm: "mod.cases.view",
-    group: "Logs",
+    group: "Moderation",
     async render(view) {
       const daysSelect = h("select", {},
         h("option", { value: "7" }, "7 " + t("Days")),
@@ -507,6 +507,7 @@
     id: "users",
     title: "Users",
     perm: "users.view",
+    group: "Moderation",
     async render(view, args) {
       if (args[0]) await renderProfile(view, args[0]);
       else await renderMembers(view);

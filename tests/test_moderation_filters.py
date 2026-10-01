@@ -19,6 +19,7 @@ from bulmaai.services.moderation import (
     ModerationDecision,
     ModerationState,
     evaluate_message,
+    without_filters,
 )
 
 
@@ -54,6 +55,21 @@ class MassMentionTests(unittest.TestCase):
         config = ModerationConfig(mass_mention_limit=5)
         decision = evaluate_message(_signal(mention_count=2), config, ModerationState(), now=1.0)
         self.assertEqual(decision.action, ModerationAction.ALLOW)
+
+
+class DisabledFilterTests(unittest.TestCase):
+    def test_disabled_filter_lets_later_filters_run(self) -> None:
+        config = without_filters(ModerationConfig(mass_mention_limit=5, banned_words=("spam",)), ["mass_mention"])
+        self.assertEqual(config.banned_words, ("spam",))
+        allowed = evaluate_message(_signal(mention_count=9), config, ModerationState(), now=1.0)
+        self.assertEqual(allowed.action, ModerationAction.ALLOW)
+        caught = evaluate_message(_signal(mention_count=9, content="spam"), config, ModerationState(), now=1.0)
+        self.assertEqual(caught.reason, "banned_word")
+
+    def test_disabled_link_burst_keeps_shortener_alert(self) -> None:
+        config = without_filters(ModerationConfig(link_burst_count=1), ["link_burst"])
+        decision = evaluate_message(_signal(content="https://bit.ly/abc"), config, ModerationState(), now=1.0)
+        self.assertEqual(decision.reason, "suspicious_shortener")
 
 
 class EveryonePingTests(unittest.TestCase):

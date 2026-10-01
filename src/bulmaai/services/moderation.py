@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from functools import lru_cache
 from typing import Any
@@ -119,6 +119,33 @@ class ModerationConfig:
     emoji_limit: int = 0
     newline_limit: int = 0
     zalgo_enabled: bool = False
+
+
+# Panel on/off switch per filter (moderation_disabled_filters): turning one off neutralizes its
+# config but keeps its thresholds for when it is turned back on.
+FILTER_OFF: dict[str, dict[str, Any]] = {
+    "blocked_domain": {"blocked_domains": ()},
+    "discord_invite": {"block_discord_invites": False},
+    "banned_word": {"banned_words": ()},
+    "mass_mention": {"mass_mention_limit": 0},
+    "everyone_ping": {"block_everyone_ping": False},
+    "excessive_caps": {"caps_percent": 0},
+    "excessive_emoji": {"emoji_limit": 0},
+    "wall_of_text": {"newline_limit": 0},
+    "zalgo": {"zalgo_enabled": False},
+    "duplicate_spam": {"duplicate_count": 0},
+    "fast_messages": {"fast_message_count": 0},
+    "link_burst": {"link_burst_count": 0},
+    "suspicious_shortener": {"suspicious_shortener_domains": ()},
+    "image_burst": {"image_burst_count": 0},
+}
+
+
+def without_filters(config: "ModerationConfig", disabled: "tuple[str, ...] | list[str]") -> "ModerationConfig":
+    changes: dict[str, Any] = {}
+    for name in disabled:
+        changes.update(FILTER_OFF.get(name, {}))
+    return replace(config, **changes) if changes else config
 
 
 @dataclass(frozen=True)
@@ -559,7 +586,7 @@ def evaluate_message(
             max_events=config.link_burst_count,
             action=ModerationAction.TIMEOUT,
         )
-        if link_decision.action is not ModerationAction.ALLOW:
+        if config.link_burst_count > 0 and link_decision.action is not ModerationAction.ALLOW:
             return ModerationDecision(
                 action=link_decision.action,
                 reason="link burst",
@@ -590,7 +617,7 @@ def evaluate_message(
         return fast_message_decision
 
     images = extract_image_attachments(signal.attachments)
-    if images:
+    if images and config.image_burst_count > 0:
         # Every image counts toward the burst, even when the message also has
         # text, so spammers cannot dodge detection by attaching captions or
         # batching several images into one message.

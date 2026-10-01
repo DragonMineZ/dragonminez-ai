@@ -28,6 +28,7 @@ from bulmaai.services.moderation import (
     extract_image_attachments,
     extract_urls,
     image_signature,
+    without_filters,
 )
 from bulmaai.ui.mod_views import quick_actions_view
 from bulmaai.utils.permissions import is_admin, is_staff
@@ -136,7 +137,7 @@ class ModerationCog(commands.Cog):
 
     def _decision_config(self) -> ModerationConfig:
         settings = self._settings()
-        return ModerationConfig(
+        config = ModerationConfig(
             blocked_domains=tuple(settings.moderation_blocked_domains),
             allowed_domains=tuple(settings.moderation_allowed_domains),
             block_discord_invites=settings.moderation_block_discord_invites,
@@ -158,6 +159,7 @@ class ModerationCog(commands.Cog):
             newline_limit=settings.moderation_newline_limit,
             zalgo_enabled=settings.moderation_zalgo_enabled,
         )
+        return without_filters(config, settings.moderation_disabled_filters)
 
     def _phishdestroy_action(self) -> ModerationAction:
         value = self._settings().phishdestroy_action.lower().strip()
@@ -866,7 +868,11 @@ class ModerationCog(commands.Cog):
         """Hashes the message's hashable images and checks them against the known scam list.
         Shadow mode (moderation_scam_images_enforce=False) only alerts; enforce=True deletes."""
         settings = self._settings()
-        if not settings.moderation_scam_images_enabled or scam_images.is_empty():
+        if (
+            not settings.moderation_scam_images_enabled
+            or "scam_image" in settings.moderation_disabled_filters
+            or scam_images.is_empty()
+        ):
             return None
         hashable = [attachment for attachment in message.attachments if scam_images.is_hashable(attachment)]
         if not hashable:
@@ -898,6 +904,8 @@ class ModerationCog(commands.Cog):
 
     async def _evaluate_phishdestroy(self, signal: MessageSignal) -> ModerationDecision | None:
         if self._phishdestroy is None or self._phishdestroy_down:
+            return None
+        if "phishdestroy_domain" in self._settings().moderation_disabled_filters:
             return None
         domains = tuple(sorted({url.domain for url in extract_urls(signal.content)}))
         for domain in domains:

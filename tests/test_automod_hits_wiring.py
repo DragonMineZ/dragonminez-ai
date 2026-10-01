@@ -108,6 +108,7 @@ DEFAULT_SETTINGS = dict(
     moderation_log_channel_id=None,
     discord_log_channel_id=None,
     moderation_scam_images_enabled=True,
+    moderation_disabled_filters=(),
     moderation_scam_images_enforce=False,
     moderation_scam_image_distance=6,
 )

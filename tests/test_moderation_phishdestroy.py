@@ -41,6 +41,7 @@ class ModerationPhishDestroyTests(unittest.IsolatedAsyncioTestCase):
             "phishdestroy_threat_ttl_seconds": 60,
             "phishdestroy_recovery_interval_seconds": 300,
             "moderation_allowed_domains": (),
+            "moderation_disabled_filters": (),
         }
         values.update(overrides)
         return type("Settings", (), values)()

@@ -496,6 +496,9 @@ class Settings:
     moderation_emoji_limit: int = 15
     moderation_newline_limit: int = 30
     moderation_zalgo_enabled: bool = True
+    # Automod filters switched off from the panel's Automod page (ids: services.moderation.FILTER_OFF,
+    # plus scam_image and phishdestroy_domain). Their thresholds are kept for when they're turned back on.
+    moderation_disabled_filters: Sequence[str] = ()
     # Anti-raid and join gate. Actions: alert | timeout | kick.
     moderation_raid_join_count: int = 10
     moderation_raid_join_window_seconds: int = 60

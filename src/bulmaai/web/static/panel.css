@@ -245,11 +245,33 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 .tabs button[aria-current="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 
 /* ---- Automod: filter cards with on/off switches (automod.js) --------------------------------- */
-.filters { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); align-items: start; }
-.filters .card { margin: 0; }
-.filter h3 { margin: 0; }
+.page-head { margin-bottom: 4px; }
+.page-head h1 { margin: 0; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.tight { margin-top: 0; }
+.stack.tight > * + * { margin-top: 6px; }
+label.check { display: flex; color: var(--text); font-size: 14px; margin: 0; cursor: pointer; }
+.master { font-weight: 600; }
+.banner.warn { border-color: var(--warn); color: var(--warn); }
+.toolbar input[type="search"] { flex: 1; min-width: 180px; }
+.toolbar > span { margin-left: auto; }
+.filters { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); margin-bottom: 16px; }
+.filters.dimmed { opacity: .55; }
+.filter { margin: 0; display: flex; flex-direction: column; gap: 8px; transition: opacity .15s ease, border-color .15s ease; }
+.filter:hover { border-color: var(--muted); }
+.filter h3 { margin: 0; overflow-wrap: anywhere; }
+.filter p { margin: 0; }
+.filter > .row.end { margin-top: auto; padding-top: 4px; }
 .filter.off { opacity: .6; }
 .filter.off:hover, .filter.off:focus-within { opacity: 1; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
+.suggestion { padding: 8px 10px; border: 1px dashed var(--warn); border-radius: 6px; }
+.suggestion .mono { overflow-wrap: anywhere; }
+.defaults { max-width: 760px; }
+.defaults .role-picker { max-height: 220px; }
+.defaults select, .defaults input[type="text"] { width: 100%; }
 .switch {
   appearance: none; flex: none; position: relative; width: 40px; height: 22px; padding: 0; margin: 0; border-radius: 999px;
   background: var(--surface-2); border: 1px solid var(--border); cursor: pointer; transition: background-color .15s ease;

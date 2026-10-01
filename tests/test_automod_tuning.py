@@ -65,6 +65,25 @@ class DHashTests(unittest.TestCase):
         self.assertNotIn("width=10", url)
 
 
+
+class FreshSuggestionTests(unittest.IsolatedAsyncioTestCase):
+    settings = SimpleNamespace(moderation_caps_percent=80)
+
+    async def _run(self, changed_at, recent):
+        pool = SimpleNamespace(fetch=AsyncMock(return_value=[{"target": "moderation_caps_percent", "changed": changed_at}]))
+        with patch.object(automod_hits, "get_pool", AsyncMock(return_value=pool)),                 patch.object(automod_hits, "filter_stats", AsyncMock(return_value=recent)):
+            return await automod_hits.fresh_suggestions(1, [FilterStats("excessive_caps", 8, 0, 3)], NOW, self.settings)
+
+    async def test_knob_changed_in_window_is_judged_on_hits_since_the_change(self):
+        later = NOW.replace(day=5)
+        self.assertEqual(await self._run(later, [FilterStats("excessive_caps", 2, 0, 0)]), [])
+        (again,) = await self._run(later, [FilterStats("excessive_caps", 4, 0, 3)])
+        self.assertEqual((again.current, again.suggested), (80, 90))
+
+    async def test_change_before_the_window_keeps_the_suggestion(self):
+        (suggestion,) = await self._run(NOW.replace(year=2025), [])
+        self.assertEqual(suggestion.suggested, 90)
+
 class SuggestTests(unittest.TestCase):
     settings = SimpleNamespace(moderation_caps_percent=70, moderation_zalgo_enabled=True, moderation_caps_min_length=20)
 

@@ -206,6 +206,33 @@ def suggest(stats: list[FilterStats], settings) -> list[Suggestion]:
     return suggestions
 
 
+
+async def fresh_suggestions(guild_id: int, stats: list[FilterStats], since: datetime, settings) -> list[Suggestion]:
+    """suggest(), but a knob changed in the panel during the window is judged only on hits since that
+    change; otherwise applying a suggestion just brings the next, looser one back on the same old hits."""
+    suggestions = suggest(stats, settings)
+    knobs = sorted({item.setting for item in suggestions if item.setting})
+    if not knobs:
+        return suggestions
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT target, max(created_at) AS changed FROM panel_audit_log
+        WHERE action IN ('settings.set', 'settings.reset') AND target = ANY($1::text[]) GROUP BY target
+        """,
+        knobs,
+    )
+    changed = {row["target"]: row["changed"] for row in rows if row["changed"] > since}
+    result = []
+    for item in suggestions:
+        when = changed.get(item.setting)
+        if when is None:
+            result.append(item)
+            continue
+        recent = [stat for stat in await filter_stats(guild_id, when) if stat.reason == item.reason]
+        result.extend(suggest(recent, settings))
+    return result
+
 # --- staff feedback --------------------------------------------------------------------------------
 
 

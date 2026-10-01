@@ -95,20 +95,6 @@
     "Save": "Guardar",
     "Actions": "Acciones",
     "Automod": "Automod",
-    "Days": "Días",
-    "Hits": "Alertas",
-    "Confirmed": "Confirmado",
-    "False positives": "Falsos positivos",
-    "FP rate": "Tasa FP",
-    "Filters": "Filtros",
-    "No automod hits in this period.": "Sin alertas de automod en este período.",
-    "Tuning suggestions": "Sugerencias de ajuste",
-    "of": "de",
-    "marked false positive": "marcados como falso positivo",
-    "Apply": "Aplicar",
-    "No suggestions: staff haven't flagged enough false positives.": "Sin sugerencias: el personal no ha marcado suficientes falsos positivos.",
-    "Use the False positive button on automod alerts; each click undoes the automod action and feeds these numbers.": "Usa el botón de Falso positivo en alertas de automod; cada clic deshace la acción de automod y alimenta estos números.",
-    "Suggested": "Sugerido",
   });
 
   const ACTION_KIND = { warn: "warn", note: "", timeout: "warn", kick: "danger", ban: "danger", softban: "danger", delete: "danger", alert: "warn", unban: "ok", untimeout: "ok", appeal: "" };
@@ -423,85 +409,6 @@
           can("patreon.view") ? h("p", {}, h("a", { href: `#/patreon/${encodeURIComponent(p.user.id)}` }, t("View Patreon details ›"))) : null)
         : h("p", { class: "muted" }, t("No Patreon account linked.")))));
   }
-
-  // ---- Automod: tuning statistics and suggestions --------------------------------------------------
-
-  Panel.page({
-    id: "automod",
-    title: "Automod",
-    perm: "mod.cases.view",
-    group: "Moderation",
-    async render(view) {
-      const daysSelect = h("select", {},
-        h("option", { value: "7" }, "7 " + t("Days")),
-        h("option", { value: "30", selected: true }, "30 " + t("Days")),
-        h("option", { value: "90" }, "90 " + t("Days")));
-      const filtersBody = h("div");
-      const suggestionsBody = h("div");
-
-      const load = async () => {
-        const days = parseInt(daysSelect.value, 10);
-        const data = await api(`/api/automod/stats?days=${days}`);
-
-        // Filters table
-        if (data.filters.length === 0) {
-          filtersBody.replaceChildren(h("p", { class: "muted" }, t("No automod hits in this period.")));
-        } else {
-          filtersBody.replaceChildren(table([
-            { label: t("Filter"), render: (f) => badge(f.reason) },
-            { label: t("Hits"), render: (f) => String(f.hits) },
-            { label: t("Confirmed"), render: (f) => String(f.confirmed) },
-            { label: t("False positives"), render: (f) => String(f.false_positives) },
-            { label: t("FP rate"), render: (f) => {
-              const rate = f.false_positive_rate * 100;
-              const kind = rate >= 20 ? "warn" : "";
-              return badge((rate.toFixed(1)) + "%", kind);
-            } },
-          ], data.filters));
-        }
-
-        // Tuning suggestions card
-        if (data.suggestions.length === 0) {
-          suggestionsBody.replaceChildren(h("p", { class: "muted" }, t("No suggestions: staff haven't flagged enough false positives.")));
-        } else {
-          const suggestionElements = data.suggestions.map((s) => {
-            const stats = h("div", { class: "muted small" },
-              s.false_positives + " " + t("of") + " " + s.hits + " " + t("marked false positive"));
-            if (!s.setting) {
-              return h("div", { class: "card" }, badge(s.reason), stats, h("p", { class: "muted small" }, s.note));
-            }
-            const applyBtn = can("settings.edit") ? h("button", { class: "btn small", type: "button" }, t("Apply")) : null;
-            if (applyBtn) {
-              applyBtn.addEventListener("click", async () => {
-                await run(applyBtn, () => api(`/api/settings/${s.setting}`, { method: "PUT", body: { value: String(s.suggested) } }), t("Setting updated"));
-                Panel.refresh();
-              });
-            }
-            return h("div", { class: "card" },
-              h("div", { class: "row spread" },
-                h("div", {}, badge(s.reason), stats),
-                h("div", { class: "row" }, h("span", { class: "mono" }, `${s.setting}: ${s.current} → ${s.suggested}`), applyBtn)));
-          });
-          suggestionsBody.replaceChildren(...suggestionElements);
-        }
-      };
-
-      daysSelect.addEventListener("change", () => run(null, load));
-
-      view.append(
-        h("h1", {}, t("Automod")),
-        h("div", { class: "card stack" },
-          field(t("Days"), daysSelect),
-          h("h2", {}, t("Filters")),
-          filtersBody),
-        h("div", { class: "card stack" },
-          h("h2", {}, t("Tuning suggestions")),
-          suggestionsBody,
-          h("p", { class: "muted small" }, t("Use the False positive button on automod alerts; each click undoes the automod action and feeds these numbers."))));
-
-      await load();
-    },
-  });
 
   Panel.page({
     id: "users",

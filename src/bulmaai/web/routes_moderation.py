@@ -509,7 +509,7 @@ async def automod_stats(request: web.Request, actor: Actor) -> web.Response:
     days = _query_int(request, "days", 30, 365)
     since = datetime.now(timezone.utc) - timedelta(days=days)
     stats = await automod_hits.filter_stats(actor.member.guild.id, since)
-    suggestions = automod_hits.suggest(stats, request.app[BOT].settings)
+    suggestions = await automod_hits.fresh_suggestions(actor.member.guild.id, stats, since, request.app[BOT].settings)
     return web.json_response(
         {
             "days": days,

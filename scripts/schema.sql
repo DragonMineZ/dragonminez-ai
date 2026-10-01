@@ -358,6 +358,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_joiner_alerts_alert
 CREATE INDEX IF NOT EXISTS idx_joiner_alerts_due
     ON joiner_alerts (expires_at) WHERE outcome IS NULL;
 
+-- Build gate (cogs/build_gate.py): a Java push asks staff-devs before the dev-jar workflow runs. Rows are
+-- the durable state: the 1h auto-close sweep and the live build-progress tracker both resume from here.
+CREATE TABLE IF NOT EXISTS build_requests (
+    id          BIGSERIAL PRIMARY KEY,
+    repo        TEXT NOT NULL,
+    branch      TEXT NOT NULL,
+    head_sha    TEXT NOT NULL,
+    pusher      TEXT NOT NULL,
+    commits     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source      TEXT NOT NULL DEFAULT 'push',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    channel_id  BIGINT,
+    message_id  BIGINT,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    decided_by  BIGINT,
+    decided_at  TIMESTAMPTZ,
+    run_id      BIGINT,
+    run_url     TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_build_requests_created ON build_requests (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_build_requests_open ON build_requests (status) WHERE status IN ('pending', 'building');
+
 -- Channels locked by /lock or a lockdown, with the @everyone overwrites to restore on unlock.
 CREATE TABLE IF NOT EXISTS mod_locked_channels (
     channel_id         BIGINT PRIMARY KEY,

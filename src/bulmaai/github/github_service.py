@@ -75,6 +75,49 @@ class GitHubService:
         r = await request("POST", f"{self.api}/dispatches", headers=await self._headers(), json=payload)
         r.raise_for_status()
 
+    # ==================== ACTIONS ====================
+
+    async def dispatch_workflow(self, *, workflow: str, ref: str, inputs: dict[str, str]) -> None:
+        r = await request(
+            "POST",
+            f"{self.api}/actions/workflows/{workflow}/dispatches",
+            headers=await self._headers(),
+            json={"ref": ref, "inputs": inputs},
+        )
+        r.raise_for_status()
+
+    async def list_workflow_runs(self, workflow: str, *, event: str = "workflow_dispatch", per_page: int = 10) -> list[dict]:
+        r = await request(
+            "GET",
+            f"{self.api}/actions/workflows/{workflow}/runs",
+            headers=await self._headers(),
+            params={"event": event, "per_page": per_page},
+        )
+        r.raise_for_status()
+        return r.json().get("workflow_runs", [])
+
+    async def get_workflow_run(self, run_id: int) -> dict:
+        r = await request("GET", f"{self.api}/actions/runs/{run_id}", headers=await self._headers())
+        r.raise_for_status()
+        return r.json()
+
+    async def list_run_jobs(self, run_id: int) -> list[dict]:
+        r = await request("GET", f"{self.api}/actions/runs/{run_id}/jobs", headers=await self._headers())
+        r.raise_for_status()
+        return r.json().get("jobs", [])
+
+    async def list_repo_events(self, *, per_page: int = 50) -> list[dict]:
+        r = await request(
+            "GET", f"{self.api}/events", headers=await self._headers(), params={"per_page": per_page}
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def get_commit(self, sha: str) -> dict:
+        r = await request("GET", f"{self.api}/commits/{sha}", headers=await self._headers())
+        r.raise_for_status()
+        return r.json()
+
     # ==================== ISSUES ====================
 
     async def get_labels(self) -> list[dict]:

@@ -79,6 +79,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.curseforge_updates",
     "bulmaai.cogs.release_approval",
     "bulmaai.cogs.dev_jar_downloads",
+    "bulmaai.cogs.build_gate",
     "bulmaai.cogs.patch_notes_updates",
     "bulmaai.cogs.bug_reports",
     "bulmaai.cogs.power_level",
@@ -285,6 +286,7 @@ NON_OVERRIDABLE_SETTINGS = {
     "patreon_webhook_secret",
     "curseforge_api_key",
     "release_webhook_secret",
+    "github_push_webhook_secret",
     "dev_jar_download_upload_dir",
     "panel_session_secret",
 }
@@ -509,6 +511,14 @@ class Settings:
     # Weekly digest, Mondays; empty channel = the text channel named staff-general.
     moderation_digest_enabled: bool = True
     moderation_digest_channel_id: int | None = None
+    # Build gate: a Java push asks staff-devs before the dev-jar workflow runs. Empty channel = dev_jar_review_channel_id.
+    build_gate_enabled: bool = True
+    build_gate_channel_id: int | None = None
+    build_gate_webhook_path: str = "/dmz-github-push"
+    build_gate_workflow: str = "dev-jar-upload.yml"
+    build_gate_expire_minutes: int = 60
+    build_gate_window_minutes: int = 30
+    github_push_webhook_secret: str | None = None
 
 
 def _get_env(name: str, default: str | None = None) -> str | None:
@@ -741,6 +751,7 @@ def _build_settings_from_env() -> Settings:
             or DEFAULT_RELEASE_WEBHOOK_PATH
         ),
         release_webhook_secret=_get_env("DMZ_RELEASE_BOT_WEBHOOK_SECRET"),
+        github_push_webhook_secret=_get_env("GITHUB_PUSH_WEBHOOK_SECRET"),
         dev_jar_download_enabled=_get_env_bool(
             "DEV_JAR_DOWNLOAD_ENABLED",
             DEFAULT_DEV_JAR_DOWNLOAD_ENABLED,

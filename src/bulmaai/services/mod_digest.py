@@ -71,6 +71,8 @@ class DigestData:
     appeals: AppealStats
     reports_received: int
     antiraid_actions: int
+    # Set by collect(settings=...): suggestions judged only on hits since each knob last changed.
+    suggestions: tuple[automod_hits.Suggestion, ...] | None = None
 
 
 # --- queries (one per concern) -------------------------------------------------------------------
@@ -182,7 +184,7 @@ async def _reports_and_antiraid(pool, guild_id: int, week_start: datetime) -> tu
     return row["reports"], row["antiraid"]
 
 
-async def collect(guild_id: int, *, now: datetime) -> DigestData:
+async def collect(guild_id: int, *, now: datetime, settings=None) -> DigestData:
     """Aggregates the last 7 days (and the 7 before, for deltas) of moderation activity."""
     pool = await get_pool()
     week_start = now - timedelta(days=7)
@@ -211,6 +213,11 @@ async def collect(guild_id: int, *, now: datetime) -> DigestData:
         appeals=await _appeals(pool, guild_id, week_start),
         reports_received=reports_received,
         antiraid_actions=antiraid_actions,
+        suggestions=(
+            tuple(await automod_hits.fresh_suggestions(guild_id, filter_stats, week_start, settings))
+            if settings is not None
+            else None
+        ),
     )
 
 
@@ -328,7 +335,7 @@ def build_embeds(data: DigestData, settings) -> list[discord.Embed]:
         ]
         automod_fields.append(("Scam images", "\n".join(scam_lines)))
 
-    suggestions = automod_hits.suggest(list(data.filter_stats), settings)
+    suggestions = data.suggestions if data.suggestions is not None else automod_hits.suggest(list(data.filter_stats), settings)
     if suggestions:
         automod_fields.append(("Tuning suggestions", _join_capped([_suggestion_line(s) for s in suggestions])))
 

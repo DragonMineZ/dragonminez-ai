@@ -68,7 +68,7 @@ class ModDigestCog(commands.Cog):
         await self._send_to(channel, guild.id, now)
 
     async def _send_to(self, channel: discord.abc.Messageable, guild_id: int, now: datetime) -> None:
-        data = await mod_digest.collect(guild_id, now=now)
+        data = await mod_digest.collect(guild_id, now=now, settings=self.bot.settings)
         embeds = mod_digest.build_embeds(data, self.bot.settings)
         await channel.send(embeds=embeds, allowed_mentions=discord.AllowedMentions.none())
 
@@ -85,7 +85,7 @@ class ModDigestCog(commands.Cog):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
         await ctx.defer(ephemeral=True)
-        data = await mod_digest.collect(ctx.guild.id, now=discord.utils.utcnow())
+        data = await mod_digest.collect(ctx.guild.id, now=discord.utils.utcnow(), settings=self.bot.settings)
         embeds = mod_digest.build_embeds(data, self.bot.settings)
         await ctx.respond(embeds=embeds, ephemeral=True)
 

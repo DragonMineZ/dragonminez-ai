@@ -238,7 +238,7 @@ class LoopBodyTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.services.mod_digest.build_embeds", return_value=["EMBED"]) as build,
         ):
             await self.cog._tick(NOW)
-        collect.assert_awaited_once_with(1, now=NOW)
+        collect.assert_awaited_once_with(1, now=NOW, settings=self.bot.settings)
         build.assert_called_once_with("DATA", self.bot.settings)
         fake_channel.send.assert_awaited_once()
         kwargs = fake_channel.send.await_args.kwargs

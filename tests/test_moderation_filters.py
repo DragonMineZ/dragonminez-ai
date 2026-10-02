@@ -18,7 +18,10 @@ from bulmaai.services.moderation import (
     ModerationConfig,
     ModerationDecision,
     ModerationState,
+    apply_rule_action,
     evaluate_message,
+    exempt_filters,
+    parse_filter_rules,
     without_filters,
 )
 
@@ -70,6 +73,34 @@ class DisabledFilterTests(unittest.TestCase):
         config = without_filters(ModerationConfig(link_burst_count=1), ["link_burst"])
         decision = evaluate_message(_signal(content="https://bit.ly/abc"), config, ModerationState(), now=1.0)
         self.assertEqual(decision.reason, "suspicious_shortener")
+
+
+class FilterRuleTests(unittest.TestCase):
+    RAW = '{"discord_invite": {"action": "alert", "channels": ["10"], "roles": ["20"]}, "link_burst": {"action": "timeout"}, "zalgo": "junk", "x": {"action": "nuke"}}'
+
+    def test_parse_skips_bad_entries_and_unknown_actions(self) -> None:
+        rules = parse_filter_rules(self.RAW)
+        self.assertEqual(sorted(rules), ["discord_invite", "link_burst", "x"])
+        self.assertEqual(rules["x"].action, "")
+        self.assertEqual(parse_filter_rules("not json"), {})
+
+    def test_exemption_by_channel_or_role(self) -> None:
+        rules = parse_filter_rules(self.RAW)
+        self.assertEqual(exempt_filters(rules, {10, None}, set()), ("discord_invite",))
+        self.assertEqual(exempt_filters(rules, {99}, {20}), ("discord_invite",))
+        self.assertEqual(exempt_filters(rules, {99}, {21}), ())
+
+    def test_action_override_maps_burst_reason_and_skips_purge(self) -> None:
+        rules = parse_filter_rules(self.RAW)
+        burst = ModerationDecision(action=ModerationAction.TIMEOUT, reason="link burst")
+        timed = apply_rule_action(burst, rules, timeout_seconds=600)
+        self.assertEqual((timed.action, timed.timeout_seconds, timed.purge, timed.warn), (ModerationAction.TIMEOUT, 600, False, False))
+        invite = ModerationDecision(action=ModerationAction.DELETE, reason="discord_invite")
+        self.assertEqual(apply_rule_action(invite, rules, timeout_seconds=600).action, ModerationAction.ALERT)
+        caps = ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps")
+        self.assertIs(apply_rule_action(caps, rules, timeout_seconds=600), caps)
+        warned = apply_rule_action(caps, parse_filter_rules('{"excessive_caps": {"action": "warn"}}'), timeout_seconds=600)
+        self.assertEqual((warned.action, warned.warn), (ModerationAction.DELETE, True))
 
 
 class EveryonePingTests(unittest.TestCase):
@@ -300,6 +331,51 @@ class WarnStrikeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["log_case"], False)
         # The channel notice for a DELETE-level human filter also fires at most once per incident.
         self.assertEqual(channel.send.await_count, 1)
+
+
+class RuleWiringTests(unittest.IsolatedAsyncioTestCase):
+    def _cog(self, **settings) -> ModerationCog:
+        cog = ModerationCog.__new__(ModerationCog)
+        values = dict(
+            moderation_image_burst_timeout_seconds=7 * 24 * 3600,
+            moderation_image_burst_purge_seconds=600,
+            moderation_log_channel_id=None,
+            discord_log_channel_id=None,
+            moderation_disabled_filters=("zalgo",),
+            moderation_filter_rules="",
+        )
+        values.update(settings)
+        cog.bot = SimpleNamespace(settings=SimpleNamespace(**values))
+        cog._recent_message_channels = {}
+        cog._incidents = {}
+        cog._record_case = AsyncMock()
+        return cog
+
+    def test_thread_inherits_parent_channel_exemption_and_role_exemption(self) -> None:
+        cog = self._cog(moderation_filter_rules='{"discord_invite": {"channels": ["10"]}, "mass_mention": {"roles": ["7"]}}')
+        thread = SimpleNamespace(id=55, parent_id=10, category_id=None)
+        member = SimpleNamespace(roles=[SimpleNamespace(id=7)])
+        self.assertEqual(cog._filters_off(SimpleNamespace(channel=thread, author=member)), {"zalgo", "discord_invite", "mass_mention"})
+        self.assertEqual(cog._filters_off(SimpleNamespace(channel=SimpleNamespace(id=11), author=SimpleNamespace(roles=[]))), {"zalgo"})
+
+    async def _warned(self, decision: ModerationDecision) -> bool:
+        cog = self._cog()
+        message = SimpleNamespace(
+            id=1, guild=SimpleNamespace(id=1), channel=SimpleNamespace(id=10, send=AsyncMock()),
+            author=SimpleNamespace(id=3, mention="<@3>"), jump_url="https://discord.com/channels/1/10/1",
+            attachments=[], delete=AsyncMock(),
+        )
+        with (
+            patch("bulmaai.services.mod_actions.perform", new=AsyncMock()) as perform,
+            patch("bulmaai.services.automod_hits.record_hit", AsyncMock(return_value=1)),
+            patch("bulmaai.services.automod_hits.update_hit", AsyncMock()),
+        ):
+            await cog._apply_decision(message, decision)
+        return perform.await_count == 1
+
+    async def test_rule_warn_flag_overrides_the_filter_default(self) -> None:
+        self.assertFalse(await self._warned(ModerationDecision(action=ModerationAction.DELETE, reason="banned_word", warn=False)))
+        self.assertTrue(await self._warned(ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps", warn=True)))
 
 
 class HandledFieldCarryForwardTests(unittest.IsolatedAsyncioTestCase):

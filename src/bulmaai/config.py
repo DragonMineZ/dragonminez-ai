@@ -499,6 +499,9 @@ class Settings:
     # Automod filters switched off from the panel's Automod page (ids: services.moderation.FILTER_OFF,
     # plus scam_image and phishdestroy_domain). Their thresholds are kept for when they're turned back on.
     moderation_disabled_filters: Sequence[str] = ()
+    # Per-filter exempt channels/roles and action override, JSON written by the panel's Automod page:
+    # {"discord_invite": {"action": "alert|delete|warn|timeout", "channels": ["id"], "roles": ["id"]}}.
+    moderation_filter_rules: str = ""
     # Anti-raid and join gate. Actions: alert | timeout | kick.
     moderation_raid_join_count: int = 10
     moderation_raid_join_window_seconds: int = 60

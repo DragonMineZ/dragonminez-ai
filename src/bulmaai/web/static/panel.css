@@ -136,7 +136,7 @@ tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -
 .toast { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--ok); padding: 10px 14px; border-radius: 6px; max-width: 360px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 .toast.error { border-left-color: var(--danger); color: var(--text); }
 
-dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: min(520px, calc(100vw - 32px)); }
+dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: min(520px, calc(100vw - 32px)); overflow-x: hidden; }
 dialog::backdrop { background: rgba(0,0,0,.5); }
 
 /* Floating language switch (panel.js mountLangDock). Parked with ~18px of the circle showing. */
@@ -267,10 +267,13 @@ label.check { display: flex; color: var(--text); font-size: 14px; margin: 0; cur
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
+.exempt { color: var(--muted); overflow-wrap: anywhere; }
+.dialog-section { margin: 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .suggestion { padding: 8px 10px; border: 1px dashed var(--warn); border-radius: 6px; }
 .suggestion .mono { overflow-wrap: anywhere; }
 .defaults { max-width: 760px; }
 .defaults .role-picker { max-height: 220px; }
+dialog .role-picker, .defaults .role-picker { overflow-x: hidden; }
 .defaults select, .defaults input[type="text"] { width: 100%; }
 .switch {
   appearance: none; flex: none; position: relative; width: 40px; height: 22px; padding: 0; margin: 0; border-radius: 999px;

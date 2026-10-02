@@ -27,7 +27,10 @@ from bulmaai.services.moderation import (
     evaluate_message,
     extract_image_attachments,
     extract_urls,
+    apply_rule_action,
+    exempt_filters,
     image_signature,
+    parse_filter_rules,
     without_filters,
 )
 from bulmaai.ui.mod_views import quick_actions_view
@@ -135,7 +138,18 @@ class ModerationCog(commands.Cog):
     def _settings(self) -> Settings:
         return self.bot.settings
 
-    def _decision_config(self) -> ModerationConfig:
+    def _filters_off(self, message: discord.Message | None = None) -> frozenset[str]:
+        """Filters switched off in the panel, plus those this message's channel or author is exempt from."""
+        settings = self._settings()
+        off = set(settings.moderation_disabled_filters)
+        if message is not None:
+            channel = message.channel
+            places = {channel.id, getattr(channel, "parent_id", None), getattr(channel, "category_id", None)}
+            roles = {role.id for role in getattr(message.author, "roles", [])}
+            off.update(exempt_filters(parse_filter_rules(settings.moderation_filter_rules), places, roles))
+        return frozenset(off)
+
+    def _decision_config(self, off: frozenset[str] | None = None) -> ModerationConfig:
         settings = self._settings()
         config = ModerationConfig(
             blocked_domains=tuple(settings.moderation_blocked_domains),
@@ -159,7 +173,7 @@ class ModerationCog(commands.Cog):
             newline_limit=settings.moderation_newline_limit,
             zalgo_enabled=settings.moderation_zalgo_enabled,
         )
-        return without_filters(config, settings.moderation_disabled_filters)
+        return without_filters(config, sorted(self._filters_off() if off is None else off))
 
     def _phishdestroy_action(self) -> ModerationAction:
         value = self._settings().phishdestroy_action.lower().strip()
@@ -501,11 +515,13 @@ class ModerationCog(commands.Cog):
         if run_timeout:
             timed_out, incident.timeout_status = await self._timeout_member(message, incident.decision)
             incident.timed_out = incident.timed_out or timed_out
-            incident.purged += await self._purge_recent_messages(message, incident.decision)
+            if incident.decision.purge:
+                incident.purged += await self._purge_recent_messages(message, incident.decision)
             if timed_out and incident.hit_id is not None:
                 await self._update_hit_best_effort(incident.hit_id, timed_out=True, action="timeout")
 
-        if is_new and incident.decision.reason in _WARN_REASONS:
+        warn = incident.decision.warn
+        if is_new and (incident.decision.reason in _WARN_REASONS if warn is None else warn):
             await self._issue_warn_strike(message, incident)
 
         if is_new:
@@ -536,7 +552,7 @@ class ModerationCog(commands.Cog):
         """One warn per incident for reasons that are squarely one person's fault; this DMs them,
         records the warn and runs the warn ladder (which may itself timeout/kick/ban and log a case)."""
         decision = incident.decision
-        readable = _READABLE_REASONS.get(decision.reason, decision.reason)
+        readable = _READABLE_REASONS.get(decision.reason, decision.reason.replace("_", " "))
         try:
             result = await mod_actions.perform(
                 self.bot,
@@ -836,25 +852,31 @@ class ModerationCog(commands.Cog):
         if not is_edit:
             self._record_recent_channel(message)
             self._record_image_post(message, signal)
+        off = self._filters_off(message)
         decision = evaluate_message(
             signal,
-            self._decision_config(),
+            self._decision_config(off),
             # Edits only re-check content (a link edited in); counting them toward
             # bursts again would double-count and punish someone fixing a typo.
             ModerationState() if is_edit else self._state,
             now=time.monotonic(),
         )
         if decision.action is ModerationAction.ALLOW:
-            phishdestroy_decision = await self._evaluate_phishdestroy(signal)
+            phishdestroy_decision = await self._evaluate_phishdestroy(signal, off)
             if phishdestroy_decision is not None:
                 decision = phishdestroy_decision
 
         scam_hash_value: int | None = None
         if not is_edit and scam_check_applies(decision, enforcing=self._settings().moderation_scam_images_enforce):
-            scam_hit = await self._evaluate_scam_images(message)
+            scam_hit = await self._evaluate_scam_images(message, off)
             if scam_hit is not None:
                 decision, scam_hash_value = scam_hit
 
+        decision = apply_rule_action(
+            decision,
+            parse_filter_rules(self._settings().moderation_filter_rules),
+            timeout_seconds=HUMAN_ESCALATION_TIMEOUT_SECONDS,
+        )
         if decision.reason == IMAGE_BURST_REASON:
             await self._confirm_then_apply_image_burst(message, decision)
             return
@@ -864,13 +886,15 @@ class ModerationCog(commands.Cog):
             if incident is not None:
                 await self._add_image_hashes(incident, (scam_hash_value,))
 
-    async def _evaluate_scam_images(self, message: discord.Message) -> tuple[ModerationDecision, int] | None:
+    async def _evaluate_scam_images(
+        self, message: discord.Message, off: frozenset[str] | None = None
+    ) -> tuple[ModerationDecision, int] | None:
         """Hashes the message's hashable images and checks them against the known scam list.
         Shadow mode (moderation_scam_images_enforce=False) only alerts; enforce=True deletes."""
         settings = self._settings()
         if (
             not settings.moderation_scam_images_enabled
-            or "scam_image" in settings.moderation_disabled_filters
+            or "scam_image" in (self._filters_off() if off is None else off)
             or scam_images.is_empty()
         ):
             return None
@@ -902,10 +926,12 @@ class ModerationCog(commands.Cog):
             return decision, value
         return None
 
-    async def _evaluate_phishdestroy(self, signal: MessageSignal) -> ModerationDecision | None:
+    async def _evaluate_phishdestroy(
+        self, signal: MessageSignal, off: frozenset[str] | None = None
+    ) -> ModerationDecision | None:
         if self._phishdestroy is None or self._phishdestroy_down:
             return None
-        if "phishdestroy_domain" in self._settings().moderation_disabled_filters:
+        if "phishdestroy_domain" in (self._filters_off() if off is None else off):
             return None
         domains = tuple(sorted({url.domain for url in extract_urls(signal.content)}))
         for domain in domains:

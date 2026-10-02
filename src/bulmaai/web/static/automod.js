@@ -33,11 +33,22 @@
     "{name} off": "{name} desactivado",
     "0 turns this check off.": "0 desactiva esta revisión.",
     "Adds a warn strike": "Suma una advertencia",
-    "No settings, just on/off.": "Sin opciones, solo encendido/apagado.",
     "Deletes": "Borra",
     "Times out": "Aísla",
     "Alerts staff": "Avisa al staff",
     "Deletes, times out across channels": "Borra; aísla si es en varios canales",
+    "Deletes + warns": "Borra y advierte",
+    "custom": "personalizado",
+    "When it triggers": "Cuando se activa",
+    "Default: {action}": "Predeterminado: {action}",
+    "Delete + warn strike": "Borrar y sumar advertencia",
+    "Time out for 10 minutes": "Aislar 10 minutos",
+    "Only for this filter. Picking a category covers all its channels.": "Solo para este filtro. Elegir una categoría cubre todos sus canales.",
+    "Members with any of these roles skip this filter.": "Los miembros con cualquiera de estos roles se saltan este filtro.",
+    "Ignored in {places}": "Ignorado en {places}",
+    "Skipped for {roles}": "Omitido para {roles}",
+    "category": "categoría",
+    "Limits": "Límites",
     "No hits": "Sin alertas",
     "{hits} hits · {confirmed} confirmed · {fp} false positives": "{hits} alertas · {confirmed} confirmadas · {fp} falsos positivos",
     "{rate}% false positives": "{rate}% falsos positivos",
@@ -126,20 +137,25 @@
   });
 
   const DISABLED = "moderation_disabled_filters";
+  const RULES = "moderation_filter_rules";
+  // services/moderation.py RULE_ACTIONS; "" = the filter's built-in behaviour.
+  const RULE_ACTIONS = [["alert", "Alert staff only"], ["delete", "Delete the message"], ["warn", "Delete + warn strike"], ["timeout", "Time out for 10 minutes"]];
+  const RULE_BADGE = { alert: "Alerts staff", delete: "Deletes", warn: "Deletes + warns", timeout: "Times out" };
   const DAYS_KEY = "panel.automod.days";
   const DELETES = "Deletes";
 
   // id: entry in moderation_disabled_filters; stat: automod_hits.reason when it differs from id.
   // flag: the filter's own bool setting, switched on together with the card. warns: _WARN_REASONS.
-  // params: [setting, label, {hint, off: "0 turns it off", choices}].
+  // params: [setting, label, {hint, off: "0 turns it off", choices}]. ownAction: has its own action setting,
+  // so its Edit dialog offers no rule action (exemptions still apply).
   const FILTERS = [
     { id: "blocked_domain", name: "Blocked links", desc: "Deletes links to blocked domains.", action: DELETES, warns: true,
       params: [["moderation_blocked_domains", "Blocked domains", { hint: "Comma-separated, e.g. example.com, bad.site" }],
         ["moderation_allowed_domains", "Always-allowed domains", { hint: "Comma-separated, e.g. example.com, bad.site" }]] },
-    { id: "phishdestroy_domain", name: "Phishing links", desc: "Checks links against the PhishDestroy threat list.",
+    { id: "phishdestroy_domain", name: "Phishing links", desc: "Checks links against the PhishDestroy threat list.", ownAction: true,
       action: (s) => (s.phishdestroy_action.value === "delete" ? DELETES : "Alerts staff"),
       params: [["phishdestroy_action", "Action", { choices: [["alert", "Alert staff only"], ["delete", "Delete the message"]] }]] },
-    { id: "scam_image", name: "Scam images", desc: "Matches known scam pictures by image hash.", flag: "moderation_scam_images_enabled",
+    { id: "scam_image", name: "Scam images", desc: "Matches known scam pictures by image hash.", flag: "moderation_scam_images_enabled", ownAction: true,
       action: (s) => (s.moderation_scam_images_enforce.value ? DELETES : "Alerts staff"),
       params: [["moderation_scam_images_enforce", "Delete matches (off = alert only)"], ["moderation_scam_image_distance", "Match distance (lower = stricter)"]] },
     { id: "discord_invite", name: "Invite links", desc: "Deletes Discord server invites.", action: DELETES, flag: "moderation_block_discord_invites", warns: true, params: [] },
@@ -186,6 +202,34 @@
     if (!ok) input.checked = !input.checked;
   }
 
+  function rulesOf(s) {
+    try {
+      const rules = JSON.parse(s[RULES].value || "{}");
+      return rules && typeof rules === "object" && !Array.isArray(rules) ? rules : {};
+    } catch {
+      return {};
+    }
+  }
+
+  // Channels (and categories, which cover every channel in them) for the exemption pickers.
+  function placeItems(g) {
+    const kinds = ["text", "news", "forum", "voice", "stage_voice", "category"];
+    const rank = (c) => (c.type === "category" ? 0 : 1);
+    return g.channels.filter((c) => kinds.includes(c.type)).sort((a, b) => rank(a) - rank(b) || a.position - b.position)
+      .map((c) => ({ id: c.id, label: c.type === "category" ? `${c.name} (${t("category")})` : `#${c.name}${c.category ? ` (${c.category})` : ""}` }));
+  }
+
+  const roleItems = (g) => g.roles.map((r) => ({ id: r.id, label: `@${r.name}` }));
+
+  function nameOf(items, id) {
+    const found = items.find((item) => item.id === String(id));
+    return found ? found.label : String(id);
+  }
+
+  function defaultAction(filter, s) {
+    return typeof filter.action === "function" ? filter.action(s) : filter.action;
+  }
+
   function isOn(filter, s) {
     return (!filter.flag || s[filter.flag].value) && !s[DISABLED].value.includes(filter.id);
   }
@@ -214,7 +258,7 @@
     }));
   }
 
-  async function editFilter(filter, s, reload) {
+  async function editFilter(filter, s, g, reload) {
     const inputs = filter.params.map(([name, label, opts = {}]) => {
       const setting = s[name];
       const input = paramInput(setting, opts);
@@ -225,7 +269,33 @@
         : h("div", {}, field(t(label), input), help ? h("div", { class: "muted small" }, help) : null);
       return { name, raw, before: raw(), el };
     });
-    if (!(await dialog(t(filter.name), inputs.map((p) => p.el), { confirmLabel: t("Save") }))) return;
+    const limits = inputs.map((p) => p.el);
+    const rules = rulesOf(s);
+    const rule = rules[filter.id] || {};
+    const actionSelect = filter.ownAction ? null : h("select", {},
+      h("option", { value: "" }, t("Default: {action}", { action: t(defaultAction(filter, s)) })),
+      RULE_ACTIONS.map(([value, label]) => h("option", { value }, t(label))));
+    if (actionSelect) actionSelect.value = rule.action || "";
+    const places = idPicker(placeItems(g), rule.channels || [], t("Filter channels…"));
+    const roles = idPicker(roleItems(g), rule.roles || [], t("Filter roles…"));
+    const ruleRaw = () => {
+      const next = { ...rule, channels: places.list(), roles: roles.list() };
+      if (actionSelect) next.action = actionSelect.value;
+      for (const key of ["action", "channels", "roles"]) if (!next[key] || next[key].length === 0) delete next[key];
+      const all = { ...rules, [filter.id]: next };
+      if (!Object.keys(next).length) delete all[filter.id];
+      return Object.keys(all).length ? JSON.stringify(all) : "";
+    };
+    inputs.push({ name: RULES, raw: ruleRaw, before: ruleRaw() });
+
+    const body = [
+      limits.length ? h("h3", { class: "dialog-section" }, t("Limits")) : null,
+      limits,
+      actionSelect ? field(t("When it triggers"), actionSelect) : null,
+      h("div", {}, h("label", {}, t("Ignored channels")), h("div", { class: "muted small hint" }, t("Only for this filter. Picking a category covers all its channels.")), places.el),
+      h("div", {}, h("label", {}, t("Exempt roles")), h("div", { class: "muted small hint" }, t("Members with any of these roles skip this filter.")), roles.el),
+    ];
+    if (!(await dialog(t(filter.name), body, { confirmLabel: t("Save") }))) return;
     const changed = inputs.filter((p) => p.raw() !== p.before);
     if (!changed.length) { Panel.toast(t("Nothing changed.")); return; }
     await run(null, async () => {
@@ -262,7 +332,12 @@
     const locked = !s || !can("settings.edit");
     const on = s ? isOn(filter, s) : true;
     const key = filter.stat || filter.id;
-    const action = typeof filter.action === "function" ? (s ? filter.action(s) : null) : filter.action;
+    const allRules = s ? rulesOf(s) : {};
+    const rule = (!filter.ownAction && allRules[filter.id]) || {};
+    const exempt = allRules[filter.id] || {};
+    const action = rule.action ? RULE_BADGE[rule.action] : s || typeof filter.action !== "function" ? defaultAction(filter, s) : null;
+    const warns = rule.action ? rule.action === "warn" : filter.warns;
+    const g = ctx.g;
 
     const sw = s ? switchInput(on, t(filter.name), locked, (input) => flip(input, async () => {
       const rest = s[DISABLED].value.filter((id) => id !== filter.id);
@@ -272,16 +347,23 @@
       await reload();
     }, t(input.checked ? "{name} on" : "{name} off", { name: t(filter.name) }))) : null;
 
-    const edit = s && filter.params.length && !locked
-      ? h("button", { class: "btn small ghost", type: "button", onclick: () => editFilter(filter, s, reload) }, t("Edit"))
+    const edit = s && g && !locked
+      ? h("button", { class: "btn small ghost", type: "button", onclick: () => editFilter(filter, s, g, reload) }, t("Edit"))
       : null;
 
     return h("article", { class: on ? "card filter" : "card filter off", "aria-label": t(filter.name) },
       h("div", { class: "row spread nowrap" }, h("h3", {}, t(filter.name)), sw),
       h("p", { class: "muted small" }, t(filter.desc)),
       h("div", { class: "row" }, action ? badge(t(action), action === DELETES ? "" : "accent") : null,
-        filter.warns ? badge(t("Adds a warn strike"), "warn") : null),
-      s ? (filter.params.length ? summary(filter, s) : h("p", { class: "muted small" }, t("No settings, just on/off."))) : null,
+        warns ? badge(t("Adds a warn strike"), "warn") : null,
+        rule.action ? badge(t("custom")) : null),
+      s && filter.params.length ? summary(filter, s) : null,
+      g && (exempt.channels || []).length
+        ? h("div", { class: "small exempt" }, t("Ignored in {places}", { places: exempt.channels.map((id) => nameOf(placeItems(g), id)).join(", ") }))
+        : null,
+      g && (exempt.roles || []).length
+        ? h("div", { class: "small exempt" }, t("Skipped for {roles}", { roles: exempt.roles.map((id) => nameOf(roleItems(g), id)).join(", ") }))
+        : null,
       stats ? statLine(stats.get(key)) : null,
       suggestionBox(suggestions && suggestions.get(key), reload),
       edit ? h("div", { class: "row end tight" }, edit) : null);
@@ -307,7 +389,11 @@
     });
     counted();
     // Keep IDs that no longer exist in the server so saving doesn't silently drop them.
-    return { el: h("div", { class: "stack tight" }, h("div", { class: "row" }, search, count), box), get: () => [...chosen].join(",") };
+    return {
+      el: h("div", { class: "stack tight" }, h("div", { class: "row" }, search, count), box),
+      get: () => [...chosen].join(","),
+      list: () => [...chosen],
+    };
   }
 
   async function renderDefaults(container, s, reload) {
@@ -395,7 +481,7 @@
         h("p", { class: "muted small" }, t("Use the False positive button on automod alerts; each click undoes the automod action and feeds these numbers.")));
       const defaultsPane = h("div");
 
-      const ctx = { s: null, stats: null, suggestions: null, reload: null };
+      const ctx = { s: null, g: null, stats: null, suggestions: null, reload: null };
 
       const drawGrid = () => {
         const q = search.value.trim().toLowerCase();
@@ -436,7 +522,9 @@
 
       const loadSettings = async () => {
         if (!canSettings) return;
-        ctx.s = Object.fromEntries((await api("/api/settings")).settings.map((x) => [x.name, x]));
+        const [data, g] = await Promise.all([api("/api/settings"), guild()]);
+        ctx.s = Object.fromEntries(data.settings.map((x) => [x.name, x]));
+        ctx.g = g;
       };
       const loadStats = async () => {
         try {

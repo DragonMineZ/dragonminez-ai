@@ -1,3 +1,5 @@
+import json
+import logging
 import re
 import unicodedata
 from collections import defaultdict
@@ -6,6 +8,8 @@ from enum import Enum
 from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
+
+log = logging.getLogger(__name__)
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
@@ -147,6 +151,71 @@ def without_filters(config: "ModerationConfig", disabled: "tuple[str, ...] | lis
         changes.update(FILTER_OFF.get(name, {}))
     return replace(config, **changes) if changes else config
 
+# Per-filter rules from moderation_filter_rules (JSON written by the panel's Automod page):
+# {"discord_invite": {"action": "alert", "channels": ["123"], "roles": ["456"]}}.
+# channels/roles exempt that one filter; action replaces what the filter does on a hit.
+RULE_ACTIONS = ("alert", "delete", "warn", "timeout")
+# Decision reasons that differ from their filter id.
+_REASON_FILTER = {"link burst": "link_burst", "image burst": "image_burst"}
+
+
+@dataclass(frozen=True)
+class FilterRule:
+    action: str = ""
+    channels: frozenset[int] = frozenset()
+    roles: frozenset[int] = frozenset()
+
+
+def _ids(values: Any) -> frozenset[int]:
+    return frozenset(int(value) for value in values or () if str(value).strip().isdigit())
+
+
+@lru_cache(maxsize=8)
+def parse_filter_rules(raw: str) -> dict[str, FilterRule]:
+    """Lenient: a malformed value or entry is skipped (and logged once), never breaks automod."""
+    if not raw or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+    except ValueError as error:
+        log.warning("Ignoring invalid moderation_filter_rules: %s", error)
+        return {}
+    rules = {}
+    for filter_id, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        action = entry.get("action") if entry.get("action") in RULE_ACTIONS else ""
+        rules[str(filter_id)] = FilterRule(action, _ids(entry.get("channels")), _ids(entry.get("roles")))
+    return rules
+
+
+def exempt_filters(rules: dict[str, FilterRule], place_ids: "set[int]", role_ids: "set[int]") -> tuple[str, ...]:
+    """Filters this message skips: its channel (or thread parent / category) or one of the author's roles is listed."""
+    return tuple(
+        filter_id for filter_id, rule in rules.items() if rule.channels & place_ids or rule.roles & role_ids
+    )
+
+
+def filter_id_for(reason: str) -> str:
+    return _REASON_FILTER.get(reason, reason)
+
+
+def apply_rule_action(
+    decision: "ModerationDecision", rules: dict[str, FilterRule], *, timeout_seconds: int
+) -> "ModerationDecision":
+    if decision.action is ModerationAction.ALLOW:
+        return decision
+    rule = rules.get(filter_id_for(decision.reason))
+    if rule is None or not rule.action:
+        return decision
+    if rule.action == "alert":
+        return replace(decision, action=ModerationAction.ALERT, warn=False)
+    if rule.action == "timeout":
+        return replace(decision, action=ModerationAction.TIMEOUT, warn=False, timeout_seconds=timeout_seconds, purge=False)
+    return replace(decision, action=ModerationAction.DELETE, warn=rule.action == "warn", purge=False)
+
 
 @dataclass(frozen=True)
 class ModerationDecision:
@@ -162,6 +231,10 @@ class ModerationDecision:
     timeout_seconds: int | None = None
     # Set for a scam_image match: the scam_image_hashes row it matched, for automod_hits.
     scam_hash_id: int | None = None
+    # Set by a panel rule action: whether to add a warn strike (None = the filter's default).
+    warn: bool | None = None
+    # False: a timeout doesn't purge the author's recent messages (rule timeouts aren't spam-bot shaped).
+    purge: bool = True
 
     @classmethod
     def allow(cls, reason: str = "allowed") -> "ModerationDecision":

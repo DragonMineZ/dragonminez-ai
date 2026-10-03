@@ -1,5 +1,7 @@
+import asyncio
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
@@ -22,6 +24,7 @@ from bulmaai.services.release_approval import (
     validate_publish_metadata,
 )
 from bulmaai.ui.release_views import (
+    ReleaseCandidateView,
     build_release_candidate_embed,
     can_manage_release_approval,
 )
@@ -144,7 +147,10 @@ class ReleaseApprovalTests(unittest.TestCase):
         admin = type(
             "Member",
             (),
-            {"guild_permissions": type("Perms", (), {"administrator": True})()},
+            {
+                "guild": type("Guild", (), {"id": load_settings().panel_guild_id})(),
+                "guild_permissions": type("Perms", (), {"administrator": True})(),
+            },
         )()
         staff_non_admin = type(
             "Member",
@@ -190,6 +196,35 @@ class ReleaseApprovalTests(unittest.TestCase):
 
         self.assertIsNone(cog.webhook_server)
         self.assertIn("DMZ_RELEASE_BOT_WEBHOOK_SECRET", "\n".join(logs.output))
+
+
+class ReleaseViewTests(unittest.IsolatedAsyncioTestCase):  # py-cord Views need a running loop
+    async def test_concurrent_approve_clicks_dispatch_once(self) -> None:
+        dispatched = []
+        github = asyncio.Event()
+
+        async def approve(interaction, candidate):
+            dispatched.append(interaction)
+            await github.wait()
+            return True
+
+        view = ReleaseCandidateView(parse_release_candidate_payload(VALID_PAYLOAD), on_approve=approve, on_reject=AsyncMock())
+        admin = SimpleNamespace(
+            id=1,
+            guild=SimpleNamespace(id=load_settings().panel_guild_id),
+            guild_permissions=SimpleNamespace(administrator=True),
+        )
+        clicks = [SimpleNamespace(user=admin, response=SimpleNamespace(send_message=AsyncMock())) for _ in range(3)]
+
+        double_click = [asyncio.create_task(view.approve_button.callback(click)) for click in clicks[:2]]
+        await asyncio.sleep(0)
+        github.set()
+        await asyncio.gather(*double_click)
+        await view.approve_button.callback(clicks[2])
+
+        self.assertEqual(dispatched, [clicks[0]])
+        self.assertTrue(clicks[1].response.send_message.await_args.kwargs["ephemeral"])
+        clicks[2].response.send_message.assert_awaited_once()
 
 
 class GitHubDispatchTests(unittest.IsolatedAsyncioTestCase):

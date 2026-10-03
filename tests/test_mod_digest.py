@@ -38,6 +38,7 @@ def fake_settings(**overrides):
         moderation_digest_enabled=True,
         moderation_digest_channel_id=None,
         panel_guild_id=1,
+        dev_guild_id=None,
         moderation_scam_images_enforce=False,
         moderation_caps_percent=70,
         moderation_zalgo_enabled=True,

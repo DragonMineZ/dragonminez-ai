@@ -9,9 +9,10 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from bulmaai.config import load_settings
+from bulmaai.config import get_editable_setting_names, load_settings
 from bulmaai.web import core
 from bulmaai.web.core import SESSION_COOKIE, Tier, read_session, sign_session, tier_for
+from bulmaai.web.routes_settings import _owner_only
 from bulmaai.web.server import create_app
 
 SECRET = "test-secret"
@@ -42,6 +43,7 @@ def make_bot():
     settings = load_settings(include_overrides=False)
     object.__setattr__(settings, "panel_session_secret", SECRET)
     object.__setattr__(settings, "panel_public_url", "http://127.0.0.1")
+    object.__setattr__(settings, "panel_guild_id", 1)
     guild = SimpleNamespace(
         id=1, name="DMZ", icon=None, owner_id=OWNER_ID, channels=[], roles=[],
         get_role={HELPER_ROLE: SimpleNamespace(id=HELPER_ROLE, name="DMZ Helper")}.get,
@@ -80,6 +82,27 @@ class SessionTests(unittest.TestCase):
         founder.roles = [SimpleNamespace(id=FOUNDER_ROLE)]
         self.assertEqual(tier_for(founder, bot.settings), Tier.OWNER)
         self.assertEqual(tier_for(make_member(9, guild, [COMMUNITY_ADMIN_ROLE]), bot.settings), Tier.ADMIN)
+
+    def test_other_servers_grant_no_tier(self):
+        bot = make_bot()
+        other = SimpleNamespace(id=2, owner_id=9)
+        self.assertEqual(tier_for(make_member(9, other), bot.settings), Tier.NONE)
+        self.assertEqual(tier_for(make_member(OWNER_ID, other, [FOUNDER_ROLE]), bot.settings), Tier.NONE)
+        self.assertEqual(tier_for(SimpleNamespace(id=9, name="dm-user"), bot.settings), Tier.NONE)
+
+
+class OwnerOnlySettingsTests(unittest.TestCase):
+    def test_infrastructure_settings_are_owner_only(self):
+        infrastructure = (
+            "PGHOST", "PGPORT", "PGUSER", "PGDB", "initial_extensions", "message_presets_path",
+            "GITHUB_WHITELIST_FILE_PATH", "log_level", "discord_log_channel_id", "dev_jar_download_public_base_url",
+            "phishdestroy_api_base_url", "release_webhook_port", "discord_staff_role_ids", "panel_guild_id",
+            "dev_guild_id",
+        )
+        for name in infrastructure:
+            self.assertIn(name, get_editable_setting_names())
+            self.assertTrue(_owner_only(name), name)
+        self.assertFalse(_owner_only("showcase_threshold"))
 
 
 class PanelApiTests(unittest.IsolatedAsyncioTestCase):

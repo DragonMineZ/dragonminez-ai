@@ -41,15 +41,23 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+OWNER_ONLY_SETTINGS = {"initial_extensions", "log_level", "discord_staff_role_ids", "dev_guild_id"}
+
+
 def _owner_only(name: str) -> bool:
-    return name.startswith("panel_")
+    """Panel access and infrastructure (database, loaded code, paths, URLs, logging, staff roles)."""
+    return (
+        name.startswith(("panel_", "PG", "release_webhook_", "discord_log_"))
+        or name.lower().endswith(("_path", "_url"))
+        or name in OWNER_ONLY_SETTINGS
+    )
 
 
 def _check_editable(actor: Actor, name: str) -> None:
     if name not in get_editable_setting_names():
         raise api_error(404, "Unknown setting.")
     if _owner_only(name) and not actor.can("settings.edit_panel"):
-        raise api_error(403, "Only the owner can change panel access settings.")
+        raise api_error(403, "Only the owner can change panel access and infrastructure settings.")
 
 
 @routes.get("/api/settings")

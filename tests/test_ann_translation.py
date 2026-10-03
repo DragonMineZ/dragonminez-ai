@@ -1,11 +1,15 @@
 import os
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
-from bulmaai.cogs.ai_ann_translation import build_announcement_sends
+import discord
+
+from bulmaai.cogs.ai_ann_translation import AiAnnTranslation, build_announcement_sends
 
 
 class BuildAnnouncementSendsTests(unittest.TestCase):
@@ -48,6 +52,36 @@ class BuildAnnouncementSendsTests(unittest.TestCase):
 
     def test_empty_announcement_sends_nothing(self) -> None:
         self.assertEqual(build_announcement_sends("", []), [])
+
+
+class AutoPublishTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prompts_with_buttons_are_not_crossposted_but_link_posts_are(self) -> None:
+        cog = AiAnnTranslation.__new__(AiAnnTranslation)
+        cog.bot = SimpleNamespace(
+            settings=SimpleNamespace(
+                announcement_source_channel_id=None,
+                announcement_spanish_channel_id=None,
+                announcement_portuguese_channel_id=None,
+                releases_channel_id=5,
+                sneak_peeks_channel_id=None,
+                patreon_announcement_channel_id=None,
+            )
+        )
+
+        def message(*children):
+            return SimpleNamespace(
+                author="bot",
+                channel=SimpleNamespace(id=5, type=discord.ChannelType.news),
+                components=[SimpleNamespace(children=list(children))],
+                publish=AsyncMock(),
+            )
+
+        prompt = message(SimpleNamespace(custom_id="approve", url=None))
+        link_post = message(SimpleNamespace(custom_id=None, url="https://www.patreon.com/posts/1"))
+        await cog.on_message_publish(prompt)
+        await cog.on_message_publish(link_post)
+        prompt.publish.assert_not_awaited()
+        link_post.publish.assert_awaited_once()
 
 
 if __name__ == "__main__":

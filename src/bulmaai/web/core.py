@@ -16,7 +16,7 @@ import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
-from bulmaai.utils.permissions import is_bruno
+from bulmaai.utils.permissions import in_main_guild, is_bruno
 
 
 log = logging.getLogger(__name__)
@@ -90,7 +90,10 @@ def panel_guild(bot: discord.Bot) -> discord.Guild | None:
 
 
 def tier_for(member: discord.Member, settings: Any) -> Tier:
-    """Tiers come only from configured roles; Discord's Administrator permission grants nothing here."""
+    """Tiers come only from configured roles; Discord's Administrator permission grants nothing here.
+    Members of any other server the bot is in get nothing, its owner included."""
+    if not in_main_guild(member, settings):
+        return Tier.NONE
     if is_bruno(member) or member.id == member.guild.owner_id:
         return Tier.OWNER
     role_ids = {role.id for role in member.roles}

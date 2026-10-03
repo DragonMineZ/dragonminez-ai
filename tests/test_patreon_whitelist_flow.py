@@ -1186,6 +1186,40 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Gift approved automatically", ctx.followup.sent[-1][0][0])
         self.assertIn("auto-approved", staff_channel.sent[-1][0][0])
 
+    async def test_concurrent_gifts_cannot_both_pass_the_gift_limit(self) -> None:
+        author = SimpleNamespace(id=456, name="Requester", mention="<@456>", roles=[SimpleNamespace(id=1287877272224665640)])
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = SimpleNamespace(settings=self._settings(), get_channel=lambda channel_id: FakeChannel())
+        cog.gh = FakeGitHub()
+        link = SimpleNamespace(entitlement_active=True)
+        granted = []
+
+        async def slow_lookup(_nickname):
+            await asyncio.sleep(0)  # lets the other gift run up to its own limit check
+            return True
+
+        async def upsert(grant):
+            granted.append(grant)
+
+        def recipient(i):
+            return SimpleNamespace(id=789 + i, name=f"Gifted{i}", mention=f"<@{789 + i}>", bot=False)
+
+        self.mojang_lookup.side_effect = slow_lookup
+        contexts = [FakeCommandContext(author=author, channel=FakeChannel()) for _ in range(2)]
+        count_gifts = AsyncMock(side_effect=lambda _owner_id: len(granted))
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.discord.Member", SimpleNamespace),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=link)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.count_active_gifts_for_owner", count_gifts),
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", upsert),
+        ):
+            await asyncio.gather(
+                *(cog._handle_gift_beta_command(ctx, recipient(i), f"GiftedMC{i}") for i, ctx in enumerate(contexts))
+            )
+
+        self.assertEqual(len(granted), 1)
+        self.assertIn("gift limit", contexts[1].followup.sent[-1][0][0])
+
     async def test_gift_beta_flags_ai_log_when_mojang_lookup_fails(self) -> None:
         staff_channel = FakeChannel()
         ai_log_channel = FakeChannel()

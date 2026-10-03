@@ -10,7 +10,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
 
-from bulmaai.cogs.mod_commands import ModCommandsCog, purge_check, role_refusal
+from bulmaai.cogs.mod_commands import DANGEROUS_ROLE_PERMISSIONS, ModCommandsCog, purge_check, role_refusal
 from bulmaai.services.mod_actions import MAX_TIMEOUT_SECONDS, ActionResult, ModActionError
 from bulmaai.services.mod_cases import ModCase
 
@@ -32,9 +32,10 @@ def make_member(user_id, guild, role_ids=(), position=0):
     )
 
 
-def make_role(position=5, managed=False, default=False, **perms):
-    permissions = dict(administrator=False, manage_guild=False, manage_roles=False, ban_members=False) | perms
+def make_role(position=5, managed=False, default=False, role_id=77, **perms):
+    permissions = dict.fromkeys(DANGEROUS_ROLE_PERMISSIONS, False) | perms
     return SimpleNamespace(
+        id=role_id,
         position=position,
         managed=managed,
         is_default=lambda: default,
@@ -74,6 +75,12 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             panel_moderator_role_ids=(MOD_ROLE,),
             panel_helper_role_ids=(HELPER_ROLE,),
             panel_owner_role_ids=(),
+            panel_guild_id=1,
+            dev_guild_id=None,
+            discord_staff_role_ids=(),
+            patreon_access_role_ids=(),
+            dev_jar_patreon_role_ids=(),
+            dev_jar_tester_role_ids=(),
             moderation_warn_ladder="2/7d=24h, 5/30d=3d, 7/30d=ban",
         )
         self.guild = SimpleNamespace(id=1, owner_id=OWNER_ID)
@@ -313,6 +320,16 @@ class RoleRefusalTests(unittest.TestCase):
     def setUp(self):
         self.guild = SimpleNamespace(owner_id=OWNER_ID, me=SimpleNamespace(top_role=SimpleNamespace(position=50)))
         self.moderator = SimpleNamespace(id=MOD_ID, top_role=SimpleNamespace(position=20))
+        self.settings = SimpleNamespace(
+            discord_staff_role_ids=(10,),
+            panel_owner_role_ids=(),
+            panel_admin_role_ids=(),
+            panel_moderator_role_ids=(),
+            panel_helper_role_ids=(),
+            patreon_access_role_ids=(11,),
+            dev_jar_patreon_role_ids=(),
+            dev_jar_tester_role_ids=(12,),
+        )
 
     def test_refusals(self):
         cases = {
@@ -322,15 +339,21 @@ class RoleRefusalTests(unittest.TestCase):
             "manage server": make_role(manage_guild=True),
             "ban members": make_role(ban_members=True),
             "above moderator": make_role(position=20),
+            "mention everyone": make_role(mention_everyone=True),
+            "timeout members": make_role(moderate_members=True),
+            "audit log": make_role(view_audit_log=True),
+            "staff": make_role(role_id=10),
+            "patreon": make_role(role_id=11),
+            "tester": make_role(role_id=12),
         }
         for label, role in cases.items():
-            self.assertIsNotNone(role_refusal(role, self.moderator, self.guild), label)
-        self.assertIsNone(role_refusal(make_role(position=19), self.moderator, self.guild))
+            self.assertIsNotNone(role_refusal(role, self.moderator, self.guild, self.settings), label)
+        self.assertIsNone(role_refusal(make_role(position=19), self.moderator, self.guild, self.settings))
 
     def test_owner_skips_own_role_check_but_not_the_bots(self):
         owner = SimpleNamespace(id=OWNER_ID, top_role=SimpleNamespace(position=1))
-        self.assertIsNone(role_refusal(make_role(position=40), owner, self.guild))
-        self.assertIn("bot's top role", role_refusal(make_role(position=50), owner, self.guild))
+        self.assertIsNone(role_refusal(make_role(position=40), owner, self.guild, self.settings))
+        self.assertIn("bot's top role", role_refusal(make_role(position=50), owner, self.guild, self.settings))
 
 
 if __name__ == "__main__":

@@ -85,9 +85,21 @@ class CloseReasonModal(discord.ui.Modal):
         await interaction.response.defer()
 
 
-class LabelSelectView(discord.ui.View):
-    def __init__(self, labels: list[dict], *, timeout: float = 300):
+class _AuthorOnlyView(discord.ui.View):
+    def __init__(self, *, author_id: int, timeout: float):
         super().__init__(timeout=timeout)
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message("Only whoever ran this command can use these controls.", ephemeral=True)
+        return False
+
+
+class LabelSelectView(_AuthorOnlyView):
+    def __init__(self, labels: list[dict], *, author_id: int, timeout: float = 300):
+        super().__init__(author_id=author_id, timeout=timeout)
         self.selected_labels: list[str] = []
         self.confirmed = False
 
@@ -234,9 +246,9 @@ class PRCommentModal(discord.ui.Modal):
         await interaction.response.defer()
 
 
-class MergeConfirmView(discord.ui.View):
-    def __init__(self, *, timeout: float = 120):
-        super().__init__(timeout=timeout)
+class MergeConfirmView(_AuthorOnlyView):
+    def __init__(self, *, author_id: int, timeout: float = 120):
+        super().__init__(author_id=author_id, timeout=timeout)
         self.merge_method: str | None = None
         self.confirmed = False
 

@@ -1,8 +1,10 @@
 import asyncio
 import json
 import logging
+import re
 import threading
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +21,15 @@ from bulmaai.services.release_approval import (
 log = logging.getLogger(__name__)
 
 WEBHOOK_SECRET_HEADER = "X-DMZ-Release-Bot-Secret"
+MAX_BODY_BYTES = 1024 * 1024
+# ponytail: raw routes are the signed GitHub push / Patreon webhooks. GitHub allows pushes up to
+# 25 MB; anything over this cap gets a 413 and no build prompt.
+MAX_RAW_BODY_BYTES = 8 * 1024 * 1024
+# ponytail: fixed cap on in-flight connections, excess gets an immediate 503 instead of a queue.
+MAX_CONCURRENT_REQUESTS = 32
+REQUEST_TIMEOUT_SECONDS = 10
+# ponytail: any 16+ char [\w-] run is treated as a token; a shorter secret in a path would still be logged.
+_TOKEN_LIKE_RE = re.compile(r"[\w-]{16,}")
 
 
 @dataclass(frozen=True)
@@ -159,6 +170,10 @@ def handle_release_webhook_get(
     return text_http_response(403, "Forbidden")
 
 
+def _redact_request_text(text: str) -> str:
+    return _TOKEN_LIKE_RE.sub("…", text.partition("?")[0])
+
+
 def _get_header(headers: Any, name: str) -> str | None:
     if hasattr(headers, "get"):
         return headers.get(name)
@@ -281,6 +296,7 @@ class ReleaseWebhookServer:
         self.on_payload = on_payload
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
 
     def start(self) -> None:
         if self._server is not None:
@@ -289,6 +305,20 @@ class ReleaseWebhookServer:
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
+            timeout = REQUEST_TIMEOUT_SECONDS
+
+            def handle(self) -> None:
+                if not owner._slots.acquire(blocking=False):
+                    self.connection.settimeout(1)
+                    with suppress(OSError):
+                        self.connection.recv(65536)  # drain the request so close() doesn't reset the 503
+                        self.wfile.write(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                    return
+                try:
+                    super().handle()
+                finally:
+                    owner._slots.release()
+
             def _send_release_response(self, response: ReleaseWebhookResponse) -> None:
                 self.send_response(response.status)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -336,7 +366,7 @@ class ReleaseWebhookServer:
                             self.wfile.write(chunk)
                     if response.on_stream_complete is not None:
                         response.on_stream_complete()
-                except (BrokenPipeError, ConnectionResetError) as error:
+                except (BrokenPipeError, ConnectionResetError, TimeoutError) as error:
                     log.info("Client disconnected while streaming webhook file response: %s", error)
                     if response.on_stream_error is not None:
                         response.on_stream_error(error)
@@ -346,7 +376,14 @@ class ReleaseWebhookServer:
                         response.on_stream_error(error)
 
             def do_POST(self) -> None:
-                content_length = int(self.headers.get("Content-Length", "0") or "0")
+                limit = MAX_RAW_BODY_BYTES if self.path in _extra_raw_routes else MAX_BODY_BYTES
+                try:
+                    content_length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    content_length = -1
+                if not 0 <= content_length <= limit:
+                    self._send_release_response(ReleaseWebhookResponse(status=413, body="Payload too large"))
+                    return
                 body = self.rfile.read(content_length)
                 response = handle_release_webhook_post(
                     path=self.path,
@@ -377,6 +414,7 @@ class ReleaseWebhookServer:
             do_OPTIONS = _reject_unsupported_method
 
             def log_message(self, format: str, *args: object) -> None:
+                args = tuple(_redact_request_text(arg) if isinstance(arg, str) else arg for arg in args)
                 log.info("Release webhook: " + format, *args)
 
         self._server = ThreadingHTTPServer((self.host, self.port), Handler)

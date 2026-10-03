@@ -1,6 +1,7 @@
 import asyncio
 import http.client
 import json
+import secrets
 import threading
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bulmaai.services.release_webhook import (
+    MAX_BODY_BYTES,
     ReleaseWebhookHttpResponse,
     ReleaseWebhookServer,
     clear_extra_webhook_routes,
@@ -253,6 +255,51 @@ class ReleaseWebhookTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.body, b"public-data")
+
+    def _serve(self) -> tuple[str, int]:
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+
+        async def on_payload(payload: dict) -> None:
+            raise AssertionError("request should not submit a payload")
+
+        server = ReleaseWebhookServer(
+            host="127.0.0.1",
+            port=0,
+            path="/dmz-release",
+            secret="secret",
+            loop=loop,
+            on_payload=on_payload,
+        )
+        server.start()
+        self.addCleanup(server.stop)
+        assert server._server is not None
+        return server._server.server_address
+
+    def test_bad_or_oversized_content_length_is_rejected_before_reading(self) -> None:
+        host, port = self._serve()
+        for length in ("-1", "abc", str(MAX_BODY_BYTES + 1)):
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            self.addCleanup(connection.close)
+            connection.putrequest("POST", "/dmz-release")
+            connection.putheader("Content-Length", length)
+            connection.endheaders()
+            self.assertEqual(connection.getresponse().status, 413, length)
+
+    def test_request_log_masks_tokens_and_drops_query(self) -> None:
+        host, port = self._serve()
+        token = secrets.token_urlsafe(32)
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        self.addCleanup(connection.close)
+
+        with self.assertLogs("bulmaai.services.release_webhook", "INFO") as logs:
+            connection.request("GET", f"/dev-download/{token}?code=one-time-code")
+            connection.getresponse().read()
+
+        output = "\n".join(logs.output)
+        self.assertIn("/dev-download/…", output)
+        self.assertNotIn(token, output)
+        self.assertNotIn("one-time-code", output)
 
     def test_invalid_json_is_rejected(self) -> None:
         response = handle_release_webhook_post(

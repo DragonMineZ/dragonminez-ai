@@ -32,6 +32,7 @@ from bulmaai.services.ticket_ai_state import (
     get_ai_disabled_ticket_channels,
     set_ticket_ai_disabled,
 )
+from bulmaai.services.ticket_pages import StoredPage, page_url
 from bulmaai.services.ticket_transcripts import (
     TicketSummary,
     TranscriptLine,
@@ -370,6 +371,8 @@ def _build_close_embed(
     open_for: timedelta,
     added_to_knowledge: bool,
     closed_at: datetime,
+    page_link: str | None = None,
+    page_expires_at: datetime | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"🎫 {summary.title if summary else channel_name}"[:256],
@@ -382,6 +385,9 @@ def _build_close_embed(
     embed.add_field(name="Messages", value=str(message_count))
     embed.add_field(name="AI confidence", value=f"{confidence:.0%}" if confidence is not None else "n/a")
     embed.add_field(name="Open for", value=str(open_for).split(".")[0])
+    if page_link:
+        keep = f"expires <t:{int(page_expires_at.timestamp())}:R>" if page_expires_at else "kept permanently"
+        embed.add_field(name="Web transcript", value=f"[Open the HTML transcript]({page_link}) · {keep}", inline=False)
     if summary is not None:
         embed.add_field(name="Problem", value=(summary.problem or "-")[:1024], inline=False)
         embed.add_field(name="Resolution", value=(summary.resolution or "-")[:1024], inline=False)
@@ -407,7 +413,7 @@ class AITicketsCog(commands.Cog):
         # ponytail: in-memory, a restart just shows "n/a" confidence on the close embed.
         self._last_confidence: dict[int, float] = {}
         self._closing_channels: set[int] = set()
-        # ponytail: in-memory dedupe; a ticket reopened and re-closed after a restart archives twice.
+        # ponytail: in-memory dedupe; reopening a ticket clears its entry (forget_archived), a restart clears all.
         self._archived_channels: set[int] = set()
         self._paused_notices: dict[int, date] = {}
         self._rate_limit_state = ModerationState()
@@ -1145,19 +1151,15 @@ class AITicketsCog(commands.Cog):
             )
         return lines, requester_id
 
-    async def _post_close_embed(
-        self,
-        embed: discord.Embed,
-        transcript: str,
-        channel_name: str,
-        html: bytes | None = None,
-    ) -> bool:
+    def forget_archived(self, channel_id: int) -> None:
+        """A re-opened ticket must be archivable again when it closes."""
+        self._archived_channels.discard(channel_id)
+
+    async def _post_close_embed(self, embed: discord.Embed, transcript: str, channel_name: str) -> bool:
         channel_id = self.bot.settings.ai_ticket_transcript_channel_id
         if channel_id is None:
             return False
         files = [discord.File(io.BytesIO(transcript.encode("utf-8")), filename=f"{channel_name}-transcript.txt")]
-        if html is not None:
-            files.append(discord.File(io.BytesIO(html), filename=f"{channel_name}-transcript.html"))
         try:
             target = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
             await target.send(embed=embed, files=files)
@@ -1165,6 +1167,17 @@ class AITicketsCog(commands.Cog):
         except discord.HTTPException:
             log.exception("Failed to post ticket transcript", extra={"transcript_channel_id": channel_id})
             return False
+
+    async def _build_page(self, channel: discord.TextChannel) -> StoredPage | None:
+        """The in-house ticket cog owns HTML export; without it (or when it fails) the ticket just has no web page."""
+        tickets = self.bot.get_cog("TicketsCog")
+        if tickets is None:
+            return None
+        try:
+            return await tickets.build_page(channel)
+        except Exception:
+            log.exception("Failed to build hosted ticket transcript", extra={"channel_id": channel.id})
+            return None
 
     async def _close_ticket(
         self,
@@ -1174,12 +1187,12 @@ class AITicketsCog(commands.Cog):
         requester_id: int | None,
         resolved: bool | None,
         delete_channel: bool,
-        html: bytes | None = None,
+        announce: bool = True,
     ) -> bool:
-        """Transcript → summarize → learn (vector store) → embed → record → optionally delete.
+        """Transcript → hosted HTML page → summarize → learn (vector store) → embed → record → optionally delete.
         Transcript is read first because Ticket Tool may delete the channel seconds later.
         resolved=None lets the summary decide (Ticket Tool closes don't say).
-        Returns whether the transcript reached the archive channel; `html` rides along as a second attachment."""
+        Returns whether the transcript reached the archive channel."""
         archived = False
         if channel.id in self._closing_channels or channel.id in self._archived_channels:
             return archived
@@ -1191,6 +1204,7 @@ class AITicketsCog(commands.Cog):
             closed_at = datetime.now(timezone.utc)
             lines, requester_id = await self._collect_transcript(channel, requester_id)
             transcript = render_transcript_text(lines, channel_name=channel.name)
+            page = await self._build_page(channel)
 
             summary: TicketSummary | None = None
             try:
@@ -1244,8 +1258,10 @@ class AITicketsCog(commands.Cog):
                 open_for=closed_at - channel.created_at,
                 added_to_knowledge=openai_file_id is not None,
                 closed_at=closed_at,
+                page_link=page_url(settings, page.token) if page else None,
+                page_expires_at=page.expires_at if page else None,
             )
-            archived = await self._post_close_embed(embed, transcript, channel.name, html)
+            archived = await self._post_close_embed(embed, transcript, channel.name)
 
             try:
                 await record_ticket_transcript(
@@ -1260,6 +1276,8 @@ class AITicketsCog(commands.Cog):
                     summary=summary,
                     transcript=transcript,
                     openai_file_id=openai_file_id,
+                    html_token=page.token if page else None,
+                    html_expires_at=page.expires_at if page else None,
                 )
                 await delete_image_analyses(channel.id)
             except Exception:
@@ -1274,7 +1292,8 @@ class AITicketsCog(commands.Cog):
                 else "📋 Ticket summary and transcript saved."
             )
             try:
-                await channel.send(embed=embed)
+                if announce:
+                    await channel.send(embed=embed)
             except discord.HTTPException:
                 # Expected when Ticket Tool already deleted the channel.
                 log.info("Could not post close embed in ticket", extra={"channel_id": channel.id})

@@ -19,6 +19,7 @@ venv/
 *.sqlite
 *.log
 data/evals/*.jsonl
+data/ticket_transcripts/
 
 # OS / editors
 .DS_Store

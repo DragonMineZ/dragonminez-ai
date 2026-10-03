@@ -302,6 +302,11 @@ async def upload_ticket_knowledge(
     return file_id
 
 
+async def has_transcript(channel_id: int, *, pool: Any | None = None) -> bool:
+    resolved_pool = pool or await get_pool()
+    return bool(await resolved_pool.fetchval("SELECT 1 FROM ticket_transcripts WHERE channel_id = $1 LIMIT 1", channel_id))
+
+
 async def record_ticket_transcript(
     *,
     channel_id: int,
@@ -315,32 +320,40 @@ async def record_ticket_transcript(
     summary: TicketSummary | None,
     transcript: str,
     openai_file_id: str | None,
+    html_token: str | None = None,
+    html_expires_at: datetime | None = None,
     pool: Any | None = None,
 ) -> None:
+    """A re-opened ticket closes again with its full history, so the new row replaces the old one
+    (the old hosted file becomes an orphan that ticket_pages.purge removes)."""
     resolved_pool = pool or await get_pool()
     async with resolved_pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO ticket_transcripts (
-                channel_id, guild_id, channel_name, requester_id, closed_by_id,
-                resolved, ai_confidence, message_count, title, problem, resolution,
-                tags, knowledge_worthy, transcript, openai_file_id, closed_at
+        async with conn.transaction():
+            await conn.execute("DELETE FROM ticket_transcripts WHERE channel_id = $1", channel_id)
+            await conn.execute(
+                """
+                INSERT INTO ticket_transcripts (
+                    channel_id, guild_id, channel_name, requester_id, closed_by_id,
+                    resolved, ai_confidence, message_count, title, problem, resolution,
+                    tags, knowledge_worthy, transcript, openai_file_id, html_token, html_expires_at, closed_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+                """,
+                channel_id,
+                guild_id,
+                channel_name,
+                requester_id,
+                closed_by_id,
+                resolved,
+                ai_confidence,
+                message_count,
+                summary.title if summary else None,
+                summary.problem if summary else None,
+                summary.resolution if summary else None,
+                list(summary.tags) if summary else [],
+                summary.knowledge_worthy if summary else False,
+                transcript,
+                openai_file_id,
+                html_token,
+                html_expires_at,
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
-            """,
-            channel_id,
-            guild_id,
-            channel_name,
-            requester_id,
-            closed_by_id,
-            resolved,
-            ai_confidence,
-            message_count,
-            summary.title if summary else None,
-            summary.problem if summary else None,
-            summary.resolution if summary else None,
-            list(summary.tags) if summary else [],
-            summary.knowledge_worthy if summary else False,
-            transcript,
-            openai_file_id,
-        )

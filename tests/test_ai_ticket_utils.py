@@ -31,6 +31,7 @@ from bulmaai.cogs.ai_tickets import (
     _is_staff_ticket_message,
     _support_debounce_seconds,
 )
+from bulmaai.services.ticket_pages import StoredPage
 from bulmaai.services.ticket_transcripts import TicketSummary, TranscriptLine
 from bulmaai.services.support_intent import (
     SUPPORT_INTENT_PATREON_WHITELIST,
@@ -320,8 +321,11 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
             ai_ticket_close_delay_seconds=0,
             ai_ticket_escalation_role_ids=(111, 222),
             ai_ticket_category_id=77,
+            ticket_transcript_public_url="https://tickets.example",
         )
-        return AITicketsCog(types.SimpleNamespace(settings=settings, user=types.SimpleNamespace(id=999)))
+        return AITicketsCog(
+            types.SimpleNamespace(settings=settings, user=types.SimpleNamespace(id=999), get_cog=lambda name: None)
+        )
 
     def _channel(self, channel_id: int) -> types.SimpleNamespace:
         return types.SimpleNamespace(
@@ -368,6 +372,49 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Crash on launch", channel.send.await_args.kwargs["embed"].title)
         channel.delete.assert_awaited_once()
         self.assertNotIn(10, cog._closing_channels)
+
+    async def test_close_links_the_hosted_page_and_records_it(self) -> None:
+        cog = self._cog()
+        expires = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        page = StoredPage(token="p" * 32, expires_at=expires)
+        cog.bot.get_cog = lambda name: types.SimpleNamespace(build_page=AsyncMock(return_value=page))
+        channel = self._channel(14)
+        lines = [TranscriptLine(datetime.now(timezone.utc), "requester", "Goku", "crash")]
+        collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
+
+        with collect, summarize, upload_p, record_p as record, delete_p:
+            await cog._close_ticket(
+                channel, closed_by_id=5, requester_id=42, resolved=False, delete_channel=False, announce=False
+            )
+
+        self.assertEqual(record.await_args.kwargs["html_token"], "p" * 32)
+        self.assertEqual(record.await_args.kwargs["html_expires_at"], expires)
+        channel.send.assert_not_awaited()  # announce=False keeps staff-only details out of the ticket
+
+        collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
+        cog._archived_channels.clear()
+        with collect, summarize, upload_p, record_p, delete_p:
+            await cog._close_ticket(channel, closed_by_id=5, requester_id=42, resolved=False, delete_channel=False)
+        embed = channel.send.await_args.kwargs["embed"]
+        field = next(field for field in embed.fields if field.name == "Web transcript")
+        self.assertIn(f"https://tickets.example/t/{'p' * 32}", field.value)
+        self.assertIn("<t:", field.value)
+
+    async def test_a_failed_page_build_still_archives_the_text(self) -> None:
+        cog = self._cog()
+        cog.bot.get_cog = lambda name: types.SimpleNamespace(build_page=AsyncMock(side_effect=RuntimeError("boom")))
+        lines = [TranscriptLine(datetime.now(timezone.utc), "requester", "Goku", "crash")]
+        collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
+        with collect, summarize, upload_p, record_p as record, delete_p:
+            await cog._close_ticket(self._channel(15), closed_by_id=5, requester_id=42, resolved=False, delete_channel=False)
+        self.assertIsNone(record.await_args.kwargs["html_token"])
+
+    def test_reopened_tickets_can_be_archived_again(self) -> None:
+        cog = self._cog()
+        cog._archived_channels.add(16)
+        cog.forget_archived(16)
+        cog.forget_archived(16)
+        self.assertNotIn(16, cog._archived_channels)
 
     async def test_only_the_ticket_owner_gets_the_solved_buttons(self) -> None:
         from bulmaai.cogs.ai_tickets import TICKET_TOOL_BOT_ID

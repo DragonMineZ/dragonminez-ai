@@ -3,11 +3,13 @@
 from typing import Any
 
 import logging
+from datetime import datetime, timezone
 
 import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
+from bulmaai.services import ticket_pages
 from bulmaai.services.ticket_ai_state import get_ai_disabled_ticket_channels, set_ticket_ai_disabled
 from bulmaai.services.tickets import ticket_info_for_channels
 from bulmaai.utils.permissions import is_staff
@@ -171,21 +173,69 @@ async def get_transcript(request: web.Request, actor: Actor) -> web.Response:
         raise api_error(400, "Transcript id must be an integer.")
     pool = await get_pool()
     row = await pool.fetchrow(
-        f"SELECT {_SUMMARY_COLUMNS}, guild_id, problem, resolution, transcript, openai_file_id "
-        "FROM ticket_transcripts WHERE id = $1",
+        f"SELECT {_SUMMARY_COLUMNS}, guild_id, problem, resolution, transcript, openai_file_id, "
+        "html_token, html_expires_at FROM ticket_transcripts WHERE id = $1",
         transcript_id,
     )
     if row is None:
         raise api_error(404, "Transcript not found.")
     data = _summary_json(guild, row)
+    expires = row["html_expires_at"]
+    live = row["html_token"] is not None and (expires is None or expires > datetime.now(timezone.utc))
     data.update(
         problem=row["problem"],
         resolution=row["resolution"],
         transcript=row["transcript"],
         openai_file_id=row["openai_file_id"],
         guild_id=str(row["guild_id"]) if row["guild_id"] else None,
+        html_url=ticket_pages.page_url(request.app[BOT].settings, row["html_token"]) if live else None,
+        html_permanent=live and expires is None,
+        html_expires_at=expires.isoformat() if live and expires else None,
     )
     return web.json_response(data)
+
+
+def _transcript_id(request: web.Request) -> int:
+    try:
+        return int(request.match_info["id"])
+    except ValueError:
+        raise api_error(400, "Transcript id must be an integer.")
+
+
+@routes.post("/api/transcripts/{id}/html")
+@requires("tickets.manage")
+async def keep_transcript_page(request: web.Request, actor: Actor) -> web.Response:
+    """Keep the hosted page forever (permanent: true) or put it back on the normal retention clock."""
+    permanent = (await read_json(request)).get("permanent")
+    if not isinstance(permanent, bool):
+        raise api_error(400, "permanent must be true or false.")
+    transcript_id = _transcript_id(request)
+    if not await ticket_pages.set_permanent(request.app[BOT].settings, transcript_id, permanent):
+        raise api_error(404, "That transcript has no web page.")
+    await audit(actor, "tickets.transcript_keep", str(transcript_id), permanent=permanent)
+    return web.json_response({"ok": True})
+
+
+@routes.delete("/api/transcripts/{id}/html")
+@requires("tickets.manage")
+async def delete_transcript_page(request: web.Request, actor: Actor) -> web.Response:
+    """Take the hosted page down; the staff text record stays."""
+    transcript_id = _transcript_id(request)
+    if not await ticket_pages.delete_page(request.app[BOT].settings, transcript_id):
+        raise api_error(404, "That transcript has no web page.")
+    await audit(actor, "tickets.transcript_page_delete", str(transcript_id))
+    return web.json_response({"ok": True})
+
+
+@routes.delete("/api/transcripts/{id}")
+@requires("tickets.manage")
+async def delete_transcript(request: web.Request, actor: Actor) -> web.Response:
+    """Remove the whole record: summary, text transcript and hosted page."""
+    transcript_id = _transcript_id(request)
+    if not await ticket_pages.delete_record(request.app[BOT].settings, transcript_id):
+        raise api_error(404, "Transcript not found.")
+    await audit(actor, "tickets.transcript_delete", str(transcript_id))
+    return web.json_response({"ok": True})
 
 
 def _summary_json(guild: discord.Guild, row: Any) -> dict[str, Any]:

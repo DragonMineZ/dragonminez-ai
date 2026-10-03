@@ -293,6 +293,16 @@ CREATE TABLE IF NOT EXISTS ticket_transcripts (
 CREATE INDEX IF NOT EXISTS idx_ticket_transcripts_closed_at
     ON ticket_transcripts (closed_at DESC);
 
+-- Hosted HTML transcript: file <ticket_transcript_dir>/<html_token>.html; NULL expiry with a token = kept forever.
+ALTER TABLE ticket_transcripts ADD COLUMN IF NOT EXISTS html_token TEXT;
+ALTER TABLE ticket_transcripts ADD COLUMN IF NOT EXISTS html_expires_at TIMESTAMPTZ;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_transcripts_html_token
+    ON ticket_transcripts (html_token);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_transcripts_channel_id
+    ON ticket_transcripts (channel_id);
+
 CREATE TABLE IF NOT EXISTS panel_audit_log (
     id          BIGSERIAL PRIMARY KEY,
     actor_id    BIGINT NOT NULL,

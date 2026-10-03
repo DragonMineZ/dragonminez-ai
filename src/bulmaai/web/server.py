@@ -21,6 +21,7 @@ from bulmaai.web import (
     routes_settings,
     routes_status,
     routes_tickets,
+    routes_transcripts,
 )
 from bulmaai.web.core import (
     BOT,
@@ -49,6 +50,7 @@ MODULES = (
     routes_settings,
     routes_moderation,
     routes_tickets,
+    routes_transcripts,
     routes_patreon,
     routes_presets,
     routes_announce,
@@ -63,6 +65,12 @@ CSP = (
 
 @web.middleware
 async def security_middleware(request: web.Request, handler) -> web.StreamResponse:
+    # The tickets hostname shares this process (and tunnel) with the panel but may only ever serve /t/<token>.
+    settings = request.app[BOT].settings
+    transcript_host = urlparse(settings.ticket_transcript_public_url).netloc
+    if request.host == transcript_host != urlparse(settings.panel_public_url).netloc:
+        if not request.path.startswith("/t/"):
+            return web.Response(status=404, text="Not found.")
     # Cross-site write protection: every non-GET must come from this origin. The public URL's host
     # is accepted too, so it works behind proxies/tunnels that rewrite Host (e.g. cloudflared).
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
@@ -83,7 +91,7 @@ async def security_middleware(request: web.Request, handler) -> web.StreamRespon
 
 
 def _harden(request: web.Request, response: web.StreamResponse) -> None:
-    response.headers["Content-Security-Policy"] = CSP
+    response.headers.setdefault("Content-Security-Policy", CSP)  # hosted transcripts bring their own
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"

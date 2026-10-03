@@ -1,4 +1,4 @@
-"""In-house ticket system: dropdown panel → intake modal → private channel, instant close, HTML archive.
+"""In-house ticket system: dropdown panel → intake modal → private channel, close = archive, hosted HTML transcript.
 
 AI answers inside tickets still come from AITicketsCog (same category); this cog owns the lifecycle.
 """
@@ -12,11 +12,13 @@ from enum import IntEnum
 import chat_exporter
 import discord
 from chat_exporter import AttachmentHandler
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from bulmaai.services import ai_budget
 from bulmaai.services.ai_guard import defuse_mentions
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
+from bulmaai.services.ticket_pages import StoredPage, get_page_for_channel, page_url, purge, save_page
+from bulmaai.services.ticket_transcripts import has_transcript
 from bulmaai.services.tickets import (
     STATUS_OPEN,
     Ticket,
@@ -47,9 +49,10 @@ from bulmaai.ui.ticket_views import (
     msg_dm_created,
     msg_dm_transcript,
     msg_limit,
+    notice_claimed,
     notice_closed,
+    notice_released,
     notice_reopened,
-    with_claim,
 )
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.permissions import is_admin, is_bruno
@@ -59,6 +62,8 @@ log = logging.getLogger(__name__)
 AI_COG = "AITicketsCog"
 # ponytail: newest 1000 messages, same cap as the AI transcript; page through history if tickets outgrow it.
 TRANSCRIPT_MESSAGE_LIMIT = 1000
+# Hosted pages live on our disk, so this is only a sanity cap; Discord's upload limit matters just for /ticket transcript.
+PAGE_MAX_BYTES = 25_000_000
 # Images are inlined so the archived .html outlives Discord's expiring attachment links.
 INLINE_IMAGE_LIMIT = 1_500_000
 INLINE_TOTAL_LIMIT = 5_000_000
@@ -171,6 +176,7 @@ class TicketsCog(commands.Cog):
         self._views_registered = True
         for view in (TicketPanelView(), TicketControlView(), TicketModeratorView()):
             self.bot.add_view(view)
+        self._purge_pages.start()
         try:
             # Channels deleted while the bot was offline would otherwise count against their owner's limit.
             for ticket in await list_active_tickets():
@@ -178,6 +184,19 @@ class TicketsCog(commands.Cog):
                     await mark_deleted(ticket.channel_id)
         except Exception:
             log.exception("Failed to reconcile ticket channels")
+
+    def cog_unload(self) -> None:
+        self._purge_pages.cancel()
+
+    @tasks.loop(hours=1)
+    async def _purge_pages(self) -> None:
+        try:
+            removed = await purge(self.settings)
+        except Exception:
+            log.exception("Transcript purge failed")
+            return
+        if removed:
+            log.info("Purged %d expired or orphaned ticket transcript files", removed)
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
@@ -199,7 +218,7 @@ class TicketsCog(commands.Cog):
                 continue
             closed = await self.close_ticket(channel, closer_id=None, reason=REASON_LEFT)
             if closed is not None:
-                await self.archive_and_delete(channel, closed, closed_by_id=None, dm_owner=False)
+                await self.delete_ticket(channel, closed, closed_by_id=None)
 
     # ---- ticket creation -------------------------------------------------------------------------
 
@@ -274,7 +293,7 @@ class TicketsCog(commands.Cog):
         ai_cog = self.bot.get_cog(AI_COG)
         if ai_cog is not None and category.ai_reply:
             await ai_cog.answer_new_ticket(
-                channel, member, category_label=category.label, form_text=form_text, language=intake.language
+                channel, member, category_label=category.name, form_text=form_text, language=intake.language
             )
 
     async def _triage(self, category: TicketCategory, answers: list[tuple[str, str]], ticket: Ticket) -> TicketIntake:
@@ -285,7 +304,7 @@ class TicketsCog(commands.Cog):
             return fallback
         try:
             return await triage_intake(
-                category.label,
+                category.name,
                 answers,
                 model=settings.openai_ticket_summary_model,
                 fallback_slug=category.fallback_slug,
@@ -299,7 +318,7 @@ class TicketsCog(commands.Cog):
     async def close_ticket(
         self, channel: discord.TextChannel, *, closer_id: int | None, reason: str | None
     ) -> Ticket | None:
-        """Lock the owner out, rename, swap the buttons. None if the ticket wasn't open."""
+        """Lock the owner out, rename, swap the buttons, then archive the transcript. None if the ticket wasn't open."""
         ticket = await mark_closed(channel.id, closed_by=closer_id, reason=reason)
         if ticket is None:
             return None
@@ -317,12 +336,15 @@ class TicketsCog(commands.Cog):
             ),
             channel,
         )
+        await self.archive(channel, ticket, closed_by_id=closer_id)
         return ticket
 
     async def reopen_ticket(self, channel: discord.TextChannel, *, opener_id: int) -> Ticket | None:
         ticket = await mark_reopened(channel.id)
         if ticket is None:
             return None
+        if (ai_cog := self.bot.get_cog(AI_COG)) is not None:
+            ai_cog.forget_archived(channel.id)
         owner = channel.guild.get_member(ticket.owner_id)
         if owner is not None:
             overwrite = channel.overwrites_for(owner)
@@ -383,10 +405,12 @@ class TicketsCog(commands.Cog):
                 return await interaction.response.send_message(MSG["failed"], ephemeral=True)
         else:
             return await interaction.response.send_message(msg_claimed_by(f"<@{ticket.claimed_by}>"), ephemeral=True)
-        edits: dict = {"view": TicketControlView(claimed=claimed)}
-        if interaction.message.embeds:
-            edits["embed"] = with_claim(interaction.message.embeds[0], user_id if claimed else None)
-        await interaction.response.edit_message(**edits)
+        # Announced as a new message: rewriting the ticket's first message reads like the ticket itself changed.
+        await interaction.response.send_message(
+            (notice_claimed if claimed else notice_released)(interaction.user.mention),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        await self._set_buttons(interaction.channel, ticket, TicketControlView(claimed=claimed))
 
     async def on_close(self, interaction: discord.Interaction) -> None:
         ticket = await self._gate(interaction, Rank.OWNER)
@@ -409,15 +433,13 @@ class TicketsCog(commands.Cog):
         if ticket is None:
             return
         await interaction.response.send_message(MSG["deleting"])
-        if not await self.archive_and_delete(
-            interaction.channel, ticket, closed_by_id=interaction.user.id, dm_owner=self.settings.ticket_dm_transcript
-        ):
+        if not await self.delete_ticket(interaction.channel, ticket, closed_by_id=interaction.user.id):
             await interaction.followup.send(MSG["archive_failed"], ephemeral=True)
 
     # ---- transcript + archive --------------------------------------------------------------------
 
     async def export_html(self, channel: discord.TextChannel) -> bytes | None:
-        """Standalone .html of the newest messages, or None if it failed or won't fit in an upload."""
+        """Standalone .html of the newest messages, or None if it failed or is implausibly large."""
         try:
             messages = [message async for message in channel.history(limit=TRANSCRIPT_MESSAGE_LIMIT)]
             messages.reverse()
@@ -433,61 +455,73 @@ class TicketsCog(commands.Cog):
             log.exception("HTML transcript export failed", extra={"channel_id": channel.id})
             return None
         data = (html or "").encode("utf-8")
-        if not data or len(data) > channel.guild.filesize_limit - 65_536:
+        if not data or len(data) > PAGE_MAX_BYTES:
             log.warning("HTML transcript empty or too large", extra={"channel_id": channel.id, "bytes": len(data)})
             return None
         return data
 
-    async def archive_and_delete(
-        self,
-        channel: discord.TextChannel,
-        ticket: Ticket,
-        *,
-        closed_by_id: int | None,
-        dm_owner: bool,
-    ) -> bool:
-        """Transcript → archive channel → (DM) → delete. The channel is only deleted once the archive post landed."""
+    async def build_page(self, channel: discord.TextChannel) -> StoredPage | None:
+        """Export the channel and host it on disk; AITicketsCog records the token with the rest of the close-out."""
+        html = await self.export_html(channel)
+        return await save_page(self.settings, html) if html is not None else None
+
+    async def archive(self, channel: discord.TextChannel, ticket: Ticket, *, closed_by_id: int | None) -> bool:
+        """Transcript + summary into the archive channel and the DB, then the owner gets the hosted link by DM."""
+        archived = await self._archive(channel, ticket, closed_by_id)
+        if self.settings.ticket_dm_transcript:
+            await self._dm_transcript_link(channel, ticket)
+        return archived
+
+    async def _dm_transcript_link(self, channel: discord.TextChannel, ticket: Ticket) -> None:
+        owner = channel.guild.get_member(ticket.owner_id)
+        try:
+            page = await get_page_for_channel(channel.id)
+        except Exception:
+            log.exception("Could not look up hosted transcript", extra={"channel_id": channel.id})
+            return
+        if owner is None or page is None:
+            return
+        try:
+            await owner.send(msg_dm_transcript(ticket.ticket_id, page_url(self.settings, page.token), page.expires_at))
+        except discord.HTTPException:
+            log.info("Could not DM ticket transcript", extra={"user_id": ticket.owner_id})
+
+    async def delete_ticket(self, channel: discord.TextChannel, ticket: Ticket, *, closed_by_id: int | None) -> bool:
+        """Delete the channel. Its transcript was saved when the ticket closed; one that never was gets saved first,
+        and the channel is only deleted once a transcript exists."""
         if channel.id in self._deleting:
             return False
         self._deleting.add(channel.id)
         try:
-            html = await self.export_html(channel)
-            if not await self._archive(channel, ticket, closed_by_id, html):
-                return False
-            owner = channel.guild.get_member(ticket.owner_id)
-            if dm_owner and html is not None and owner is not None:
-                try:
-                    await owner.send(
-                        msg_dm_transcript(ticket.ticket_id),
-                        file=discord.File(io.BytesIO(html), filename=f"ticket-{ticket.ticket_id:04d}.html"),
-                    )
-                except discord.HTTPException:
-                    log.info("Could not DM ticket transcript", extra={"user_id": ticket.owner_id})
+            if not await has_transcript(channel.id):
+                await self.archive(channel, ticket, closed_by_id=closed_by_id)
+                if not await has_transcript(channel.id):
+                    return False
             await mark_deleted(channel.id)
-            await channel.delete(reason=f"Ticket #{ticket.ticket_id:04d} archived and deleted")
+            await channel.delete(reason=f"Ticket #{ticket.ticket_id:04d} deleted")
             return True
         except discord.HTTPException:
-            log.exception("Failed to archive/delete ticket", extra={"channel_id": channel.id})
+            log.exception("Failed to delete ticket", extra={"channel_id": channel.id})
             return False
         finally:
             self._deleting.discard(channel.id)
 
-    async def _archive(
-        self, channel: discord.TextChannel, ticket: Ticket, closed_by_id: int | None, html: bytes | None
-    ) -> bool:
+    async def _archive(self, channel: discord.TextChannel, ticket: Ticket, closed_by_id: int | None) -> bool:
         ai_cog = self.bot.get_cog(AI_COG)
         if ai_cog is not None:
-            # Posts the summary embed + .txt + our .html to the transcript channel and records it for the panel.
+            # Posts the summary embed + .txt to the archive channel and records it (with the hosted page) for the panel.
             return await ai_cog._close_ticket(
                 channel,
                 closed_by_id=closed_by_id,
                 requester_id=ticket.owner_id,
                 resolved=None,
                 delete_channel=False,
-                html=html,
+                announce=False,
             )
+        # ponytail: without the AI cog there is no DB row or hosted page, so the file goes straight to the archive channel.
+        html = await self.export_html(channel)
         target_id = self.settings.ai_ticket_transcript_channel_id
-        if html is None or target_id is None:
+        if html is None or target_id is None or len(html) > channel.guild.filesize_limit - 65_536:
             return False
         try:
             target = self.bot.get_channel(target_id) or await self.bot.fetch_channel(target_id)
@@ -571,7 +605,7 @@ class TicketsCog(commands.Cog):
             return
         await ctx.defer(ephemeral=True)
         html = await self.export_html(ctx.channel)
-        if html is None:
+        if html is None or len(html) > ctx.guild.filesize_limit - 65_536:
             return await ctx.respond(MSG["transcript_failed"], ephemeral=True)
         await ctx.respond(
             file=discord.File(io.BytesIO(html), filename=f"ticket-{ticket.ticket_id:04d}.html"), ephemeral=True

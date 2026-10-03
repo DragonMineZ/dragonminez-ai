@@ -1,10 +1,12 @@
 """Ticket panel dropdown, intake modals, and the persistent in-ticket buttons (cogs/tickets.py does the work).
 
-Everything user-facing is hardcoded in English | Spanish | Portuguese. Views are stateless: each callback
+The public panel (dropdown, forms) is English | Spanish | Portuguese because the visitor's language isn't known
+yet; everything inside a ticket is English. Views are stateless: each callback
 looks the ticket up by channel, so they survive bot restarts.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import discord
 
@@ -41,6 +43,11 @@ class TicketCategory:
     fallback_slug: str
     ai_reply: bool
     fields: tuple[FormField, ...]
+
+    @property
+    def name(self) -> str:
+        """English name, for everything inside a ticket."""
+        return self.label.split(" | ")[0]
 
 
 CATEGORIES: dict[str, TicketCategory] = {
@@ -139,50 +146,26 @@ CATEGORIES: dict[str, TicketCategory] = {
 }
 
 MSG = {
-    "creating": tri("🎫 Creating your ticket…", "🎫 Creando tu ticket…", "🎫 Criando seu ticket…"),
+    "creating": "🎫 Creating your ticket…",
     "failed": tri(
         "❌ Something went wrong creating your ticket. Please try again or contact staff.",
         "❌ Algo salió mal al crear tu ticket. Inténtalo de nuevo o contacta al staff.",
         "❌ Algo deu errado ao criar seu ticket. Tente novamente ou fale com a staff.",
     ),
     "no_permission": tri("You can't do that here.", "No puedes hacer eso aquí.", "Você não pode fazer isso aqui."),
-    "staff_only": tri("Only staff can do this.", "Solo el staff puede hacer esto.", "Somente a staff pode fazer isso."),
-    "mod_only": tri(
-        "Only moderators and admins can do this.",
-        "Solo moderadores y admins pueden hacer esto.",
-        "Somente moderadores e admins podem fazer isso.",
+    "staff_only": "Only staff can do this.",
+    "mod_only": "Only moderators and admins can do this.",
+    "not_ticket": "This isn't an open ticket channel.",
+    "already_closed": "This ticket is already closed.",
+    "not_closed": "This ticket isn't closed.",
+    "owner_left": "The ticket owner left the server, so it can't be re-opened.",
+    "deleting": "🗑️ Deleting this ticket…",
+    "archive_failed": (
+        "❌ I couldn't save the transcript, so the channel was kept. Check the archive channel and my permissions."
     ),
-    "not_ticket": tri(
-        "This isn't an open ticket channel.", "Este no es un canal de ticket.", "Este não é um canal de ticket."
-    ),
-    "already_closed": tri(
-        "This ticket is already closed.", "Este ticket ya está cerrado.", "Este ticket já está fechado."
-    ),
-    "not_closed": tri("This ticket isn't closed.", "Este ticket no está cerrado.", "Este ticket não está fechado."),
-    "owner_left": tri(
-        "The ticket owner left the server, so it can't be re-opened.",
-        "El dueño del ticket salió del servidor, no se puede reabrir.",
-        "O dono do ticket saiu do servidor, não é possível reabrir.",
-    ),
-    "deleting": tri(
-        "🗑️ Archiving and deleting this ticket…",
-        "🗑️ Archivando y eliminando este ticket…",
-        "🗑️ Arquivando e excluindo este ticket…",
-    ),
-    "archive_failed": tri(
-        "❌ I couldn't archive the transcript, so the channel was kept. Check the archive channel and my permissions.",
-        "❌ No pude archivar la transcripción, así que el canal se conservó. Revisa el canal de archivo y mis permisos.",
-        "❌ Não consegui arquivar a transcrição, então o canal foi mantido. Verifique o canal de arquivo e minhas permissões.",
-    ),
-    "transcript_failed": tri(
-        "❌ I couldn't generate the transcript.", "❌ No pude generar la transcripción.", "❌ Não consegui gerar a transcrição."
-    ),
-    "protected_target": tri(
-        "You can't remove the ticket owner or staff.",
-        "No puedes quitar al dueño del ticket ni al staff.",
-        "Você não pode remover o dono do ticket nem a staff.",
-    ),
-    "done": tri("Done.", "Listo.", "Pronto."),
+    "transcript_failed": "❌ I couldn't generate the transcript.",
+    "protected_target": "You can't remove the ticket owner or staff.",
+    "done": "Done.",
 }
 
 
@@ -195,43 +178,37 @@ def msg_limit(count: int) -> str:
 
 
 def msg_created(channel_mention: str) -> str:
-    return tri(
-        f"✅ Your ticket is ready: {channel_mention}",
-        f"✅ Tu ticket está listo: {channel_mention}",
-        f"✅ Seu ticket está pronto: {channel_mention}",
-    )
+    return f"✅ Your ticket is ready: {channel_mention}"
 
 
 def msg_dm_created(number: int, url: str) -> str:
-    return tri(
-        f"🎫 Your ticket #{number:04d} has been created: {url}",
-        f"🎫 Tu ticket #{number:04d} fue creado: {url}",
-        f"🎫 Seu ticket #{number:04d} foi criado: {url}",
-    )
+    return f"🎫 Your ticket #{number:04d} has been created: {url}"
 
 
-def msg_dm_transcript(number: int) -> str:
-    return tri(
-        f"🎫 Your ticket #{number:04d} was closed. Here is the transcript.",
-        f"🎫 Tu ticket #{number:04d} fue cerrado. Aquí está la transcripción.",
-        f"🎫 Seu ticket #{number:04d} foi fechado. Aqui está a transcrição.",
-    )
+def msg_dm_transcript(number: int, url: str, expires_at: datetime | None) -> str:
+    keep = f"It expires <t:{int(expires_at.timestamp())}:R>." if expires_at else "It is kept permanently."
+    return f"🎫 Your ticket #{number:04d} was closed. Here is the transcript: {url}\n{keep}"
 
 
 def msg_claimed_by(mention: str) -> str:
-    return tri(f"Already claimed by {mention}.", f"Ya fue reclamado por {mention}.", f"Já foi reivindicado por {mention}.")
+    return f"Already claimed by {mention}."
+
+
+def notice_claimed(mention: str) -> str:
+    return f"🙋 {mention} claimed this ticket."
+
+
+def notice_released(mention: str) -> str:
+    return f"🙋 {mention} released this ticket."
 
 
 def notice_closed(mention: str | None, reason: str | None) -> str:
-    if mention:
-        text = tri(f"🔒 Ticket closed by {mention}.", f"🔒 Ticket cerrado por {mention}.", f"🔒 Ticket fechado por {mention}.")
-    else:
-        text = tri("🔒 Ticket closed.", "🔒 Ticket cerrado.", "🔒 Ticket fechado.")
+    text = f"🔒 Ticket closed by {mention}." if mention else "🔒 Ticket closed."
     return f"{text}\n{reason}" if reason else text
 
 
 def notice_reopened(mention: str) -> str:
-    return tri(f"🔓 Ticket re-opened by {mention}.", f"🔓 Ticket reabierto por {mention}.", f"🔓 Ticket reaberto por {mention}.")
+    return f"🔓 Ticket re-opened by {mention}."
 
 
 def build_panel_embed() -> discord.Embed:
@@ -268,34 +245,17 @@ def build_ticket_embed(
     summary: str | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
-        title=f"🎫 #{number:04d} · {category.emoji} {category.label}"[:256],
+        title=f"🎫 #{number:04d} · {category.emoji} {category.name}"[:256],
         description=(
-            "🇬🇧 Thanks for reaching out! A staff member will be with you soon. "
-            "Feel free to add more details, screenshots or logs while you wait.\n"
-            "🇪🇸 ¡Gracias por escribirnos! Un miembro del staff te atenderá pronto. "
-            "Mientras tanto, puedes añadir más detalles, capturas o logs.\n"
-            "🇧🇷 Obrigado por entrar em contato! Um membro da staff vai atender você em breve. "
-            "Enquanto isso, fique à vontade para adicionar detalhes, capturas de tela ou logs."
+            "Thanks for reaching out! A staff member will be with you soon. "
+            "Feel free to add more details, screenshots or logs while you wait."
         ),
         color=BLURPLE,
     )
     for label, value in answers:
         embed.add_field(name=label[:256], value=value[:1024], inline=False)
     if summary:
-        embed.add_field(name=tri("🤖 AI summary", "🤖 Resumen IA", "🤖 Resumo IA"), value=summary[:1024], inline=False)
-    return embed
-
-
-def with_claim(embed: discord.Embed, claimed_by: int | None) -> discord.Embed:
-    """The ticket embed with its "Claimed by" field set (or cleared)."""
-    kept = [field for field in embed.fields if not field.name.startswith("🙋")]
-    embed.clear_fields()
-    for field in kept:
-        embed.add_field(name=field.name, value=field.value, inline=field.inline)
-    if claimed_by:
-        embed.add_field(
-            name=tri("🙋 Claimed by", "🙋 Reclamado por", "🙋 Reivindicado por"), value=f"<@{claimed_by}>", inline=False
-        )
+        embed.add_field(name="🤖 AI summary", value=summary[:1024], inline=False)
     return embed
 
 
@@ -368,11 +328,11 @@ class TicketControlView(discord.ui.View):
     def __init__(self, *, claimed: bool = False) -> None:
         super().__init__(timeout=None)
         if claimed:
-            self.claim.label = tri("Release", "Liberar", "Liberar")
+            self.claim.label = "Release"
             self.claim.style = discord.ButtonStyle.secondary
 
     @discord.ui.button(
-        label=tri("Claim", "Reclamar", "Reivindicar"),
+        label="Claim",
         emoji="🙋",
         style=discord.ButtonStyle.primary,
         custom_id=CLAIM_BUTTON_ID,
@@ -382,7 +342,7 @@ class TicketControlView(discord.ui.View):
             await cog.on_claim(interaction)
 
     @discord.ui.button(
-        label=tri("Close", "Cerrar", "Fechar"),
+        label="Close",
         emoji="🔒",
         style=discord.ButtonStyle.danger,
         custom_id=CLOSE_BUTTON_ID,
@@ -399,7 +359,7 @@ class TicketModeratorView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label=tri("Re-Open", "Reabrir", "Reabrir"),
+        label="Re-Open",
         emoji="🔓",
         style=discord.ButtonStyle.success,
         custom_id=REOPEN_BUTTON_ID,
@@ -409,7 +369,7 @@ class TicketModeratorView(discord.ui.View):
             await cog.on_reopen(interaction)
 
     @discord.ui.button(
-        label=tri("Delete", "Eliminar", "Excluir"),
+        label="Delete",
         emoji="🗑️",
         style=discord.ButtonStyle.danger,
         custom_id=DELETE_BUTTON_ID,

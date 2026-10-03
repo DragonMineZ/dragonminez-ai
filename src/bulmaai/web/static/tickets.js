@@ -1,7 +1,7 @@
 "use strict";
 
 (() => {
-  const { h, api, run, can, time, user, badge, table, go, t } = Panel;
+  const { h, api, run, can, time, user, badge, table, go, dialog, t } = Panel;
 
   Panel.i18n({
     "Msgs": "Msjs",
@@ -58,6 +58,22 @@
     "Resolution": "Resolución",
     "Transcript": "Transcripción",
     "(empty)": "(vacío)",
+    "Open the HTML transcript": "Abrir la transcripción HTML",
+    "Kept permanently.": "Se conserva de forma permanente.",
+    "Expires": "Caduca",
+    "Keep permanently": "Conservar permanentemente",
+    "Expire normally": "Dejar que caduque",
+    "Delete web page": "Eliminar página web",
+    "Delete transcript": "Eliminar transcripción",
+    "Delete the web page?": "¿Eliminar la página web?",
+    "The link stops working immediately. The text record stays in the panel.": "El enlace deja de funcionar al instante. El registro de texto permanece en el panel.",
+    "Delete this transcript?": "¿Eliminar esta transcripción?",
+    "This removes the summary, the text and the web page. It can't be undone.": "Esto elimina el resumen, el texto y la página web. No se puede deshacer.",
+    "Kept permanently": "Conservada permanentemente",
+    "Back on the normal expiry": "De nuevo con caducidad normal",
+    "Web page deleted": "Página web eliminada",
+    "Transcript deleted": "Transcripción eliminada",
+    "There is no web page for this transcript: it expired, was deleted, or the ticket was closed before hosted transcripts existed. The plain text is below.": "No hay página web para esta transcripción: caducó, se eliminó o el ticket se cerró antes de existir las transcripciones alojadas. El texto plano está abajo.",
   });
 
   function discordLink(url, label) {
@@ -140,7 +156,38 @@
   }
 
   async function transcriptDetail(view, id) {
-    const tr = await api(`/api/transcripts/${encodeURIComponent(id)}`);
+    const path = `/api/transcripts/${encodeURIComponent(id)}`;
+    const tr = await api(path);
+    const reload = () => { view.replaceChildren(); return transcriptDetail(view, id); };
+    const action = (label, { danger = false, confirm, request, done, after = reload }) => {
+      const button = h("button", { class: danger ? "btn small danger" : "btn small", type: "button" }, label);
+      button.addEventListener("click", () => run(button, async () => {
+        if (confirm && !(await dialog(confirm[0], h("p", {}, confirm[1]), { confirmLabel: label, danger }))) return;
+        await request();
+        await after();
+      }, done));
+      return button;
+    };
+    const manage = can("tickets.manage");
+    const transcriptCard = tr.html_url
+      ? h("div", { class: "card stack" },
+        h("h2", {}, t("Transcript")),
+        h("p", {}, h("a", { href: tr.html_url, target: "_blank", rel: "noopener noreferrer" }, t("Open the HTML transcript"))),
+        h("p", { class: "muted small" }, tr.html_permanent ? t("Kept permanently.") : [t("Expires"), " ", time(tr.html_expires_at)]),
+        manage ? h("div", { class: "row" },
+          tr.html_permanent
+            ? action(t("Expire normally"), { request: () => api(`${path}/html`, { method: "POST", body: { permanent: false } }), done: t("Back on the normal expiry") })
+            : action(t("Keep permanently"), { request: () => api(`${path}/html`, { method: "POST", body: { permanent: true } }), done: t("Kept permanently") }),
+          action(t("Delete web page"), {
+            danger: true,
+            confirm: [t("Delete the web page?"), t("The link stops working immediately. The text record stays in the panel.")],
+            request: () => api(`${path}/html`, { method: "DELETE" }),
+            done: t("Web page deleted"),
+          })) : null)
+      : h("div", { class: "card stack" },
+        h("h2", {}, t("Transcript")),
+        h("p", { class: "muted small" }, t("There is no web page for this transcript: it expired, was deleted, or the ticket was closed before hosted transcripts existed. The plain text is below.")),
+        h("pre", { class: "log" }, tr.transcript || t("(empty)")));
     view.append(
       h("p", {}, h("a", { href: "#/tickets" }, t("← Back to tickets"))),
       h("h1", {}, tr.title || `#${tr.channel_name || tr.channel_id}`),
@@ -158,7 +205,14 @@
       h("div", { class: "card stack" },
         h("h3", {}, t("Problem")), h("p", {}, tr.problem || "—"),
         h("h3", {}, t("Resolution")), h("p", {}, tr.resolution || "—")),
-      h("div", { class: "card" }, h("h2", {}, t("Transcript")), h("pre", { class: "log" }, tr.transcript || t("(empty)"))));
+      transcriptCard,
+      manage ? h("div", { class: "row end" }, action(t("Delete transcript"), {
+        danger: true,
+        confirm: [t("Delete this transcript?"), t("This removes the summary, the text and the web page. It can't be undone.")],
+        request: () => api(path, { method: "DELETE" }),
+        done: t("Transcript deleted"),
+        after: () => go("#/tickets"),
+      })) : null);
   }
 
   Panel.page({

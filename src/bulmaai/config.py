@@ -477,6 +477,11 @@ class Settings:
     ticket_tester_role_ids: Sequence[int] = DEFAULT_TICKET_TESTER_ROLE_IDS
     ticket_max_open_per_user: int = 2
     ticket_dm_transcript: bool = True
+    # HTML transcripts are files under ticket_transcript_dir, served at ticket_transcript_public_url/t/<token>
+    # (a public hostname on the same cloudflared tunnel as the panel). 0 retention days keeps them forever.
+    ticket_transcript_public_url: str = "https://tickets.dragonminez.com"
+    ticket_transcript_dir: str = "data/ticket_transcripts"
+    ticket_transcript_retention_days: int = 30
     # Dyno (being phased out): its bans/kicks/timeouts come from the Discord audit log; warns and the
     # real moderator come from its mod-log channel embeds when this channel is set.
     dyno_user_id: int = 155149108183695360
@@ -845,6 +850,10 @@ def _build_settings_from_env() -> Settings:
         ticket_tester_role_ids=_get_env_int_list("TICKET_TESTER_ROLE_IDS", DEFAULT_TICKET_TESTER_ROLE_IDS),
         ticket_max_open_per_user=_get_env_int("TICKET_MAX_OPEN_PER_USER", 2) or 2,
         ticket_dm_transcript=_get_env_bool("TICKET_DM_TRANSCRIPT", True),
+        ticket_transcript_public_url=_get_env("TICKET_TRANSCRIPT_PUBLIC_URL", "https://tickets.dragonminez.com")
+        or "https://tickets.dragonminez.com",
+        ticket_transcript_dir=_get_env("TICKET_TRANSCRIPT_DIR", "data/ticket_transcripts") or "data/ticket_transcripts",
+        ticket_transcript_retention_days=_get_env_int("TICKET_TRANSCRIPT_RETENTION_DAYS", 30) or 0,
         openai_ticket_summary_model=_get_env("OPENAI_TICKET_SUMMARY_MODEL", DEFAULT_OPENAI_TICKET_SUMMARY_MODEL) or DEFAULT_OPENAI_TICKET_SUMMARY_MODEL,
         openai_ticket_vector_store_id=_get_env("OPENAI_TICKET_VECTOR_STORE_ID", DEFAULT_OPENAI_TICKET_VECTOR_STORE_ID),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,

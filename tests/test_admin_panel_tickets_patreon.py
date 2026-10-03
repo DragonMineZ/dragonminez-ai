@@ -138,6 +138,7 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
             "resolved": True, "ai_confidence": 0.9, "message_count": 3, "title": "Crash on start", "tags": ["crash"],
             "knowledge_worthy": True, "closed_at": NOW, "guild_id": 1, "problem": "p", "resolution": "r",
             "transcript": "Transcript: #ticket-0001", "openai_file_id": None,
+            "html_token": None, "html_expires_at": None,
         }
         pool = SimpleNamespace(fetch=AsyncMock(return_value=[row]), fetchrow=AsyncMock(return_value=row))
         with patch("bulmaai.web.routes_tickets.get_pool", AsyncMock(return_value=pool)):

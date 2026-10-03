@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ import discord
 from bulmaai.cogs import tickets as cog_module
 from bulmaai.cogs.tickets import InlineImageHandler, Rank, TicketsCog, build_overwrites, member_rank
 from bulmaai.services import tickets as db
+from bulmaai.services.ticket_pages import StoredPage
 from bulmaai.services.ticket_intake import triage_intake
 from bulmaai.ui import ticket_views as views
 
@@ -28,6 +30,7 @@ SETTINGS = SimpleNamespace(
     ticket_dm_transcript=True,
     ticket_max_open_per_user=2,
     ai_ticket_transcript_channel_id=555,
+    ticket_transcript_public_url="https://tickets.example",
     ai_ticket_category_id=1,
     openai_ticket_summary_model="gpt-5-mini",
 )
@@ -152,17 +155,26 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         for view in (views.TicketPanelView(), views.TicketControlView(), views.TicketModeratorView()):
             self.assertIsNone(view.timeout)
 
-    async def test_claim_field_toggles(self):
+    async def test_ticket_embed_is_english_only(self):
         embed = views.build_ticket_embed(
             number=7, category=views.CATEGORIES["bug"], answers=[("Summary", "boom")], summary="Crash."
         )
-        views.with_claim(embed, 5)
-        views.with_claim(embed, 6)
-        claimed = [field.value for field in embed.fields if field.name.startswith("🙋")]
-        self.assertEqual(claimed, ["<@6>"])
-        views.with_claim(embed, None)
-        self.assertFalse([field for field in embed.fields if field.name.startswith("🙋")])
-        self.assertEqual([field.name for field in embed.fields][:1], ["Summary"])
+        self.assertEqual(embed.title, "🎫 #0007 · ⚙️ Game-Breaking Bug")
+        self.assertNotIn(" | ", embed.description)
+        self.assertEqual([field.name for field in embed.fields], ["Summary", "🤖 AI summary"])
+
+    async def test_in_ticket_buttons_and_notices_are_english_only(self):
+        for view in (views.TicketControlView(), views.TicketControlView(claimed=True), views.TicketModeratorView()):
+            for child in view.children:
+                self.assertNotIn(" | ", child.label)
+        for text in (
+            views.MSG["creating"],
+            views.msg_created("<#1>"),
+            views.notice_closed("<@1>", None),
+            views.notice_reopened("<@1>"),
+            views.notice_claimed("<@1>"),
+        ):
+            self.assertNotIn(" | ", text)
 
 
 class FakeConn:
@@ -294,7 +306,10 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_close_locks_owner_renames_and_swaps_buttons(self):
         cog, owner, channel = make_cog(), member(OWNER_ID), make_channel()
         channel.guild.get_member = lambda _id: owner
-        with patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed:
+        with (
+            patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed,
+            patch.object(cog, "archive", AsyncMock()),
+        ):
             ticket = await cog.close_ticket(channel, closer_id=STAFF_ID, reason="done")
         self.assertEqual(ticket.ticket_id, 42)
         closed.assert_awaited_once_with(900, closed_by=STAFF_ID, reason="done")
@@ -323,7 +338,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         channel.edit.assert_awaited_once_with(name="crash-0042")
         view = channel.get_partial_message.return_value.edit.await_args.kwargs["view"]
         self.assertEqual([c.custom_id for c in view.children], ["ticket_btn_claim", "ticket_btn_close"])
-        self.assertEqual(view.children[0].label, "Release | Liberar | Liberar")
+        self.assertEqual(view.children[0].label, "Release")
 
     async def test_member_leaving_closes_archives_and_deletes(self):
         cog, channel = make_cog(), make_channel()
@@ -333,11 +348,11 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(cog_module, "get_open_tickets_by_owner", AsyncMock(return_value=[ticket])),
             patch.object(cog, "close_ticket", AsyncMock(return_value=ticket)) as close,
-            patch.object(cog, "archive_and_delete", AsyncMock(return_value=True)) as archive,
+            patch.object(cog, "delete_ticket", AsyncMock(return_value=True)) as delete,
         ):
             await cog.on_member_remove(leaver)
         close.assert_awaited_once_with(channel, closer_id=None, reason="User left the server.")
-        archive.assert_awaited_once_with(channel, ticket, closed_by_id=None, dm_owner=False)
+        delete.assert_awaited_once_with(channel, ticket, closed_by_id=None)
 
     async def test_other_guild_tickets_are_left_alone(self):
         cog, channel = make_cog(), make_channel()
@@ -349,38 +364,102 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             await cog.on_member_remove(SimpleNamespace(id=OWNER_ID, guild=guild))
         close.assert_not_called()
 
-    async def test_channel_survives_when_the_archive_post_fails(self):
+    async def test_close_archives_the_transcript(self):
         cog, channel = make_cog(), make_channel()
+        ticket = make_ticket(status="closed")
+        with (
+            patch.object(cog_module, "mark_closed", AsyncMock(return_value=ticket)),
+            patch.object(cog, "archive", AsyncMock(return_value=True)) as archive,
+        ):
+            await cog.close_ticket(channel, closer_id=STAFF_ID, reason=None)
+        archive.assert_awaited_once_with(channel, ticket, closed_by_id=STAFF_ID)
+        self.assertEqual(channel.send.await_args.args[0], "🔒 Ticket closed by <@200>.")
+
+    async def test_reopen_lets_the_ticket_be_archived_again(self):
+        ai_cog = SimpleNamespace(forget_archived=MagicMock())
+        cog, channel = make_cog(), make_channel()
+        cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
+        with patch.object(cog_module, "mark_reopened", AsyncMock(return_value=make_ticket())):
+            await cog.reopen_ticket(channel, opener_id=STAFF_ID)
+        ai_cog.forget_archived.assert_called_once_with(900)
+
+    async def test_archive_dms_the_owner_the_hosted_link(self):
+        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
+        cog, channel = make_cog(), make_channel(owner)
+        page = StoredPage(token="a" * 32, expires_at=datetime(2026, 11, 2, tzinfo=timezone.utc))
+        with (
+            patch.object(cog, "_archive", AsyncMock(return_value=True)),
+            patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=page)),
+        ):
+            self.assertTrue(await cog.archive(channel, make_ticket(), closed_by_id=STAFF_ID))
+        text = owner.send.await_args.args[0]
+        self.assertIn(f"{SETTINGS.ticket_transcript_public_url}/t/{'a' * 32}", text)
+        self.assertIn("<t:", text)
+        self.assertNotIn("file", owner.send.await_args.kwargs)
+
+    async def test_archive_without_a_page_sends_no_dm(self):
+        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
+        cog, channel = make_cog(), make_channel(owner)
+        with (
+            patch.object(cog, "_archive", AsyncMock(return_value=True)),
+            patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=None)),
+        ):
+            await cog.archive(channel, make_ticket(), closed_by_id=STAFF_ID)
+        owner.send.assert_not_called()
+
+    async def test_build_page_hosts_the_export(self):
+        cog, channel = make_cog(), make_channel()
+        page = StoredPage(token="b" * 32, expires_at=None)
         with (
             patch.object(cog, "export_html", AsyncMock(return_value=b"<html/>")),
-            patch.object(cog, "_archive", AsyncMock(return_value=False)),
+            patch.object(cog_module, "save_page", AsyncMock(return_value=page)) as save,
+        ):
+            self.assertIs(await cog.build_page(channel), page)
+        save.assert_awaited_once_with(SETTINGS, b"<html/>")
+        with patch.object(cog, "export_html", AsyncMock(return_value=None)):
+            self.assertIsNone(await cog.build_page(channel))
+
+    async def test_delete_does_not_re_archive_a_saved_ticket(self):
+        cog, channel = make_cog(), make_channel()
+        with (
+            patch.object(cog_module, "has_transcript", AsyncMock(return_value=True)),
+            patch.object(cog, "archive", AsyncMock()) as archive,
             patch.object(cog_module, "mark_deleted", AsyncMock()) as deleted,
         ):
-            self.assertFalse(await cog.archive_and_delete(channel, make_ticket(), closed_by_id=STAFF_ID, dm_owner=True))
+            self.assertTrue(await cog.delete_ticket(channel, make_ticket(), closed_by_id=STAFF_ID))
+        archive.assert_not_called()
+        deleted.assert_awaited_once_with(900)
+        channel.delete.assert_awaited_once()
+
+    async def test_delete_archives_first_when_nothing_was_saved(self):
+        cog, channel = make_cog(), make_channel()
+        with (
+            patch.object(cog_module, "has_transcript", AsyncMock(side_effect=[False, True])),
+            patch.object(cog, "archive", AsyncMock(return_value=True)) as archive,
+            patch.object(cog_module, "mark_deleted", AsyncMock()),
+        ):
+            self.assertTrue(await cog.delete_ticket(channel, make_ticket(), closed_by_id=STAFF_ID))
+        archive.assert_awaited_once()
+        channel.delete.assert_awaited_once()
+
+    async def test_channel_survives_when_no_transcript_can_be_saved(self):
+        cog, channel = make_cog(), make_channel()
+        with (
+            patch.object(cog_module, "has_transcript", AsyncMock(return_value=False)),
+            patch.object(cog, "archive", AsyncMock(return_value=False)),
+            patch.object(cog_module, "mark_deleted", AsyncMock()) as deleted,
+        ):
+            self.assertFalse(await cog.delete_ticket(channel, make_ticket(), closed_by_id=STAFF_ID))
         channel.delete.assert_not_called()
         deleted.assert_not_called()
         self.assertEqual(cog._deleting, set())
 
-    async def test_archive_then_dm_then_delete(self):
-        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
-        cog, channel = make_cog(), make_channel(owner)
-        with (
-            patch.object(cog, "export_html", AsyncMock(return_value=b"<html/>")),
-            patch.object(cog, "_archive", AsyncMock(return_value=True)) as archive,
-            patch.object(cog_module, "mark_deleted", AsyncMock()) as deleted,
-        ):
-            self.assertTrue(await cog.archive_and_delete(channel, make_ticket(), closed_by_id=STAFF_ID, dm_owner=True))
-        archive.assert_awaited_once()
-        owner.send.assert_awaited_once()
-        deleted.assert_awaited_once_with(900)
-        channel.delete.assert_awaited_once()
-
     async def test_second_delete_click_is_ignored(self):
         cog, channel = make_cog(), make_channel()
         cog._deleting.add(900)
-        with patch.object(cog, "export_html", AsyncMock()) as export:
-            self.assertFalse(await cog.archive_and_delete(channel, make_ticket(), closed_by_id=None, dm_owner=False))
-        export.assert_not_called()
+        with patch.object(cog_module, "has_transcript", AsyncMock()) as exists:
+            self.assertFalse(await cog.delete_ticket(channel, make_ticket(), closed_by_id=None))
+        exists.assert_not_called()
 
 
 class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
@@ -398,7 +477,7 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cog_module, "claim_ticket", AsyncMock()) as claim, \
                 patch.object(cog, "close_ticket", AsyncMock()) as close, \
                 patch.object(cog, "reopen_ticket", AsyncMock()) as reopen, \
-                patch.object(cog, "archive_and_delete", AsyncMock()) as delete:
+                patch.object(cog, "delete_ticket", AsyncMock()) as delete:
             for handler in (cog.on_claim, cog.on_close, cog.on_reopen, cog.on_delete):
                 interaction = self.interaction(tester)
                 await handler(interaction)
@@ -425,7 +504,7 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
         cog = make_cog()
         closed = make_ticket(status="closed")
         with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=closed)), \
-                patch.object(cog, "archive_and_delete", AsyncMock(return_value=True)) as delete:
+                patch.object(cog, "delete_ticket", AsyncMock(return_value=True)) as delete:
             interaction = self.interaction(member(STAFF_ID, HELPER_ROLE))
             await cog.on_delete(interaction)
             delete.assert_not_called()
@@ -434,6 +513,23 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             interaction.followup = SimpleNamespace(send=AsyncMock())
             await cog.on_delete(interaction)
             delete.assert_awaited_once()
+
+    async def test_claim_is_announced_not_edited_into_the_ticket(self):
+        cog = make_cog()
+        interaction = self.interaction(member(STAFF_ID, HELPER_ROLE))
+        interaction.user.mention = "<@200>"
+        interaction.channel = make_channel()
+        with (
+            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
+            patch.object(cog_module, "claim_ticket", AsyncMock(return_value=True)),
+        ):
+            await cog.on_claim(interaction)
+        interaction.response.edit_message.assert_not_called()
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertEqual(text, "🙋 <@200> claimed this ticket.")
+        self.assertNotIn("ephemeral", interaction.response.send_message.await_args.kwargs)
+        view = interaction.channel.get_partial_message.return_value.edit.await_args.kwargs["view"]
+        self.assertEqual(view.children[0].label, "Release")
 
     async def test_open_ticket_cannot_be_reopened_or_deleted_via_stale_buttons(self):
         cog = make_cog()

@@ -140,6 +140,18 @@ class PanelApiTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(response.status, 200, await response.text())
 
+    async def test_oauth_callback_rejects_junk_state_and_logs_exchange_failure_in_one_line(self):
+        self.client.session.cookie_jar.update_cookies({"panel_oauth_state": "good-state"})
+        fetch = AsyncMock(side_effect=RuntimeError("invalid_grant"))
+        with patch("bulmaai.web.server.DiscordOAuthClient.fetch_user_id_for_code", fetch):
+            junk = await self.client.get("/auth/callback", params={"code": "x", "state": "\u00e9"})
+            self.assertEqual(junk.status, 400)
+            fetch.assert_not_awaited()
+            with self.assertLogs("bulmaai.web.server", "WARNING") as logs:
+                failed = await self.client.get("/auth/callback", params={"code": "x", "state": "good-state"})
+        self.assertEqual(failed.status, 502)
+        self.assertEqual([record.exc_info for record in logs.records], [None])
+
     async def test_security_headers(self):
         response = await self.client.get("/")
         self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])

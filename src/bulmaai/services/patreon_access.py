@@ -103,6 +103,8 @@ def parse_patreon_oauth_state(
     *,
     now: Callable[[], float],
 ) -> PatreonOAuthState | None:
+    if not state.isascii():
+        return None
     try:
         body, signature = state.rsplit(".", 1)
     except ValueError:

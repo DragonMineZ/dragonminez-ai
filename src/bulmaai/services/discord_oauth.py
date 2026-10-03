@@ -64,6 +64,8 @@ def parse_discord_oauth_state(
     *,
     now: Callable[[], float],
 ) -> DiscordOAuthState | None:
+    if not state.isascii():
+        return None
     try:
         body, signature = state.rsplit(".", 1)
     except ValueError:

@@ -1058,6 +1058,30 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         fetch_identity.assert_not_awaited()
         upsert_link.assert_not_awaited()
 
+    async def test_patreon_token_exchange_failure_logs_one_line_without_traceback(self) -> None:
+        cog = CapturingOAuthPatreonWhitelistFlowCog()
+        cog.bot = SimpleNamespace(settings=self._settings())
+        state = build_patreon_oauth_state(
+            secret="patreon-client-secret",
+            discord_user_id=456,
+            guild_id=111,
+            action="link",
+            expires_at=9999999999,
+        )
+        confirm = patreon_link_confirm_token("patreon-client-secret", "junk-code", state)
+
+        with (
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.PatreonOAuthClient.fetch_identity_for_code",
+                AsyncMock(side_effect=HTTPError("401 Client Error")),
+            ),
+            self.assertLogs("bulmaai.cogs.patreon_whitelist_flow", "WARNING") as logs,
+        ):
+            response = await cog._handle_patreon_oauth_callback("junk-code", state, confirm=confirm)
+
+        self.assertEqual(response.status, 502)
+        self.assertEqual([record.exc_info for record in logs.records], [None])
+
     async def test_replayed_patreon_oauth_state_is_processed_once(self) -> None:
         member = SimpleNamespace(
             id=456,

@@ -543,8 +543,8 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 client_secret=settings.discord_oauth_client_secret,
                 redirect_uri=settings.discord_oauth_redirect_uri,
             ).fetch_user_id_for_code(code)
-        except Exception:
-            log.exception("Discord OAuth identity fetch failed")
+        except Exception as error:
+            log.warning("Discord OAuth identity fetch failed: %s", error)
             return self._html_response("Discord authorization failed. Please try again.", status=500)
 
         member = await self._resolve_member_across_guilds(discord_user_id)
@@ -1671,7 +1671,11 @@ class PatreonWhitelistFlowCog(commands.Cog):
             redirect_uri=settings.patreon_oauth_redirect_uri,
             campaign_id=settings.PATREON_CAMPAIGN_ID,
         )
-        identity = await client.fetch_identity_for_code(code)
+        try:
+            identity = await client.fetch_identity_for_code(code)
+        except Exception as error:
+            log.warning("Patreon OAuth identity fetch failed: %s", error)
+            return self._html_response("Patreon authorization failed. Please try again from Discord.", status=502)
         active = is_active_entitled_patron(
             identity.status,
             eligible_tier_ids=_eligible_tier_ids(settings),

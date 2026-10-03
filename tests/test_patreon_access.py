@@ -52,6 +52,7 @@ class PatreonAccessTests(unittest.TestCase):
         self.assertIsNone(parsed.minecraft_username)
         self.assertIsNone(parse_patreon_oauth_state("secret", state + "x", now=lambda: 1999))
         self.assertIsNone(parse_patreon_oauth_state("secret", state, now=lambda: 2001))
+        self.assertIsNone(parse_patreon_oauth_state("secret", "é.é", now=lambda: 1999))
 
     def test_oauth_state_can_carry_pending_minecraft_username(self) -> None:
         state = build_patreon_oauth_state(

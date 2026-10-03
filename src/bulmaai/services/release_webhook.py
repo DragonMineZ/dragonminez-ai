@@ -63,9 +63,10 @@ class ExtraWebhookRoute:
 @dataclass(frozen=True)
 class ExtraGetRoute:
     path_prefix: str
-    handle_request: Callable[[str, dict[str, list[str]]], ReleaseWebhookHttpResponse]
+    handle_request: Callable[..., ReleaseWebhookHttpResponse]
     secret: str | None = None
     secret_header: str = WEBHOOK_SECRET_HEADER
+    pass_headers: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,9 +135,10 @@ def unregister_extra_raw_webhook_route(path: str) -> None:
 def register_extra_get_route(
     *,
     path_prefix: str,
-    handle_request: Callable[[str, dict[str, list[str]]], ReleaseWebhookHttpResponse],
+    handle_request: Callable[..., ReleaseWebhookHttpResponse],
     secret: str | None = None,
     secret_header: str = WEBHOOK_SECRET_HEADER,
+    pass_headers: bool = False,
 ) -> None:
     _extra_get_routes[:] = [
         route for route in _extra_get_routes if route.path_prefix != path_prefix
@@ -147,6 +149,7 @@ def register_extra_get_route(
             handle_request=handle_request,
             secret=secret,
             secret_header=secret_header,
+            pass_headers=pass_headers,
         )
     )
 
@@ -166,6 +169,8 @@ def handle_release_webhook_get(
                 headers, secret=route.secret, header_name=route.secret_header
             ):
                 return text_http_response(401, "Unauthorized")
+            if route.pass_headers:
+                return route.handle_request(path, parse_qs(query), headers)
             return route.handle_request(path, parse_qs(query))
     return text_http_response(403, "Forbidden")
 

@@ -130,6 +130,10 @@ def parse_patreon_oauth_state(
         return None
 
 
+def patreon_link_confirm_token(secret: str, code: str, state: str) -> str:
+    return hmac.new(secret.encode("utf-8"), f"confirm.{code}.{state}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def build_patreon_authorization_url(
     *,
     client_id: str,

@@ -28,7 +28,31 @@ log = logging.getLogger(__name__)
 
 MAX_REASON_LENGTH = 400  # the panel's cap; leaves room for the audit-log suffix under Discord's 512
 BAN_DELETE_SECONDS = {"none": 0, "1h": 3600, "24h": 86400, "7d": 7 * 86400}
-DANGEROUS_ROLE_PERMISSIONS = ("administrator", "manage_guild", "manage_roles", "ban_members")
+DANGEROUS_ROLE_PERMISSIONS = (
+    "administrator",
+    "manage_guild",
+    "manage_roles",
+    "ban_members",
+    "kick_members",
+    "moderate_members",
+    "mention_everyone",
+    "manage_messages",
+    "manage_channels",
+    "manage_nicknames",
+    "manage_webhooks",
+    "manage_threads",
+    "view_audit_log",
+)
+PROTECTED_ROLE_SETTINGS = (
+    "discord_staff_role_ids",
+    "panel_owner_role_ids",
+    "panel_admin_role_ids",
+    "panel_moderator_role_ids",
+    "panel_helper_role_ids",
+    "patreon_access_role_ids",
+    "dev_jar_patreon_role_ids",
+    "dev_jar_tester_role_ids",
+)
 STAFF_ONLY = discord.Permissions(moderate_members=True)
 VERBS = {
     "warn": "Warned",
@@ -72,11 +96,13 @@ def purge_check(
     return check
 
 
-def role_refusal(role: discord.Role, moderator: discord.Member, guild: discord.Guild) -> str | None:
+def role_refusal(role: discord.Role, moderator: discord.Member, guild: discord.Guild, settings) -> str | None:
     if role.managed or role.is_default():
         return "That role is managed by Discord or an integration."
     if any(getattr(role.permissions, name) for name in DANGEROUS_ROLE_PERMISSIONS):
-        return "Roles with Administrator, Manage Server, Manage Roles or Ban Members can't be changed with /role."
+        return "Roles with moderation or server-management permissions can't be changed with /role."
+    if any(role.id in getattr(settings, name) for name in PROTECTED_ROLE_SETTINGS):
+        return "Staff, panel, Patreon and tester roles can't be changed with /role."
     if moderator.id != guild.owner_id and role.position >= moderator.top_role.position:
         return "That role is equal to or above your top role."
     if role.position >= guild.me.top_role.position:
@@ -547,7 +573,7 @@ class ModCommandsCog(commands.Cog):
         member = await resolve_member(ctx.guild, user.id)
         if member is None:
             return await ctx.respond("That user isn't in the server.", ephemeral=True)
-        refusal = role_refusal(role, ctx.user, ctx.guild)
+        refusal = role_refusal(role, ctx.user, ctx.guild, self.bot.settings)
         if refusal is None:
             try:
                 mod_actions.check_hierarchy(self.bot, ctx.guild, ctx.user, user.id, member, discord_action=True)

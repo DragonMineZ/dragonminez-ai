@@ -17,6 +17,7 @@ from bulmaai.ui.github_views import (
     PRCommentModal,
 )
 from bulmaai.utils.permissions import is_staff
+from bulmaai.web.core import Tier, tier_for
 
 log = logging.getLogger(__name__)
 settings = load_settings()
@@ -27,13 +28,19 @@ async def repo_autocomplete(ctx: discord.AutocompleteContext) -> list[str]:
     return [repo for repo in settings.GITHUB_REPOS if current in repo.lower()][:25]
 
 
+class UnknownRepoError(ValueError):
+    pass
+
+
 def _get_github_service(repo: str | None = None) -> GitHubService:
+    target_repo = repo or settings.GITHUB_DEFAULT_REPO
+    if target_repo not in settings.GITHUB_REPOS:
+        raise UnknownRepoError(f"`{target_repo}` isn't one of the configured repositories.")
     auth = GitHubAppAuth(
         app_id=settings.GH_APP_ID,
         installation_id=settings.GH_INSTALLATION_ID,
         private_key_pem=settings.GH_APP_PRIVATE_KEY_PEM,
     )
-    target_repo = repo or settings.GITHUB_DEFAULT_REPO
     whitelist_path = settings.GITHUB_WHITELIST_FILE_PATH if target_repo == settings.GITHUB_WHITELIST_REPO else None
     return GitHubService(
         auth=auth,
@@ -52,7 +59,7 @@ def _build_issue_embed(issue: dict, owner: str, repo: str) -> discord.Embed:
         color=discord.Color.green() if issue["state"] == "open" else discord.Color.red(),
     )
     body = issue.get("body") or "No description"
-    embed.description = body[:1500] + "..." if len(body) > 1500 else body
+    embed.description = discord.utils.escape_markdown(body[:1500] + "..." if len(body) > 1500 else body)
 
     labels = issue.get("labels", [])
     if labels:
@@ -76,7 +83,8 @@ def _build_issue_list_embed(issues: list[dict], owner: str, repo: str, state: st
     for issue in issues[:15]:
         state_emoji = "🟢" if issue["state"] == "open" else "🔴"
         labels = " ".join(f"`{label['name']}`" for label in issue.get("labels", [])[:3])
-        lines.append(f"{state_emoji} **#{issue['number']}** [{issue['title'][:50]}]({issue['html_url']}) {labels}")
+        title = discord.utils.escape_markdown(issue["title"][:50])
+        lines.append(f"{state_emoji} **#{issue['number']}** [{title}]({issue['html_url']}) {labels}")
     embed.description = "\n".join(lines) or "No issues found."
     if len(issues) > 15:
         embed.set_footer(text=f"Showing 15 of {len(issues)} issues")
@@ -102,7 +110,7 @@ def _build_pr_embed(pr: dict, owner: str, repo: str) -> discord.Embed:
         color=color,
     )
     body = pr.get("body") or "No description"
-    embed.description = body[:1500] + "..." if len(body) > 1500 else body
+    embed.description = discord.utils.escape_markdown(body[:1500] + "..." if len(body) > 1500 else body)
     embed.add_field(name="State", value=state_text, inline=True)
     embed.add_field(name="Branch", value=f"`{pr['head']['ref']}` -> `{pr['base']['ref']}`", inline=True)
     if pr.get("user"):
@@ -141,7 +149,8 @@ def _build_pr_list_embed(prs: list[dict], owner: str, repo: str, state: str) -> 
             emoji = "📝" if draft else "🟢"
         else:
             emoji = "🔴"
-        lines.append(f"{emoji} **#{pr['number']}** [{pr['title'][:50]}]({pr['html_url']}) by `{pr['user']['login']}`")
+        title = discord.utils.escape_markdown(pr["title"][:50])
+        lines.append(f"{emoji} **#{pr['number']}** [{title}]({pr['html_url']}) by `{pr['user']['login']}`")
     embed.description = "\n".join(lines) or "No pull requests found."
     if len(prs) > 15:
         embed.set_footer(text=f"Showing 15 of {len(prs)} pull requests")
@@ -155,6 +164,18 @@ class GitHubCog(commands.Cog):
         self.default_repo = settings.GITHUB_DEFAULT_REPO
 
     github = discord.SlashCommandGroup("github", "GitHub issue management commands")
+
+    async def _service(self, ctx, repo: str | None) -> GitHubService | None:
+        """ctx is an ApplicationContext or an Interaction; None once they've been told the repo isn't allowed."""
+        try:
+            return _get_github_service(repo)
+        except UnknownRepoError as error:
+            await ctx.respond(str(error), ephemeral=True)
+            return None
+
+    def _is_github_admin(self, member) -> bool:
+        # Merging and closing/reopening PRs need panel ADMIN; staff keep issues and PR comments.
+        return tier_for(member, self.bot.settings) >= Tier.ADMIN
 
     async def _load_issue_board_view(
         self,
@@ -219,9 +240,10 @@ class GitHubCog(commands.Cog):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can create issues.")
 
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer()
 
         try:
             labels = await service.get_labels()
@@ -229,7 +251,7 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to fetch labels")
             return await ctx.followup.send(f"Failed to fetch labels: {error}")
 
-        label_view = LabelSelectView(labels)
+        label_view = LabelSelectView(labels, author_id=ctx.author.id)
         selection_message = await ctx.followup.send(
             "**Step 1/2:** Select labels for the new issue or skip them.",
             view=label_view,
@@ -271,7 +293,8 @@ class GitHubCog(commands.Cog):
             return await ctx.respond("Only staff can close issues.")
 
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
         modal = CloseReasonModal(issue_number)
         await ctx.send_modal(modal)
         await modal.wait()
@@ -301,9 +324,10 @@ class GitHubCog(commands.Cog):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can reopen issues.")
 
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer()
 
         try:
             issue = await service.reopen_issue(issue_number)
@@ -323,9 +347,10 @@ class GitHubCog(commands.Cog):
     @discord.option("issue_number", description="Issue number to view", required=True)
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def view_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer(ephemeral=not is_staff(ctx.author))
 
         try:
             issue = await service.get_issue(issue_number)
@@ -346,9 +371,10 @@ class GitHubCog(commands.Cog):
     @discord.option("label", description="Filter by label", required=False)
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def list_issues(self, ctx: discord.ApplicationContext, state: str = "open", label: str = None, repo: str = None):
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer(ephemeral=not is_staff(ctx.author))
 
         try:
             issues = await service.list_issues(state=state, labels=label)
@@ -376,7 +402,8 @@ class GitHubCog(commands.Cog):
             return await ctx.respond("Only staff can comment on issues.")
 
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
         modal = AddCommentModal(issue_number)
         await ctx.send_modal(modal)
         await modal.wait()
@@ -401,9 +428,10 @@ class GitHubCog(commands.Cog):
     @github.command(name="labels", description="View available labels for a repository")
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def list_labels(self, ctx: discord.ApplicationContext, repo: str = None):
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer(ephemeral=not is_staff(ctx.author))
 
         try:
             labels = await service.get_labels()
@@ -432,16 +460,17 @@ class GitHubCog(commands.Cog):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can add labels.")
 
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer()
 
         try:
             labels = await service.get_labels()
         except Exception as error:
             return await ctx.followup.send(f"Failed to fetch labels: {error}")
 
-        label_view = LabelSelectView(labels)
+        label_view = LabelSelectView(labels, author_id=ctx.author.id)
         prompt_message = await ctx.followup.send(
             f"Select labels to add to issue #{issue_number}:",
             view=label_view,
@@ -472,9 +501,10 @@ class GitHubCog(commands.Cog):
     @discord.option("state", description="PR state", choices=["open", "closed", "all"], required=False)
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def list_prs(self, ctx: discord.ApplicationContext, state: str = "open", repo: str = None):
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer(ephemeral=not is_staff(ctx.author))
 
         try:
             prs = await service.list_prs(state=state)
@@ -497,9 +527,10 @@ class GitHubCog(commands.Cog):
     @discord.option("pr_number", description="PR number to view", required=True)
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def view_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer(ephemeral=not is_staff(ctx.author))
 
         try:
             pr = await service.get_pr(pr_number)
@@ -520,14 +551,15 @@ class GitHubCog(commands.Cog):
     @discord.option("pr_number", description="PR number to merge", required=True)
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def merge_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
-        if not is_staff(ctx.author):
-            return await ctx.respond("Only staff can merge pull requests.")
+        if not self._is_github_admin(ctx.author):
+            return await ctx.respond("Only admins can merge pull requests.", ephemeral=True)
 
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer()
 
-        confirm_view = MergeConfirmView()
+        confirm_view = MergeConfirmView(author_id=ctx.author.id)
         prompt_message = await ctx.followup.send(
             f"Merge PR #{pr_number}. Select a merge method and confirm:",
             view=confirm_view,
@@ -562,12 +594,13 @@ class GitHubCog(commands.Cog):
     @discord.option("pr_number", description="PR number to close", required=True)
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def close_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
-        if not is_staff(ctx.author):
-            return await ctx.respond("Only staff can close pull requests.")
+        if not self._is_github_admin(ctx.author):
+            return await ctx.respond("Only admins can close pull requests.", ephemeral=True)
 
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer()
 
         try:
             pr = await service.close_pr(pr_number)
@@ -588,12 +621,13 @@ class GitHubCog(commands.Cog):
     @discord.option("pr_number", description="PR number to reopen", required=True)
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
     async def reopen_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
-        if not is_staff(ctx.author):
-            return await ctx.respond("Only staff can reopen pull requests.")
+        if not self._is_github_admin(ctx.author):
+            return await ctx.respond("Only admins can reopen pull requests.", ephemeral=True)
 
-        await ctx.defer()
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
+        await ctx.defer()
 
         try:
             pr = await service.reopen_pr(pr_number)
@@ -618,7 +652,8 @@ class GitHubCog(commands.Cog):
             return await ctx.respond("Only staff can comment on pull requests.")
 
         target_repo = repo or self.default_repo
-        service = _get_github_service(target_repo)
+        if (service := await self._service(ctx, target_repo)) is None:
+            return
         modal = PRCommentModal(pr_number)
         await ctx.send_modal(modal)
         await modal.wait()
@@ -647,24 +682,27 @@ class GitHubCog(commands.Cog):
             return
 
         custom_id = interaction.data.get("custom_id", "")
-        if custom_id.startswith("gh_issue_select:"):
-            await self._handle_issue_select(interaction, custom_id)
-        elif custom_id.startswith("gh_pr_select:"):
-            await self._handle_pr_select(interaction, custom_id)
-        elif custom_id.startswith("gh_close:"):
-            await self._handle_close(interaction, custom_id)
-        elif custom_id.startswith("gh_reopen:"):
-            await self._handle_reopen(interaction, custom_id)
-        elif custom_id.startswith("gh_comment:"):
-            await self._handle_comment(interaction, custom_id)
-        elif custom_id.startswith("gh_pr_merge:"):
-            await self._handle_pr_merge(interaction, custom_id)
-        elif custom_id.startswith("gh_pr_close:"):
-            await self._handle_pr_close(interaction, custom_id)
-        elif custom_id.startswith("gh_pr_reopen:"):
-            await self._handle_pr_reopen(interaction, custom_id)
-        elif custom_id.startswith("gh_pr_comment:"):
-            await self._handle_pr_comment(interaction, custom_id)
+        try:
+            if custom_id.startswith("gh_issue_select:"):
+                await self._handle_issue_select(interaction, custom_id)
+            elif custom_id.startswith("gh_pr_select:"):
+                await self._handle_pr_select(interaction, custom_id)
+            elif custom_id.startswith("gh_close:"):
+                await self._handle_close(interaction, custom_id)
+            elif custom_id.startswith("gh_reopen:"):
+                await self._handle_reopen(interaction, custom_id)
+            elif custom_id.startswith("gh_comment:"):
+                await self._handle_comment(interaction, custom_id)
+            elif custom_id.startswith("gh_pr_merge:"):
+                await self._handle_pr_merge(interaction, custom_id)
+            elif custom_id.startswith("gh_pr_close:"):
+                await self._handle_pr_close(interaction, custom_id)
+            elif custom_id.startswith("gh_pr_reopen:"):
+                await self._handle_pr_reopen(interaction, custom_id)
+            elif custom_id.startswith("gh_pr_comment:"):
+                await self._handle_pr_comment(interaction, custom_id)
+        except UnknownRepoError as error:
+            await interaction.respond(str(error), ephemeral=True)
 
     async def _handle_issue_select(self, interaction: discord.Interaction, custom_id: str):
         parts = custom_id.split(":")
@@ -791,14 +829,14 @@ class GitHubCog(commands.Cog):
         await interaction.followup.send(f"Comment added to issue #{issue_number} by {interaction.user.mention}.")
 
     async def _handle_pr_merge(self, interaction: discord.Interaction, custom_id: str):
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message("Only staff can merge PRs.")
+        if not self._is_github_admin(interaction.user):
+            return await interaction.response.send_message("Only admins can merge PRs.", ephemeral=True)
 
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)
         service = _get_github_service(repo)
 
-        confirm_view = MergeConfirmView()
+        confirm_view = MergeConfirmView(author_id=interaction.user.id)
         await interaction.response.send_message(
             f"Merge PR #{pr_number}. Select a merge method and confirm:",
             view=confirm_view,
@@ -825,8 +863,8 @@ class GitHubCog(commands.Cog):
         )
 
     async def _handle_pr_close(self, interaction: discord.Interaction, custom_id: str):
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message("Only staff can close PRs.")
+        if not self._is_github_admin(interaction.user):
+            return await interaction.response.send_message("Only admins can close PRs.", ephemeral=True)
 
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)
@@ -848,8 +886,8 @@ class GitHubCog(commands.Cog):
         await interaction.followup.send(f"PR #{pr_number} closed by {interaction.user.mention}.")
 
     async def _handle_pr_reopen(self, interaction: discord.Interaction, custom_id: str):
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message("Only staff can reopen PRs.")
+        if not self._is_github_admin(interaction.user):
+            return await interaction.response.send_message("Only admins can reopen PRs.", ephemeral=True)
 
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)

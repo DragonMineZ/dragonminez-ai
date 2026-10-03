@@ -1493,6 +1493,98 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cog.gh.merged_prs, [12])
         self.assertEqual(cog.gh.removed_branches, ["patreon/remove-456"])
 
+    def _revoke_cog(self, gh):
+        staff_channel = FakeChannel()
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        cog.bot = SimpleNamespace(settings=self._settings(), get_channel=lambda channel_id: staff_channel, guilds=[])
+        cog.gh = gh
+        grants = [
+            PatreonGrant(456, 456, "Requester", "OwnerMC", PatreonGrantKind.SELF, True),
+            PatreonGrant(456, 789, "Gifted", "GiftedMC", PatreonGrantKind.GIFT, True),
+        ]
+        return cog, grants
+
+    def _link(self):
+        return PatreonLink(456, "Requester", "p-user", "member-1", "Pat", "active_patron", ("1287877272224665640",), None, True)
+
+    async def test_webhook_lapse_removes_self_and_gift_even_when_member_lookup_404s(self) -> None:
+        cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        cog.bot.settings.patreon_webhook_secret = "secret"
+        not_found = HTTPError("404")
+        not_found.response = SimpleNamespace(status_code=404)
+        body = (
+            b'{"data":{"id":"member-1","type":"member","attributes":{"patron_status":"former_patron"},'
+            b'"relationships":{"user":{"data":{"id":"p-user","type":"user"}},"currently_entitled_tiers":{"data":[]}}}}'
+        )
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.verify_patreon_webhook_signature", return_value=True),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link_by_member_id", AsyncMock(return_value=self._link())),
+            patch("bulmaai.cogs.patreon_whitelist_flow.PatreonCreatorClient") as client_cls,
+            patch("bulmaai.cogs.patreon_whitelist_flow.update_link_entitlement", AsyncMock()) as update_link,
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
+        ):
+            client_cls.return_value.fetch_member_status = AsyncMock(side_effect=not_found)
+            response = await cog._handle_patreon_webhook(body, {})
+
+        self.assertEqual(response.status, 202)
+        self.assertFalse(update_link.await_args.kwargs["entitlement_active"])
+        self.assertEqual(cog.gh.put_calls[0]["new_text"], "KeepMe\n")
+        deactivate.assert_awaited_once_with(456)
+
+    async def test_revoke_keeps_grants_active_when_github_fails(self) -> None:
+        cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        cog.gh.merge_pr = AsyncMock(side_effect=RuntimeError("github down"))
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
+        ):
+            with self.assertRaises(RuntimeError):
+                await cog.revoke_owner_access(456, "former_patron")
+        deactivate.assert_not_called()
+
+    async def test_losing_patreon_role_revokes_self_and_gift(self) -> None:
+        cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        before = SimpleNamespace(id=456, roles=[SimpleNamespace(id=1287877272224665640)])
+        after = SimpleNamespace(id=456, roles=[])
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.ROLE_LOSS_GRACE_SECONDS", 0),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
+        ):
+            await cog.on_member_update(before, after)
+        self.assertEqual(cog.gh.put_calls[0]["new_text"], "KeepMe\n")
+        deactivate.assert_awaited_once_with(456)
+
+    async def test_role_swap_within_grace_period_keeps_access(self) -> None:
+        cog, _grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        before = SimpleNamespace(id=456, roles=[SimpleNamespace(id=1287877272224665640)])
+        after = SimpleNamespace(id=456, roles=[])
+        upgraded = SimpleNamespace(id=456, roles=[SimpleNamespace(id=1287877305259130900)])
+        cog._resolve_member_across_guilds = AsyncMock(return_value=upgraded)
+        cog.revoke_owner_access = AsyncMock()
+        with patch("bulmaai.cogs.patreon_whitelist_flow.ROLE_LOSS_GRACE_SECONDS", 0):
+            await cog.on_member_update(before, after)
+        cog.revoke_owner_access.assert_not_called()
+
+    async def test_sync_revokes_owner_whose_patreon_lapsed(self) -> None:
+        cog, _grants = self._revoke_cog(FakeGitHub())
+        cog._resolve_member_across_guilds = AsyncMock(
+            return_value=SimpleNamespace(id=456, roles=[SimpleNamespace(id=1287877272224665640)])
+        )
+        cog.revoke_owner_access = AsyncMock()
+        lapsed = PatreonMemberStatus("p-user", "member-1", "Pat", "declined_patron", (), None)
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_linked_owner_ids_with_active_grants", AsyncMock(return_value=[456])),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=self._link())),
+            patch("bulmaai.cogs.patreon_whitelist_flow.PatreonCreatorClient") as client_cls,
+            patch("bulmaai.cogs.patreon_whitelist_flow.update_link_entitlement", AsyncMock()),
+            patch("bulmaai.cogs.patreon_whitelist_flow.asyncio.sleep", AsyncMock()),
+        ):
+            client_cls.return_value.fetch_member_status = AsyncMock(return_value=lapsed)
+            await cog.sync_patreon_access.coro(cog)
+        cog.revoke_owner_access.assert_awaited_once_with(456, "Patreon status `declined_patron`")
+
     async def test_beta_access_rejects_invalid_minecraft_username_immediately(self) -> None:
         bot = SimpleNamespace(settings=SimpleNamespace(
                 patreon_access_role_ids=(123,),

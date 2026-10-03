@@ -221,7 +221,7 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await self.post("/api/patreon/revoke", {"owner_id": "10"})
         self.assertEqual(response.status, 502)
-        deactivate_all.assert_awaited_once_with(10)
+        deactivate_all.assert_not_called()  # grants stay active so the revoke can be retried
         self.assertFalse(self.routes_patreon_audit.await_args.kwargs["github_ok"])
 
 

@@ -316,16 +316,17 @@ async def revoke_access(request: web.Request, actor: Actor) -> web.Response:
             ]
         if not grants:
             raise api_error(404, "No active grants to revoke.")
-        if gift_only:
-            await deactivate_gift_grant(owner_id, beneficiary_id)
-        else:
-            grants = await deactivate_grants_for_owner(owner_id)
+        # Whitelist file first: on a GitHub failure the grants stay active so staff can simply retry.
         github_ok = True
         try:
             await cog._remove_whitelist_grants(owner_id, grants, f"revoked by {actor.member} from the admin panel")
         except Exception:
             log.exception("Admin panel whitelist removal failed for owner %s", owner_id)
             github_ok = False
+        if github_ok and gift_only:
+            await deactivate_gift_grant(owner_id, beneficiary_id)
+        elif github_ok:
+            await deactivate_grants_for_owner(owner_id)
 
     usernames = sorted({g.minecraft_username for g in grants})
     await audit(
@@ -337,5 +338,5 @@ async def revoke_access(request: web.Request, actor: Actor) -> web.Response:
         github_ok=github_ok,
     )
     if not github_ok:
-        raise api_error(502, "Grants were marked inactive, but the GitHub whitelist update failed. Check the bot logs.")
+        raise api_error(502, "The GitHub whitelist update failed, so the grants are still active. Check the bot logs and retry.")
     return web.json_response({"ok": True, "revoked": usernames})

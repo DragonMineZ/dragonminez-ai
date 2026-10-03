@@ -10,7 +10,7 @@ from hmac import compare_digest
 from urllib.parse import urlparse
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from requests import HTTPError
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
@@ -28,6 +28,7 @@ from bulmaai.services.patreon_access import (
     build_patreon_authorization_url,
     build_patreon_oauth_state,
     is_active_entitled_patron,
+    parse_member_resource_status,
     parse_patreon_oauth_state,
     patreon_link_confirm_token,
     verify_patreon_webhook_signature,
@@ -42,6 +43,7 @@ from bulmaai.services.patreon_grants import (
     get_patreon_link,
     get_patreon_link_by_member_id,
     list_active_grants_for_owner,
+    list_linked_owner_ids_with_active_grants,
     update_link_entitlement,
     upsert_patreon_link,
     upsert_whitelist_grant,
@@ -71,6 +73,10 @@ BETA_ACCESS_START_PATH = "/beta-access/start"
 BETA_ACCESS_NONCE_COOKIE = "dmz_beta_access_nonce"
 DISCORD_OAUTH_TTL_SECONDS = 10 * 60
 PROCESSED_OAUTH_STATE_TTL_SECONDS = PATREON_OAUTH_TTL_SECONDS + 60
+# Patreon's Discord integration can swap tier roles (Contributor -> Benefactor) in two separate
+# member updates, so a lost role is only acted on if it's still gone after this grace period.
+ROLE_LOSS_GRACE_SECONDS = 120
+PATREON_SYNC_INTERVAL_HOURS = 1
 URL_RE = re.compile(r"https?://[^\s<]+")
 
 
@@ -350,6 +356,98 @@ class PatreonWhitelistFlowCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         self._register_patreon_routes()
+        if not self.sync_patreon_access.is_running():
+            self.sync_patreon_access.start()
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        settings = self.bot.settings
+        if not has_patreon_access_role(before, settings=settings) or has_patreon_access_role(after, settings=settings):
+            return
+        await asyncio.sleep(ROLE_LOSS_GRACE_SECONDS)
+        member = await self._resolve_member_across_guilds(after.id)
+        if member is not None and has_patreon_access_role(member, settings=settings):
+            return
+        try:
+            await self.revoke_owner_access(after.id, "Patreon role removed")
+        except Exception:
+            log.exception("Failed to revoke Patreon beta access after role loss for %s", after.id)
+
+    @tasks.loop(hours=PATREON_SYNC_INTERVAL_HOURS)
+    async def sync_patreon_access(self) -> None:
+        """Safety net for missed webhooks / role events: re-check every linked owner holding active grants."""
+        try:
+            owner_ids = await list_linked_owner_ids_with_active_grants()
+        except Exception:
+            log.exception("Patreon access sync could not list owners")
+            return
+        for owner_id in owner_ids:
+            try:
+                reason = await self._lapsed_access_reason(owner_id)
+                if reason is not None:
+                    await self.revoke_owner_access(owner_id, reason)
+            except Exception:
+                log.exception("Patreon access sync failed for owner %s", owner_id)
+            await asyncio.sleep(1)  # ponytail: crude Patreon/GitHub rate limiting, fine for a few hundred patrons
+
+    @sync_patreon_access.before_loop
+    async def _before_sync_patreon_access(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _lapsed_access_reason(self, owner_id: int) -> str | None:
+        """Why this owner's grants should go, or None to keep them."""
+        settings = self.bot.settings
+        member = await self._resolve_member_across_guilds(owner_id)
+        if member is None:
+            return "left the Discord server"
+        if not has_patreon_access_role(member, settings=settings):
+            return "Patreon role missing"
+
+        link = await get_patreon_link(owner_id)
+        if link is None or not link.patreon_member_id or not settings.PATREON_CREATOR_TOKEN:
+            return None
+        client = PatreonCreatorClient(
+            creator_token=settings.PATREON_CREATOR_TOKEN,
+            campaign_id=settings.PATREON_CAMPAIGN_ID,
+        )
+        try:
+            status = await client.fetch_member_status(link.patreon_member_id)
+        except HTTPError as exc:
+            if _github_error_status(exc) != 404:
+                log.warning("Patreon sync lookup failed for owner %s: %s", owner_id, exc)
+                return None
+            await update_link_entitlement(
+                discord_user_id=owner_id,
+                patron_status="deleted",
+                tier_ids=(),
+                last_charge_date=link.last_charge_date,
+                entitlement_active=False,
+            )
+            return "Patreon membership deleted"
+        except Exception as exc:
+            log.warning("Patreon sync lookup failed for owner %s: %s", owner_id, exc)
+            return None
+
+        active = is_active_entitled_patron(status, eligible_tier_ids=_eligible_tier_ids(settings))
+        await update_link_entitlement(
+            discord_user_id=owner_id,
+            patron_status=status.patron_status,
+            tier_ids=status.tier_ids,
+            last_charge_date=status.last_charge_date,
+            entitlement_active=active,
+        )
+        return None if active else f"Patreon status `{status.patron_status}`"
+
+    async def revoke_owner_access(self, owner_id: int, reason: str | None) -> list[PatreonGrant]:
+        """Remove the owner's self grant AND every gift they handed out. The whitelist file goes first so a
+        GitHub failure leaves the grants active for the next webhook/sync to retry."""
+        async with self._beta_access_lock(owner_id):
+            grants = await list_active_grants_for_owner(owner_id)
+            if not grants:
+                return []
+            await self._remove_whitelist_grants(owner_id, grants, reason)
+            await deactivate_grants_for_owner(owner_id)
+        return grants
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
@@ -388,6 +486,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         )
 
     def cog_unload(self) -> None:
+        self.sync_patreon_access.cancel()
         path = urlparse(self.bot.settings.patreon_oauth_redirect_uri).path
         unregister_extra_get_route(path)
         unregister_extra_get_route(BETA_ACCESS_ROUTE_PREFIX)
@@ -1795,7 +1894,12 @@ class PatreonWhitelistFlowCog(commands.Cog):
             creator_token=settings.PATREON_CREATOR_TOKEN,
             campaign_id=settings.PATREON_CAMPAIGN_ID,
         )
-        status = await client.fetch_member_status(member_id)
+        try:
+            status = await client.fetch_member_status(member_id)
+        except Exception as error:
+            # A deleted pledge often 404s on /members/{id}; the webhook body carries the same member resource.
+            log.warning("Patreon member lookup failed for %s, using webhook payload: %s", member_id, error)
+            status = parse_member_resource_status(payload, campaign_id=settings.PATREON_CAMPAIGN_ID)
         active = is_active_entitled_patron(status, eligible_tier_ids=_eligible_tier_ids(settings))
         await update_link_entitlement(
             discord_user_id=link.discord_user_id,
@@ -1810,8 +1914,12 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return text_http_response(202, "Patreon webhook accepted")
 
-        grants = await deactivate_grants_for_owner(link.discord_user_id)
-        await self._remove_whitelist_grants(link.discord_user_id, grants, status.patron_status)
+        try:
+            await self.revoke_owner_access(link.discord_user_id, status.patron_status)
+        except Exception:
+            # Patreon pauses the whole webhook after repeated failures, so never 500 here: the grants stay
+            # active (whitelist goes first) and the hourly sync retries the removal.
+            log.exception("Patreon webhook revoke failed for %s; hourly sync will retry", link.discord_user_id)
         return text_http_response(202, "Patreon webhook accepted")
 
     async def _remove_whitelist_grants(
@@ -1827,18 +1935,21 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
         branch = _patreon_remove_branch_name(owner_discord_user_id)
+        keys = {nickname.casefold() for nickname in nicknames}
         base_text, _base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
         base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
-        remaining = [line for line in base_lines if line not in set(nicknames)]
+        remaining = [line for line in base_lines if line.casefold() not in keys]
         if remaining == base_lines:
             await self._log_staff_info(
                 f"Patreon access expired for <@{owner_discord_user_id}>; no matching whitelist lines found for `{', '.join(nicknames)}`."
             )
             return
         await self.gh.create_branch(branch, self.gh.base_branch)
+        # A failed earlier attempt leaves this branch behind; start it fresh from the base.
+        await self.gh.reset_branch(branch, await self.gh.get_ref_sha(self.gh.base_branch))
         branch_text, branch_sha = await self.gh.get_whitelist_file(ref=branch)
         branch_lines = [ln.strip() for ln in branch_text.splitlines() if ln.strip()]
-        updated = [line for line in branch_lines if line not in set(nicknames)]
+        updated = [line for line in branch_lines if line.casefold() not in keys]
         await self.gh.put_whitelist_file(
             branch=branch,
             new_text=("\n".join(updated) + "\n") if updated else "",

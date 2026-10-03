@@ -262,6 +262,21 @@ async def list_active_grants_for_owner(owner_discord_user_id: int) -> list[Patre
     return [_row_to_grant(row) for row in rows]
 
 
+async def list_linked_owner_ids_with_active_grants() -> list[int]:
+    """Owners who came through the Patreon flow; staff overrides without a link are left alone."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT g.owner_discord_user_id
+            FROM patreon_whitelist_grants g
+            JOIN patreon_links l ON l.discord_user_id = g.owner_discord_user_id
+            WHERE g.active = TRUE
+            """
+        )
+    return [int(row["owner_discord_user_id"]) for row in rows]
+
+
 async def list_active_gifts_for_beneficiary(beneficiary_discord_user_id: int) -> list[PatreonGrant]:
     pool = await get_pool()
     async with pool.acquire() as conn:

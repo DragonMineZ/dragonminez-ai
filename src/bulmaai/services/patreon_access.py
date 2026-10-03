@@ -230,6 +230,27 @@ def parse_patreon_member_status(
     )
 
 
+def parse_member_resource_status(
+    payload: Mapping[str, Any],
+    *,
+    campaign_id: str | None,
+) -> PatreonMemberStatus:
+    """A /members/{id} response or a members:* webhook body, where `data` is the member itself."""
+    data = payload.get("data")
+    if not isinstance(data, dict) or data.get("type") != "member":
+        return parse_patreon_member_status(payload, campaign_id=campaign_id)
+    user_ids = _relationship_ids(data, "user")
+    wrapped = {
+        "data": {
+            "id": user_ids[0] if user_ids else "",
+            "type": "user",
+            "relationships": {"memberships": {"data": [data]}},
+        },
+        "included": [data],
+    }
+    return parse_patreon_member_status(wrapped, campaign_id=campaign_id)
+
+
 def is_active_entitled_patron(
     status: PatreonMemberStatus,
     *,
@@ -325,19 +346,7 @@ class PatreonCreatorClient:
             },
         )
         response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data")
-        if isinstance(data, dict) and data.get("type") == "member":
-            user_id = None
-            user_ids = _relationship_ids(data, "user")
-            if user_ids:
-                user_id = user_ids[0]
-            if user_id is not None:
-                payload = {
-                    "data": {"id": user_id, "type": "user", "relationships": {"memberships": {"data": [data]}}},
-                    "included": [data],
-                }
-        return parse_patreon_member_status(payload, campaign_id=self.campaign_id)
+        return parse_member_resource_status(response.json(), campaign_id=self.campaign_id)
 
     async def fetch_member_details(self, member_id: str, *, timeout: int = 6) -> PatreonMemberDetails:
         """Admin-panel detail view only: pledge amount, lifetime support, charge/cadence info."""

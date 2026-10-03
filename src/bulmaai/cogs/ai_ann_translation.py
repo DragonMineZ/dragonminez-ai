@@ -194,6 +194,9 @@ class AiAnnTranslation(commands.Cog):
             self.settings.patreon_announcement_channel_id,
         }
         publishable_channels.discard(None)
+        # Never crosspost prompts with real buttons (release approvals); link-button announcements still go out.
+        if any(getattr(item, "custom_id", None) for row in message.components for item in getattr(row, "children", ())):
+            return
 
         if message.channel.id in publishable_channels and message.channel.type == discord.ChannelType.news:
             try:

@@ -7,7 +7,7 @@ from bulmaai.services.release_approval import ReleaseCandidate
 from bulmaai.utils.permissions import is_admin
 
 
-ReleaseAction = Callable[[discord.Interaction, ReleaseCandidate], Awaitable[None]]
+ReleaseAction = Callable[[discord.Interaction, ReleaseCandidate], Awaitable[bool]]  # True once decided
 
 
 def can_manage_release_approval(user: object) -> bool:
@@ -104,6 +104,7 @@ class ReleaseCandidateView(discord.ui.View):
         self.candidate = candidate
         self._on_approve = on_approve
         self._on_reject = on_reject
+        self._handled = False
 
     async def _require_admin(self, interaction: discord.Interaction) -> bool:
         if can_manage_release_approval(interaction.user):
@@ -114,17 +115,28 @@ class ReleaseCandidateView(discord.ui.View):
         )
         return False
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
-    async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def _decide(self, interaction: discord.Interaction, action: ReleaseAction) -> None:
         if not await self._require_admin(interaction):
             return
-        await self._on_approve(interaction, self.candidate)
+        if self._handled:
+            await interaction.response.send_message("This release is already being handled.", ephemeral=True)
+            return
+        # Claimed before the first await, so a double or concurrent click can't dispatch two approvals;
+        # released only when the action didn't decide (e.g. missing release notes).
+        self._handled = True
+        decided = False
+        try:
+            decided = await action(interaction, self.candidate)
+        finally:
+            self._handled = decided
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
+    async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        await self._decide(interaction, self._on_approve)
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger)
     async def reject_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if not await self._require_admin(interaction):
-            return
-        await self._on_reject(interaction, self.candidate)
+        await self._decide(interaction, self._on_reject)
 
     @discord.ui.button(label="Modify", style=discord.ButtonStyle.primary)
     async def modify_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -134,7 +146,7 @@ class ReleaseCandidateView(discord.ui.View):
         modal = ReleaseMetadataModal(self.candidate)
         await interaction.response.send_modal(modal)
         await modal.wait()
-        if modal.result is None:
+        if modal.result is None or self._handled:  # don't bring the buttons back on a decided release
             return
 
         self.candidate = modal.result

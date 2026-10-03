@@ -162,7 +162,7 @@ class ReleaseApprovalCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         candidate: ReleaseCandidate,
-    ) -> None:
+    ) -> bool:
         await interaction.response.defer(ephemeral=True)
         try:
             await self.approval_service.approve_candidate(
@@ -176,7 +176,7 @@ class ReleaseApprovalCog(commands.Cog):
                 f"{error}. Use Modify to add release notes before approval.",
                 ephemeral=True,
             )
-            return
+            return False
         if interaction.message is not None:
             await interaction.message.edit(
                 embed=build_release_candidate_embed(
@@ -190,12 +190,13 @@ class ReleaseApprovalCog(commands.Cog):
             f"DragonMineZ {candidate.version} approval dispatched to GitHub.",
             ephemeral=True,
         )
+        return True
 
     async def _reject_candidate(
         self,
         interaction: discord.Interaction,
         candidate: ReleaseCandidate,
-    ) -> None:
+    ) -> bool:
         await interaction.response.defer(ephemeral=True)
         if interaction.message is not None:
             await interaction.message.edit(
@@ -210,6 +211,7 @@ class ReleaseApprovalCog(commands.Cog):
             f"DragonMineZ {candidate.version} release candidate rejected.",
             ephemeral=True,
         )
+        return True
 
 
 def setup(bot: discord.Bot):

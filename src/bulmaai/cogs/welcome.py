@@ -30,11 +30,20 @@ class WelcomeCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
+    def _eligible(self, member: discord.Member) -> bool:
+        return not member.bot and member.guild.id == self.bot.settings.panel_guild_id
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        settings = self.bot.settings
-        if member.bot or member.guild.id != settings.panel_guild_id:
-            return
+        if self._eligible(member) and not member.pending:
+            await self._onboard(member)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        if self._eligible(after) and before.pending and not after.pending:
+            await self._onboard(after)
+
+    async def _onboard(self, member: discord.Member) -> None:
         await self._grant_member_role(member)
         await self._send_welcome(member)
 

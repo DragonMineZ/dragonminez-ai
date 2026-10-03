@@ -28,13 +28,14 @@ def make_avatar_bytes() -> bytes:
     return output.getvalue()
 
 
-def make_member(*, guild, roles=(), bot=False):
+def make_member(*, guild, roles=(), bot=False, pending=False):
     avatar = MagicMock()
     avatar.with_size.return_value.with_static_format.return_value.read = AsyncMock(return_value=make_avatar_bytes())
     return SimpleNamespace(
         id=42,
         name="zoned.out",
         bot=bot,
+        pending=pending,
         guild=guild,
         roles=list(roles),
         mention="<@42>",
@@ -108,6 +109,40 @@ class WelcomeCogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], build_welcome_message(member))
         self.assertIsInstance(kwargs["file"], discord.File)
         self.assertEqual(kwargs["allowed_mentions"].users, [member])
+
+    async def test_pending_join_waits_for_terms_acceptance(self):
+        role = SimpleNamespace(id=77, name="Member")
+        channel = SimpleNamespace(id=50, send=AsyncMock())
+        member = make_member(guild=make_guild(role=role, channel=channel), pending=True)
+
+        await make_cog(make_settings()).on_member_join(member)
+
+        member.add_roles.assert_not_awaited()
+        channel.send.assert_not_awaited()
+
+    async def test_accepting_terms_grants_role_and_welcomes(self):
+        role = SimpleNamespace(id=77, name="Member")
+        channel = SimpleNamespace(id=50, send=AsyncMock())
+        guild = make_guild(role=role, channel=channel)
+        before = make_member(guild=guild, pending=True)
+        after = make_member(guild=guild, pending=False)
+
+        await make_cog(make_settings()).on_member_update(before, after)
+
+        after.add_roles.assert_awaited_once_with(role, reason=AUTO_JOIN_REASON)
+        channel.send.assert_awaited_once()
+
+    async def test_unrelated_member_update_does_nothing(self):
+        role = SimpleNamespace(id=77, name="Member")
+        channel = SimpleNamespace(id=50, send=AsyncMock())
+        guild = make_guild(role=role, channel=channel)
+        before = make_member(guild=guild)
+        after = make_member(guild=guild)
+
+        await make_cog(make_settings()).on_member_update(before, after)
+
+        after.add_roles.assert_not_awaited()
+        channel.send.assert_not_awaited()
 
     async def test_ignores_bots(self):
         role = SimpleNamespace(id=77, name="Member")

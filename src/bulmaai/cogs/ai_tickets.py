@@ -3,7 +3,9 @@ import io
 import logging
 import random
 import re
+import time
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -13,7 +15,9 @@ from openai import AsyncOpenAI
 
 from bulmaai.config import load_settings
 from bulmaai.services import ai_budget
+from bulmaai.services.ai_guard import can_post_publicly, defuse_mentions, safe_name, strip_links
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
+from bulmaai.services.moderation import ModerationState
 from bulmaai.services.openai_client import (
     ConversationMessage,
     is_transient_ai_error,
@@ -67,6 +71,13 @@ ACK_MESSAGE_RE = re.compile(
 )
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
+# ponytail: in-memory per-user window (a restart resets it); stops one member draining the shared daily AI budget.
+SUPPORT_RATE_LIMIT_CALLS = 8
+SUPPORT_RATE_LIMIT_WINDOW_SECONDS = 600
+PUBLIC_FALLBACK_TEXT = "I can't answer that one here. Try `/ask`, or open a ticket."
+RATE_LIMITED_TEXT = (
+    "You're sending messages faster than I can keep up, so I'll pause for a few minutes. Staff can still see this."
+)
 GENERAL_CONTEXT_MAX_AGE = timedelta(minutes=30)
 REPLY_PREVIEW_CHARS = 80
 AI_PAUSED_TEXT = (
@@ -399,6 +410,10 @@ class AITicketsCog(commands.Cog):
         # ponytail: in-memory dedupe; a ticket reopened and re-closed after a restart archives twice.
         self._archived_channels: set[int] = set()
         self._paused_notices: dict[int, date] = {}
+        self._rate_limit_state = ModerationState()
+        self._support_events: dict[tuple[int, int], list[float]] = defaultdict(list)
+        # ponytail: one entry per ticket channel answered; tiny, cleared on restart.
+        self._ticket_owners: dict[int, int | None] = {}
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -732,7 +747,7 @@ class AITicketsCog(commands.Cog):
                 roles.append("patron")
             if has_any_allowed_role(member, settings.dev_jar_tester_role_ids):
                 roles.append("tester")
-        name = getattr(message.author, "display_name", message.author.name)
+        name = safe_name(getattr(message.author, "display_name", message.author.name))
         lines = [f"channel: {where}", f"requester: {name} (roles: {', '.join(roles) or 'member'})"]
         opened = _relative_age(getattr(channel, "created_at", None)) if in_ticket else None
         if opened:
@@ -798,12 +813,26 @@ class AITicketsCog(commands.Cog):
         if ai_budget.is_paused(settings):
             await self._send_paused_notice(channel)
             return
+        events = self._rate_limit_state.record(
+            self._support_events, (message.author.id, 0), time.monotonic(), SUPPORT_RATE_LIMIT_WINDOW_SECONDS
+        )
+        if len(events) > SUPPORT_RATE_LIMIT_CALLS:
+            log.warning(
+                "AI support rate limit hit by %s",
+                message.author.id,
+                extra={"event": "ai_support_rate_limited", "channel_id": channel.id, "user_id": message.author.id},
+            )
+            if len(events) == SUPPORT_RATE_LIMIT_CALLS + 1 and (in_ticket or in_dm):
+                await self._send_messages_with_typing(channel, [RATE_LIMITED_TEXT])
+            return
 
         async with self._channel_locks[channel.id]:
             try:
                 # Analyses are rendered inline on the triggering message, so the question text and
                 # its screenshots stay one user turn (and are reused for later turns + the transcript).
-                image_analyses = await self._extract_image_context(message)
+                # Shielded: a newer message may cancel this task, but a request already sent still costs
+                # tokens and must finish so ai_budget records it; only the stale reply is dropped.
+                image_analyses = await asyncio.shield(self._extract_image_context(message))
                 history = await self._build_history(
                     message,
                     in_ticket=in_ticket,
@@ -813,7 +842,7 @@ class AITicketsCog(commands.Cog):
                     message, member=member, in_ticket=in_ticket, in_dm=in_dm
                 )
                 async with channel.typing():
-                    result = await run_support_agent(
+                    result = await asyncio.shield(run_support_agent(
                         messages=history,
                         enabled_tools=SUPPORT_TOOL_NAMES,
                         language_hint=None,
@@ -825,7 +854,7 @@ class AITicketsCog(commands.Cog):
                         context_lines=context_lines,
                         requester_is_staff=member is not None and is_staff(member, settings=settings),
                         channel_kind="ticket" if in_ticket else "dm" if in_dm else "public",
-                    )
+                    ))
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -878,6 +907,9 @@ class AITicketsCog(commands.Cog):
             kind = result.get("kind")
 
             reply_text = result["reply"].strip()
+            public = not (in_ticket or in_dm)
+            if public and reply_text and reply_text != "(no reply)" and not can_post_publicly(result):
+                reply_text = PUBLIC_FALLBACK_TEXT
             if reply_text and reply_text != "(no reply)":
                 outgoing_messages.append(reply_text)
                 should_mark_escalated = in_ticket and kind == "handoff"
@@ -897,7 +929,7 @@ class AITicketsCog(commands.Cog):
                 await self._mark_ticket_escalated(channel.id)
                 if kind == "handoff":
                     await self._ping_escalation_roles(channel, message.author.id)
-            elif sent and in_ticket and kind in (None, "answer"):
+            elif sent and in_ticket and kind in (None, "answer") and await self._is_ticket_owner(channel, message.author.id):
                 await self._maybe_prompt_resolution(
                     channel,
                     requester_id=message.author.id,
@@ -905,6 +937,19 @@ class AITicketsCog(commands.Cog):
                     force=result["suggested_close"],
                     language=result.get("language", "en"),
                 )
+
+    async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
+        """Ticket Tool's welcome message mentions the owner; only they may get the "solved?" buttons."""
+        if channel.id not in self._ticket_owners:
+            owner_id = None
+            async for entry in channel.history(limit=5, oldest_first=True):
+                if entry.author.id == TICKET_TOOL_BOT_ID:
+                    owner_id = next((mentioned.id for mentioned in entry.mentions if not mentioned.bot), None)
+                    if owner_id is not None:
+                        break
+            self._ticket_owners[channel.id] = owner_id
+        owner_id = self._ticket_owners[channel.id]
+        return owner_id is None or owner_id == user_id
 
     async def _maybe_prompt_resolution(
         self,
@@ -1080,19 +1125,30 @@ class AITicketsCog(commands.Cog):
 
             summary: TicketSummary | None = None
             try:
-                summary = await summarize_ticket(
-                    lines,
-                    model=settings.openai_ticket_summary_model,
-                    timeout_seconds=settings.ai_support_timeout_seconds,
-                )
+                if not ai_budget.is_paused(settings):
+                    summary = await summarize_ticket(
+                        lines,
+                        model=settings.openai_ticket_summary_model,
+                        timeout_seconds=settings.ai_support_timeout_seconds,
+                    )
             except Exception:
                 log.exception("Failed to summarize ticket", extra={"channel_id": channel.id})
+            if summary is not None:
+                # Written by a model from member text; it lands in staff channels and AI knowledge.
+                summary = replace(
+                    summary,
+                    title=strip_links(defuse_mentions(summary.title)),
+                    problem=strip_links(defuse_mentions(summary.problem)),
+                    resolution=strip_links(defuse_mentions(summary.resolution)),
+                )
             if resolved is None:
                 resolved = bool(summary and summary.resolved)
 
             openai_file_id: str | None = None
             vector_store_id = _ticket_vector_store_id(settings)
-            if summary is not None and summary.knowledge_worthy and vector_store_id:
+            # Only tickets a staff member took part in may teach the AI, and only their lines are kept.
+            staff_reviewed = any(line.speaker_kind == "staff" for line in lines)
+            if summary is not None and summary.knowledge_worthy and staff_reviewed and vector_store_id:
                 try:
                     openai_file_id = await upload_ticket_knowledge(
                         render_knowledge_markdown(summary, lines, closed_at=closed_at),

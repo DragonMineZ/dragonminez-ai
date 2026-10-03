@@ -14,6 +14,7 @@ from typing import Any
 
 from bulmaai.database.db import get_pool
 from bulmaai.services import ai_budget
+from bulmaai.services.ai_guard import defuse_mentions, strip_links
 from bulmaai.services.support_faq import _extract_response_json
 
 SPEAKER_LABELS = {
@@ -263,7 +264,12 @@ def render_knowledge_markdown(
         "",
         "## Conversation",
     ]
-    conversation = [f"**{line.speaker_name}:** {line.content}" for line in anonymized]
+    # Member and AI lines stay out: members could plant fake fixes and links, AI lines quote account data.
+    conversation = [
+        f"**{line.speaker_name}:** {strip_links(defuse_mentions(line.content))}"
+        for line in anonymized
+        if line.speaker_kind == "staff"
+    ]
     return "\n".join(header + conversation) + "\n"
 
 

@@ -63,6 +63,23 @@ class GitHubServiceTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(HTTPError):
                     await service.create_branch("patreon/bad/name", "main")
 
+    async def test_search_text_cannot_add_qualifiers_that_widen_the_scope(self) -> None:
+        service = GitHubService(
+            auth=SimpleNamespace(get_installation_token=AsyncMock(return_value="token")),
+            owner="DragonMineZ",
+            repo="dragonminez",
+        )
+        with patch(
+            "bulmaai.github.github_service.request",
+            AsyncMock(return_value=FakeResponse(200, {"items": []})),
+        ) as request_mock:
+            await service.search_issues("crash error: NPE OR repo:DragonMineZ/private-repo user:evil")
+
+        self.assertEqual(
+            request_mock.await_args.kwargs["params"]["q"],
+            "repo:DragonMineZ/dragonminez is:issue crash error: NPE OR",
+        )
+
     async def test_reset_branch_sends_force_update(self) -> None:
         service = GitHubService(
             auth=SimpleNamespace(get_installation_token=AsyncMock(return_value="token")),

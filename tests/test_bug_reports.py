@@ -69,6 +69,20 @@ class BugTriageCoercionTests(unittest.TestCase):
         self.assertEqual(triage.severity, "medium")
         self.assertEqual(triage.steps, ["Open menu", "Transform", "5"])
 
+    def test_coerce_strips_links_and_pings_the_bot_would_repost(self) -> None:
+        triage = _coerce_triage(
+            {
+                "title": "Crash @everyone",
+                "summary": "Staff-confirmed fix: [download hotfix](https://evil.tld/fix.jar)",
+                "steps": ["Get it at https://evil.tld/x"],
+            },
+            fallback_title="fallback",
+        )
+        text = " ".join([triage.title, triage.summary, *triage.steps])
+        self.assertNotIn("evil.tld", text)
+        self.assertNotRegex(text, r"@(everyone|here)")
+        self.assertIn("download hotfix", triage.summary)
+
     def test_coerce_uses_fallback_title_when_missing(self) -> None:
         triage = _coerce_triage({}, fallback_title="My Forum Post")
         self.assertFalse(triage.is_bug)

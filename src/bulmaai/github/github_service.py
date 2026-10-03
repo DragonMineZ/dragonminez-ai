@@ -1,8 +1,11 @@
 import base64
+import re
 from requests import HTTPError
 
 from bulmaai.services.http import request
 from bulmaai.github.github_app_auth import GitHubAppAuth
+
+_SEARCH_QUALIFIER_RE = re.compile(r"(?i)(?<!\S)-?[a-z][a-z_-]*:\S+")
 
 
 def _is_ref_already_exists_response(response) -> bool:
@@ -180,6 +183,8 @@ class GitHubService:
 
     async def search_issues(self, text: str, *, per_page: int = 10) -> list[dict]:
         """Full-text search issues (open and closed) in this repo, most relevant first."""
+        # The text comes from members/the model: drop qualifiers like repo:/org:/user: so it can't widen the scope.
+        text = " ".join(_SEARCH_QUALIFIER_RE.sub(" ", text).split())
         query = f"repo:{self.owner}/{self.repo} is:issue {text}".strip()
         r = await request(
             "GET",

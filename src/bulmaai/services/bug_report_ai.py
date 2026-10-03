@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 
 from bulmaai.services import ai_budget
+from bulmaai.services.ai_guard import defuse_mentions, strip_links
 
 log = logging.getLogger(__name__)
 
@@ -92,19 +93,25 @@ class DuplicateAssessment:
 _NO_MATCH = DuplicateAssessment("none", None, "", "low", "")
 
 
+def _clean(value: object) -> str:
+    """Model output built from member text (and GitHub titles anyone can write) is posted under the bot's
+    name in a public thread and can become a GitHub issue: no pings, no links."""
+    return strip_links(defuse_mentions(str(value or ""))).strip()
+
+
 def _coerce_triage(data: dict, *, fallback_title: str) -> BugTriage:
     severity = str(data.get("severity", "medium")).strip().lower()
     if severity not in VALID_SEVERITIES:
         severity = "medium"
     raw_steps = data.get("steps") or []
-    steps = [str(step).strip() for step in raw_steps if str(step).strip()][:10]
-    title = str(data.get("title") or fallback_title).strip()[:240] or fallback_title
+    steps = [_clean(step) for step in raw_steps if _clean(step)][:10]
+    title = _clean(data.get("title") or fallback_title)[:240] or _clean(fallback_title) or "Bug report"
     return BugTriage(
         is_bug=bool(data.get("is_bug", False)),
         title=title,
-        summary=str(data.get("summary") or "").strip()[:1500],
+        summary=_clean(data.get("summary"))[:1500],
         severity=severity,
-        affected_area=str(data.get("affected_area") or "Unknown").strip()[:100],
+        affected_area=_clean(data.get("affected_area") or "Unknown")[:100],
         steps=steps,
     )
 
@@ -225,7 +232,7 @@ async def assess_duplicate(
     return DuplicateAssessment(
         match_type=match_type,
         issue_number=issue_number,
-        issue_title=titles_by_number[issue_number],
+        issue_title=_clean(titles_by_number[issue_number]),
         confidence=confidence,
-        reason=str(data.get("reason") or "").strip()[:300],
+        reason=_clean(data.get("reason"))[:300],
     )

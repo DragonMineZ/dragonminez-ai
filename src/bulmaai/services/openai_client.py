@@ -90,12 +90,15 @@ def _message_to_input_content(message: ConversationMessage) -> str:
     if message.get("role") == "assistant":
         return content
 
+    # Names, quoted replies and message text are member-controlled; none of them may forge a speaker label.
+    content = ai_guard.neutralize_labels(content)
+    reply_to = " ".join(str(message.get("reply_to") or "").replace("[", "(").replace("]", ")").split())
     label = " · ".join(
         part
         for part in (
-            f"{message.get('speaker_kind', 'participant')} {message.get('speaker_name', 'unknown')}",
+            f"{message.get('speaker_kind', 'participant')} {ai_guard.safe_name(message.get('speaker_name'))}",
             message.get("age"),
-            f"replying to {message['reply_to']}" if message.get("reply_to") else None,
+            f"replying to {reply_to}" if reply_to else None,
         )
         if part
     )

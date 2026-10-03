@@ -8,7 +8,7 @@ import discord
 from discord.ext import commands
 
 from bulmaai.cogs.ai_tickets import _chunk_discord_message
-from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, screen_question
+from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, can_post_publicly, safe_name, screen_question
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.openai_client import (
@@ -24,16 +24,10 @@ REFUSAL_TEXT = (
     "I only answer DragonMineZ questions, in my own words: I won't repeat text, ping anyone or change my rules. "
     "Ask your question plainly, or open a ticket."
 )
-PUBLIC_KINDS = frozenset({"answer", "clarify"})
 
 
 def is_ask_channel_allowed(channel_id: int, allowed_channel_ids: Sequence[int]) -> bool:
     return channel_id in set(allowed_channel_ids)
-
-
-def can_post_publicly(result: dict) -> bool:
-    """Only clean, on-topic answers go public; anything the guard touched or the model flagged stays private."""
-    return result.get("kind") in PUBLIC_KINDS and not result.get("guard_flags")
 
 
 def evaluate_ask_rate_limit(
@@ -114,7 +108,7 @@ class AskCog(commands.Cog):
             ConversationMessage(
                 role="user",
                 content=question,
-                speaker_name=getattr(ctx.author, "display_name", ctx.author.name),
+                speaker_name=safe_name(getattr(ctx.author, "display_name", ctx.author.name)),
                 speaker_id=str(ctx.author.id),
                 speaker_kind="requester",
             )
@@ -132,7 +126,7 @@ class AskCog(commands.Cog):
                 settings=settings,
                 context_lines=[
                     f"channel: /ask slash command in #{getattr(ctx.channel, 'name', '?')} (single question, no history)",
-                    f"requester: {getattr(ctx.author, 'display_name', ctx.author.name)}",
+                    f"requester: {safe_name(getattr(ctx.author, 'display_name', ctx.author.name))}",
                 ],
                 requester_is_staff=isinstance(ctx.author, discord.Member) and is_staff(ctx.author, settings=settings),
                 channel_kind="public",

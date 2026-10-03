@@ -81,6 +81,7 @@ class BugReportsCog(commands.Cog):
         self.client = AsyncOpenAI(api_key=self.settings.openai_key)
         self._poll_lock = asyncio.Lock()
         self._poll_started = False
+        self._creating_issues: set[int] = set()
 
     # ==================== lifecycle ====================
 
@@ -228,6 +229,16 @@ class BugReportsCog(commands.Cog):
             await self._handle_close_fixed(interaction, int(custom_id.split(":")[1]))
 
     async def _handle_create_issue(self, interaction: discord.Interaction, thread_id: int) -> None:
+        # Two quick clicks would both pass the "already tracked" check and file duplicate GitHub issues.
+        if thread_id in self._creating_issues:
+            return await interaction.response.send_message("That issue is already being created.", ephemeral=True)
+        self._creating_issues.add(thread_id)
+        try:
+            await self._create_issue(interaction, thread_id)
+        finally:
+            self._creating_issues.discard(thread_id)
+
+    async def _create_issue(self, interaction: discord.Interaction, thread_id: int) -> None:
         if not is_staff(interaction.user, settings=self.settings):
             return await interaction.response.send_message(
                 "Only staff can create issues.", ephemeral=True

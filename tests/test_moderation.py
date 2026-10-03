@@ -324,6 +324,26 @@ class ModerationIncidentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.timeouts), 1)
         self.assertEqual(self.cases, ["delete", "timeout"])
 
+    async def test_everyone_ping_warns_on_the_third_try_only(self) -> None:
+        from collections import defaultdict
+
+        from bulmaai.services.moderation import ModerationState
+
+        cog, make_message = self._setup(member_outranks_bot=True)
+        cog._state = ModerationState()
+        cog._everyone_ping_events = defaultdict(list)
+        cog._send_delete_notice = AsyncMock()
+        cog._issue_warn_strike = AsyncMock()
+        decision = ModerationDecision(action=ModerationAction.DELETE, reason="everyone_ping")
+
+        for i in range(2):
+            await cog._apply_decision(make_message(i, 10), decision)
+        cog._issue_warn_strike.assert_not_awaited()
+        await cog._apply_decision(make_message(2, 10), decision)
+        cog._issue_warn_strike.assert_awaited_once()
+        await cog._apply_decision(make_message(3, 10), decision)
+        cog._issue_warn_strike.assert_awaited_once()
+
 
 class ImageBurstConfirmationTests(unittest.TestCase):
     def _post(self, at: float, channel: int, *sigs):

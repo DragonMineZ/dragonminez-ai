@@ -21,7 +21,7 @@ from openai import (
 )
 
 from bulmaai.config import Settings, load_settings
-from bulmaai.services import ai_budget, ai_tools
+from bulmaai.services import ai_budget, ai_guard, ai_tools
 from bulmaai.services.support_traces import SupportAITrace, record_support_ai_trace
 from bulmaai.services.wiki_knowledge import (
     DEFAULT_WIKI_BASE_URL,
@@ -70,6 +70,7 @@ class AgentResult(TypedDict, total=False):
     escalated: bool
     paused: bool
     response_id: str
+    guard_flags: frozenset[str]
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
@@ -782,6 +783,15 @@ async def _run_once(
     reply_text, confidence = _split_confidence(raw_text)
     reply_text, kind = _split_kind(reply_text)
     reply_text, sources = _split_sources(reply_text)
+    # Before the wiki links are appended: those are ours, everything above them is model output.
+    reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings)
+    if guard_flags - {"unknown_link"}:
+        log.warning(
+            "AI reply tripped guardrails (%s)%s",
+            ", ".join(sorted(guard_flags)),
+            "; blocked" if guard_flags & ai_guard.BLOCKING_FLAGS else "; defused",
+            extra={"event": "ai_reply_guarded", "channel_id": channel_id, "user_id": user_id, "workflow": workflow},
+        )
     cited = [name for each in responses for name in _extract_file_citations(each)]
     cited += [name for name in sources if name in knowledge_filenames]
     reply_text = _append_wiki_sources(
@@ -834,6 +844,7 @@ async def _run_once(
         confidence=confidence,
         kind=kind,
         model=model,
+        guard_flags=guard_flags,
     )
     if response_id:
         result["response_id"] = response_id

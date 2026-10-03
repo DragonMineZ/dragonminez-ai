@@ -18,7 +18,12 @@ from urllib.parse import urlparse
 
 import discord
 
-from bulmaai.cogs.ai_ann_translation import build_announcement_sends, swap_role_mentions, translate_text
+from bulmaai.cogs.ai_ann_translation import (
+    build_announcement_sends,
+    swap_role_mentions,
+    translate_text,
+    translated_role_mentions,
+)
 from bulmaai.database.db import get_pool
 
 log = logging.getLogger(__name__)
@@ -297,7 +302,12 @@ async def _send_one_translation(bot: Any, guild: discord.Guild, channel: Any, pa
     target_channel_id = getattr(bot.settings, LANGUAGE_CHANNEL_SETTINGS[lang], None)
     target = resolve_channel(guild, target_channel_id) if target_channel_id else channel
     check_bot_can(guild, target, embed=bool(built.embeds), edit=False)
-    mentions = discord.AllowedMentions(roles=True, users=False, everyone=built.mentions.everyone)
+    mentions = translated_role_mentions(
+        [int(role_id) for role_id in payload.get("mention_roles") or []],
+        lang,
+        cog.settings,
+        everyone=built.mentions.everyone,
+    )
     await send_built_message(target, BuiltMessage(built.content, built.embeds, built.view, mentions))
 
 

@@ -42,6 +42,10 @@ def _get_github_service(settings, repo: str) -> GitHubService:
     )
 
 
+def _reporter_only(report) -> discord.AllowedMentions:
+    return discord.AllowedMentions(users=[discord.Object(id=report.reporter_id)] if report.reporter_id else False)
+
+
 def _thread_jump_url(guild_id: int | None, thread_id: int) -> str:
     guild_part = str(guild_id) if guild_id else "@me"
     return f"https://discord.com/channels/{guild_part}/{thread_id}"
@@ -381,7 +385,7 @@ class BugReportsCog(commands.Cog):
             try:
                 await thread.send(
                     message_builder(report),
-                    allowed_mentions=discord.AllowedMentions(users=True),
+                    allowed_mentions=_reporter_only(report),
                 )
                 await thread.edit(archived=True, locked=True)
             except Exception:
@@ -500,7 +504,7 @@ class BugReportsCog(commands.Cog):
             await thread.send(
                 f"{mention}Good news! 🎉 The issue you reported has been **fixed** and will be "
                 "included in an upcoming update. Thanks a lot for taking the time to report it!",
-                allowed_mentions=discord.AllowedMentions(users=True),
+                allowed_mentions=_reporter_only(report),
             )
             if report.triage_message_id:
                 try:

@@ -37,18 +37,20 @@ class BotStartupTests(unittest.IsolatedAsyncioTestCase):
 
         install.assert_called_once()
 
-    def test_default_mentions_never_ping_everyone_or_roles(self) -> None:
+    def test_default_mentions_ping_nobody_unless_a_call_names_them(self) -> None:
         default = BulmaAI(load_settings(include_overrides=False)).allowed_mentions
 
-        def parse(per_call: discord.AllowedMentions | None) -> list[str]:
-            return (default.merge(per_call) if per_call else default).to_dict()["parse"]
+        def payload(per_call: discord.AllowedMentions | None) -> dict:
+            return (default.merge(per_call) if per_call else default).to_dict()
 
-        self.assertEqual(parse(None), ["users"])
-        # Partial objects used across cogs leave everyone/roles at a truthy sentinel; the default must win.
-        self.assertEqual(parse(discord.AllowedMentions(users=True)), ["users"])
-        self.assertNotIn("everyone", parse(discord.AllowedMentions(roles=True)))
+        self.assertEqual(payload(None)["parse"], [])
+        # Answering someone pings that ID only, even if their name is "@everyone": partial objects leave
+        # everyone/roles at a truthy sentinel and the default must win the merge.
+        only_them = payload(discord.AllowedMentions(users=[discord.Object(id=42)]))
+        self.assertEqual((only_them["parse"], only_them["users"]), ([], [42]))
+        self.assertNotIn("everyone", payload(discord.AllowedMentions(roles=[discord.Object(id=7)]))["parse"])
         # The admin panel's explicit @everyone opt-in still works.
-        self.assertIn("everyone", parse(discord.AllowedMentions(everyone=True)))
+        self.assertIn("everyone", payload(discord.AllowedMentions(everyone=True))["parse"])
 
 
 if __name__ == "__main__":

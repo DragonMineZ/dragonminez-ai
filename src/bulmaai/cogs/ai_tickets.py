@@ -756,7 +756,7 @@ class AITicketsCog(commands.Cog):
             await channel.send(
                 " ".join(f"<@&{role_id}>" for role_id in role_ids)
                 + f" <@{requester_id}> still needs help, the AI couldn't solve this one.",
-                allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+                allowed_mentions=discord.AllowedMentions(roles=[discord.Object(id=role_id) for role_id in role_ids]),
             )
         except discord.HTTPException:
             log.exception("Failed to ping staff for escalated ticket", extra={"channel_id": channel.id})

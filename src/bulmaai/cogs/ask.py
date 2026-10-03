@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 
 from bulmaai.cogs.ai_tickets import _chunk_discord_message
+from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, screen_question
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.openai_client import (
@@ -19,9 +20,20 @@ from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
 
+REFUSAL_TEXT = (
+    "I only answer DragonMineZ questions, in my own words: I won't repeat text, ping anyone or change my rules. "
+    "Ask your question plainly, or open a ticket."
+)
+PUBLIC_KINDS = frozenset({"answer", "clarify"})
+
 
 def is_ask_channel_allowed(channel_id: int, allowed_channel_ids: Sequence[int]) -> bool:
     return channel_id in set(allowed_channel_ids)
+
+
+def can_post_publicly(result: dict) -> bool:
+    """Only clean, on-topic answers go public; anything the guard touched or the model flagged stays private."""
+    return result.get("kind") in PUBLIC_KINDS and not result.get("guard_flags")
 
 
 def evaluate_ask_rate_limit(
@@ -46,7 +58,9 @@ class AskCog(commands.Cog):
         self._rate_limit_events: dict[tuple[int, int], list[float]] = defaultdict(list)
 
     @discord.slash_command(name="ask", description="Ask the DragonMineZ AI support agent a question.")
-    @discord.option("question", description="Your DragonMineZ question", required=True)
+    @discord.option(
+        "question", description="Your DragonMineZ question", required=True, max_length=ASK_MAX_QUESTION_LENGTH
+    )
     @discord.option(
         "public",
         description="Share the answer with the channel instead of just you",
@@ -79,6 +93,19 @@ class AskCog(commands.Cog):
                 f"You're asking too fast. Try again in {math.ceil(retry_after)}s.",
                 ephemeral=True,
             )
+            return
+
+        # After the rate limit on purpose: refused attempts still burn the caller's quota.
+        refusal = screen_question(question)
+        if refusal is not None:
+            log.warning(
+                "Refused /ask from %s (%s): %r",
+                ctx.author.id,
+                refusal,
+                question[:200],
+                extra={"event": "ask_question_refused", "user_id": ctx.author.id, "channel_id": channel_id},
+            )
+            await ctx.respond(REFUSAL_TEXT, ephemeral=True)
             return
 
         await ctx.defer(ephemeral=not public)
@@ -140,8 +167,12 @@ class AskCog(commands.Cog):
         if not reply_text or reply_text == "(no reply)":
             reply_text = "I couldn't find a confident knowledge-backed answer for that."
 
+        private = not public or not can_post_publicly(result)
+        if public and private:
+            # The first followup inherits the public defer, so it can't carry the answer itself.
+            await ctx.followup.send("-# I sent this answer to you privately.", allowed_mentions=discord.AllowedMentions.none())
         for chunk in _chunk_discord_message(reply_text):
-            await ctx.followup.send(chunk, ephemeral=not public, allowed_mentions=discord.AllowedMentions.none())
+            await ctx.followup.send(chunk, ephemeral=private, allowed_mentions=discord.AllowedMentions.none())
 
 
 def setup(bot: discord.Bot):

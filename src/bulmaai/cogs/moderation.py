@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
@@ -42,6 +43,10 @@ log = logging.getLogger(__name__)
 # ponytail: in-memory incidents; a restart mid-raid just opens a fresh one.
 INCIDENT_TTL_SECONDS = 300
 REPEAT_OFFENSE_TIMEOUT_HITS = 3
+# everyone_ping stays delete-only for a first innocent "@everyone help"; the 3rd try in 10 minutes is a warn.
+# ponytail: in-memory window like the other rate filters, a restart resets the count.
+EVERYONE_PING_WARN_TRIES = 3
+EVERYONE_PING_WARN_WINDOW_SECONDS = 600
 LOG_UPDATE_DEBOUNCE_SECONDS = 5
 # ponytail: fixed settle delay; move to Settings if mods want to tune it.
 IMAGE_BURST_CONFIRM_SECONDS = 8
@@ -60,12 +65,11 @@ _SEVERITY = {
 }
 # One warn strike per incident, on the first hit, for reasons that are clearly one person's fault
 # (not a shared/compromised-account spam shape).
-# everyone_ping is delete + notice only: new members type "@everyone help" innocently.
 _WARN_REASONS = frozenset({"banned_word", "mass_mention", "blocked_domain", "discord_invite"})
 _READABLE_REASONS = {
     "banned_word": "a banned word",
     "mass_mention": "mass mentions",
-    "everyone_ping": "an `@everyone`/`@here` ping",
+    "everyone_ping": "repeated `@everyone`/`@here` pings",
     "blocked_domain": "a blocked link",
     "discord_invite": "a Discord invite link",
 }
@@ -121,6 +125,7 @@ class ModerationCog(commands.Cog):
         # burst purge can clean every channel the spammer recently posted in.
         self._recent_message_channels: dict[tuple[int, int], dict[int, float]] = {}
         self._incidents: dict[tuple[int, int], _Incident] = {}
+        self._everyone_ping_events: dict[tuple[int, int], list[float]] = defaultdict(list)
         self._recent_images: dict[tuple[int, int], dict[int, ImagePost]] = {}
         self._pending_image_bursts: dict[tuple[int, int], list[discord.Message]] = {}
         self._scam_images_loaded = False
@@ -523,6 +528,8 @@ class ModerationCog(commands.Cog):
         warn = incident.decision.warn
         if is_new and (incident.decision.reason in _WARN_REASONS if warn is None else warn):
             await self._issue_warn_strike(message, incident)
+        elif decision.reason == "everyone_ping" and self._everyone_ping_strike_due(message):
+            await self._issue_warn_strike(message, incident)
 
         if is_new:
             hits_logged = incident.hits
@@ -534,6 +541,16 @@ class ModerationCog(commands.Cog):
         if is_new or run_timeout:
             await self._record_case(message, incident.decision, timed_out=timed_out)
         return timed_out
+
+    def _everyone_ping_strike_due(self, message: discord.Message) -> bool:
+        key = (message.guild.id, message.author.id)
+        events = self._state.record(
+            self._everyone_ping_events, key, time.monotonic(), EVERYONE_PING_WARN_WINDOW_SECONDS
+        )
+        if len(events) < EVERYONE_PING_WARN_TRIES:
+            return False
+        self._everyone_ping_events[key] = []  # the next warn needs a fresh 3 tries
+        return True
 
     async def _send_delete_notice(self, message: discord.Message, decision: ModerationDecision) -> None:
         text = _NOTICE_TEXT.get(decision.reason)

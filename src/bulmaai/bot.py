@@ -25,9 +25,10 @@ log = logging.getLogger("bulmaai")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESTART_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
-# Every send merges over this, so @everyone/@here/role pings need an explicit per-call opt-in.
-# Without it, AllowedMentions(users=True) or no allowed_mentions at all lets AI text ping @everyone.
-SAFE_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=True)
+# Every send merges over this: the bot pings nobody unless that call names the exact users/roles
+# (only the person it is answering, or what an admin picked). Without it, AllowedMentions(users=True)
+# or no allowed_mentions at all let AI text and names like "@everyone" ping the whole server.
+SAFE_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=False, replied_user=True)
 
 @dataclass(frozen=True)
 class GitRuntimeInfo:

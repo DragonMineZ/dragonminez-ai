@@ -75,6 +75,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.mod_commands",
     "bulmaai.cogs.mod_interactions",
     "bulmaai.cogs.raid_guard",
+    "bulmaai.cogs.welcome",
     "bulmaai.cogs.mod_digest",
     "bulmaai.cogs.patreon_announcements",
     "bulmaai.cogs.curseforge_updates",
@@ -482,6 +483,9 @@ class Settings:
     ticket_transcript_public_url: str = "https://tickets.dragonminez.com"
     ticket_transcript_dir: str = "data/ticket_transcripts"
     ticket_transcript_retention_days: int = 30
+    welcome_channel_id: int | None = None
+    member_role_id: int | None = None
+    member_role_name: str = "Member"
     # Dyno (being phased out): its bans/kicks/timeouts come from the Discord audit log; warns and the
     # real moderator come from its mod-log channel embeds when this channel is set.
     dyno_user_id: int = 155149108183695360
@@ -849,6 +853,9 @@ def _build_settings_from_env() -> Settings:
         ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
         ticket_tester_role_ids=_get_env_int_list("TICKET_TESTER_ROLE_IDS", DEFAULT_TICKET_TESTER_ROLE_IDS),
         ticket_max_open_per_user=_get_env_int("TICKET_MAX_OPEN_PER_USER", 2) or 2,
+        welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID"),
+        member_role_id=_get_env_int("MEMBER_ROLE_ID"),
+        member_role_name=_get_env("MEMBER_ROLE_NAME", "Member") or "Member",
         ticket_dm_transcript=_get_env_bool("TICKET_DM_TRANSCRIPT", True),
         ticket_transcript_public_url=_get_env("TICKET_TRANSCRIPT_PUBLIC_URL", "https://tickets.dragonminez.com")
         or "https://tickets.dragonminez.com",

@@ -147,6 +147,7 @@ DEFAULT_GITHUB_WHITELIST_FILE_PATH = "allowed_betatesters.txt"
 DEFAULT_PATREON_CAMPAIGN_ID = "12861895"
 DEFAULT_PATREON_WELCOME_CHANNEL_ID = 1216435214968950844
 DEFAULT_WELCOME_CHANNEL_ID = 1216435214968950844
+DEFAULT_MEMBER_ROLE_ID = 1216431620614000730
 DEFAULT_PATREON_BOT_USER_ID = 216303189073461248
 DEFAULT_PATREON_ACCESS_ROLE_IDS: Sequence[int] = (
     1287877272224665640,
@@ -485,7 +486,7 @@ class Settings:
     ticket_transcript_dir: str = "data/ticket_transcripts"
     ticket_transcript_retention_days: int = 30
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
-    member_role_id: int | None = None
+    member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"
     # Dyno (being phased out): its bans/kicks/timeouts come from the Discord audit log; warns and the
     # real moderator come from its mod-log channel embeds when this channel is set.
@@ -855,7 +856,7 @@ def _build_settings_from_env() -> Settings:
         ticket_tester_role_ids=_get_env_int_list("TICKET_TESTER_ROLE_IDS", DEFAULT_TICKET_TESTER_ROLE_IDS),
         ticket_max_open_per_user=_get_env_int("TICKET_MAX_OPEN_PER_USER", 2) or 2,
         welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID", DEFAULT_WELCOME_CHANNEL_ID),
-        member_role_id=_get_env_int("MEMBER_ROLE_ID"),
+        member_role_id=_get_env_int("MEMBER_ROLE_ID", DEFAULT_MEMBER_ROLE_ID),
         member_role_name=_get_env("MEMBER_ROLE_NAME", "Member") or "Member",
         ticket_dm_transcript=_get_env_bool("TICKET_DM_TRANSCRIPT", True),
         ticket_transcript_public_url=_get_env("TICKET_TRANSCRIPT_PUBLIC_URL", "https://tickets.dragonminez.com")

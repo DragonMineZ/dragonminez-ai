@@ -176,6 +176,8 @@ class ModCommandsCog(commands.Cog):
             duration = escalation.duration_seconds
             text += f"\n→ auto {escalation.action}" + (f" {format_duration(duration)}" if duration else "")
             text += f" (case #{escalation.case_id})" if escalation.case_id else ""
+        if result.ladder_skipped:
+            text += f"\n→ {result.ladder_skipped}"
         await ctx.respond(text, ephemeral=True)
         return result
 

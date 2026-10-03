@@ -93,7 +93,7 @@ class _AuthorOnlyView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.author_id:
             return True
-        await interaction.response.send_message("Only the person who ran this command can use these controls.", ephemeral=True)
+        await interaction.response.send_message("Only whoever ran this command can use these controls.", ephemeral=True)
         return False
 
 

@@ -4,6 +4,7 @@ case to the mod-log channel and, for warns, applies the warn ladder."""
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -11,11 +12,12 @@ import discord
 
 from bulmaai.services import mod_cases
 from bulmaai.ui.mod_views import appeal_view
-from bulmaai.web.core import resolve_member, tier_for
+from bulmaai.web.core import Tier, resolve_member, tier_for
 
 log = logging.getLogger(__name__)
 
 MAX_TIMEOUT_SECONDS = 28 * 86400  # Discord's cap
+WARN_REPEAT_SECONDS = 30
 SOFTBAN_DELETE_SECONDS = 86400
 DISCORD_ACTIONS = {"timeout", "untimeout", "kick", "ban", "softban", "unban"}
 MEMBER_ONLY_ACTIONS = {"warn", "timeout", "untimeout", "kick"}
@@ -39,6 +41,10 @@ class ModActionError(Exception):
         self.status = status
 
 
+class LadderStepSkipped(ModActionError):
+    """The warn ladder reached a step above the warner's own level."""
+
+
 @dataclass(frozen=True)
 class ActionResult:
     action: str
@@ -47,6 +53,7 @@ class ActionResult:
     escalation: "ActionResult | None" = None
     expires_at: datetime | None = None
     duration_seconds: int | None = None
+    ladder_skipped: str | None = None
 
 
 # --- durations ---------------------------------------------------------------------------------
@@ -132,7 +139,11 @@ def pick_step(steps: tuple[LadderStep, ...], counts: dict[int | None, int]) -> L
     return max(matched, key=lambda step: step.warns, default=None)
 
 
-async def escalate(bot: discord.Bot, guild: discord.Guild, user_id: int) -> ActionResult | None:
+async def escalate(
+    bot: discord.Bot, guild: discord.Guild, user_id: int, warner: discord.Member | None = None
+) -> ActionResult | None:
+    """warner=None (automod) gets the whole ladder; a staff warn only runs steps up to the warner's
+    own level: timeouts for helpers, kicks and bans need a moderator."""
     steps = parse_ladder(bot.settings.moderation_warn_ladder)
     if not steps:
         return None
@@ -144,6 +155,8 @@ async def escalate(bot: discord.Bot, guild: discord.Guild, user_id: int) -> Acti
     step = pick_step(steps, counts)
     if step is None:
         return None
+    if warner is not None and step.action != "timeout" and tier_for(warner, bot.settings) < Tier.MODERATOR:
+        raise LadderStepSkipped(f"ladder step {step.action} skipped: needs a moderator")
     reason = f"Automatic: {counts[step.window_seconds]} warnings"
     if step.window_seconds:
         reason += f" in {format_duration(step.window_seconds)}"
@@ -161,6 +174,21 @@ async def escalate(bot: discord.Bot, guild: discord.Guild, user_id: int) -> Acti
 
 
 # --- checks, DMs, mod-log ----------------------------------------------------------------------
+
+
+# ponytail: in-memory and per process, so a restart forgets recent warns; it only has to stop rapid stacking.
+_recent_warns: dict[tuple[int, int], float] = {}
+
+
+def _claim_warn(moderator_id: int, target_id: int) -> bool:
+    """False when this moderator already warned this user in the last WARN_REPEAT_SECONDS."""
+    now = time.monotonic()
+    for key in [key for key, at in _recent_warns.items() if now - at >= WARN_REPEAT_SECONDS]:
+        del _recent_warns[key]
+    if (moderator_id, target_id) in _recent_warns:
+        return False
+    _recent_warns[(moderator_id, target_id)] = now
+    return True
 
 
 def check_hierarchy(
@@ -299,6 +327,8 @@ async def perform(
     if member is None and action in MEMBER_ONLY_ACTIONS:
         raise ModActionError("That user isn't in the server.", 404)
     check_hierarchy(bot, guild, moderator, target_id, member, discord_action=action in DISCORD_ACTIONS)
+    if action == "warn" and moderator is not None and not _claim_warn(moderator.id, target_id):
+        raise ModActionError(f"You just warned them; wait {WARN_REPEAT_SECONDS}s before warning them again.", 409)
 
     if action == "timeout":
         if not duration_seconds or duration_seconds < 1:
@@ -375,9 +405,18 @@ async def perform(
         )
 
     escalation = None
+    ladder_skipped = None
     if action == "warn":
         try:
-            escalation = await escalate(bot, guild, target_id)
+            escalation = await escalate(bot, guild, target_id, moderator)
+        except LadderStepSkipped as skipped:
+            ladder_skipped = str(skipped)
+            if case_id is not None:
+                try:
+                    note = f"{reason or 'No reason given'} ({ladder_skipped})"
+                    await mod_cases.update_reason(guild.id, case_id, note)
+                except Exception:
+                    log.exception("Couldn't note the skipped ladder step on case %s", case_id)
         except ModActionError as error:
             log.warning("Warn ladder step for %s skipped: %s", target_id, error)
         except Exception:
@@ -389,6 +428,7 @@ async def perform(
         escalation=escalation,
         expires_at=expires_at,
         duration_seconds=duration_seconds,
+        ladder_skipped=ladder_skipped,
     )
 
 

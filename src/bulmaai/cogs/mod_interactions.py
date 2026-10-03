@@ -312,6 +312,9 @@ class ModInteractionsCog(commands.Cog):
                 case = f" (case #{escalation.case_id})" if escalation.case_id else ""
                 line += f" -> automatic {escalation.action}"
                 reply += f"\nThat hit the warn ladder: automatic {escalation.action}{case}."
+            if result.ladder_skipped:
+                line += f" -> {result.ladder_skipped}"
+                reply += f"\nWarn ladder: {result.ladder_skipped}."
             if action in CONFIRM_HIT_ACTIONS:
                 await self._confirm_hit(alert, moderator.id)  # best-effort; never learns images on its own
         await _mark_handled(alert, line, None if action == "dismiss" else custom_id)

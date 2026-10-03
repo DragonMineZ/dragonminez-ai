@@ -105,7 +105,14 @@ class PerformTests(unittest.IsolatedAsyncioTestCase):
             moderation_warn_ladder="",
             moderation_log_channel_id=None,
             discord_log_channel_id=None,
+            panel_guild_id=1,
+            dev_guild_id=None,
+            panel_owner_role_ids=(),
+            panel_admin_role_ids=(),
+            panel_moderator_role_ids=(20,),
+            panel_helper_role_ids=(10,),
         )
+        mod_actions._recent_warns.clear()
         self.member = SimpleNamespace(
             id=5, name="spammer", top_role=SimpleNamespace(position=1), send=AsyncMock(), kick=AsyncMock()
         )
@@ -121,6 +128,13 @@ class PerformTests(unittest.IsolatedAsyncioTestCase):
         )
         self.bot = SimpleNamespace(settings=settings, user=SimpleNamespace(id=999))
 
+    def staff(self, role_id):
+        roles = [SimpleNamespace(id=role_id)]
+        return SimpleNamespace(id=50 + role_id, name="staff", guild=self.guild, roles=roles, top_role=SimpleNamespace(position=10))
+
+    async def warn(self, moderator):
+        return await mod_actions.perform(self.bot, self.guild, action="warn", target_id=5, moderator=moderator, reason="spam")
+
     async def test_automatic_kick_skips_moderator_checks_but_not_bot_role(self):
         with patch("bulmaai.services.mod_cases.record_case", AsyncMock(return_value=3)):
             result = await mod_actions.perform(
@@ -133,6 +147,31 @@ class PerformTests(unittest.IsolatedAsyncioTestCase):
         self.member.top_role.position = 60
         with self.assertRaises(mod_actions.ModActionError) as raised:
             await mod_actions.perform(self.bot, self.guild, action="kick", target_id=5, moderator=None, reason="x")
+        self.assertEqual(raised.exception.status, 409)
+
+    async def test_helper_warn_runs_timeouts_but_leaves_a_ban_step_to_a_moderator(self):
+        self.bot.settings.moderation_warn_ladder = "1=ban"
+        with (
+            patch("bulmaai.services.mod_cases.record_case", AsyncMock(return_value=3)),
+            patch("bulmaai.services.mod_cases.count_active_since", AsyncMock(return_value=1)),
+            patch("bulmaai.services.mod_cases.update_reason", AsyncMock(return_value=True)) as update_reason,
+        ):
+            result = await self.warn(self.staff(10))
+            self.guild.ban.assert_not_awaited()
+            self.assertEqual(result.ladder_skipped, "ladder step ban skipped: needs a moderator")
+            update_reason.assert_awaited_once_with(1, 3, "spam (ladder step ban skipped: needs a moderator)")
+
+            moderator_result = await self.warn(self.staff(20))
+        self.guild.ban.assert_awaited_once()
+        self.assertEqual(moderator_result.escalation.action, "ban")
+
+    async def test_same_moderator_cannot_stack_warns_on_one_user(self):
+        helper = self.staff(10)
+        with patch("bulmaai.services.mod_cases.record_case", AsyncMock(return_value=3)):
+            await self.warn(helper)
+            with self.assertRaises(mod_actions.ModActionError) as raised:
+                await self.warn(helper)
+            await self.warn(self.staff(20))  # another moderator still can
         self.assertEqual(raised.exception.status, 409)
 
     async def test_member_only_action_on_non_member(self):

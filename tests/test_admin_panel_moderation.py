@@ -228,6 +228,23 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.delete("/api/cases/9", headers={"Origin": self.origin})
         self.assertEqual(response.status, 403)
 
+    async def test_case_edits_respect_self_and_hierarchy(self):
+        self.login(MOD_ID)
+        own = ModCase(9, 1, MOD_ID, HELPER_ID, "warn", "x", None, "panel", NOW)
+        peer = ModCase(10, 1, MOD2_ID, OWNER_ID, "warn", "x", None, "panel", NOW)
+        deactivate, update_reason = AsyncMock(), AsyncMock(return_value=True)
+        with (
+            patch("bulmaai.services.mod_cases.get_case", AsyncMock(side_effect=[own, peer, own])),
+            patch("bulmaai.services.mod_cases.deactivate_case", deactivate),
+            patch("bulmaai.services.mod_cases.update_reason", update_reason),
+        ):
+            for path in ("/api/cases/9", "/api/cases/10"):
+                self.assertEqual((await self.client.delete(path, headers={"Origin": self.origin})).status, 403)
+            response = await self.post("/api/cases/9/reason", {"reason": "never happened"})
+        self.assertEqual(response.status, 403)
+        deactivate.assert_not_awaited()
+        update_reason.assert_not_awaited()
+
     async def test_search_and_profile_degrade_per_section(self):
         self.login(HELPER_ID)
         data = await (await self.client.get("/api/users/search?q=user33")).json()

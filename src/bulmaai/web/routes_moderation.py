@@ -405,6 +405,7 @@ async def _moderate(request: web.Request, actor: Actor, action: str) -> web.Resp
             "case_id": result.case_id,
             "dm_sent": result.dm_sent,
             "escalation": result.escalation.action if result.escalation else None,
+            "ladder_skipped": result.ladder_skipped,
         }
     )
 
@@ -467,6 +468,20 @@ def _case_id(request: web.Request) -> int:
     return int(raw)
 
 
+async def _editable_case(request: web.Request, actor: Actor, case_id: int) -> mod_cases.ModCase:
+    """Same rules as acting on the user: not your own cases, nor anyone at or above your tier/top role."""
+    guild = actor.member.guild
+    case = await mod_cases.get_case(guild.id, case_id)
+    if case is None:
+        raise api_error(404, "Unknown case.")
+    target = await resolve_member(guild, case.user_id)
+    try:
+        mod_actions.check_hierarchy(request.app[BOT], guild, actor.member, case.user_id, target, discord_action=False)
+    except ModActionError as error:
+        raise api_error(error.status, str(error))
+    return case
+
+
 @routes.post("/api/cases/{case_id}/reason")
 @requires("mod.cases.edit")
 async def edit_case_reason(request: web.Request, actor: Actor) -> web.Response:
@@ -477,6 +492,7 @@ async def edit_case_reason(request: web.Request, actor: Actor) -> web.Response:
     reason = reason.strip()
     if len(reason) > MAX_REASON_LENGTH:
         raise api_error(400, f"Keep the reason under {MAX_REASON_LENGTH} characters.")
+    await _editable_case(request, actor, case_id)
     if not await mod_cases.update_reason(actor.member.guild.id, case_id, reason):
         raise api_error(404, "Unknown case.")
     await audit(actor, "mod.case_reason", str(case_id), reason=reason)
@@ -489,9 +505,7 @@ async def remove_case(request: web.Request, actor: Actor) -> web.Response:
     """Soft-deletes a warn or note (Dyno's delwarn/delnote): it stops counting toward the warn ladder."""
     guild_id = actor.member.guild.id
     case_id = _case_id(request)
-    case = await mod_cases.get_case(guild_id, case_id)
-    if case is None:
-        raise api_error(404, "Unknown case.")
+    case = await _editable_case(request, actor, case_id)
     if case.action not in ("warn", "note"):
         raise api_error(400, "Only warnings and notes can be removed.")
     await mod_cases.deactivate_case(guild_id, case_id)

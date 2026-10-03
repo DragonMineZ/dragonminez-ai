@@ -12,6 +12,7 @@ from discord.ext import commands
 
 from bulmaai.config import set_setting_override
 from bulmaai.services import automod_hits, joiner_alerts, mod_actions, mod_cases
+from bulmaai.services.ai_guard import defang
 from bulmaai.ui.mod_views import (
     APPEAL,
     APPEAL_REVIEW,
@@ -156,7 +157,8 @@ def _case_summary(cases: list[mod_cases.ModCase]) -> str:
 def _appeal_embed(user: discord.abc.User, ban: discord.guild.BanEntry, text: str, cases, case_id: int | None):
     embed = discord.Embed(
         title=f"Ban appeal | Case #{case_id}" if case_id else "Ban appeal",
-        description=text,
+        # Member-written text in a staff channel: readable, but no clickable or masked (phishing) links.
+        description=defang(text),
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
@@ -171,14 +173,14 @@ def _report_embed(reporter: discord.abc.User, message: discord.Message, reason: 
     author = message.author
     embed = discord.Embed(
         title="Reported message",
-        description=reason or None,
+        description=defang(reason) if reason else None,
         color=discord.Color.orange(),
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="Author", value=f"{author.mention} (`{author.id}`)", inline=True)
     embed.add_field(name="Reporter", value=f"{reporter.mention} (`{reporter.id}`)", inline=True)
     embed.add_field(name="Channel", value=f"<#{message.channel.id}>", inline=True)
-    embed.add_field(name="Message", value=(message.content or "*no text*")[:1000], inline=False)
+    embed.add_field(name="Message", value=defang(message.content or "*no text*")[:1000], inline=False)
     if message.attachments:
         names = ", ".join(f"`{attachment.filename}`" for attachment in message.attachments[:10])
         embed.add_field(name="Attachments", value=names[:1024], inline=False)

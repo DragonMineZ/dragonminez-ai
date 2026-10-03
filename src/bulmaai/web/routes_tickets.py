@@ -2,15 +2,19 @@
 
 from typing import Any
 
+import logging
+
 import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
 from bulmaai.services.ticket_ai_state import get_ai_disabled_ticket_channels, set_ticket_ai_disabled
+from bulmaai.services.tickets import ticket_info_for_channels
 from bulmaai.utils.permissions import is_staff
 from bulmaai.web.core import BOT, Actor, api_error, audit, read_json, require_guild, requires, user_json
 
 
+log = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 PAGE_SIZE = 25
@@ -46,6 +50,15 @@ def _requester(channel: Any, settings: Any) -> discord.Member | None:
     return None
 
 
+async def _ticket_info(channels: list[Any]) -> dict[int, dict[str, Any]]:
+    """Rows from the in-house ticket system; legacy (Ticket Tool) channels just have none."""
+    try:
+        return await ticket_info_for_channels([channel.id for channel in channels])
+    except Exception:
+        log.exception("Failed to load ticket records for the panel")
+        return {}
+
+
 def _person(guild: discord.Guild, user_id: int | None) -> dict[str, Any] | str | None:
     if user_id is None:
         return None
@@ -62,13 +75,20 @@ async def list_tickets(request: web.Request, actor: Actor) -> web.Response:
     cog = bot.get_cog(TICKETS_COG)
     disabled = set() if cog else await get_ai_disabled_ticket_channels()
     tickets = []
-    for channel in sorted(_ticket_channels(guild, settings), key=lambda c: c.created_at, reverse=True):
+    channels = sorted(_ticket_channels(guild, settings), key=lambda c: c.created_at, reverse=True)
+    info = await _ticket_info(channels)
+    for channel in channels:
+        record = info.get(channel.id)
         tickets.append(
             {
                 "id": str(channel.id),
                 "name": channel.name,
                 "created_at": channel.created_at.isoformat(),
-                "requester": user_json(_requester(channel, settings)),
+                "number": record["ticket_id"] if record else None,
+                "category": record["category"] if record else None,
+                "status": record["status"] if record else None,
+                "claimed_by": _person(guild, record["claimed_by"]) if record else None,
+                "requester": _person(guild, record["owner_id"]) if record else user_json(_requester(channel, settings)),
                 "ai_enabled": cog.is_ticket_ai_enabled(channel.id) if cog else channel.id not in disabled,
                 "url": f"https://discord.com/channels/{guild.id}/{channel.id}",
             }

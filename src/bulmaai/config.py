@@ -64,6 +64,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.admin_db",
     "bulmaai.cogs.patreon_whitelist_flow",
     "bulmaai.cogs.ai_tickets",
+    "bulmaai.cogs.tickets",
     "bulmaai.cogs.github_cmds",
     "bulmaai.cogs.ai_ann_translation",
     "bulmaai.cogs.rules",
@@ -177,6 +178,8 @@ DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE = 0.6
 DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT = 3.0
 DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS = 10
 DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS: Sequence[int] = (1472821034418962573, 1341595261960589343)
+# Read-only observers of every ticket; the same Tester role as the dev-jar flow.
+DEFAULT_TICKET_TESTER_ROLE_IDS: Sequence[int] = (1286814599215317034,)
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
 DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
@@ -470,6 +473,10 @@ class Settings:
     panel_admin_role_ids: Sequence[int] = (1309022450671161476,)  # Community Admin
     panel_moderator_role_ids: Sequence[int] = (1352882775304175668, 1472821034418962573)  # DMZ Dev, Moderator
     panel_helper_role_ids: Sequence[int] = (1341595261960589343, 1341596685339725885)  # DMZ Helper, Staff
+    # In-house tickets (cogs/tickets.py); category and archive channel reuse the ai_ticket_* ids.
+    ticket_tester_role_ids: Sequence[int] = DEFAULT_TICKET_TESTER_ROLE_IDS
+    ticket_max_open_per_user: int = 2
+    ticket_dm_transcript: bool = True
     # Dyno (being phased out): its bans/kicks/timeouts come from the Discord audit log; warns and the
     # real moderator come from its mod-log channel embeds when this channel is set.
     dyno_user_id: int = 155149108183695360
@@ -835,6 +842,9 @@ def _build_settings_from_env() -> Settings:
         ai_ticket_resolve_prompt_exponent=_get_env_float_default("AI_TICKET_RESOLVE_PROMPT_EXPONENT", DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT),
         ai_ticket_close_delay_seconds=_get_env_int("AI_TICKET_CLOSE_DELAY_SECONDS", DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS),
         ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
+        ticket_tester_role_ids=_get_env_int_list("TICKET_TESTER_ROLE_IDS", DEFAULT_TICKET_TESTER_ROLE_IDS),
+        ticket_max_open_per_user=_get_env_int("TICKET_MAX_OPEN_PER_USER", 2) or 2,
+        ticket_dm_transcript=_get_env_bool("TICKET_DM_TRANSCRIPT", True),
         openai_ticket_summary_model=_get_env("OPENAI_TICKET_SUMMARY_MODEL", DEFAULT_OPENAI_TICKET_SUMMARY_MODEL) or DEFAULT_OPENAI_TICKET_SUMMARY_MODEL,
         openai_ticket_vector_store_id=_get_env("OPENAI_TICKET_VECTOR_STORE_ID", DEFAULT_OPENAI_TICKET_VECTOR_STORE_ID),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,

@@ -90,15 +90,37 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
     async def test_helper_lists_tickets_but_cannot_toggle(self):
         self.login(HELPER_ID)
         self.tickets_cog.disabled.add(TICKET_ID)
-        data = await (await self.client.get("/api/tickets")).json()
+        with patch("bulmaai.web.routes_tickets.ticket_info_for_channels", AsyncMock(return_value={})):
+            data = await (await self.client.get("/api/tickets")).json()
         self.assertEqual(len(data["tickets"]), 1)
         ticket = data["tickets"][0]
         self.assertEqual(ticket["id"], str(TICKET_ID))
         self.assertFalse(ticket["ai_enabled"])
+        self.assertIsNone(ticket["number"])
         self.assertEqual(ticket["url"], f"https://discord.com/channels/1/{TICKET_ID}")
         response = await self.post(f"/api/tickets/{TICKET_ID}/ai", {"enabled": True})
         self.assertEqual(response.status, 403)
         self.tickets_cog.set_ticket_ai_enabled.assert_not_called()
+
+    async def test_tickets_list_shows_in_house_ticket_records(self):
+        self.login(HELPER_ID)
+        record = {
+            TICKET_ID: {"ticket_id": 42, "channel_id": TICKET_ID, "category": "bug", "status": "closed",
+                        "claimed_by": HELPER_ID, "owner_id": 77}
+        }
+        with patch("bulmaai.web.routes_tickets.ticket_info_for_channels", AsyncMock(return_value=record)):
+            ticket = (await (await self.client.get("/api/tickets")).json())["tickets"][0]
+        self.assertEqual((ticket["number"], ticket["category"], ticket["status"]), (42, "bug", "closed"))
+        self.assertEqual(ticket["requester"], "77")
+        self.assertEqual(ticket["claimed_by"]["id"], str(HELPER_ID))
+
+    async def test_tickets_list_survives_a_ticket_table_outage(self):
+        self.login(HELPER_ID)
+        with patch("bulmaai.web.routes_tickets.ticket_info_for_channels", AsyncMock(side_effect=OSError("db down"))):
+            with self.assertLogs("bulmaai.web.routes_tickets", "ERROR"):
+                response = await self.client.get("/api/tickets")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["tickets"][0]["status"], None)
 
     async def test_owner_toggles_ai_through_cog(self):
         self.login(OWNER_ID)

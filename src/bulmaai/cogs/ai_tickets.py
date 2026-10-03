@@ -62,7 +62,7 @@ MAX_IMAGE_ANALYSIS_CHARS = 1000
 # ponytail: hard cap on transcript size; page through history if tickets ever exceed it.
 TRANSCRIPT_MESSAGE_LIMIT = 1000
 RESOLVE_BUTTON_PREFIX = "ticket_resolved:"
-# ponytail: Ticket Tool owns ticket lifecycle until the in-house ticket system replaces it.
+# ponytail: legacy Ticket Tool tickets still work; new ones come from cogs/tickets.py. Drop this once Ticket Tool is gone.
 TICKET_TOOL_BOT_ID = 557628352828014614
 USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
 ACK_MESSAGE_RE = re.compile(
@@ -938,12 +938,70 @@ class AITicketsCog(commands.Cog):
                     language=result.get("language", "en"),
                 )
 
+    async def answer_new_ticket(
+        self,
+        channel: discord.TextChannel,
+        member: discord.Member,
+        *,
+        category_label: str,
+        form_text: str,
+        language: str,
+    ) -> None:
+        """First AI reply for a ticket opened through the tickets cog, from the intake form instead of a message."""
+        settings = self.bot.settings
+        if not settings.ai_support_enabled or ai_budget.is_paused(settings):
+            return
+        self._ticket_owners[channel.id] = member.id
+        name = safe_name(member.display_name)
+        try:
+            async with channel.typing():
+                result = await run_support_agent(
+                    messages=[
+                        ConversationMessage(
+                            role="user",
+                            content=form_text,
+                            speaker_name=name,
+                            speaker_id=str(member.id),
+                            speaker_kind="requester",
+                        )
+                    ],
+                    enabled_tools=SUPPORT_TOOL_NAMES,
+                    language_hint=language,
+                    user_id=member.id,
+                    channel_id=channel.id,
+                    ticket_conversation=True,
+                    bot=self.bot,
+                    settings=settings,
+                    context_lines=[
+                        "channel: support ticket",
+                        f"requester: {name} (roles: member)",
+                        f"ticket category: {category_label}",
+                        "ticket opened: just now (the requester's intake form is the message below)",
+                    ],
+                    requester_is_staff=False,
+                    channel_kind="ticket",
+                )
+        except Exception:
+            log.exception("AI first reply failed for new ticket", extra={"channel_id": channel.id})
+            return
+
+        reply = result["reply"].strip()
+        if result.get("paused") or _has_user_visible_tool_result(result["tool_results"]) or reply in ("", "(no reply)"):
+            return
+        if await self._send_messages_with_typing(channel, [reply]) and result.get("kind") == "handoff":
+            await self._mark_ticket_escalated(channel.id)
+            await self._ping_escalation_roles(channel, member.id)
+
+    def _ticket_creator_ids(self) -> set[int]:
+        """Bots whose first message mentions the ticket owner: Ticket Tool, and our own tickets cog."""
+        return {TICKET_TOOL_BOT_ID, getattr(self.bot.user, "id", TICKET_TOOL_BOT_ID)}
+
     async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
         """Ticket Tool's welcome message mentions the owner; only they may get the "solved?" buttons."""
         if channel.id not in self._ticket_owners:
             owner_id = None
             async for entry in channel.history(limit=5, oldest_first=True):
-                if entry.author.id == TICKET_TOOL_BOT_ID:
+                if entry.author.id in self._ticket_creator_ids():
                     owner_id = next((mentioned.id for mentioned in entry.mentions if not mentioned.bot), None)
                     if owner_id is not None:
                         break
@@ -1056,7 +1114,7 @@ class AITicketsCog(commands.Cog):
                 (
                     mentioned.id
                     for entry in messages
-                    if entry.author.id == TICKET_TOOL_BOT_ID
+                    if entry.author.id in self._ticket_creator_ids()
                     for mentioned in entry.mentions
                     if not mentioned.bot
                 ),
@@ -1087,18 +1145,26 @@ class AITicketsCog(commands.Cog):
             )
         return lines, requester_id
 
-    async def _post_close_embed(self, embed: discord.Embed, transcript: str, channel_name: str) -> None:
+    async def _post_close_embed(
+        self,
+        embed: discord.Embed,
+        transcript: str,
+        channel_name: str,
+        html: bytes | None = None,
+    ) -> bool:
         channel_id = self.bot.settings.ai_ticket_transcript_channel_id
         if channel_id is None:
-            return
+            return False
+        files = [discord.File(io.BytesIO(transcript.encode("utf-8")), filename=f"{channel_name}-transcript.txt")]
+        if html is not None:
+            files.append(discord.File(io.BytesIO(html), filename=f"{channel_name}-transcript.html"))
         try:
             target = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-            await target.send(
-                embed=embed,
-                file=discord.File(io.BytesIO(transcript.encode("utf-8")), filename=f"{channel_name}-transcript.txt"),
-            )
+            await target.send(embed=embed, files=files)
+            return True
         except discord.HTTPException:
             log.exception("Failed to post ticket transcript", extra={"transcript_channel_id": channel_id})
+            return False
 
     async def _close_ticket(
         self,
@@ -1108,12 +1174,15 @@ class AITicketsCog(commands.Cog):
         requester_id: int | None,
         resolved: bool | None,
         delete_channel: bool,
-    ) -> None:
+        html: bytes | None = None,
+    ) -> bool:
         """Transcript → summarize → learn (vector store) → embed → record → optionally delete.
         Transcript is read first because Ticket Tool may delete the channel seconds later.
-        resolved=None lets the summary decide (Ticket Tool closes don't say)."""
+        resolved=None lets the summary decide (Ticket Tool closes don't say).
+        Returns whether the transcript reached the archive channel; `html` rides along as a second attachment."""
+        archived = False
         if channel.id in self._closing_channels or channel.id in self._archived_channels:
-            return
+            return archived
         self._closing_channels.add(channel.id)
         self._cancel_pending_task((channel.id, 0))
         self._escalated_ticket_channels.add(channel.id)
@@ -1176,7 +1245,7 @@ class AITicketsCog(commands.Cog):
                 added_to_knowledge=openai_file_id is not None,
                 closed_at=closed_at,
             )
-            await self._post_close_embed(embed, transcript, channel.name)
+            archived = await self._post_close_embed(embed, transcript, channel.name, html)
 
             try:
                 await record_ticket_transcript(
@@ -1220,6 +1289,7 @@ class AITicketsCog(commands.Cog):
                 pass
         finally:
             self._closing_channels.discard(channel.id)
+        return archived
 
     async def _process_message_after_debounce(
         self,

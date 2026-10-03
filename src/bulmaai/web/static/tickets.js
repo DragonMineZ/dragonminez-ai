@@ -8,6 +8,14 @@
     "Tickets": "Tickets",
     "Open tickets ({count})": "Tickets abiertos ({count})",
     "Channel": "Canal",
+    "Status": "Estado",
+    "Category": "Categoría",
+    "Claimed by": "Reclamado por",
+    "open": "abierto",
+    "closed": "cerrado",
+    "Game-Breaking Bug": "Bug que rompe el juego",
+    "Contributing to the Mod": "Contribuir al mod",
+    "Other": "Otro",
     "Requester": "Solicitante",
     "Opened": "Abierto",
     "AI": "IA",
@@ -56,6 +64,8 @@
     return h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label);
   }
 
+  const CATEGORY_NAMES = { bug: "Game-Breaking Bug", contribute: "Contributing to the Mod", other: "Other" };
+
   function outcome(resolved) {
     return resolved ? badge(t("solved"), "ok") : badge(t("unresolved"), "warn");
   }
@@ -73,6 +83,9 @@
     };
     const columns = [
       { label: t("Channel"), render: (t) => discordLink(t.url, `#${t.name}`) },
+      { label: t("Category"), render: (row) => (row.category ? t(CATEGORY_NAMES[row.category] || row.category) : "—") },
+      { label: t("Status"), render: (row) => (row.status ? badge(t(row.status), row.status === "open" ? "ok" : "warn") : "—") },
+      { label: t("Claimed by"), render: (row) => (row.claimed_by ? user(row.claimed_by) : "—") },
       { label: t("Requester"), render: (t) => user(t.requester) },
       { label: t("Opened"), render: (t) => time(t.created_at) },
       { label: t("AI"), render: (row) => (row.ai_enabled ? badge(t("on"), "ok") : badge(t("off"), "danger")) },

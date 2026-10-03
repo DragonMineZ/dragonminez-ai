@@ -458,3 +458,36 @@ CREATE TABLE IF NOT EXISTS scam_image_hashes (
     last_hit_at  TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- In-house ticket system (cogs/tickets.py). ticket_counter hands out gapless numbers under a row lock.
+CREATE TABLE IF NOT EXISTS ticket_counter (
+    id           SMALLINT PRIMARY KEY CHECK (id = 1),
+    last_number  BIGINT NOT NULL DEFAULT 0
+);
+
+INSERT INTO ticket_counter (id, last_number) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS tickets (
+    ticket_id           BIGINT PRIMARY KEY,
+    guild_id            BIGINT NOT NULL,
+    owner_id            BIGINT NOT NULL,
+    channel_id          BIGINT,
+    category            TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'creating'
+                        CHECK (status IN ('creating', 'open', 'closed', 'deleted')),
+    channel_name        TEXT,
+    language            VARCHAR(5) NOT NULL DEFAULT 'en',
+    control_message_id  BIGINT,
+    claimed_by          BIGINT,
+    closed_by           BIGINT,
+    close_reason        TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at           TIMESTAMPTZ,
+    deleted_at          TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_channel_id
+    ON tickets (channel_id) WHERE channel_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_tickets_active_owner
+    ON tickets (owner_id) WHERE status IN ('creating', 'open');

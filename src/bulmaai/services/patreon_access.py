@@ -103,6 +103,8 @@ def parse_patreon_oauth_state(
     *,
     now: Callable[[], float],
 ) -> PatreonOAuthState | None:
+    if not state.isascii():
+        return None
     try:
         body, signature = state.rsplit(".", 1)
     except ValueError:
@@ -128,6 +130,10 @@ def parse_patreon_oauth_state(
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
+
+
+def patreon_link_confirm_token(secret: str, code: str, state: str) -> str:
+    return hmac.new(secret.encode("utf-8"), f"confirm.{code}.{state}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def build_patreon_authorization_url(

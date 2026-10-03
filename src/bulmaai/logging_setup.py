@@ -6,6 +6,8 @@ from typing import Any
 
 import colorlog
 
+from bulmaai.services.discord_log_forwarding import sanitize_log_text
+
 
 class RingBufferHandler(logging.Handler):
     """Keeps the most recent log records in memory for the admin panel's Logs page."""
@@ -18,7 +20,7 @@ class RingBufferHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            message = self.format(record)
+            message = sanitize_log_text(self.format(record))
         except Exception:
             self.handleError(record)
             return

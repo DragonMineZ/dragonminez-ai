@@ -20,6 +20,7 @@ DISCORD_OAUTH_SCOPE = "identify"
 class DiscordOAuthState:
     minecraft_username: str
     expires_at: int
+    nonce: str = ""
 
 
 def _b64encode_json(payload: dict[str, Any]) -> str:
@@ -45,11 +46,13 @@ def build_discord_oauth_state(
     secret: str,
     minecraft_username: str,
     expires_at: int,
+    nonce: str = "",
 ) -> str:
     body = _b64encode_json(
         {
             "minecraft_username": str(minecraft_username),
             "expires_at": int(expires_at),
+            "nonce": str(nonce),
         }
     )
     return f"{body}.{_sign_state(secret, body)}"
@@ -61,6 +64,8 @@ def parse_discord_oauth_state(
     *,
     now: Callable[[], float],
 ) -> DiscordOAuthState | None:
+    if not state.isascii():
+        return None
     try:
         body, signature = state.rsplit(".", 1)
     except ValueError:
@@ -76,6 +81,7 @@ def parse_discord_oauth_state(
         return DiscordOAuthState(
             minecraft_username=str(payload["minecraft_username"]),
             expires_at=expires_at,
+            nonce=str(payload.get("nonce") or ""),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None

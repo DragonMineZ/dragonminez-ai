@@ -4,7 +4,9 @@ import json
 import asyncio
 import html
 import re
+import secrets
 from dataclasses import dataclass
+from hmac import compare_digest
 from urllib.parse import urlparse
 
 import discord
@@ -27,6 +29,7 @@ from bulmaai.services.patreon_access import (
     build_patreon_oauth_state,
     is_active_entitled_patron,
     parse_patreon_oauth_state,
+    patreon_link_confirm_token,
     verify_patreon_webhook_signature,
 )
 from bulmaai.services.patreon_grants import (
@@ -65,6 +68,7 @@ PATREON_OAUTH_TTL_SECONDS = 10 * 60
 PATREON_WEBHOOK_PATH = "/patreon/webhook"
 BETA_ACCESS_ROUTE_PREFIX = "/beta-access/"
 BETA_ACCESS_START_PATH = "/beta-access/start"
+BETA_ACCESS_NONCE_COOKIE = "dmz_beta_access_nonce"
 DISCORD_OAUTH_TTL_SECONDS = 10 * 60
 PROCESSED_OAUTH_STATE_TTL_SECONDS = PATREON_OAUTH_TTL_SECONDS + 60
 URL_RE = re.compile(r"https?://[^\s<]+")
@@ -86,6 +90,14 @@ def _patreon_gift_branch_name(owner_id: int, recipient_id: int) -> str:
 
 def _patreon_remove_branch_name(owner_id: int) -> str:
     return f"patreon/remove-{owner_id}"
+
+
+def _cookie_value(headers, name: str) -> str:
+    for part in ((headers or {}).get("Cookie") or "").split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name:
+            return value
+    return ""
 
 
 def _eligible_tier_ids(settings) -> tuple[str, ...]:
@@ -395,8 +407,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
             state = (query.get("state") or [""])[0]
             if not code or not state:
                 return text_http_response(400, "Missing OAuth code or state")
+            confirm = (query.get("confirm") or [""])[0]
             future = asyncio.run_coroutine_threadsafe(
-                self._handle_patreon_oauth_callback(code, state),
+                self._handle_patreon_oauth_callback(code, state, confirm=confirm),
                 loop,
             )
             try:
@@ -416,7 +429,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 log.exception("Patreon webhook handling failed")
                 return text_http_response(500, "Patreon webhook failed")
 
-        def handle_beta_access(path: str, query: dict[str, list[str]]) -> ReleaseWebhookHttpResponse:
+        def handle_beta_access(path: str, query: dict[str, list[str]], headers) -> ReleaseWebhookHttpResponse:
             if path == BETA_ACCESS_START_PATH:
                 return self._handle_beta_access_start(query)
             if path != discord_callback_path:
@@ -427,7 +440,11 @@ class PatreonWhitelistFlowCog(commands.Cog):
             if not code or not state:
                 return self._html_response("Missing Discord OAuth code or state.", status=400)
             future = asyncio.run_coroutine_threadsafe(
-                self._handle_beta_access_discord_callback(code=code, state=state),
+                self._handle_beta_access_discord_callback(
+                    code=code,
+                    state=state,
+                    nonce=_cookie_value(headers, BETA_ACCESS_NONCE_COOKIE),
+                ),
                 loop,
             )
             try:
@@ -443,6 +460,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         register_extra_get_route(
             path_prefix=BETA_ACCESS_ROUTE_PREFIX,
             handle_request=handle_beta_access,
+            pass_headers=True,
         )
         register_extra_raw_webhook_route(
             path=PATREON_WEBHOOK_PATH,
@@ -457,20 +475,25 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 status=400,
             )
 
-        url = self._build_discord_oauth_url(username)
+        nonce = secrets.token_urlsafe(16)
+        url = self._build_discord_oauth_url(username, nonce)
         if url is None:
             return self._html_response(
                 "Discord verification is not configured yet. Ask staff to check the bot settings.",
                 status=500,
             )
 
+        cookie = (
+            f"{BETA_ACCESS_NONCE_COOKIE}={nonce}; Max-Age={DISCORD_OAUTH_TTL_SECONDS}; "
+            f"Path={BETA_ACCESS_ROUTE_PREFIX}; HttpOnly; Secure; SameSite=Lax"
+        )
         return ReleaseWebhookHttpResponse(
             status=302,
             body=b"",
-            headers=(("Location", url),),
+            headers=(("Location", url), ("Set-Cookie", cookie)),
         )
 
-    def _build_discord_oauth_url(self, minecraft_username: str) -> str | None:
+    def _build_discord_oauth_url(self, minecraft_username: str, nonce: str) -> str | None:
         settings = self.bot.settings
         if not settings.discord_oauth_client_id or not settings.discord_oauth_client_secret:
             return None
@@ -478,6 +501,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
             secret=settings.discord_oauth_client_secret,
             minecraft_username=minecraft_username,
             expires_at=int(time.time() + DISCORD_OAUTH_TTL_SECONDS),
+            nonce=nonce,
         )
         return build_discord_authorization_url(
             client_id=settings.discord_oauth_client_id,
@@ -490,6 +514,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         *,
         code: str,
         state: str,
+        nonce: str,
         now=time.time,
     ) -> ReleaseWebhookHttpResponse:
         settings = self.bot.settings
@@ -505,6 +530,12 @@ class PatreonWhitelistFlowCog(commands.Cog):
         )
         if parsed_state is None or not MC_NAME_RE.match(parsed_state.minecraft_username):
             return self._html_response("Discord verification expired. Please try again from Minecraft.", status=403)
+        if not parsed_state.nonce or not compare_digest(nonce.encode(), parsed_state.nonce.encode()):
+            return self._html_response(
+                "This verification was started in another browser. Please try again from Minecraft.",
+                status=403,
+            )
+        minecraft_username = parsed_state.minecraft_username
 
         try:
             discord_user_id = await DiscordOAuthClient(
@@ -512,14 +543,14 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 client_secret=settings.discord_oauth_client_secret,
                 redirect_uri=settings.discord_oauth_redirect_uri,
             ).fetch_user_id_for_code(code)
-        except Exception:
-            log.exception("Discord OAuth identity fetch failed")
+        except Exception as error:
+            log.warning("Discord OAuth identity fetch failed: %s", error)
             return self._html_response("Discord authorization failed. Please try again.", status=500)
 
         member = await self._resolve_member_across_guilds(discord_user_id)
         if member is None:
             return self._html_response(
-                "Join the DragonMineZ Discord server before verifying beta access.",
+                f"Join the DragonMineZ Discord server before verifying beta access. (Minecraft username: {minecraft_username})",
                 status=403,
             )
 
@@ -527,11 +558,11 @@ class PatreonWhitelistFlowCog(commands.Cog):
         await self.start_whitelist_flow_for_user(
             member,
             destination,
-            parsed_state.minecraft_username,
+            minecraft_username,
             ephemeral=False,
         )
         message = destination.messages[-1] if destination.messages else "Verification request accepted."
-        return self._html_response(message)
+        return self._html_response(f"{message} (Minecraft username: {minecraft_username})")
 
     async def _resolve_member_across_guilds(self, user_id: int) -> discord.Member | None:
         guilds = list(getattr(self.bot, "guilds", []) or [])
@@ -1583,7 +1614,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
             return
         await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
 
-    async def _handle_patreon_oauth_callback(self, code: str, state: str) -> ReleaseWebhookHttpResponse:
+    async def _handle_patreon_oauth_callback(
+        self, code: str, state: str, *, confirm: str = ""
+    ) -> ReleaseWebhookHttpResponse:
         settings = self.bot.settings
         if not settings.patreon_oauth_client_id or not settings.patreon_oauth_client_secret:
             return text_http_response(500, "Patreon OAuth is not configured")
@@ -1600,10 +1633,31 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 return self._html_response(
                     "This Patreon authorization was already processed. You can close this tab and return to Discord."
                 )
+            expected = patreon_link_confirm_token(settings.patreon_oauth_client_secret, code, state)
+            if not compare_digest(confirm.encode(), expected.encode()):
+                return await self._patreon_link_confirm_page(code, state, expected, parsed_state)
             response = await self._complete_patreon_oauth_callback(code, parsed_state)
             if response.status < 500:
                 self._mark_patreon_oauth_state_processed(state)
             return response
+
+    async def _patreon_link_confirm_page(
+        self, code: str, state: str, confirm: str, parsed_state
+    ) -> ReleaseWebhookHttpResponse:
+        # The state is minted by whoever ran the Discord command, so show whose account gets the
+        # pledge and make the patron click once more before anything is linked.
+        member = await self._resolve_member(parsed_state.guild_id, parsed_state.discord_user_id)
+        discord_name = str(member) if member is not None else str(parsed_state.discord_user_id)
+        message = f"This links your Patreon membership to the Discord account {discord_name} ({parsed_state.discord_user_id})."
+        if parsed_state.action == "beta_access":
+            message += f" It also requests beta access for the Minecraft username {parsed_state.minecraft_username}."
+        message += " Only continue if that is your own Discord account."
+        fields = "".join(
+            f'<input type="hidden" name="{name}" value="{html.escape(value, quote=True)}">'
+            for name, value in (("code", code), ("state", state), ("confirm", confirm))
+        )
+        button = f'<button type="submit">Link to {html.escape(discord_name)}</button>'
+        return self._html_response(message, extra_html=f'<form method="get">{fields}{button}</form>')
 
     async def _complete_patreon_oauth_callback(
         self,
@@ -1617,7 +1671,11 @@ class PatreonWhitelistFlowCog(commands.Cog):
             redirect_uri=settings.patreon_oauth_redirect_uri,
             campaign_id=settings.PATREON_CAMPAIGN_ID,
         )
-        identity = await client.fetch_identity_for_code(code)
+        try:
+            identity = await client.fetch_identity_for_code(code)
+        except Exception as error:
+            log.warning("Patreon OAuth identity fetch failed: %s", error)
+            return self._html_response("Patreon authorization failed. Please try again from Discord.", status=502)
         active = is_active_entitled_patron(
             identity.status,
             eligible_tier_ids=_eligible_tier_ids(settings),
@@ -1684,12 +1742,13 @@ class PatreonWhitelistFlowCog(commands.Cog):
         *,
         status: int = 200,
         title: str = "DragonMineZ Beta Access",
+        extra_html: str = "",
     ) -> ReleaseWebhookHttpResponse:
         safe_message = self._linkify_message(message)
         body = (
             "<!doctype html><html><head><meta charset=\"utf-8\">"
             f"<title>{html.escape(title)}</title></head><body>"
-            f"<main><h1>{html.escape(title)}</h1><p>{safe_message}</p></main>"
+            f"<main><h1>{html.escape(title)}</h1><p>{safe_message}</p>{extra_html}</main>"
             "</body></html>"
         )
         return ReleaseWebhookHttpResponse(

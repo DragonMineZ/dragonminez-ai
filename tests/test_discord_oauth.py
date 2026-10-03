@@ -26,6 +26,7 @@ class DiscordOAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.expires_at, 2000)
         self.assertIsNone(parse_discord_oauth_state("secret", state + "x", now=lambda: 1999))
         self.assertIsNone(parse_discord_oauth_state("secret", state, now=lambda: 2001))
+        self.assertIsNone(parse_discord_oauth_state("secret", "\u00e9.\u00e9", now=lambda: 1999))
 
     def test_authorization_url_uses_identify_scope_and_redirect_uri(self) -> None:
         url = build_discord_authorization_url(

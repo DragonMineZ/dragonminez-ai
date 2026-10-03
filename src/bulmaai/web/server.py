@@ -154,7 +154,7 @@ async def callback(request: web.Request) -> web.StreamResponse:
     expected = request.cookies.get(STATE_COOKIE, "")
     state = request.query.get("state", "")
     code = request.query.get("code")
-    if not code or not expected or not hmac.compare_digest(state, expected):
+    if not code or not expected or not hmac.compare_digest(state.encode(), expected.encode()):
         return _plain_page("Login expired or was tampered with. Try again.", 400)
 
     client = DiscordOAuthClient(
@@ -164,8 +164,8 @@ async def callback(request: web.Request) -> web.StreamResponse:
     )
     try:
         user_id = await client.fetch_user_id_for_code(code)
-    except Exception:
-        log.exception("Admin panel Discord OAuth exchange failed")
+    except Exception as error:
+        log.warning("Admin panel Discord OAuth exchange failed: %s", error)
         return _plain_page("Discord login failed. Try again.", 502)
 
     guild = panel_guild(bot)

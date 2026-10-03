@@ -7,12 +7,13 @@ from urllib.parse import parse_qs, urlparse
 from requests import HTTPError
 
 from bulmaai.cogs.patreon_whitelist_flow import PatreonWhitelistFlowCog
-from bulmaai.services.discord_oauth import build_discord_oauth_state
+from bulmaai.services.discord_oauth import build_discord_oauth_state, parse_discord_oauth_state
 from bulmaai.services.patreon_access import (
     PatreonIdentity,
     PatreonMemberStatus,
     build_patreon_oauth_state,
     parse_patreon_oauth_state,
+    patreon_link_confirm_token,
 )
 from bulmaai.services.patreon_grants import PatreonGrant, PatreonGrantKind, PatreonLink
 
@@ -317,6 +318,37 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://discord.com/oauth2/authorize?", headers["Location"])
         self.assertIn("client_id=discord-client-id", headers["Location"])
         self.assertIn("scope=identify", headers["Location"])
+        cookie = headers["Set-Cookie"]
+        for flag in ("HttpOnly", "Secure", "SameSite=Lax"):
+            self.assertIn(flag, cookie)
+        state = parse_qs(urlparse(headers["Location"]).query)["state"][0]
+        parsed = parse_discord_oauth_state("discord-client-secret", state, now=lambda: 0)
+        self.assertEqual(cookie.split(";")[0], f"dmz_beta_access_nonce={parsed.nonce}")
+
+    async def test_beta_access_callback_rejects_state_started_in_another_browser(self) -> None:
+        cog = CapturingPatreonWhitelistFlowCog()
+        cog.bot = SimpleNamespace(settings=self._settings(), guilds=[])
+        state = build_discord_oauth_state(
+            secret="discord-client-secret",
+            minecraft_username="AttackerMC",
+            expires_at=2000,
+            nonce="attacker-browser-nonce",
+        )
+
+        with patch(
+            "bulmaai.cogs.patreon_whitelist_flow.DiscordOAuthClient.fetch_user_id_for_code",
+            AsyncMock(return_value=456),
+        ) as fetch_user_id:
+            response = await cog._handle_beta_access_discord_callback(
+                code="oauth-code",
+                state=state,
+                nonce="",
+                now=lambda: 1999,
+            )
+
+        self.assertEqual(response.status, 403)
+        fetch_user_id.assert_not_awaited()
+        self.assertEqual(cog.calls, [])
 
     async def test_beta_access_callback_passes_verified_member_to_whitelist_flow(self) -> None:
         member = SimpleNamespace(
@@ -334,6 +366,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             secret="discord-client-secret",
             minecraft_username="NewTester",
             expires_at=2000,
+            nonce="browser-nonce",
         )
 
         with patch(
@@ -343,6 +376,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             response = await cog._handle_beta_access_discord_callback(
                 code="oauth-code",
                 state=state,
+                nonce="browser-nonce",
                 now=lambda: 1999,
             )
 
@@ -353,6 +387,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(nickname, "NewTester")
         self.assertFalse(ephemeral)
         self.assertIn("Verification request accepted", response.body.decode("utf-8"))
+        self.assertIn("Minecraft username: NewTester", response.body.decode("utf-8"))
         self.assertEqual(destination.messages, [])
 
     async def test_beta_access_member_resolution_prefers_guild_member_with_patreon_role(self) -> None:
@@ -503,7 +538,11 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=[])),
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_whitelist_grant", AsyncMock()) as upsert_grant,
         ):
-            response = await cog._handle_patreon_oauth_callback("oauth-code", state)
+            response = await cog._handle_patreon_oauth_callback(
+                "oauth-code",
+                state,
+                confirm=patreon_link_confirm_token("patreon-client-secret", "oauth-code", state),
+            )
 
         body = response.body.decode("utf-8")
         self.assertEqual(response.status, 200)
@@ -991,6 +1030,58 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("updated from `OldTester` to `NewTester`", interaction.followup.sent[-1][0][0])
         self.assertIn("updated Patreon beta access", staff_channel.sent[-1][0][0])
 
+    async def test_patreon_callback_shows_receiving_discord_account_before_linking(self) -> None:
+        cog = CapturingOAuthPatreonWhitelistFlowCog()
+        cog.bot = SimpleNamespace(settings=self._settings())
+        cog.member = FakeUser(user_id=789, name="attacker")
+        state = build_patreon_oauth_state(
+            secret="patreon-client-secret",
+            discord_user_id=789,
+            guild_id=111,
+            action="link",
+            expires_at=9999999999,
+        )
+
+        with (
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.PatreonOAuthClient.fetch_identity_for_code",
+                AsyncMock(),
+            ) as fetch_identity,
+            patch("bulmaai.cogs.patreon_whitelist_flow.upsert_patreon_link", AsyncMock()) as upsert_link,
+        ):
+            response = await cog._handle_patreon_oauth_callback("oauth-code", state)
+
+        body = response.body.decode("utf-8")
+        self.assertEqual(response.status, 200)
+        self.assertIn("Discord account attacker (789)", body)
+        self.assertIn(patreon_link_confirm_token("patreon-client-secret", "oauth-code", state), body)
+        fetch_identity.assert_not_awaited()
+        upsert_link.assert_not_awaited()
+
+    async def test_patreon_token_exchange_failure_logs_one_line_without_traceback(self) -> None:
+        cog = CapturingOAuthPatreonWhitelistFlowCog()
+        cog.bot = SimpleNamespace(settings=self._settings())
+        state = build_patreon_oauth_state(
+            secret="patreon-client-secret",
+            discord_user_id=456,
+            guild_id=111,
+            action="link",
+            expires_at=9999999999,
+        )
+        confirm = patreon_link_confirm_token("patreon-client-secret", "junk-code", state)
+
+        with (
+            patch(
+                "bulmaai.cogs.patreon_whitelist_flow.PatreonOAuthClient.fetch_identity_for_code",
+                AsyncMock(side_effect=HTTPError("401 Client Error")),
+            ),
+            self.assertLogs("bulmaai.cogs.patreon_whitelist_flow", "WARNING") as logs,
+        ):
+            response = await cog._handle_patreon_oauth_callback("junk-code", state, confirm=confirm)
+
+        self.assertEqual(response.status, 502)
+        self.assertEqual([record.exc_info for record in logs.records], [None])
+
     async def test_replayed_patreon_oauth_state_is_processed_once(self) -> None:
         member = SimpleNamespace(
             id=456,
@@ -1031,8 +1122,9 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             ) as fetch_identity,
             patch("bulmaai.cogs.patreon_whitelist_flow.upsert_patreon_link", AsyncMock()) as upsert_link,
         ):
-            first_response = await cog._handle_patreon_oauth_callback("oauth-code", state)
-            second_response = await cog._handle_patreon_oauth_callback("oauth-code", state)
+            confirm = patreon_link_confirm_token("patreon-client-secret", "oauth-code", state)
+            first_response = await cog._handle_patreon_oauth_callback("oauth-code", state, confirm=confirm)
+            second_response = await cog._handle_patreon_oauth_callback("oauth-code", state, confirm=confirm)
 
         self.assertEqual(first_response.status, 200)
         self.assertEqual(second_response.status, 200)

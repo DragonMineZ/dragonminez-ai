@@ -58,6 +58,18 @@ class RingBufferTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in buffer.since(3, logging.ERROR)[0]], [5])
         self.assertEqual(len(buffer.since(99)[0]), 3)  # stale cursor from before a restart
 
+    def test_messages_are_sanitized_before_serving(self):
+        buffer = RingBufferHandler(capacity=3)
+        logger = logging.getLogger("test.ring.sanitize")
+        logger.propagate = False
+        logger.addHandler(buffer)
+        self.addCleanup(logger.removeHandler, buffer)
+        logger.warning("retrying with token=abc123secret")
+
+        message = buffer.since(0)[0][0]["message"]
+        self.assertNotIn("abc123secret", message)
+        self.assertIn("[redacted]", message)
+
 
 class StatusApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

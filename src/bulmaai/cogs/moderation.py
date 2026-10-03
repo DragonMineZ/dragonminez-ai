@@ -65,7 +65,7 @@ _WARN_REASONS = frozenset({"banned_word", "mass_mention", "blocked_domain", "dis
 _READABLE_REASONS = {
     "banned_word": "a banned word",
     "mass_mention": "mass mentions",
-    "everyone_ping": "an @everyone/@here ping",
+    "everyone_ping": "an `@everyone`/`@here` ping",
     "blocked_domain": "a blocked link",
     "discord_invite": "a Discord invite link",
 }
@@ -77,7 +77,7 @@ _NOTICE_TEXT = {
     "fast_messages": "please slow down.",
     "banned_word": "that word isn't allowed here.",
     "mass_mention": "please avoid mass-mentioning members.",
-    "everyone_ping": "you can't ping @everyone/@here here.",
+    "everyone_ping": "you can't ping `@everyone`/`@here` here.",
 }
 
 
@@ -543,7 +543,8 @@ class ModerationCog(commands.Cog):
             await message.channel.send(
                 f"{message.author.mention}, {text}",
                 delete_after=6,
-                allowed_mentions=discord.AllowedMentions(users=True),
+                # This text names @everyone; never let it fall back to a mention default again.
+                allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=[message.author]),
             )
         except discord.HTTPException:
             pass

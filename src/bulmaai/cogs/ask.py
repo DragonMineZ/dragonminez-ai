@@ -141,7 +141,7 @@ class AskCog(commands.Cog):
             reply_text = "I couldn't find a confident knowledge-backed answer for that."
 
         for chunk in _chunk_discord_message(reply_text):
-            await ctx.followup.send(chunk, ephemeral=not public)
+            await ctx.followup.send(chunk, ephemeral=not public, allowed_mentions=discord.AllowedMentions.none())
 
 
 def setup(bot: discord.Bot):

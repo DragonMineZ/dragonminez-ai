@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import unittest
 from datetime import timedelta
@@ -11,7 +12,7 @@ os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
-from bulmaai.cogs.moderation import ModerationCog
+from bulmaai.cogs.moderation import _NOTICE_TEXT, _READABLE_REASONS, ModerationCog
 from bulmaai.services.moderation import (
     AttachmentMetadata,
     DomainClassification,
@@ -24,6 +25,13 @@ from bulmaai.services.moderation import (
     extract_image_attachments,
     extract_urls,
 )
+
+
+class AutomodTextMentionTests(unittest.TestCase):
+    def test_bot_written_automod_text_never_contains_a_live_everyone_or_here(self) -> None:
+        # The everyone_ping notice once said "@everyone/@here" bare and pinged the whole server.
+        for text in (*_NOTICE_TEXT.values(), *_READABLE_REASONS.values()):
+            self.assertIsNone(re.search(r"(?<!`)@(everyone|here)", text), text)
 
 
 class ModerationUrlTests(unittest.TestCase):

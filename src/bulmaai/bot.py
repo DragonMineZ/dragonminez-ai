@@ -25,6 +25,9 @@ log = logging.getLogger("bulmaai")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESTART_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
+# Every send merges over this, so @everyone/@here/role pings need an explicit per-call opt-in.
+# Without it, AllowedMentions(users=True) or no allowed_mentions at all lets AI text ping @everyone.
+SAFE_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=True)
 
 @dataclass(frozen=True)
 class GitRuntimeInfo:
@@ -120,6 +123,7 @@ class BulmaAI(discord.Bot):
             auto_sync_commands=True,
             # Every command assumes a guild Member; hide them in DMs instead of crashing there.
             default_command_contexts={discord.InteractionContextType.guild},
+            allowed_mentions=SAFE_MENTIONS,
         )
 
         self.settings = settings

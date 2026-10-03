@@ -37,6 +37,19 @@ class BotStartupTests(unittest.IsolatedAsyncioTestCase):
 
         install.assert_called_once()
 
+    def test_default_mentions_never_ping_everyone_or_roles(self) -> None:
+        default = BulmaAI(load_settings(include_overrides=False)).allowed_mentions
+
+        def parse(per_call: discord.AllowedMentions | None) -> list[str]:
+            return (default.merge(per_call) if per_call else default).to_dict()["parse"]
+
+        self.assertEqual(parse(None), ["users"])
+        # Partial objects used across cogs leave everyone/roles at a truthy sentinel; the default must win.
+        self.assertEqual(parse(discord.AllowedMentions(users=True)), ["users"])
+        self.assertNotIn("everyone", parse(discord.AllowedMentions(roles=True)))
+        # The admin panel's explicit @everyone opt-in still works.
+        self.assertIn("everyone", parse(discord.AllowedMentions(everyone=True)))
+
 
 if __name__ == "__main__":
     unittest.main()

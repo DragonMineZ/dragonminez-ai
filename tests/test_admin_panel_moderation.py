@@ -62,6 +62,7 @@ def make_bot():
     settings = load_settings(include_overrides=False)
     object.__setattr__(settings, "panel_session_secret", SECRET)
     object.__setattr__(settings, "panel_public_url", "http://127.0.0.1")
+    object.__setattr__(settings, "panel_guild_id", 1)
     guild = SimpleNamespace(id=1, name="DMZ", icon=None, owner_id=OWNER_ID, channels=[], roles=[])
     members = {
         # joined_at spread out (oldest to newest) so /api/members sort order is unambiguous.

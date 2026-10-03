@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import discord
 
+from bulmaai.config import Settings
 from bulmaai.cogs.dev_jar_downloads import (
     DevJarDownloadsCog,
     DevJarDownloadView,
@@ -28,6 +29,8 @@ from bulmaai.ui.dev_jar_views import (
     build_dev_jar_download_embeds,
     build_dev_jar_review_embeds,
 )
+
+MAIN_GUILD = SimpleNamespace(id=Settings.panel_guild_id)
 
 
 class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
@@ -388,7 +391,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             interaction = SimpleNamespace(
                 user=SimpleNamespace(
                     id=123,
-                    guild_permissions=SimpleNamespace(administrator=True),
+                    guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True),
                     roles=[],
                 ),
                 guild_id=456,
@@ -479,7 +482,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             interaction = SimpleNamespace(
                 user=SimpleNamespace(
                     id=123,
-                    guild_permissions=SimpleNamespace(administrator=True),
+                    guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True),
                     roles=[],
                 ),
                 guild_id=456,
@@ -1399,7 +1402,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         staff = SimpleNamespace(
             response=FakeResponse(),
             user=SimpleNamespace(
-                guild_permissions=SimpleNamespace(administrator=True), roles=[]
+                guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True), roles=[]
             ),
         )
         with patch(
@@ -1413,7 +1416,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         staff_stale = SimpleNamespace(
             response=FakeResponse(),
             user=SimpleNamespace(
-                guild_permissions=SimpleNamespace(administrator=True), roles=[]
+                guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True), roles=[]
             ),
         )
         with patch(
@@ -1529,7 +1532,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
         cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
         ctx = FakeContext(
-            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=True), roles=[])
+            SimpleNamespace(guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True), roles=[])
         )
         review = SimpleNamespace(
             commits=(
@@ -1600,7 +1603,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
         cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
         ctx = FakeContext(
-            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=True), roles=[])
+            SimpleNamespace(guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True), roles=[])
         )
 
         with patch(

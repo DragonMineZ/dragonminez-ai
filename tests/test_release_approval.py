@@ -144,7 +144,10 @@ class ReleaseApprovalTests(unittest.TestCase):
         admin = type(
             "Member",
             (),
-            {"guild_permissions": type("Perms", (), {"administrator": True})()},
+            {
+                "guild": type("Guild", (), {"id": load_settings().panel_guild_id})(),
+                "guild_permissions": type("Perms", (), {"administrator": True})(),
+            },
         )()
         staff_non_admin = type(
             "Member",

@@ -5,9 +5,18 @@ import discord
 from bulmaai.config import Settings, load_settings
 
 
-def is_admin(member: discord.Member) -> bool:
+def in_main_guild(member: discord.Member, settings: Settings) -> bool:
+    """Commands are global, so a member object can come from any server the bot is in; only the main
+    server (and the dev server, when set) may grant anything."""
+    guild_id = getattr(getattr(member, "guild", None), "id", None)
+    return guild_id is not None and guild_id in (settings.panel_guild_id, settings.dev_guild_id)
+
+
+def is_admin(member: discord.Member, *, settings: Settings | None = None) -> bool:
     # DMs and user-installs hand us a discord.User, which has no guild_permissions.
-    return bool(getattr(getattr(member, "guild_permissions", None), "administrator", False))
+    if not getattr(getattr(member, "guild_permissions", None), "administrator", False):
+        return False
+    return in_main_guild(member, settings or load_settings())
 
 
 def has_any_allowed_role(member: discord.Member, role_ids: Sequence[int]) -> bool:

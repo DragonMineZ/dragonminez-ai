@@ -55,7 +55,7 @@ def push_choice_label(*, rank: int, branch: str, sha: str, title: str, author: s
 
 async def push_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
     cog = ctx.bot.get_cog("BuildGateCog")
-    if cog is None:
+    if cog is None or not is_admin(ctx.interaction.user):
         return []
     try:
         pushes = await asyncio.wait_for(cog._recent_pushes(), timeout=2.5)

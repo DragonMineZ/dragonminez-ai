@@ -29,6 +29,7 @@ JOINER_ALERTS_SET_OUTCOME = "bulmaai.services.joiner_alerts.set_outcome"
 def make_settings(**overrides):
     base = dict(
         panel_guild_id=1,
+        dev_guild_id=None,
         moderation_enabled=True,
         moderation_raid_join_count=3,
         moderation_raid_join_window_seconds=60,

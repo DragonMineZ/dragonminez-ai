@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands
 
 from bulmaai.database.db import get_pool
-from bulmaai.utils.permissions import is_admin
+from bulmaai.utils.permissions import is_bruno
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +26,8 @@ def _format_rows(rows) -> str:
 
 
 async def _db_autocomplete(ctx: discord.AutocompleteContext) -> list[str]:
+    if not is_bruno(ctx.interaction.user):
+        return []
     typed = (ctx.value or "").strip().lower()
     try:
         pool = await get_pool()
@@ -55,7 +57,7 @@ class AdminDatabaseCog(commands.Cog):
 
     @discord.slash_command(
         name="database",
-        description="Execute a PostgreSQL query (admin only)",
+        description="Execute a PostgreSQL query (Bruno only)",
     )
     @discord.option(
         "query",
@@ -64,8 +66,8 @@ class AdminDatabaseCog(commands.Cog):
         required=True,
     )
     async def database(self, ctx: discord.ApplicationContext, query: str) -> None:
-        if not isinstance(ctx.author, discord.Member) or not is_admin(ctx.author):
-            await ctx.respond("Admins only.", ephemeral=True)
+        if not is_bruno(ctx.author) or ctx.guild_id != self.bot.settings.panel_guild_id:
+            await ctx.respond("Only Bruno can run this, in the main server.", ephemeral=True)
             return
 
         await ctx.defer(ephemeral=True)

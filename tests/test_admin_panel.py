@@ -42,6 +42,7 @@ def make_bot():
     settings = load_settings(include_overrides=False)
     object.__setattr__(settings, "panel_session_secret", SECRET)
     object.__setattr__(settings, "panel_public_url", "http://127.0.0.1")
+    object.__setattr__(settings, "panel_guild_id", 1)
     guild = SimpleNamespace(
         id=1, name="DMZ", icon=None, owner_id=OWNER_ID, channels=[], roles=[],
         get_role={HELPER_ROLE: SimpleNamespace(id=HELPER_ROLE, name="DMZ Helper")}.get,
@@ -80,6 +81,13 @@ class SessionTests(unittest.TestCase):
         founder.roles = [SimpleNamespace(id=FOUNDER_ROLE)]
         self.assertEqual(tier_for(founder, bot.settings), Tier.OWNER)
         self.assertEqual(tier_for(make_member(9, guild, [COMMUNITY_ADMIN_ROLE]), bot.settings), Tier.ADMIN)
+
+    def test_other_servers_grant_no_tier(self):
+        bot = make_bot()
+        other = SimpleNamespace(id=2, owner_id=9)
+        self.assertEqual(tier_for(make_member(9, other), bot.settings), Tier.NONE)
+        self.assertEqual(tier_for(make_member(OWNER_ID, other, [FOUNDER_ROLE]), bot.settings), Tier.NONE)
+        self.assertEqual(tier_for(SimpleNamespace(id=9, name="dm-user"), bot.settings), Tier.NONE)
 
 
 class PanelApiTests(unittest.IsolatedAsyncioTestCase):

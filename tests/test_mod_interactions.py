@@ -85,6 +85,7 @@ class Base(unittest.IsolatedAsyncioTestCase):  # py-cord Views/Modals need a run
     def setUp(self):
         self.settings = SimpleNamespace(
             panel_guild_id=GUILD_ID,
+            dev_guild_id=None,
             panel_admin_role_ids=(ADMIN_ROLE,),
             panel_moderator_role_ids=(MOD_ROLE,),
             panel_helper_role_ids=(HELPER_ROLE,),

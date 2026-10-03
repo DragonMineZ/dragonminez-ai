@@ -406,8 +406,18 @@ class IsAdminTests(unittest.TestCase):
     def test_is_admin_is_false_for_plain_user_from_dms(self) -> None:
         from bulmaai.utils.permissions import is_admin
 
-        self.assertFalse(is_admin(SimpleNamespace(id=1, name="dm-user")))
-        self.assertTrue(is_admin(SimpleNamespace(guild_permissions=SimpleNamespace(administrator=True))))
+        settings = SimpleNamespace(panel_guild_id=1, dev_guild_id=None)
+        admin_perms = SimpleNamespace(administrator=True)
+        self.assertFalse(is_admin(SimpleNamespace(id=1, name="dm-user"), settings=settings))
+        self.assertTrue(is_admin(SimpleNamespace(guild=SimpleNamespace(id=1), guild_permissions=admin_perms), settings=settings))
+
+    def test_is_admin_ignores_admins_of_other_servers(self) -> None:
+        from bulmaai.utils.permissions import is_admin
+
+        settings = SimpleNamespace(panel_guild_id=1, dev_guild_id=2)
+        admin_perms = SimpleNamespace(administrator=True)
+        self.assertTrue(is_admin(SimpleNamespace(guild=SimpleNamespace(id=2), guild_permissions=admin_perms), settings=settings))
+        self.assertFalse(is_admin(SimpleNamespace(guild=SimpleNamespace(id=3), guild_permissions=admin_perms), settings=settings))
 
 
 if __name__ == "__main__":

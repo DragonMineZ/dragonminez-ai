@@ -77,6 +77,9 @@ class PhishDestroyClient:
 
         verdict = await self._fetch_verdict(domain)
         ttl = self.threat_ttl_seconds if verdict.threat else self.safe_ttl_seconds
+        if len(self._cache) >= 10_000:
+            # ponytail: crude bound on attacker-chosen keys; dropping the cache only costs repeat lookups.
+            self._cache.clear()
         self._cache[domain] = _CachedVerdict(verdict=verdict, expires_at=now + ttl)
         return verdict
 

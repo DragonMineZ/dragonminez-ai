@@ -1,13 +1,17 @@
 import logging
+from datetime import timedelta
 
 import discord
 from discord.ext import commands
 
 from bulmaai.config import Settings
 from bulmaai.services import showcase
+from bulmaai.services.ai_guard import defang
 from bulmaai.ui.showcase_views import build_showcase_highlight_embed
 
 log = logging.getLogger(__name__)
+
+MIN_VOTER_ACCOUNT_AGE = timedelta(days=7)
 
 
 def _first_image_url(message: discord.Message) -> str | None:
@@ -69,8 +73,16 @@ class ShowcaseCog(commands.Cog):
         if reaction is None:
             return
 
+        # Only real votes count: not the author, not bots, not throwaway accounts made for the occasion.
+        cutoff = discord.utils.utcnow() - MIN_VOTER_ACCOUNT_AGE
+        votes = 0
+        if reaction.count >= settings.showcase_threshold:
+            async for user in reaction.users(limit=200):
+                if user.id != message.author.id and not user.bot and user.created_at <= cutoff:
+                    votes += 1
+
         if not showcase.should_highlight_message(
-            reaction_count=reaction.count,
+            reaction_count=votes,
             threshold=settings.showcase_threshold,
             channel_id=payload.channel_id,
             source_channel_ids=source_channel_ids,
@@ -88,9 +100,9 @@ class ShowcaseCog(commands.Cog):
         embed = build_showcase_highlight_embed(
             author_name=str(message.author),
             author_avatar_url=message.author.display_avatar.url,
-            content=message.content,
+            content=defang(message.content),
             image_url=_first_image_url(message),
-            reaction_count=reaction.count,
+            reaction_count=votes,
             reaction_emoji=settings.showcase_reaction_emoji,
             jump_url=message.jump_url,
         )

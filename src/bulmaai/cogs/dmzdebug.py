@@ -7,11 +7,13 @@ embed: core stats, form, active modifiers, quest progress, and — most usefully
 party client-vs-server desync detector (see ``AI/dmzdebug-discord-parsing.md`` §7).
 """
 
+import asyncio
 import logging
 
 import discord
 from discord.ext import commands
 
+from bulmaai.services.ai_guard import defang_embed
 from bulmaai.utils import dmzdebug_diagnostics as diag
 from bulmaai.utils.dmzdebug_parser import (
     DebugReport,
@@ -431,9 +433,8 @@ class DmzDebugCog(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
-        for attachment in message.attachments:
-            if not self._is_candidate(attachment):
-                continue
+        # ponytail: two dumps per message is plenty; more is a flood, not a support question.
+        for attachment in [a for a in message.attachments if self._is_candidate(a)][:2]:
 
             try:
                 raw = await attachment.read()
@@ -455,8 +456,8 @@ class DmzDebugCog(commands.Cog):
 
             try:
                 async with message.channel.typing():
-                    report = parse_debug(text)
-                    embed = build_embed(report, attachment.filename, attachment.size)
+                    report = await asyncio.to_thread(parse_debug, text)
+                    embed = defang_embed(build_embed(report, attachment.filename, attachment.size))
                 await message.reply(embed=embed, mention_author=False)
             except Exception:
                 log.exception("Failed to render dmzdebug dump %s", attachment.filename)

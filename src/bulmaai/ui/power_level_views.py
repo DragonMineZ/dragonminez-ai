@@ -53,7 +53,8 @@ def build_leaderboard_embed(
         return embed
 
     lines = [
-        f"**#{rank}** {display_name} — Level {level} ({xp:,} XP)"
+        # Nicknames are member-controlled: escaped so "[Free Nitro](https://…)" can't become a link in a public embed.
+        f"**#{rank}** {discord.utils.escape_markdown(display_name)} — Level {level} ({xp:,} XP)"
         for rank, (display_name, xp, level) in enumerate(entries, start=1)
     ]
     embed.description = _truncate("\n".join(lines), 4096)

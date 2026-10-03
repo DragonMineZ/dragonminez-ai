@@ -33,10 +33,8 @@ _RE_SECTION = re.compile(r"^# (.+):$")
 _HANDWRITTEN = {"Party", "Quests"}
 
 # ``<uuid> (<name>)`` as produced by ``formatMember``.
-_RE_MEMBER = re.compile(r"^([0-9a-fA-F-]+)\s+\((.*)\)\s*(\[LEADER])?\s*$")
-
-# ``[<n>]:`` count header, e.g. ``Party members (client) [2]:``.
-_RE_COUNT_HEADER = re.compile(r"^(.*?)\s*\[(\d+)]:\s*$")
+# The optional tag owns its leading whitespace: "\)\s*(\[LEADER])?\s*$" is quadratic on trailing spaces.
+_RE_MEMBER = re.compile(r"^([0-9a-fA-F-]+)\s+\((.*)\)(?:\s*(\[LEADER]))?\s*$")
 
 
 # ── Data model ───────────────────────────────────────────────────────────────
@@ -385,10 +383,11 @@ def _parse_pending_invite(value: str | None) -> dict[str, Any] | None:
         return None
     expired = "[EXPIRED]" in value
     cleaned = value.replace("[EXPIRED]", "").strip()
-    # ``from <name> (<uuid>)``
-    m = re.match(r"^from\s+(.*?)\s+\(([0-9a-fA-F-]+)\)$", cleaned)
-    if m:
-        return {"name": m.group(1), "uuid": m.group(2), "expired": expired}
+    # ``from <name> (<uuid>)``, split by hand: the regex "from\s+(.*?)\s+\(" backtracks quadratically on long space runs.
+    head, sep, tail = cleaned.rpartition("(")
+    name = head.removeprefix("from")
+    if sep and name != head and name[:1].isspace() and head[-1:].isspace() and re.fullmatch(r"[0-9a-fA-F-]+\)", tail):
+        return {"name": name.strip(), "uuid": tail[:-1], "expired": expired}
     return {"raw": cleaned, "expired": expired}
 
 

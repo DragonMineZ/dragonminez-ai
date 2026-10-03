@@ -14,15 +14,20 @@ log = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 ZERO_WIDTH_CHARS = "\u200b\u200c\u200d\ufeff"
+# Labels and TLD are Unicode-aware so IDN homoglyph hosts (Cyrillic "е" in steamcommunity) are extracted too.
 URL_RE = re.compile(
-    r"(?i)\b(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<>()\[\]{}]*)?"
+    r"(?i)\b(?:https?://)?(?:[^\W_](?:[\w-]*[^\W_])?\.)+[^\W\d_]{2,}(?:/[^\s<>()\[\]{}]*)?"
 )
 DISCORD_INVITE_DOMAINS = {
     "discord.gg",
     "discord.com",
     "www.discord.com",
+    "canary.discord.com",
+    "ptb.discord.com",
     "discordapp.com",
     "www.discordapp.com",
+    "canary.discordapp.com",
+    "ptb.discordapp.com",
 }
 DEFAULT_SUSPICIOUS_SHORTENERS = (
     "bit.ly",
@@ -268,7 +273,14 @@ class ModerationState:
 
 
 def _strip_zero_width(text: str) -> str:
-    return text.translate({ord(char): None for char in ZERO_WIDTH_CHARS})
+    # Every invisible format char (zero-width, soft hyphen, word joiner...) plus NFKC, so "s⁠lur" and a
+    # fullwidth "ｓｌｕｒ" match like "slur". ponytail: no confusable folding, Cyrillic look-alikes still pass.
+    return unicodedata.normalize("NFKC", "".join(char for char in text if unicodedata.category(char) != "Cf"))
+
+
+def is_clickable(url: "UrlMatch") -> bool:
+    """Discord only links text with a scheme; "latest.log" or "evil.com" typed bare is just text."""
+    return url.raw.lower().startswith(("http://", "https://", "www."))
 
 
 def _normalize_obfuscated_text(text: str) -> str:
@@ -645,7 +657,9 @@ def evaluate_message(
         return content_decision
 
     key = (signal.guild_id, signal.author_id)
-    if urls:
+    # Only links Discord makes clickable count toward a burst: "latest.log", "config.toml" or a stack trace's
+    # "net.minecraft.client" once earned innocent players the 7-day spam-bot timeout.
+    if any(is_clickable(url) for url in extract_urls(_CODE_RE.sub(" ", signal.content))):
         link_events = state.record(
             state.link_events,
             key,

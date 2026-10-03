@@ -56,27 +56,29 @@ _RE_MOD_DISCOVERY = re.compile(
 # 1. Crash Report Table (found in crash-*.txt files)
 # Format: Filename | Name | Mod ID | Version | Status | Manifest
 # Example: xenon.jar | Xenon | xenon | 0.3.31 | DONE | ...
+# Every class stays on one line ([ \t], [^|\n]): under MULTILINE, \s or [^|] scan to the end of the file
+# from every line start, which is quadratic and froze the whole bot on multi-MB logs.
 _RE_MOD_CRASH_REPORT_TABLE = re.compile(
-    r"^\s*[^|]+\s*\|\s*[^|]+\s*\|\s*([a-z0-9_\-]+)\s*\|\s*([0-9][\w.\-+]+)",
+    r"^[^|\n]+\|[^|\n]+\|[ \t]*([a-z0-9_\-]+)[ \t]*\|[ \t]*([0-9][\w.\-+]+)",
     re.MULTILINE | re.IGNORECASE,
 )
 
 # 2. Forge Log Table (found in latest.log usually with leading pipe)
 # Format: | Mod ID | Version | ...
 _RE_MOD_LOG_TABLE = re.compile(
-    r"^\|?\s*(\w[\w\-]*)\s*\|\s*([\d][\w.\-+]*)\s*\|",
+    r"^\|?[ \t]*(\w[\w\-]*)[ \t]*\|[ \t]*([\d][\w.\-+]*)[ \t]*\|",
     re.MULTILINE,
 )
 
 # 3. "Mod ID: 'modid', ... Version: 'x.x.x'" style
 _RE_MOD_ENTRY = re.compile(
-    r"(?:Mod ID:\s*'?|Loading\s+)([a-z_][a-z0-9_]*)'?.*?Version:\s*'?([^'\";\n]+)",
+    r"(?:Mod ID:[ \t]*'?|Loading[ \t]+)([a-z_][a-z0-9_]*)'?[^\n]{0,300}?Version:[ \t]*'?([^'\";\n]+)",
     re.IGNORECASE,
 )
 
 # 4. Simple 2-space-separated list
 _RE_MOD_SIMPLE = re.compile(
-    r"^\s{2,}([a-z_][a-z0-9_]{1,63})\s{2,}([\d][^\s]{0,40})",
+    r"^[ \t]{2,}([a-z_][a-z0-9_]{1,63})[ \t]{2,}([\d][^\s]{0,40})",
     re.MULTILINE,
 )
 

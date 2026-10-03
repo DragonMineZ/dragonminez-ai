@@ -1,7 +1,7 @@
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # cogs.moderation imports services.mod_actions, whose import chain (mod_cases -> database.db)
 # calls load_settings() at import time; these need to exist regardless of run/discovery order.
@@ -426,3 +426,30 @@ class HandledFieldCarryForwardTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuditBypassTests(unittest.TestCase):
+    def test_invisible_and_fullwidth_letters_still_match_banned_words(self) -> None:
+        config = ModerationConfig(banned_words=("slur",))
+        for text in ("s\u2060lur", "s\u00adlur", "\uff53\uff4c\uff55\uff52"):
+            decision = evaluate_message(_signal(content=text), config, ModerationState(), now=1.0)
+            self.assertEqual(decision.reason, "banned_word", ascii(text))
+
+    def test_filenames_never_count_as_a_link_burst_but_real_links_do(self) -> None:
+        config = ModerationConfig(link_burst_count=5, link_burst_window_seconds=60)
+        state = ModerationState()
+        for i, text in enumerate(["latest.log broke", "config.toml?", "net.minecraft.client.Main", "debug.log", "mods.toml", "x.log"]):
+            self.assertEqual(evaluate_message(_signal(content=text), config, state, now=float(i)).reason, "allowed", text)
+        spam = [evaluate_message(_signal(content=f"https://s{i}.example/x"), config, state, now=10.0 + i) for i in range(5)]
+        self.assertEqual(spam[-1].reason, "link burst")
+
+    def test_forwarded_message_text_is_checked_like_the_members_own(self) -> None:
+        forwarded = SimpleNamespace(message=SimpleNamespace(content="free nitro https://evil.example", attachments=[]))
+        member = MagicMock(spec=discord.Member, id=3)
+        member.guild_permissions.mention_everyone = False
+        message = SimpleNamespace(
+            guild=SimpleNamespace(id=1), channel=SimpleNamespace(id=2), author=member, content="",
+            snapshots=[forwarded], raw_mentions=[], raw_role_mentions=[], attachments=[],
+        )
+        signal = ModerationCog._message_signal(message)
+        self.assertIn("https://evil.example", signal.content)

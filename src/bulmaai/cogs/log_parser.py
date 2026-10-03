@@ -1,9 +1,14 @@
+import asyncio
 import logging
 import re
+import time
+from collections import defaultdict
 
 import discord
 from discord.ext import commands
 
+from bulmaai.services.ai_guard import defang_embed
+from bulmaai.services.moderation import ModerationState
 from bulmaai.utils.dmz_addons import check_addons
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
 from bulmaai.utils.log_parser import parse_log, LogReport
@@ -13,6 +18,9 @@ log = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = (".log", ".txt")
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+# ponytail: in-memory per-user window, a restart resets it.
+AUTO_PARSE_MAX_PER_WINDOW = 3
+AUTO_PARSE_WINDOW_SECONDS = 60
 
 # High-confidence filenames that are always auto-parsed without admin approval.
 _AUTO_PARSE_NAMES = {"latest.log", "debug.log", "crash-report.txt"}
@@ -225,6 +233,13 @@ class LogParserCog(commands.Cog):
         # Maps message-id → list of attachment URLs that are pending admin approval.
         # Cleared once the reaction is received or after the message is too old.
         self._pending: dict[int, list[str]] = {}
+        self._parse_state = ModerationState()
+        self._parse_events: dict[tuple[int, int], list[float]] = defaultdict(list)
+
+    def _may_auto_parse(self, user_id: int) -> bool:
+        """A few log reports per user per minute: ten latest.log files per message shouldn't mean ten bot replies."""
+        events = self._parse_state.record(self._parse_events, (user_id, 0), time.monotonic(), AUTO_PARSE_WINDOW_SECONDS)
+        return len(events) <= AUTO_PARSE_MAX_PER_WINDOW
 
     # ── on_message: detect & triage ───────────────────────────────────────────
 
@@ -275,9 +290,12 @@ class LogParserCog(commands.Cog):
                     message.author,
                     getattr(message.channel, "name", "DM"),
                 )
+                if not self._may_auto_parse(message.author.id):
+                    continue
                 async with message.channel.typing():
-                    report = parse_log(text)
-                    embed = _build_embed(report, attachment.filename)
+                    # Off the event loop: a multi-MB log still takes about a second to parse.
+                    report = await asyncio.to_thread(parse_log, text)
+                    embed = defang_embed(_build_embed(report, attachment.filename))
                 await message.reply(embed=embed, mention_author=False)
             else:
                 # ── Uncertain name → queue for admin approval ─────────────

@@ -28,6 +28,7 @@ from bulmaai.services.moderation import (
     evaluate_message,
     extract_image_attachments,
     extract_urls,
+    is_clickable,
     apply_rule_action,
     exempt_filters,
     image_signature,
@@ -42,6 +43,7 @@ log = logging.getLogger(__name__)
 
 # ponytail: in-memory incidents; a restart mid-raid just opens a fresh one.
 INCIDENT_TTL_SECONDS = 300
+PHISHDESTROY_MAX_LOOKUPS_PER_MESSAGE = 8
 REPEAT_OFFENSE_TIMEOUT_HITS = 3
 # everyone_ping stays delete-only for a first innocent "@everyone help"; the 3rd try in 10 minutes is a warn.
 # ponytail: in-memory window like the other rate filters, a restart resets the count.
@@ -199,11 +201,17 @@ class ModerationCog(commands.Cog):
     def _message_signal(message: discord.Message) -> MessageSignal | None:
         if not message.guild or not isinstance(message.author, discord.Member):
             return None
+        # A forward's text and files live in snapshots, not content/attachments; check them like the member's own.
+        forwarded = [
+            snapshot.message for snapshot in getattr(message, "snapshots", None) or () if getattr(snapshot, "message", None)
+        ]
+        content = "\n".join([message.content or "", *(item.content or "" for item in forwarded)]).strip()
+        attachments = [*message.attachments, *(a for item in forwarded for a in (item.attachments or ()))]
         return MessageSignal(
             guild_id=message.guild.id,
             channel_id=message.channel.id,
             author_id=message.author.id,
-            content=message.content or "",
+            content=content,
             mention_count=len(set(message.raw_mentions)) + len(set(message.raw_role_mentions)),
             can_mention_everyone=bool(
                 getattr(message.author.guild_permissions, "mention_everyone", False)
@@ -217,7 +225,7 @@ class ModerationCog(commands.Cog):
                     width=getattr(attachment, "width", None),
                     height=getattr(attachment, "height", None),
                 )
-                for attachment in message.attachments
+                for attachment in attachments
             ),
         )
 
@@ -951,13 +959,16 @@ class ModerationCog(commands.Cog):
             return None
         if "phishdestroy_domain" in (self._filters_off() if off is None else off):
             return None
-        domains = tuple(sorted({url.domain for url in extract_urls(signal.content)}))
-        for domain in domains:
-            if (
-                classify_domain(domain, allowed_domains=tuple(self._settings().moderation_allowed_domains))
-                is DomainClassification.ALLOWED
-            ):
-                continue
+        allowed = tuple(self._settings().moderation_allowed_domains)
+        urls = sorted(extract_urls(signal.content), key=lambda url: not is_clickable(url))
+        domains = [
+            domain
+            for domain in dict.fromkeys(url.domain for url in urls)
+            if classify_domain(domain, allowed_domains=allowed) is not DomainClassification.ALLOWED
+        ]
+        # ponytail: clickable links first, then at most this many lookups per message, so one message full of
+        # throwaway domains can't queue hundreds of API calls ahead of everyone else (or trip the "down" pause).
+        for domain in domains[:PHISHDESTROY_MAX_LOOKUPS_PER_MESSAGE]:
             try:
                 verdict = await self._phishdestroy.check_domain(domain)
             except PhishDestroyUnavailable as error:
@@ -1056,8 +1067,14 @@ class ModerationCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
-    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
-        if before.content == after.content and before.attachments == after.attachments:
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        # Raw, not on_message_edit: that only fires for the ~1000 cached messages, so on a busy server a link
+        # edited into an older message was never re-checked. Unfurl updates re-check too, which is harmless
+        # because edits use a throwaway burst state.
+        after, before = payload.new_message, payload.cached_message
+        if after is None or (
+            before is not None and before.content == after.content and before.attachments == after.attachments
+        ):
             return
         await self._inspect_message(after, is_edit=True)
 

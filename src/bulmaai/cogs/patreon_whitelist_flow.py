@@ -62,7 +62,7 @@ from bulmaai.ui.patreon_views import (
     PATREON_WELCOME_VERIFY_CUSTOM_ID,
     UsernameUpdateConfirmView,
 )
-from bulmaai.utils.permissions import has_patreon_access_role
+from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role
 
 log = logging.getLogger(__name__)
 
@@ -78,12 +78,31 @@ PROCESSED_OAUTH_STATE_TTL_SECONDS = PATREON_OAUTH_TTL_SECONDS + 60
 ROLE_LOSS_GRACE_SECONDS = 120
 PATREON_SYNC_INTERVAL_HOURS = 1
 URL_RE = re.compile(r"https?://[^\s<]+")
+# Whitelist file layout: staff-managed names sit above this header, bot adds land below it (appended).
+AUTO_SECTION_HEADER = "# Auto-added"
 
 
 @dataclass(frozen=True, slots=True)
 class AutoApprovalResult:
     pr_url: str | None
     approved: bool
+
+
+def _is_tester(member: discord.Member, settings) -> bool:
+    return has_any_allowed_role(member, settings.dev_jar_tester_role_ids)
+
+
+def _manual_whitelist_keys(lines: list[str]) -> set[str]:
+    """Names above the auto-added header were added by staff; the bot must never remove them."""
+    if not any(line.casefold().startswith(AUTO_SECTION_HEADER.casefold()) for line in lines):
+        return set()
+    keys = set()
+    for line in lines:
+        if line.casefold().startswith(AUTO_SECTION_HEADER.casefold()):
+            break
+        if not line.startswith("#"):
+            keys.add(line.casefold())
+    return keys
 
 
 def _patreon_branch_name(user_id: int) -> str:
@@ -402,10 +421,15 @@ class PatreonWhitelistFlowCog(commands.Cog):
             return "left the Discord server"
         if not has_patreon_access_role(member, settings=settings):
             return "Patreon role missing"
+        keep, reason = await self._patreon_verdict(owner_id)
+        return None if keep is not False else reason
 
+    async def _patreon_verdict(self, owner_id: int) -> tuple[bool | None, str | None]:
+        """Ask Patreon itself: (True, None) active or lookup failed, (False, reason) lapsed, (None, None) no link."""
+        settings = self.bot.settings
         link = await get_patreon_link(owner_id)
         if link is None or not link.patreon_member_id or not settings.PATREON_CREATOR_TOKEN:
-            return None
+            return None, None
         client = PatreonCreatorClient(
             creator_token=settings.PATREON_CREATOR_TOKEN,
             campaign_id=settings.PATREON_CAMPAIGN_ID,
@@ -415,7 +439,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         except HTTPError as exc:
             if _github_error_status(exc) != 404:
                 log.warning("Patreon sync lookup failed for owner %s: %s", owner_id, exc)
-                return None
+                return True, None
             await update_link_entitlement(
                 discord_user_id=owner_id,
                 patron_status="deleted",
@@ -423,10 +447,10 @@ class PatreonWhitelistFlowCog(commands.Cog):
                 last_charge_date=link.last_charge_date,
                 entitlement_active=False,
             )
-            return "Patreon membership deleted"
+            return False, "Patreon membership deleted"
         except Exception as exc:
             log.warning("Patreon sync lookup failed for owner %s: %s", owner_id, exc)
-            return None
+            return True, None
 
         active = is_active_entitled_patron(status, eligible_tier_ids=_eligible_tier_ids(settings))
         await update_link_entitlement(
@@ -436,11 +460,19 @@ class PatreonWhitelistFlowCog(commands.Cog):
             last_charge_date=status.last_charge_date,
             entitlement_active=active,
         )
-        return None if active else f"Patreon status `{status.patron_status}`"
+        return (True, None) if active else (False, f"Patreon status `{status.patron_status}`")
 
     async def revoke_owner_access(self, owner_id: int, reason: str | None) -> list[PatreonGrant]:
         """Remove the owner's self grant AND every gift they handed out. The whitelist file goes first so a
         GitHub failure leaves the grants active for the next webhook/sync to retry."""
+        member = await self._resolve_member_across_guilds(owner_id)
+        if member is not None and _is_tester(member, self.bot.settings):
+            return []  # testers keep beta access without Patreon
+        keep, _reason = await self._patreon_verdict(owner_id)
+        if keep:
+            # Roles can lag or glitch; never revoke someone Patreon still reports as an active patron.
+            log.warning("Skipped revoking %s (%s): Patreon reports active or could not be checked", owner_id, reason)
+            return []
         async with self._beta_access_lock(owner_id):
             grants = await list_active_grants_for_owner(owner_id)
             if not grants:
@@ -681,7 +713,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
         def pick_access_member() -> discord.Member | None:
             for member in members:
-                if has_patreon_access_role(member, settings=self.bot.settings):
+                if has_patreon_access_role(member, settings=self.bot.settings) or _is_tester(member, self.bot.settings):
                     return member
             return None
 
@@ -823,7 +855,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
             )
             return
 
-        if not has_patreon_access_role(member, settings=self.bot.settings):
+        if not has_patreon_access_role(member, settings=self.bot.settings) and not _is_tester(member, self.bot.settings):
             await _send_message(
                 destination,
                 "You don't have a Patreon beta access role yet. "
@@ -1938,6 +1970,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         keys = {nickname.casefold() for nickname in nicknames}
         base_text, _base_sha = await self.gh.get_whitelist_file(ref=self.gh.base_branch)
         base_lines = [ln.strip() for ln in base_text.splitlines() if ln.strip()]
+        keys -= _manual_whitelist_keys(base_lines)
         remaining = [line for line in base_lines if line.casefold() not in keys]
         if remaining == base_lines:
             await self._log_staff_info(

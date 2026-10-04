@@ -292,6 +292,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             discord_oauth_client_secret="discord-client-secret",
             discord_oauth_redirect_uri="https://downloads.example.test/beta-access/discord/callback",
             patreon_access_role_ids=(1287877272224665640, 1287877305259130900),
+            dev_jar_tester_role_ids=(1286814599215317034,),
             patreon_eligible_tier_ids=("1287877272224665640", "1287877305259130900"),
             patreon_oauth_client_id="patreon-client-id",
             patreon_oauth_client_secret="patreon-client-secret",
@@ -567,6 +568,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_without_patreon_role_cannot_bypass_beta_access_role_check(self) -> None:
         bot = SimpleNamespace(settings=SimpleNamespace(
                 patreon_access_role_ids=(123,),
+                dev_jar_tester_role_ids=(),
                 patreon_staff_channel_id=1493390527004147876,
                 patreon_admin_ping_role_id=1309022450671161476,
                 patreon_contributor_role_id=1287877272224665640,
@@ -1522,6 +1524,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.cogs.patreon_whitelist_flow.PatreonCreatorClient") as client_cls,
             patch("bulmaai.cogs.patreon_whitelist_flow.update_link_entitlement", AsyncMock()) as update_link,
             patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=self._link())),
             patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
         ):
             client_cls.return_value.fetch_member_status = AsyncMock(side_effect=not_found)
@@ -1537,6 +1540,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         cog.gh.merge_pr = AsyncMock(side_effect=RuntimeError("github down"))
         with (
             patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=None)),
             patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
         ):
             with self.assertRaises(RuntimeError):
@@ -1550,11 +1554,20 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("bulmaai.cogs.patreon_whitelist_flow.ROLE_LOSS_GRACE_SECONDS", 0),
             patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=None)),
             patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
         ):
             await cog.on_member_update(before, after)
         self.assertEqual(cog.gh.put_calls[0]["new_text"], "KeepMe\n")
         deactivate.assert_awaited_once_with(456)
+
+    async def test_revoke_skipped_while_patreon_reports_active(self) -> None:
+        cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        cog._patreon_verdict = AsyncMock(return_value=(True, None))
+        with patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate:
+            self.assertEqual(await cog.revoke_owner_access(456, "Patreon role missing"), [])
+        self.assertEqual(cog.gh.put_calls, [])
+        deactivate.assert_not_called()
 
     async def test_role_swap_within_grace_period_keeps_access(self) -> None:
         cog, _grants = self._revoke_cog(FakeGitHubWithGrantNames())
@@ -1588,6 +1601,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_beta_access_rejects_invalid_minecraft_username_immediately(self) -> None:
         bot = SimpleNamespace(settings=SimpleNamespace(
                 patreon_access_role_ids=(123,),
+                dev_jar_tester_role_ids=(),
                 patreon_staff_channel_id=1493390527004147876,
                 patreon_admin_ping_role_id=1309022450671161476,
                 patreon_contributor_role_id=1287877272224665640,
@@ -1617,6 +1631,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_flow_rejects_missing_minecraft_username_safely(self) -> None:
         bot = SimpleNamespace(settings=SimpleNamespace(
                 patreon_access_role_ids=(123,),
+                dev_jar_tester_role_ids=(),
                 patreon_staff_channel_id=1493390527004147876,
                 patreon_admin_ping_role_id=1309022450671161476,
                 patreon_contributor_role_id=1287877272224665640,
@@ -1646,3 +1661,12 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManualWhitelistKeysTests(unittest.TestCase):
+    def test_names_above_auto_header_are_protected(self):
+        from bulmaai.cogs.patreon_whitelist_flow import _manual_whitelist_keys
+
+        lines = ["# Manually added", "Dev", "KyoSleep", "# Auto-added by the bot", "SomePatron"]
+        self.assertEqual(_manual_whitelist_keys(lines), {"dev", "kyosleep"})
+        self.assertEqual(_manual_whitelist_keys(["Dev", "SomePatron"]), set())

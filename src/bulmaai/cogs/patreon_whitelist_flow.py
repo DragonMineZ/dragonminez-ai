@@ -1917,7 +1917,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
             return text_http_response(400, "Missing Patreon member id")
         link = await get_patreon_link_by_member_id(member_id)
         if link is None:
-            await self._log_staff_info(f"Patreon webhook received for unlinked member `{member_id}`.")
+            log.debug("Patreon webhook for unlinked member %s ignored", member_id)  # free/unlinked members: nothing to act on
             return text_http_response(202, "Patreon webhook accepted")
         if not settings.PATREON_CREATOR_TOKEN:
             return text_http_response(500, "Patreon creator token is not configured")

@@ -6,7 +6,6 @@ from typing import Any
 import discord
 from aiohttp import web
 
-from bulmaai.cogs.patreon_whitelist_flow import _active_self_grant
 from bulmaai.database.db import get_pool
 from bulmaai.services.patreon_access import PatreonCreatorClient
 from bulmaai.services.patreon_grants import (
@@ -269,6 +268,9 @@ async def grant_access(request: web.Request, actor: Actor) -> web.Response:
         raise api_error(400, "Bots can't get beta access.")
 
     async with cog._beta_access_lock(member.id):
+        # Late-bound: the cog module is swapped out on a hot reload.
+        from bulmaai.cogs.patreon_whitelist_flow import _active_self_grant
+
         existing = _active_self_grant(await list_active_grants_for_owner(member.id), member.id)
         if existing is not None:
             raise api_error(409, f"Already whitelisted as {existing.minecraft_username}. Revoke it first.")

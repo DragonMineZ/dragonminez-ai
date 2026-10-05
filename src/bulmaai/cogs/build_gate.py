@@ -4,8 +4,8 @@ Flow: GitHub push webhook -> prompt (Build jar / Skip, auto-closes after build_g
 approval the bot dispatches the mod repo's dev-jar workflow and live-edits the message with the run's
 progress.
 ponytail: all state lives in build_requests (services/build_gate.py), so prompts expire and running builds
-keep being tracked across a bot restart; nothing is held only in memory except the poll tasks, which
-on_ready re-creates from the 'building' rows."""
+keep being tracked across a bot restart or reload; nothing is held only in memory except the poll tasks,
+which on_startup re-creates from the 'building' rows."""
 
 import asyncio
 import json
@@ -38,6 +38,7 @@ from bulmaai.ui.build_gate_views import (
     preview_view,
     progress_embed,
 )
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin
 
 log = logging.getLogger(__name__)
@@ -49,10 +50,9 @@ MAX_POLL_FAILURES = 5
 NO_PINGS = discord.AllowedMentions.none()
 
 
-class BuildGateCog(commands.Cog):
+class BuildGateCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
         self.repo_full_name = f"{self.settings.GITHUB_OWNER}/{self.settings.GITHUB_DEFAULT_REPO}"
         self.github = GitHubService(
             auth=GitHubAppAuth(
@@ -67,22 +67,33 @@ class BuildGateCog(commands.Cog):
         self._lock = asyncio.Lock()
         self._changelog_lock = asyncio.Lock()
         self._trackers: dict[int, asyncio.Task] = {}
-        self._route_registered = False
+        self._route_path: str | None = None
+
+    @property
+    def settings(self):
+        return self.__dict__.get("_settings_override") or self.bot.settings
+
+    @settings.setter
+    def settings(self, value) -> None:
+        # Tests build the cog without a bot and pin settings directly.
+        self.__dict__["_settings_override"] = value
 
     # --- lifecycle ------------------------------------------------------------------------------
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    async def on_startup(self) -> None:
         self._register_webhook_route()
         if not self.expire_prompts.is_running():
             self.expire_prompts.start()
+        # Trackers resume from the 'building' rows, so nothing needs carrying across a reload.
         for request in await build_gate.with_status(build_gate.BUILDING):
             self._start_tracker(request.id)
 
-    def cog_unload(self) -> None:
-        unregister_extra_raw_webhook_route(self.settings.build_gate_webhook_path)
+    async def on_shutdown(self) -> None:
+        if self._route_path is not None:
+            unregister_extra_raw_webhook_route(self._route_path)
+            self._route_path = None
         self.expire_prompts.cancel()
-        for task in self._trackers.values():
+        for task in list(self._trackers.values()):
             task.cancel()
 
     def _channel_id(self) -> int | None:
@@ -97,9 +108,8 @@ class BuildGateCog(commands.Cog):
     # --- GitHub push webhook --------------------------------------------------------------------
 
     def _register_webhook_route(self) -> None:
-        if self._route_registered or not self.settings.build_gate_enabled:
+        if self._route_path is not None or not self.settings.build_gate_enabled:
             return
-        self._route_registered = True
         secret = self.settings.github_push_webhook_secret
         if not secret:
             log.error("GITHUB_PUSH_WEBHOOK_SECRET is missing; build gate push webhook skipped.")
@@ -134,7 +144,8 @@ class BuildGateCog(commands.Cog):
             future.add_done_callback(log_result)
             return text_http_response(202, "Build prompt queued")
 
-        register_extra_raw_webhook_route(path=self.settings.build_gate_webhook_path, handle_request=handle)
+        self._route_path = self.settings.build_gate_webhook_path
+        register_extra_raw_webhook_route(path=self._route_path, handle_request=handle)
 
     async def _handle_push(self, push: build_gate.PushInfo) -> None:
         async with self._lock:

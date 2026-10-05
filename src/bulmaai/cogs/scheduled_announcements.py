@@ -14,22 +14,22 @@ from discord.ext import commands, tasks
 
 from bulmaai.database.db import get_pool
 from bulmaai.services.panel_announcements import OVERDUE_AFTER, mark_overdue, send_scheduled
+from bulmaai.utils.lifecycle import ReloadableCog
 
 log = logging.getLogger(__name__)
 
 POLL_SECONDS = 20
 
 
-class ScheduledAnnouncementsCog(commands.Cog):
+class ScheduledAnnouncementsCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    async def on_startup(self) -> None:
         if not self.send_due.is_running():
             self.send_due.start()
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self.send_due.cancel()
 
     @tasks.loop(seconds=POLL_SECONDS)

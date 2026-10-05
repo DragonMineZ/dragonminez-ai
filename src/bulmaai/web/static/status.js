@@ -7,6 +7,13 @@
     "unknown role ({id})": "rol desconocido ({id})",
     "guild owner": "propietario del servidor",
     "Overview": "Resumen",
+    "Recent updates": "Actualizaciones recientes",
+    "When": "Cuándo",
+    "Commit": "Commit",
+    "Mode": "Modo",
+    "Result": "Resultado",
+    "Took": "Duración",
+    "No updates recorded yet.": "Aún no hay actualizaciones registradas.",
     "Staff": "Staff",
     "Bot": "Bot",
     "not connected": "no conectado",
@@ -27,7 +34,6 @@
     "Extensions ({count})": "Extensiones ({count})",
     "Extension": "Extensión",
     "Reload": "Recargar",
-    "hosts the panel": "aloja el panel",
     "Reloaded {name}": "Se recargó {name}",
     "No extensions loaded.": "Sin extensiones cargadas.",
     "No roles configured.": "Sin roles configurados.",
@@ -67,6 +73,21 @@
       h("div", { class: "muted small" }, `${num(pool.used)} / ${num(pool.limit)}`));
   }
 
+  const UPDATE_TONES = { applied: "ok", restarting: "ok", prompted: "warn", checks_failed: "danger", rolled_back: "danger", failed: "danger" };
+
+  function updatesCard(data) {
+    const rows = data.updates || [];
+    return h("div", { class: "card" },
+      h("h2", {}, t("Recent updates")),
+      table([
+        { label: t("When"), render: (r) => time(r.applied_at) },
+        { label: t("Commit"), render: (r) => h("span", { class: "mono" }, `${r.sha_from} → ${r.sha_to}`) },
+        { label: t("Mode"), render: (r) => r.mode },
+        { label: t("Result"), render: (r) => badge(r.result.replace("_", " "), UPDATE_TONES[r.result] || "") },
+        { label: t("Took"), render: (r) => (r.duration_ms === null ? "—" : `${r.duration_ms} ms`) },
+      ], rows, { empty: t("No updates recorded yet.") }));
+  }
+
   function extensionsCard(data, reload) {
     const canReload = can("bot.reload");
     const rows = data.extensions.map((name) => ({ name }));
@@ -78,7 +99,6 @@
           label: "",
           render: (r) => {
             if (!canReload) return "";
-            if (r.name === data.panel_extension) return h("span", { class: "muted small" }, t("hosts the panel"));
             const button = h("button", { class: "btn small", type: "button" }, t("Reload"));
             button.addEventListener("click", () => run(button, async () => {
               await api(`/api/status/extensions/${encodeURIComponent(r.name)}/reload`, { method: "POST" });
@@ -113,6 +133,7 @@
           h("p", { class: "muted small" },
             b.paused ? badge(t("AI paused: small pool spent"), "danger") : null, " ", t("Pools reset "), time(b.resets_at), t(" (00:00 UTC).")),
           h("div", { class: "grid" }, b.pools.map(budgetCard)),
+          updatesCard(data),
           extensionsCard(data, reload));
       };
       const refresh = h("button", { class: "btn small ghost", type: "button" }, t("Refresh"));

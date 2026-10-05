@@ -22,6 +22,7 @@ from bulmaai.services.mod_actions import (
     parse_ladder,
     pick_step,
 )
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, resolve_member, tier_for
 
 log = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ class ReasonModal(discord.ui.Modal):
         await self._submit(interaction, self.reason_input.value.strip())
 
 
-class ModCommandsCog(commands.Cog):
+class ModCommandsCog(ReloadableCog):
     lockdown_group = discord.SlashCommandGroup(
         "lockdown", "Lock or unlock every public channel", default_member_permissions=STAFF_ONLY
     )
@@ -623,12 +624,11 @@ class ModCommandsCog(commands.Cog):
 
     # --- tempban expiry ----------------------------------------------------------------------
 
-    @commands.Cog.listener()
-    async def on_ready(self):
+    async def on_startup(self) -> None:
         if not self.expire_tempbans.is_running():
             self.expire_tempbans.start()
 
-    def cog_unload(self):
+    async def on_shutdown(self) -> None:
         self.expire_tempbans.cancel()
 
     @tasks.loop(minutes=1)

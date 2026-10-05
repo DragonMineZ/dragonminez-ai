@@ -23,6 +23,7 @@ from bulmaai.services.bug_reports import (
     upsert_triage,
 )
 from bulmaai.ui.bug_report_views import BugTriageView, apply_status, build_triage_embed
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
@@ -72,28 +73,35 @@ def _build_issue_body(
     return "\n".join(lines)
 
 
-class BugReportsCog(commands.Cog):
+class BugReportsCog(ReloadableCog):
     """AI-triages bug-report forum posts and tracks them to resolution."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
         self.client = AsyncOpenAI(api_key=self.settings.openai_key)
         self._poll_lock = asyncio.Lock()
-        self._poll_started = False
         self._creating_issues: set[int] = set()
+
+    @property
+    def settings(self):
+        return self.__dict__.get("_settings_override") or self.bot.settings
+
+    @settings.setter
+    def settings(self, value) -> None:
+        # Tests build the cog without a bot and pin settings directly.
+        self.__dict__["_settings_override"] = value
 
     # ==================== lifecycle ====================
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    async def on_startup(self) -> None:
         self._start_polling_if_configured()
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self.poll_tracked_issues.cancel()
+        await self.client.close()
 
     def _start_polling_if_configured(self) -> None:
-        if self._poll_started or self.poll_tracked_issues.is_running():
+        if self.poll_tracked_issues.is_running():
             return
         if not getattr(self.settings, "bug_reports_enabled", False):
             log.info("Bug-report triage disabled in settings.")
@@ -105,7 +113,6 @@ class BugReportsCog(commands.Cog):
             minutes=max(self.settings.bug_report_poll_minutes, 1),
         )
         self.poll_tracked_issues.start()
-        self._poll_started = True
         log.info(
             "Bug-report tracking poll started every %s minutes.",
             self.settings.bug_report_poll_minutes,

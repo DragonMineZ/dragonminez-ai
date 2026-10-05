@@ -62,6 +62,7 @@ from bulmaai.ui.patreon_views import (
     PATREON_WELCOME_VERIFY_CUSTOM_ID,
     UsernameUpdateConfirmView,
 )
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role
 
 log = logging.getLogger(__name__)
@@ -232,13 +233,12 @@ async def _pick_staff_channel(
     return None
 
 
-class PatreonWhitelistFlowCog(commands.Cog):
+class PatreonWhitelistFlowCog(ReloadableCog):
     """Patreon beta whitelist workflow used by the /patreon beta-access command."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.gh = self._build_github_service()
-        self._patreon_routes_registered = False
         self._beta_access_locks: dict[int, asyncio.Lock] = {}
         self._patreon_oauth_state_locks: dict[str, asyncio.Lock] = {}
         self._processed_patreon_oauth_states: dict[str, float] = {}
@@ -374,11 +374,14 @@ class PatreonWhitelistFlowCog(commands.Cog):
     ) -> None:
         await self._handle_edit_gift_command(ctx, recipient, new_recipient, username)
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    async def on_startup(self) -> None:
         self._register_patreon_routes()
         if not self.sync_patreon_access.is_running():
             self.sync_patreon_access.start()
+
+    async def on_shutdown(self) -> None:
+        self.sync_patreon_access.cancel()
+        self._unregister_patreon_routes()
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
@@ -519,18 +522,14 @@ class PatreonWhitelistFlowCog(commands.Cog):
             ephemeral=True,
         )
 
-    def cog_unload(self) -> None:
-        self.sync_patreon_access.cancel()
-        path = urlparse(self.bot.settings.patreon_oauth_redirect_uri).path
-        unregister_extra_get_route(path)
+    def _unregister_patreon_routes(self) -> None:
+        unregister_extra_get_route(urlparse(self.bot.settings.patreon_oauth_redirect_uri).path)
         unregister_extra_get_route(BETA_ACCESS_ROUTE_PREFIX)
         unregister_extra_raw_webhook_route(PATREON_WEBHOOK_PATH)
 
     def _register_patreon_routes(self) -> None:
-        if self._patreon_routes_registered:
-            return
-        self._patreon_routes_registered = True
-
+        # register_extra_get_route replaces any entry with the same prefix, so re-registering after a reload
+        # swaps in this instance's handlers instead of stacking duplicates.
         loop = asyncio.get_running_loop()
         callback_path = urlparse(self.bot.settings.patreon_oauth_redirect_uri).path
         discord_callback_path = urlparse(self.bot.settings.discord_oauth_redirect_uri).path

@@ -16,11 +16,11 @@ from .services.discord_log_forwarding import (
     DiscordLogForwarder,
     install_discord_log_forwarder,
 )
-from .services import ai_budget
-from .services.db_schema import ensure_schema
-from .services.message_presets import ensure_message_presets_file
-from .services.support_traces import sum_tokens_by_model_since
-from .utils.permissions import is_allowed_guild_id
+from .services import ai_budget, db_schema, message_presets, support_traces
+from .services.release_webhook import ReleaseWebhookServer
+from .utils import permissions
+from .utils.lifecycle import lifecycle_cogs
+from .web import server as panel_server
 
 log = logging.getLogger("bulmaai")
 
@@ -145,6 +145,13 @@ class BulmaAI(discord.Bot):
         self._restart_announcement_sent = False
         self.restart_requested = False
         self._discord_log_forwarder: DiscordLogForwarder | None = None
+        # Cog state parked across a hot reload (see utils/lifecycle.py) and the lock every update takes.
+        self.reload_state: dict[str, object] = {}
+        self.update_lock = asyncio.Lock()
+        self.update_task: asyncio.Task | None = None
+        self.panel_server = None
+        self.release_webhook_server: ReleaseWebhookServer | None = None
+        self._servers_started = False
         BulmaAI.instance = self
 
     async def start(self, token: str, *, reconnect: bool = True) -> None:
@@ -163,16 +170,16 @@ class BulmaAI(discord.Bot):
             )
         try:
             await init_db_pool()
-            await ensure_schema()
+            await db_schema.ensure_schema()
         except Exception:
             # Non-fatal: get_pool() retries lazily, same as before this hook actually ran.
             log.exception("Database setup failed (pool or scripts/schema.sql); continuing")
         try:
             midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            ai_budget.seed(await sum_tokens_by_model_since(midnight))
+            ai_budget.seed(await support_traces.sum_tokens_by_model_since(midnight))
         except Exception:
             log.exception("Failed to seed today's OpenAI token budget from traces")
-        ensure_message_presets_file()
+        message_presets.ensure_message_presets_file()
 
     def reload_settings(self) -> Settings:
         self.settings = load_settings()
@@ -190,16 +197,90 @@ class BulmaAI(discord.Bot):
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
         for guild in self.guilds:
-            if not is_allowed_guild_id(guild.id, self.settings):
+            if not permissions.is_allowed_guild_id(guild.id, self.settings):
                 log.info("Bot is in other server %s (%s); ignoring everything there", guild.name, guild.id)
+        if not self._servers_started:
+            self._servers_started = True
+            await self.start_panel()
+            self.start_release_webhook()
+        await self.start_cog_lifecycles()
         if self._restart_announcement_sent:
             return
 
         if await self._send_restart_announcement():
             self._restart_announcement_sent = True
 
+    async def start_cog_lifecycles(self) -> None:
+        async def start(cog) -> None:
+            try:
+                await cog.start_lifecycle()
+            except Exception:
+                log.exception("%s failed to start", cog.qualified_name)
+
+        await asyncio.gather(*(start(cog) for cog in lifecycle_cogs(self)))
+
+    # The panel and the release webhook server live on the bot, not in a cog, so reloading any cog
+    # (including the ones that register webhook routes) never takes them down.
+    async def start_panel(self) -> None:
+        settings = self.settings
+        if self.panel_server is not None or not settings.panel_enabled:
+            return
+        if not settings.panel_session_secret or not settings.discord_oauth_client_secret:
+            log.error("Admin panel needs PANEL_SESSION_SECRET and DISCORD_OAUTH_CLIENT_SECRET; not starting.")
+            return
+        server = panel_server.PanelServer(self)
+        try:
+            await server.start()
+        except OSError:
+            log.exception("Admin panel failed to bind %s:%s", settings.panel_host, settings.panel_port)
+            return
+        self.panel_server = server
+
+    async def stop_panel(self) -> None:
+        if self.panel_server is not None:
+            await self.panel_server.stop()
+            self.panel_server = None
+
+    def start_release_webhook(self) -> None:
+        settings = self.settings
+        if self.release_webhook_server is not None or not settings.release_webhook_enabled:
+            return
+        if not settings.release_webhook_secret:
+            log.error(
+                "Release webhook is enabled but DMZ_RELEASE_BOT_WEBHOOK_SECRET is not set; "
+                "webhook listener will not start."
+            )
+            return
+        server = ReleaseWebhookServer(
+            host=settings.release_webhook_host,
+            port=settings.release_webhook_port,
+            path=settings.release_webhook_path,
+            secret=settings.release_webhook_secret,
+            loop=asyncio.get_running_loop(),
+            on_payload=self._handle_release_payload,
+        )
+        try:
+            server.start()
+        except OSError:
+            log.exception("Release webhook failed to bind %s:%s", settings.release_webhook_host, settings.release_webhook_port)
+            return
+        self.release_webhook_server = server
+
+    async def _handle_release_payload(self, payload: dict) -> None:
+        cog = self.get_cog("ReleaseApprovalCog")
+        if cog is None:
+            raise RuntimeError("Release candidate arrived while ReleaseApprovalCog isn't loaded")
+        await cog.handle_webhook_payload(payload)
+
     async def close(self) -> None:
         """Called when the bot is shutting down."""
+        await asyncio.gather(
+            *(cog.stop_lifecycle() for cog in lifecycle_cogs(self)), return_exceptions=True
+        )
+        await self.stop_panel()
+        if self.release_webhook_server is not None:
+            await asyncio.to_thread(self.release_webhook_server.stop)
+            self.release_webhook_server = None
         if self._discord_log_forwarder is not None:
             await self._discord_log_forwarder.stop()
             self._discord_log_forwarder = None
@@ -210,7 +291,7 @@ class BulmaAI(discord.Bot):
 
     async def invoke_application_command(self, ctx: discord.ApplicationContext) -> None:
         # Public-bot gate: every command is global, so refuse anything run outside our servers.
-        if not is_allowed_guild_id(ctx.guild_id, self.settings):
+        if not permissions.is_allowed_guild_id(ctx.guild_id, self.settings):
             await ctx.respond("This bot only works in the official DragonMineZ server.", ephemeral=True)
             return
         await super().invoke_application_command(ctx)
@@ -219,13 +300,13 @@ class BulmaAI(discord.Bot):
         # Public-bot gate for events: the bot may sit in other servers but does nothing there (no automod,
         # XP, welcome, log parsing...). Interactions still pass so commands get the refusal above; DMs pass.
         if event not in UNGATED_EVENTS and any(
-            not is_allowed_guild_id(guild_id, self.settings) for guild_id in map(event_guild_id, args) if guild_id
+            not permissions.is_allowed_guild_id(guild_id, self.settings) for guild_id in map(event_guild_id, args) if guild_id
         ):
             return
         super().dispatch(event, *args, **kwargs)
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        if not is_allowed_guild_id(guild.id, self.settings):
+        if not permissions.is_allowed_guild_id(guild.id, self.settings):
             log.info("Added to other server %s (%s); staying but ignoring it", guild.name, guild.id)
 
     async def on_application_command_error(

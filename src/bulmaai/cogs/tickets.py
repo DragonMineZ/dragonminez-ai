@@ -55,6 +55,7 @@ from bulmaai.ui.ticket_views import (
     notice_reopened,
 )
 from bulmaai.utils.language import detect_language_from_text
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_bruno
 
 log = logging.getLogger(__name__)
@@ -158,10 +159,9 @@ class InlineImageHandler(AttachmentHandler):
         return attachment
 
 
-class TicketsCog(commands.Cog):
+class TicketsCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self._views_registered = False
         # ponytail: in-memory guard against double-clicks; one bot process owns the guild.
         self._deleting: set[int] = set()
 
@@ -169,14 +169,11 @@ class TicketsCog(commands.Cog):
     def settings(self):
         return self.bot.settings
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if self._views_registered:
-            return
-        self._views_registered = True
+    async def on_startup(self) -> None:
         for view in (TicketPanelView(), TicketControlView(), TicketModeratorView()):
             self.bot.add_view(view)
-        self._purge_pages.start()
+        if not self._purge_pages.is_running():
+            self._purge_pages.start()
         try:
             # Channels deleted while the bot was offline would otherwise count against their owner's limit.
             for ticket in await list_active_tickets():
@@ -185,7 +182,7 @@ class TicketsCog(commands.Cog):
         except Exception:
             log.exception("Failed to reconcile ticket channels")
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self._purge_pages.cancel()
 
     @tasks.loop(hours=1)

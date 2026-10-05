@@ -504,3 +504,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_channel_id
 
 CREATE INDEX IF NOT EXISTS idx_tickets_active_owner
     ON tickets (owner_id) WHERE status IN ('creating', 'open');
+
+-- Every update the self-updater applied or tried: hot reloads, full restarts, failed checks.
+CREATE TABLE IF NOT EXISTS bot_updates (
+    id           BIGSERIAL PRIMARY KEY,
+    sha_from     TEXT NOT NULL,
+    sha_to       TEXT NOT NULL,
+    mode         TEXT NOT NULL,
+    result       TEXT NOT NULL,
+    duration_ms  INTEGER,
+    detail       TEXT,
+    applied_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_updates_applied_at
+    ON bot_updates (applied_at DESC);

@@ -9,8 +9,8 @@ os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
+from bulmaai.bot import BulmaAI
 from bulmaai.config import get_editable_setting_names, load_settings
-from bulmaai.cogs.release_approval import ReleaseApprovalCog
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
 from bulmaai.services.release_approval import (
@@ -187,14 +187,14 @@ class ReleaseApprovalTests(unittest.TestCase):
                 "release_webhook_path": "/dmz-release",
             },
         )()
-        cog = object.__new__(ReleaseApprovalCog)
-        cog.settings = settings
-        cog.webhook_server = None
+        bot = object.__new__(BulmaAI)
+        bot.settings = settings
+        bot.release_webhook_server = None
 
-        with self.assertLogs("bulmaai.cogs.release_approval", level="ERROR") as logs:
-            cog._start_webhook_server()
+        with self.assertLogs("bulmaai", level="ERROR") as logs:
+            bot.start_release_webhook()
 
-        self.assertIsNone(cog.webhook_server)
+        self.assertIsNone(bot.release_webhook_server)
         self.assertIn("DMZ_RELEASE_BOT_WEBHOOK_SECRET", "\n".join(logs.output))
 
 

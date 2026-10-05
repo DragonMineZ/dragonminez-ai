@@ -46,6 +46,7 @@ from bulmaai.services.ticket_transcripts import (
     ticket_knowledge_filename,
     upload_ticket_knowledge,
 )
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import (
     can_use_ai_support,
     has_any_allowed_role,
@@ -401,7 +402,7 @@ def _build_close_embed(
     return embed
 
 
-class AITicketsCog(commands.Cog):
+class AITicketsCog(ReloadableCog):
     """AI triage / support for ticket channels and role-authorized support requests."""
 
     def __init__(self, bot: discord.Bot):
@@ -409,7 +410,6 @@ class AITicketsCog(commands.Cog):
         self._channel_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._pending_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
         self._escalated_ticket_channels: set[int] = set()
-        self._disabled_channels_loaded = False
         self._resolve_prompts: dict[int, discord.Message] = {}
         # ponytail: in-memory, a restart just shows "n/a" confidence on the close embed.
         self._last_confidence: dict[int, float] = {}
@@ -422,19 +422,36 @@ class AITicketsCog(commands.Cog):
         # ponytail: one entry per ticket channel answered; tiny, cleared on restart.
         self._ticket_owners: dict[int, int | None] = {}
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if self._disabled_channels_loaded:
-            return
-        self._disabled_channels_loaded = True
+    async def on_startup(self) -> None:
         try:
             self._escalated_ticket_channels |= await get_ai_disabled_ticket_channels()
         except Exception:
             log.exception("Failed to load persisted AI ticket disabled channels")
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         for pending_key in list(self._pending_tasks):
             self._cancel_pending_task(pending_key)
+
+    def is_busy(self) -> bool:
+        return any(not task.done() for task in self._pending_tasks.values())
+
+    def export_state(self) -> dict[str, Any]:
+        return {
+            "escalated": set(self._escalated_ticket_channels),
+            "resolve_prompts": dict(self._resolve_prompts),
+            "last_confidence": dict(self._last_confidence),
+            "archived": set(self._archived_channels),
+            "paused_notices": dict(self._paused_notices),
+            "ticket_owners": dict(self._ticket_owners),
+        }
+
+    def import_state(self, state: dict[str, Any]) -> None:
+        self._escalated_ticket_channels |= state.get("escalated", set())
+        self._resolve_prompts.update(state.get("resolve_prompts", {}))
+        self._last_confidence.update(state.get("last_confidence", {}))
+        self._archived_channels |= state.get("archived", set())
+        self._paused_notices.update(state.get("paused_notices", {}))
+        self._ticket_owners.update(state.get("ticket_owners", {}))
 
     def _cancel_pending_task(self, pending_key: tuple[int, int]) -> None:
         task = self._pending_tasks.pop(pending_key, None)

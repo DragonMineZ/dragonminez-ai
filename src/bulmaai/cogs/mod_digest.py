@@ -4,9 +4,10 @@ import logging
 from datetime import datetime, time, timezone
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import tasks
 
 from bulmaai.services import mod_actions, mod_digest
+from bulmaai.utils.lifecycle import ReloadableCog
 
 log = logging.getLogger(__name__)
 
@@ -24,13 +25,16 @@ async def resolve_digest_channel(bot: discord.Bot, guild: discord.Guild) -> disc
     return discord.utils.get(guild.text_channels, name=STAFF_GENERAL_CHANNEL_NAME)
 
 
-class ModDigestCog(commands.Cog):
+class ModDigestCog(ReloadableCog):
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.send_digest.start()
 
-    def cog_unload(self) -> None:
+    async def on_startup(self) -> None:
+        if not self.send_digest.is_running():
+            self.send_digest.start()
+
+    async def on_shutdown(self) -> None:
         self.send_digest.cancel()
 
     # --- the weekly send -----------------------------------------------------------------------

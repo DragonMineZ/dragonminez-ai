@@ -11,7 +11,7 @@ import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
-from bulmaai.services import ai_budget
+from bulmaai.services import ai_budget, update_engine
 from bulmaai.web.core import (
     BOT,
     PERMISSIONS,
@@ -32,7 +32,6 @@ log = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 STARTED_AT = datetime.now(timezone.utc)
-PANEL_EXTENSION = "bulmaai.cogs.admin_panel"
 DB_TIMEOUT_SECONDS = 3
 AUDIT_PAGE_MAX = 200
 
@@ -78,6 +77,24 @@ def _ai_budget(settings: Any) -> dict[str, Any]:
     return {"pools": pools, "paused": ai_budget.is_paused(settings), "resets_at": resets_at.isoformat()}
 
 
+async def _recent_updates() -> list[dict[str, Any]]:
+    try:
+        rows = await asyncio.wait_for(update_engine.recent_updates(), DB_TIMEOUT_SECONDS)
+    except Exception:
+        return []
+    return [
+        {
+            "sha_from": row["sha_from"][:7],
+            "sha_to": row["sha_to"][:7],
+            "mode": row["mode"],
+            "result": row["result"],
+            "duration_ms": row["duration_ms"],
+            "applied_at": row["applied_at"].isoformat(),
+        }
+        for row in rows
+    ]
+
+
 @routes.get("/api/status")
 @requires("status.view")
 async def status(request: web.Request, actor: Actor) -> web.Response:
@@ -94,8 +111,8 @@ async def status(request: web.Request, actor: Actor) -> web.Response:
             "uptime_seconds": int((now - STARTED_AT).total_seconds()),
             "guild": {"id": str(guild.id), "name": guild.name, "member_count": guild.member_count} if guild else None,
             "extensions": sorted(bot.extensions),
-            "panel_extension": PANEL_EXTENSION,
             "db": await _db_health(),
+            "updates": await _recent_updates(),
             "ai_budget": _ai_budget(bot.settings),
         }
     )
@@ -108,15 +125,15 @@ async def reload_extension(request: web.Request, actor: Actor) -> web.Response:
     name = request.match_info["name"]
     if name not in bot.extensions:
         raise api_error(404, "That extension isn't loaded.")
-    if name == PANEL_EXTENSION:
-        raise api_error(400, "The panel can't reload its own extension; restart the bot instead.")
+    if bot.update_lock.locked():
+        raise api_error(409, "An update is running right now; try again in a moment.")
     try:
-        bot.reload_extension(name)
+        synced = await update_engine.reload_extension_safely(bot, name)
     except discord.ExtensionError as error:
         log.exception("Panel reload of %s failed", name)
         raise api_error(502, f"Reload failed, previous version kept: {error}")
     await audit(actor, "bot.reload", name)
-    return web.json_response({"ok": True, "extensions": sorted(bot.extensions)})
+    return web.json_response({"ok": True, "extensions": sorted(bot.extensions), "synced_commands": synced})
 
 
 def _match_member_ids(guild: discord.Guild, query: str) -> list[int]:

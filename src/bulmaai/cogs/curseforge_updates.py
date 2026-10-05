@@ -3,13 +3,14 @@ import logging
 import math
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import tasks
 
 from bulmaai.services.curseforge_client import CurseForgeClient, CurseForgeRelease
 from bulmaai.services.curseforge_state import (
     get_curseforge_project_state,
     upsert_curseforge_project_state,
 )
+from bulmaai.utils.lifecycle import ReloadableCog
 
 logger = logging.getLogger(__name__)
 
@@ -95,18 +96,25 @@ def _build_release_view(release: CurseForgeRelease) -> discord.ui.View:
     return view
 
 
-class CurseForgeUpdatesCog(commands.Cog):
+class CurseForgeUpdatesCog(ReloadableCog):
     """Announces new DragonMineZ CurseForge releases."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
         self.client = CurseForgeClient(self.settings)
         self._poll_lock = asyncio.Lock()
-        self._poll_started = False
+
+    @property
+    def settings(self):
+        return self.__dict__.get("_settings_override") or self.bot.settings
+
+    @settings.setter
+    def settings(self, value) -> None:
+        # Tests build the cog without a bot and pin settings directly.
+        self.__dict__["_settings_override"] = value
 
     def _start_polling_if_configured(self) -> None:
-        if self._poll_started or self.poll_curseforge.is_running():
+        if self.poll_curseforge.is_running():
             return
         if not self.settings.curseforge_enabled:
             logger.info("CurseForge updates disabled in settings.")
@@ -119,18 +127,16 @@ class CurseForgeUpdatesCog(commands.Cog):
             minutes=max(self.settings.curseforge_poll_minutes, 1),
         )
         self.poll_curseforge.start()
-        self._poll_started = True
         logger.info(
             "CurseForge polling loop started for project %s every %s minutes.",
             self.settings.curseforge_project_id,
             self.settings.curseforge_poll_minutes,
         )
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    async def on_startup(self) -> None:
         self._start_polling_if_configured()
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self.poll_curseforge.cancel()
 
     @tasks.loop(minutes=15)
@@ -148,6 +154,8 @@ class CurseForgeUpdatesCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _poll_once(self) -> None:
+        if self.client._settings is not self.settings:
+            self.client = CurseForgeClient(self.settings)
         release = await self.client.fetch_latest_release()
         state = await get_curseforge_project_state(release.project_id)
 

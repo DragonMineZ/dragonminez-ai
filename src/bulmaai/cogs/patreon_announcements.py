@@ -15,6 +15,7 @@ from bulmaai.services.patreon_state import (
     upsert_patreon_campaign_state,
 )
 from bulmaai.ui.patreon_views import PatreonWelcomeView
+from bulmaai.utils.lifecycle import ReloadableCog
 
 logger = logging.getLogger(__name__)
 
@@ -283,18 +284,20 @@ def _downloads_channel_url(member: discord.Member, channel_id: int | None) -> st
     return f"https://discord.com/channels/{guild_id}/{channel_id}"
 
 
-class PatreonAnnouncementsCog(commands.Cog):
+class PatreonAnnouncementsCog(ReloadableCog):
     """Polls Patreon for new posts and announces them in Discord."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
         self.token = self.settings.PATREON_CREATOR_TOKEN
         self.campaign_id = self.settings.PATREON_CAMPAIGN_ID
         self.channel_id = self.settings.patreon_announcement_channel_id
         self._poll_lock = asyncio.Lock()
-        self._poll_started = False
         self._recent_welcome_events: dict[tuple[int, tuple[int, ...]], float] = {}
+
+    @property
+    def settings(self):
+        return self.bot.settings
 
     def _cleanup_recent_welcome_events(self) -> None:
         now = monotonic()
@@ -384,7 +387,7 @@ class PatreonAnnouncementsCog(commands.Cog):
             logger.exception("Failed to DM Patreon welcome message to user %s", member.id)
 
     def _start_polling_if_configured(self) -> None:
-        if self._poll_started or self.poll_patreon.is_running():
+        if self.poll_patreon.is_running():
             return
         if not self.token or not self.campaign_id:
             logger.warning(
@@ -398,11 +401,9 @@ class PatreonAnnouncementsCog(commands.Cog):
             return
 
         self.poll_patreon.start()
-        self._poll_started = True
         logger.info("Patreon polling loop started (every 5 min).")
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    async def on_startup(self) -> None:
         self._start_polling_if_configured()
 
     @commands.Cog.listener()
@@ -428,7 +429,7 @@ class PatreonAnnouncementsCog(commands.Cog):
         primary_role = max(added_roles, key=lambda role: (role.position, role.id))
         await self._send_patreon_welcome(after, primary_role)
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self.poll_patreon.cancel()
 
     @tasks.loop(minutes=5)

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 import discord
@@ -12,7 +11,6 @@ from bulmaai.services.release_approval import (
     ReleasePublishMetadataError,
     parse_release_candidate_payload,
 )
-from bulmaai.services.release_webhook import ReleaseWebhookServer
 from bulmaai.ui.release_views import (
     ReleaseCandidateView,
     build_release_candidate_embed,
@@ -39,44 +37,15 @@ def _get_release_github_service(settings) -> GitHubService:
 class ReleaseApprovalCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
         self.approval_service = ReleaseApprovalService(
-            github_service=_get_release_github_service(self.settings),
+            github_service=_get_release_github_service(bot.settings),
         )
-        self.webhook_server: ReleaseWebhookServer | None = None
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        self._start_webhook_server()
+    @property
+    def settings(self):
+        return self.bot.settings
 
-    def cog_unload(self) -> None:
-        if self.webhook_server is not None:
-            self.webhook_server.stop()
-            self.webhook_server = None
-
-    def _start_webhook_server(self) -> None:
-        if not self.settings.release_webhook_enabled:
-            return
-        if self.webhook_server is not None:
-            return
-        if not self.settings.release_webhook_secret:
-            log.error(
-                "Release webhook is enabled but DMZ_RELEASE_BOT_WEBHOOK_SECRET is not set; "
-                "webhook listener will not start."
-            )
-            return
-
-        self.webhook_server = ReleaseWebhookServer(
-            host=self.settings.release_webhook_host,
-            port=self.settings.release_webhook_port,
-            path=self.settings.release_webhook_path,
-            secret=self.settings.release_webhook_secret,
-            loop=asyncio.get_running_loop(),
-            on_payload=self._handle_webhook_payload,
-        )
-        self.webhook_server.start()
-
-    async def _handle_webhook_payload(self, payload: dict) -> None:
+    async def handle_webhook_payload(self, payload: dict) -> None:
         candidate = parse_release_candidate_payload(payload)
         await self.post_candidate(candidate)
 

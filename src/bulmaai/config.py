@@ -87,7 +87,6 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.power_level",
     "bulmaai.cogs.ask",
     "bulmaai.cogs.showcase",
-    "bulmaai.cogs.admin_panel",
     "bulmaai.cogs.self_update",
     "bulmaai.cogs.mod_log_sync",
     "bulmaai.cogs.scheduled_announcements",
@@ -229,6 +228,8 @@ DEFAULT_CURSEFORGE_POLL_MINUTES = 15
 DEFAULT_DISCORD_LOG_FORWARDING_ENABLED = True
 DEFAULT_DISCORD_LOG_CHANNEL_ID = 1493390527004147876
 DEFAULT_DISCORD_LOG_MIN_LEVEL = "WARNING"
+# Hot-reloadable updates on origin are tested and applied on their own; full restarts still wait for Bruno.
+DEFAULT_SELF_UPDATE_AUTO_APPLY = True
 DEFAULT_MODERATION_ENABLED = True
 DEFAULT_MODERATION_LOG_CHANNEL_ID = 1501735528356118528
 DEFAULT_MODERATION_EXEMPT_ROLE_IDS: Sequence[int] = ()
@@ -425,6 +426,7 @@ class Settings:
     discord_log_forwarding_enabled: bool
     discord_log_channel_id: int | None
     discord_log_min_level: str
+    self_update_auto_apply: bool
     moderation_enabled: bool
     moderation_log_channel_id: int | None
     moderation_exempt_role_ids: Sequence[int]
@@ -920,6 +922,7 @@ def _build_settings_from_env() -> Settings:
             "DISCORD_LOG_FORWARDING_ENABLED",
             DEFAULT_DISCORD_LOG_FORWARDING_ENABLED,
         ),
+        self_update_auto_apply=_get_env_bool("SELF_UPDATE_AUTO_APPLY", DEFAULT_SELF_UPDATE_AUTO_APPLY),
         discord_log_channel_id=_get_env_int(
             "DISCORD_LOG_CHANNEL_ID",
             DEFAULT_DISCORD_LOG_CHANNEL_ID,

@@ -17,6 +17,7 @@ from discord.ext import commands, tasks
 
 from bulmaai.services import joiner_alerts, mod_actions, mod_cases
 from bulmaai.ui.mod_views import RAID, parse_custom_id, quick_actions_view, raid_view
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, tier_for
 
 log = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ def offense_breakdown(cases) -> dict[str, int]:
     return counts
 
 
-class RaidGuardCog(commands.Cog):
+class RaidGuardCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self._join_times: deque[float] = deque()
@@ -225,13 +226,36 @@ class RaidGuardCog(commands.Cog):
 
     # --- 1h auto-dismiss sweep (durable: reads joiner_alerts, survives a restart) ---------------
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    async def on_startup(self) -> None:
         if not self.expire_joiner_alerts.is_running():
             self.expire_joiner_alerts.start()
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self.expire_joiner_alerts.cancel()
+        if self._raid_update_task is not None and not self._raid_update_task.done():
+            self._raid_update_task.cancel()
+
+    def export_state(self) -> dict | None:
+        # Raid mode must survive a reload or a code push mid-raid would silently stop quarantining joiners.
+        if not self._join_times and self._raid_until is None:
+            return None
+        return {
+            "join_times": list(self._join_times),
+            "raid_until": self._raid_until,
+            "raid_message": self._raid_message,
+            "raid_joiners": list(self._raid_joiners),
+            "raid_revision": self._raid_revision,
+        }
+
+    def import_state(self, state: dict) -> None:
+        self._join_times = deque(state.get("join_times", ()))
+        self._raid_until = state.get("raid_until")
+        self._raid_message = state.get("raid_message")
+        self._raid_joiners = list(state.get("raid_joiners", ()))
+        self._raid_revision = state.get("raid_revision", 0)
+        if self._raid_message is not None and self._in_raid(time.monotonic()):
+            # An embed edit the old instance had pending was cancelled with it.
+            self._schedule_raid_update()
 
     @tasks.loop(minutes=1)
     async def expire_joiner_alerts(self) -> None:

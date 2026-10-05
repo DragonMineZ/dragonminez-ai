@@ -47,7 +47,7 @@ OWNER_ONLY_SETTINGS = {"initial_extensions", "log_level", "discord_staff_role_id
 def _owner_only(name: str) -> bool:
     """Panel access and infrastructure (database, loaded code, paths, URLs, logging, staff roles)."""
     return (
-        name.startswith(("panel_", "PG", "release_webhook_", "discord_log_"))
+        name.startswith(("panel_", "PG", "release_webhook_", "discord_log_", "self_update_"))
         or name.lower().endswith(("_path", "_url"))
         or name in OWNER_ONLY_SETTINGS
     )

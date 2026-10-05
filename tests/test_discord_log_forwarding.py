@@ -12,10 +12,14 @@ from bulmaai.services.discord_log_forwarding import (
 
 class DiscordLogForwardingTests(unittest.TestCase):
     def test_long_traceback_keeps_tail_and_attaches_full_text(self) -> None:
+        # Two functions taking turns: Python collapses runs of identical frames into one line.
         def deep(n: int) -> None:
             if n == 0:
                 raise RuntimeError("404 Client Error: Not Found for url: https://example.test/END")
-            deep(n - 1)
+            deeper(n - 1)
+
+        def deeper(n: int) -> None:
+            deep(n)
 
         try:
             deep(30)

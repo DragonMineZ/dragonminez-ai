@@ -31,3 +31,6 @@ data/ticket_transcripts/
 
 # Claude-authored local notes/instructions (never pushed)
 docs/
+
+# Self-updater staging worktree
+.update-staging/

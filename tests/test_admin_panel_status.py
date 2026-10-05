@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from datetime import datetime, timezone
@@ -29,8 +30,12 @@ def make_status_bot():
     guild.members = list(members.values())
     bot.user = make_member(999, guild)
     bot.latency = 0.0421
-    bot.extensions = {"bulmaai.cogs.meta": None, "bulmaai.cogs.admin_panel": None}
+    bot.extensions = {"bulmaai.cogs.meta": None}
     bot.reload_extension = MagicMock()
+    bot.update_lock = asyncio.Lock()
+    bot.cogs = {}
+    bot.pending_application_commands = []
+    bot.sync_commands = AsyncMock()
     return bot
 
 
@@ -77,7 +82,6 @@ class StatusApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post("/api/status/extensions/bulmaai.cogs.meta/reload")).status, 403)
         self.login(OWNER_ID)
         self.assertEqual((await self.post("/api/status/extensions/bulmaai.cogs.nope/reload")).status, 404)
-        self.assertEqual((await self.post("/api/status/extensions/bulmaai.cogs.admin_panel/reload")).status, 400)
         self.bot.reload_extension.assert_not_called()
 
     async def test_reload_happy_path_and_failure(self):

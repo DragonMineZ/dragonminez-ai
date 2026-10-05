@@ -36,6 +36,7 @@ from bulmaai.services.moderation import (
     without_filters,
 )
 from bulmaai.ui.mod_views import quick_actions_view
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_staff
 
 
@@ -117,7 +118,7 @@ class _Incident:
     image_hashes: tuple[int, ...] = field(default_factory=tuple)
 
 
-class ModerationCog(commands.Cog):
+class ModerationCog(ReloadableCog):
     """MVP anti-spam and harmful-link guardrail."""
 
     def __init__(self, bot: discord.Bot):
@@ -130,7 +131,6 @@ class ModerationCog(commands.Cog):
         self._everyone_ping_events: dict[tuple[int, int], list[float]] = defaultdict(list)
         self._recent_images: dict[tuple[int, int], dict[int, ImagePost]] = {}
         self._pending_image_bursts: dict[tuple[int, int], list[discord.Message]] = {}
-        self._scam_images_loaded = False
         settings = self._settings()
         self._phishdestroy: PhishDestroyClient | None = None
         self._phishdestroy_down = False
@@ -1028,11 +1028,7 @@ class ModerationCog(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         await self._inspect_message(message)
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if self._scam_images_loaded:
-            return
-        self._scam_images_loaded = True
+    async def on_startup(self) -> None:
         try:
             count = await scam_images.load()
         except Exception:
@@ -1044,8 +1040,13 @@ class ModerationCog(commands.Cog):
             extra={"event": "scam_images_loaded", "count": count},
         )
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self.recover_phishdestroy.cancel()
+        # An incident only drops out of _incidents minutes after its last hit, long after its debounced
+        # flush finished, so walking the live ones reaches every pending log update.
+        for incident in self._incidents.values():
+            if incident.update_task is not None:
+                incident.update_task.cancel()
 
     @tasks.loop(minutes=5)
     async def recover_phishdestroy(self) -> None:

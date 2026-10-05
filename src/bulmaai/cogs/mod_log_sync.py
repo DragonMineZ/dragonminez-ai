@@ -6,6 +6,7 @@ Two sources, both best-effort (a failed insert logs and moves on):
 Panel actions and automod hits are already recorded where they happen (mod_cases.py callers).
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from discord.ext import commands
 from bulmaai.config import Settings
 from bulmaai.services import mod_actions, mod_cases
 from bulmaai.services.mod_actions import parse_duration_seconds
+from bulmaai.utils.lifecycle import ReloadableCog
 
 log = logging.getLogger(__name__)
 
@@ -222,12 +224,12 @@ def _parse_dyno_case(embed: dict) -> ParsedCase | None:
     )
 
 
-class ModLogSyncCog(commands.Cog):
+class ModLogSyncCog(ReloadableCog):
     """Listens for moderation done outside the bot (Discord's UI, other bots, Dyno)."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self._backfilled = False
+        self._backfill_task: asyncio.Task | None = None
 
     def _settings(self) -> Settings:
         return self.bot.settings
@@ -338,11 +340,16 @@ class ModLogSyncCog(commands.Cog):
 
     # --- backfill --------------------------------------------------------------
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if self._backfilled:
-            return
-        self._backfilled = True
+    async def on_startup(self) -> None:
+        # Idempotent, so a reload re-running it only catches up on what happened meanwhile.
+        self._backfill_task = asyncio.create_task(self._backfill())
+
+    async def on_shutdown(self) -> None:
+        if self._backfill_task is not None:
+            self._backfill_task.cancel()
+            self._backfill_task = None
+
+    async def _backfill(self) -> None:
         settings = self._settings()
         guild = self.bot.get_guild(settings.panel_guild_id)
         if guild is None:

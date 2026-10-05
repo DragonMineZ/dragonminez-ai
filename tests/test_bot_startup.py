@@ -30,7 +30,7 @@ class BotStartupTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("bulmaai.bot.install_discord_log_forwarder") as install,
             patch("bulmaai.bot.init_db_pool", AsyncMock(side_effect=OSError("db down"))),
-            patch("bulmaai.bot.ensure_message_presets_file"),
+            patch("bulmaai.services.message_presets.ensure_message_presets_file"),
             self.assertLogs("bulmaai", level="ERROR"),
         ):
             await bot.setup_hook()

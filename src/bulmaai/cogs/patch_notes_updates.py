@@ -17,6 +17,7 @@ from bulmaai.services.patch_notes import (
     summarize_patch_notes_update,
     upsert_patch_notes_state,
 )
+from bulmaai.utils.lifecycle import ReloadableCog
 
 log = logging.getLogger(__name__)
 
@@ -52,15 +53,17 @@ class PatchNotesUpdateView(discord.ui.View):
         self.add_item(discord.ui.Button(label="Read the Patch Notes", url=patch_notes_url))
 
 
-class PatchNotesUpdatesCog(commands.Cog):
+class PatchNotesUpdatesCog(ReloadableCog):
     """Watches the patch notes branch and announces the daily 9 AM update."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
         self.gh = self._build_github_service()
         self._poll_lock = asyncio.Lock()
-        self._poll_started = False
+
+    @property
+    def settings(self):
+        return self.bot.settings
 
     def _build_github_service(self) -> GitHubService | None:
         settings = self.bot.settings
@@ -77,18 +80,16 @@ class PatchNotesUpdatesCog(commands.Cog):
             repo=settings.patch_notes_repo,
         )
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if self._poll_started or self.poll_patch_notes.is_running():
+    async def on_startup(self) -> None:
+        if self.poll_patch_notes.is_running():
             return
         if self.gh is None:
             log.warning("GitHub App credentials missing; patch notes updates will not be watched.")
             return
         self.poll_patch_notes.start()
-        self._poll_started = True
         log.info("Patch notes polling loop started (every %s min).", PATCH_NOTES_POLL_MINUTES)
 
-    def cog_unload(self) -> None:
+    async def on_shutdown(self) -> None:
         self.poll_patch_notes.cancel()
 
     @tasks.loop(minutes=PATCH_NOTES_POLL_MINUTES)

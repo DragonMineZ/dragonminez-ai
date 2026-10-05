@@ -53,6 +53,7 @@ from bulmaai.ui.dev_jar_views import (
     build_dev_jar_download_embeds,
     build_dev_jar_review_embeds,
 )
+from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 
 
@@ -144,29 +145,49 @@ class DevJarReviewView(discord.ui.View):
         )
 
 
-class DevJarDownloadsCog(commands.Cog):
+class DevJarDownloadsCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.settings = bot.settings
         self.token_store = OneTimeDownloadTokenStore(now=time.time)
-        self._release_webhook_route_registered = False
-        self._release_get_routes_registered = False
+        self._webhook_path: str | None = None
+        self._get_paths: list[str] = []
         self._pending_review_lock = asyncio.Lock()
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
+    @property
+    def settings(self):
+        return self.__dict__.get("_settings_override") or self.bot.settings
+
+    @settings.setter
+    def settings(self, value) -> None:
+        # Tests build the cog without a bot and pin settings directly.
+        self.__dict__["_settings_override"] = value
+
+    async def on_startup(self) -> None:
         self._register_release_webhook_route()
         self._register_release_get_routes()
 
-    def cog_unload(self) -> None:
-        unregister_extra_webhook_route(self.settings.dev_jar_download_webhook_path)
-        unregister_extra_get_route(f"{self.settings.dev_jar_download_download_path.rstrip('/')}/")
-        unregister_extra_get_route(PROTECTED_ARTIFACTS_PATH)
+    async def on_shutdown(self) -> None:
+        if self._webhook_path is not None:
+            unregister_extra_webhook_route(self._webhook_path)
+            self._webhook_path = None
+        for path_prefix in self._get_paths:
+            unregister_extra_get_route(path_prefix)
+        self._get_paths = []
+
+    def export_state(self) -> dict | None:
+        # Download links already handed out must keep working after a reload.
+        self.token_store.cleanup_expired()
+        if not self.token_store._grants:
+            return None
+        return {"grants": dict(self.token_store._grants), "claimed": set(self.token_store._claimed)}
+
+    def import_state(self, state: dict) -> None:
+        self.token_store._grants.update(state["grants"])
+        self.token_store._claimed |= state["claimed"]
 
     def _register_release_webhook_route(self) -> None:
-        if self._release_webhook_route_registered:
+        if self._webhook_path is not None:
             return
-        self._release_webhook_route_registered = True
         if not self.settings.dev_jar_download_enabled:
             return
         if not self.settings.release_webhook_secret:
@@ -189,8 +210,9 @@ class DevJarDownloadsCog(commands.Cog):
 
             future.add_done_callback(log_result)
 
+        self._webhook_path = self.settings.dev_jar_download_webhook_path
         register_extra_webhook_route(
-            path=self.settings.dev_jar_download_webhook_path,
+            path=self._webhook_path,
             secret=self.settings.release_webhook_secret,
             secret_header="X-DMZ-Release-Bot-Secret",
             parse_payload=parse_dev_jar_upload_payload,
@@ -199,9 +221,8 @@ class DevJarDownloadsCog(commands.Cog):
         )
 
     def _register_release_get_routes(self) -> None:
-        if self._release_get_routes_registered:
+        if self._get_paths:
             return
-        self._release_get_routes_registered = True
         if not self.settings.dev_jar_download_enabled:
             return
         if not self.settings.dev_jar_download_upload_dir:
@@ -221,6 +242,7 @@ class DevJarDownloadsCog(commands.Cog):
             path_prefix=direct_prefix,
             handle_request=handle_direct_download,
         )
+        self._get_paths.append(direct_prefix)
         if not self.settings.release_webhook_secret:
             log.error(
                 "DMZ_RELEASE_BOT_WEBHOOK_SECRET is missing; dev jar protected-artifacts route skipped."
@@ -232,6 +254,7 @@ class DevJarDownloadsCog(commands.Cog):
             secret=self.settings.release_webhook_secret,
             secret_header="X-DMZ-Release-Bot-Secret",
         )
+        self._get_paths.append(PROTECTED_ARTIFACTS_PATH)
 
     def _handle_protected_artifacts_request(
         self, path: str, query: dict[str, list[str]]

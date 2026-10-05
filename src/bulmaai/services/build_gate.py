@@ -238,13 +238,11 @@ async def set_preview_message(request_id: int, message_id: int) -> None:
     await pool.execute("UPDATE build_requests SET preview_message_id = $2 WHERE id = $1", request_id, message_id)
 
 
-async def changelog_for_commit(commit_sha: str) -> str | None:
-    """The changelog staff attached to the build that produced the jar with this (short) commit sha."""
+async def latest_build_changelog() -> str | None:
+    """The changelog of the most recently started build (null if staff left it empty)."""
     pool = await get_pool()
     return await pool.fetchval(
-        "SELECT changelog FROM build_requests WHERE changelog IS NOT NULL AND status IN ('building', 'succeeded') "
-        "AND left(head_sha, char_length($1)) = $1 ORDER BY id DESC LIMIT 1",
-        commit_sha,
+        "SELECT changelog FROM build_requests WHERE status IN ('building', 'succeeded') ORDER BY id DESC LIMIT 1"
     )
 
 

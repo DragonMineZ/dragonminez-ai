@@ -532,7 +532,7 @@ class DevJarDownloadsCog(commands.Cog):
 
     async def _staff_changelog(self, artifact: DevJarArtifact) -> str | None:
         try:
-            return await build_gate.changelog_for_commit(artifact.commit_sha)
+            return await build_gate.latest_build_changelog()
         except Exception:
             log.exception("Failed to load the changelog for dev jar %s; publishing without one", artifact.file_name)
             return None

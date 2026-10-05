@@ -1090,7 +1090,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "bulmaai.cogs.dev_jar_downloads.build_gate.changelog_for_commit",
+                    "bulmaai.cogs.dev_jar_downloads.build_gate.latest_build_changelog",
                     new=AsyncMock(return_value="New form drains"),
                 ) as changelog_mock,
                 patch(
@@ -1110,7 +1110,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(patreon_channel.sent), 1)
         self.assertEqual(len(testing_channel.sent), 1)
-        changelog_mock.assert_awaited_once_with("222222222222")
+        changelog_mock.assert_awaited_once_with()
         for channel in (patreon_channel, testing_channel):
             whats_new = [embed for embed in channel.sent[0]["embeds"] if embed.title == "What's New"]
             self.assertEqual([embed.description for embed in whats_new], ["New form drains"])

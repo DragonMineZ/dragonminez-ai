@@ -7,7 +7,19 @@ os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
 from bulmaai.services import build_gate
+from bulmaai.ui.build_gate_views import (
+    CHANGELOG_PREFIX,
+    changelog_button,
+    gate_embed,
+    gate_view,
+    preview_embeds,
+    preview_view,
+)
 
 REPO = "DragonMineZ/dragonminez"
 
@@ -87,3 +99,94 @@ class HelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def build_request(**overrides):
+    fields = dict(
+        id=7, repo=REPO, branch="feature", head_sha="a" * 40, pusher="goku", commits=(), source="push",
+        status=build_gate.PENDING, channel_id=1, message_id=2, expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        decided_by=None, decided_at=None, run_id=None, run_url=None, created_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        changelog=None, preview_message_id=None,
+    )
+    fields.update(overrides)
+    return build_gate.BuildRequest(**fields)
+
+
+class ChangelogTextTests(unittest.TestCase):
+    def test_blank_becomes_none_and_long_text_is_capped(self):
+        self.assertIsNone(build_gate.clean_changelog(None))
+        self.assertIsNone(build_gate.clean_changelog("  \n "))
+        self.assertEqual(build_gate.clean_changelog("  hi  "), "hi")
+        self.assertEqual(len(build_gate.clean_changelog("x" * 9000)), build_gate.MAX_CHANGELOG_CHARS)
+
+
+class ChangelogViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prompt_has_changelog_button_that_switches_label_once_set(self):
+        labels = [child.label for child in gate_view(build_request()).children]
+        self.assertEqual(labels, ["Build jar", "Add changelog", "Skip"])
+        self.assertEqual(changelog_button(build_request(changelog="x")).label, "Edit changelog")
+        self.assertEqual(changelog_button(build_request()).custom_id, f"{CHANGELOG_PREFIX}7")
+        self.assertEqual(len(preview_view(build_request()).children), 1)
+
+    async def test_gate_embed_shows_changelog_only_when_set(self):
+        names = lambda request: [f.name for f in gate_embed(request, recent=[], window_minutes=10).fields]
+        self.assertNotIn("Changelog", names(build_request()))
+        self.assertIn("Changelog", names(build_request(changelog="x" * 4000)))
+        long_field = next(
+            f for f in gate_embed(build_request(changelog="x" * 4000), recent=[], window_minutes=10).fields
+            if f.name == "Changelog"
+        )
+        self.assertLessEqual(len(long_field.value), 1024)
+
+    async def test_preview_matches_public_whats_new_embed(self):
+        [embed] = preview_embeds(build_request(changelog="Shiny form"))
+        self.assertEqual((embed.title, embed.description), ("What's New", "Shiny form"))
+        [empty] = preview_embeds(build_request())
+        self.assertEqual(empty.title, "No changelog")
+        self.assertIn("Final", preview_embeds(build_request(), locked=True)[0].footer.text)
+
+
+class SaveChangelogTests(unittest.IsolatedAsyncioTestCase):
+    def make_cog(self):
+        import asyncio
+        from bulmaai.cogs.build_gate import BuildGateCog
+
+        cog = BuildGateCog.__new__(BuildGateCog)
+        cog._changelog_lock = asyncio.Lock()
+        cog.repo_full_name = REPO
+        cog.settings = SimpleNamespace(build_gate_window_minutes=10)
+        cog._edit_message = AsyncMock()
+        cog._edit_preview = AsyncMock()
+        return cog
+
+    def make_interaction(self):
+        return SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock())
+        )
+
+    async def test_pending_request_refreshes_prompt(self):
+        cog, interaction = self.make_cog(), self.make_interaction()
+        request = build_request(changelog="hi")
+        with patch.object(build_gate, "set_changelog", AsyncMock(return_value=request)), patch.object(
+            build_gate, "recent", AsyncMock(return_value=[])
+        ):
+            await cog._save_changelog(interaction, 7, "hi")
+        cog._edit_message.assert_awaited_once()
+        cog._edit_preview.assert_not_awaited()
+        self.assertIn("saved", interaction.followup.send.await_args.args[0].lower())
+
+    async def test_building_request_refreshes_preview(self):
+        cog, interaction = self.make_cog(), self.make_interaction()
+        request = build_request(status=build_gate.BUILDING, changelog="hi")
+        with patch.object(build_gate, "set_changelog", AsyncMock(return_value=request)):
+            await cog._save_changelog(interaction, 7, "hi")
+        cog._edit_preview.assert_awaited_once_with(request, locked=False)
+        cog._edit_message.assert_not_awaited()
+
+    async def test_finished_build_rejects_the_edit(self):
+        cog, interaction = self.make_cog(), self.make_interaction()
+        with patch.object(build_gate, "set_changelog", AsyncMock(return_value=None)):
+            await cog._save_changelog(interaction, 7, "late")
+        cog._edit_preview.assert_not_awaited()
+        cog._edit_message.assert_not_awaited()
+        self.assertIn("locked", interaction.followup.send.await_args.args[0])

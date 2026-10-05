@@ -21,6 +21,7 @@ SUPERSEDED = "superseded"
 
 NULL_SHA = "0" * 40
 MAX_COMMITS_INPUT = 40
+MAX_CHANGELOG_CHARS = 4000
 MAX_INPUT_CHARS = 60000  # workflow_dispatch inputs are capped at 65535 chars
 
 
@@ -50,6 +51,8 @@ class BuildRequest:
     run_id: int | None
     run_url: str | None
     created_at: datetime
+    changelog: str | None = None
+    preview_message_id: int | None = None
 
     @property
     def request_token(self) -> str:
@@ -165,20 +168,21 @@ def _request(row) -> BuildRequest:
         commits=tuple(commits), source=row["source"], status=row["status"], channel_id=row["channel_id"],
         message_id=row["message_id"], expires_at=row["expires_at"], decided_by=row["decided_by"],
         decided_at=row["decided_at"], run_id=row["run_id"], run_url=row["run_url"], created_at=row["created_at"],
+        changelog=row["changelog"], preview_message_id=row["preview_message_id"],
     )
 
 
 async def create(
     *, repo: str, branch: str, head_sha: str, pusher: str, commits: tuple[dict[str, Any], ...],
-    source: str, expires_at: datetime,
+    source: str, expires_at: datetime, changelog: str | None = None,
 ) -> BuildRequest:
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO build_requests (repo, branch, head_sha, pusher, commits, source, expires_at)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING *
+        INSERT INTO build_requests (repo, branch, head_sha, pusher, commits, source, expires_at, changelog)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) RETURNING *
         """,
-        repo, branch, head_sha, pusher, json.dumps(list(commits)), source, expires_at,
+        repo, branch, head_sha, pusher, json.dumps(list(commits)), source, expires_at, changelog,
     )
     return _request(row)
 
@@ -212,6 +216,36 @@ async def transition(
 async def set_run(request_id: int, run_id: int, run_url: str) -> None:
     pool = await get_pool()
     await pool.execute("UPDATE build_requests SET run_id = $2, run_url = $3 WHERE id = $1", request_id, run_id, run_url)
+
+
+def clean_changelog(text: str | None) -> str | None:
+    cleaned = (text or "").strip()[:MAX_CHANGELOG_CHARS].strip()
+    return cleaned or None
+
+
+async def set_changelog(request_id: int, text: str | None) -> BuildRequest | None:
+    """None when the request is no longer pending or building: the changelog locks once the build ends."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "UPDATE build_requests SET changelog = $2 WHERE id = $1 AND status IN ('pending', 'building') RETURNING *",
+        request_id, clean_changelog(text),
+    )
+    return _request(row) if row else None
+
+
+async def set_preview_message(request_id: int, message_id: int) -> None:
+    pool = await get_pool()
+    await pool.execute("UPDATE build_requests SET preview_message_id = $2 WHERE id = $1", request_id, message_id)
+
+
+async def changelog_for_commit(commit_sha: str) -> str | None:
+    """The changelog staff attached to the build that produced the jar with this (short) commit sha."""
+    pool = await get_pool()
+    return await pool.fetchval(
+        "SELECT changelog FROM build_requests WHERE changelog IS NOT NULL AND status IN ('building', 'succeeded') "
+        "AND left(head_sha, char_length($1)) = $1 ORDER BY id DESC LIMIT 1",
+        commit_sha,
+    )
 
 
 async def with_status(status: str) -> list[BuildRequest]:

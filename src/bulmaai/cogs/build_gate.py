@@ -28,10 +28,14 @@ from bulmaai.services.release_webhook import (
 )
 from bulmaai.ui.build_gate_views import (
     APPROVE_PREFIX,
+    CHANGELOG_PREFIX,
     REJECT_PREFIX,
+    ChangelogModal,
     final_embed,
     gate_embed,
     gate_view,
+    preview_embeds,
+    preview_view,
     progress_embed,
 )
 from bulmaai.utils.permissions import is_admin
@@ -61,6 +65,7 @@ class BuildGateCog(commands.Cog):
             base_branch=self.settings.GITHUB_BASE_BRANCH,
         )
         self._lock = asyncio.Lock()
+        self._changelog_lock = asyncio.Lock()
         self._trackers: dict[int, asyncio.Task] = {}
         self._route_registered = False
 
@@ -140,8 +145,10 @@ class BuildGateCog(commands.Cog):
                 (r for r in recent if r.branch == push.branch and r.status == build_gate.PENDING), key=lambda r: r.id
             )
             commits = push.commits
+            changelog = None
             for earlier in pending_same_branch:
                 commits = build_gate.merge_commits(earlier.commits, commits)
+                changelog = earlier.changelog or changelog
 
             request = await build_gate.create(
                 repo=self.repo_full_name,
@@ -151,6 +158,7 @@ class BuildGateCog(commands.Cog):
                 commits=commits,
                 source="push",
                 expires_at=now + timedelta(minutes=self.settings.build_gate_expire_minutes),
+                changelog=changelog,
             )
 
             replaced: set[int] = set()
@@ -168,7 +176,7 @@ class BuildGateCog(commands.Cog):
                 return
             message = await channel.send(
                 embed=gate_embed(request, recent=others, window_minutes=window),
-                view=gate_view(request.id),
+                view=gate_view(request),
                 allowed_mentions=NO_PINGS,
             )
             await build_gate.set_message(request.id, channel.id, message.id)
@@ -198,6 +206,9 @@ class BuildGateCog(commands.Cog):
             return
         custom_id = (interaction.data or {}).get("custom_id", "")
         if not isinstance(custom_id, str):
+            return
+        if custom_id.startswith(CHANGELOG_PREFIX) and custom_id.removeprefix(CHANGELOG_PREFIX).isdigit():
+            await self._handle_changelog_button(interaction, int(custom_id.removeprefix(CHANGELOG_PREFIX)))
             return
         for prefix, approve in ((APPROVE_PREFIX, True), (REJECT_PREFIX, False)):
             if custom_id.startswith(prefix) and custom_id.removeprefix(prefix).isdigit():
@@ -235,6 +246,71 @@ class BuildGateCog(commands.Cog):
         if error:
             await interaction.followup.send(error, ephemeral=True)
 
+    # --- changelog ------------------------------------------------------------------------------
+
+    async def _handle_changelog_button(self, interaction: discord.Interaction, request_id: int) -> None:
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("Only administrators can edit the changelog.", ephemeral=True)
+            return
+        request = await build_gate.get(request_id)
+        if request is None or request.status not in (build_gate.PENDING, build_gate.BUILDING):
+            await interaction.response.send_message("The build already finished, so its changelog is locked.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ChangelogModal(request, self._save_changelog))
+
+    async def _save_changelog(self, interaction: discord.Interaction, request_id: int, text: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        async with self._changelog_lock:
+            request = await build_gate.set_changelog(request_id, text)
+            if request is None:
+                await interaction.followup.send("The build already finished, so the changelog is locked.", ephemeral=True)
+                return
+            if request.status == build_gate.PENDING:
+                await self._refresh_gate_message(request)
+            else:
+                await self._edit_preview(request, locked=False)
+        saved = "Changelog saved." if request.changelog else "Changelog cleared. The public post will have no What's New."
+        await interaction.followup.send(saved, ephemeral=True)
+
+    async def _refresh_gate_message(self, request: build_gate.BuildRequest) -> None:
+        if request.channel_id is None or request.message_id is None:
+            return
+        window = self.settings.build_gate_window_minutes
+        since = discord.utils.utcnow() - timedelta(minutes=window)
+        recent = await build_gate.recent(self.repo_full_name, since, exclude_id=request.id)
+        await self._edit_message(
+            request, gate_embed(request, recent=recent, window_minutes=window), view=gate_view(request)
+        )
+
+    async def _post_preview(self, request: build_gate.BuildRequest) -> None:
+        if request.channel_id is None:
+            return
+        try:
+            channel = await self._channel(request.channel_id)
+            message = await channel.send(
+                embeds=preview_embeds(request), view=preview_view(request), allowed_mentions=NO_PINGS
+            )
+            await build_gate.set_preview_message(request.id, message.id)
+        except discord.HTTPException:
+            log.exception("Couldn't post the changelog preview for build %s", request.id)
+
+    async def _edit_preview(self, request: build_gate.BuildRequest, *, locked: bool) -> None:
+        if request.channel_id is None or request.preview_message_id is None:
+            return
+        try:
+            channel = await self._channel(request.channel_id)
+            await channel.get_partial_message(request.preview_message_id).edit(
+                embeds=preview_embeds(request, locked=locked), view=None if locked else preview_view(request)
+            )
+        except discord.HTTPException:
+            log.exception("Couldn't edit changelog preview %s", request.preview_message_id)
+
+    async def _lock_preview(self, request_id: int) -> None:
+        async with self._changelog_lock:
+            request = await build_gate.get(request_id)
+            if request is not None:
+                await self._edit_preview(request, locked=True)
+
     # --- starting + tracking a build ------------------------------------------------------------
 
     async def _active_build(self) -> build_gate.BuildRequest | None:
@@ -266,6 +342,9 @@ class BuildGateCog(commands.Cog):
             await self._edit_message(claimed, final_embed(claimed, status=build_gate.FAILED, note=f"Couldn't start the workflow: {error}"[:200]))
             return f"Couldn't start the workflow: {error}"
         await self._edit_message(claimed, progress_embed(claimed, job=None, run=None, approver_id=approver_id))
+        async with self._changelog_lock:
+            claimed = await build_gate.get(claimed.id) or claimed
+            await self._post_preview(claimed)
         self._start_tracker(claimed.id)
         return None
 
@@ -288,6 +367,7 @@ class BuildGateCog(commands.Cog):
     async def _fail(self, request: build_gate.BuildRequest, note: str) -> None:
         if await build_gate.transition(request.id, build_gate.FAILED, from_status=build_gate.BUILDING):
             await self._edit_message(request, final_embed(request, status=build_gate.FAILED, note=note))
+            await self._lock_preview(request.id)
 
     async def _find_run(self, request: build_gate.BuildRequest) -> dict | None:
         marker = f"[{request.request_token}]"
@@ -339,6 +419,7 @@ class BuildGateCog(commands.Cog):
                 if await build_gate.transition(request.id, status, from_status=build_gate.BUILDING):
                     note = None if ok else f"Run conclusion: {run.get('conclusion')}"
                     await self._edit_message(request, final_embed(request, status=status, job=job, note=note))
+                    await self._lock_preview(request.id)
                 return
 
             steps = build_gate.visible_steps(job)
@@ -353,12 +434,14 @@ class BuildGateCog(commands.Cog):
                 return
             await asyncio.sleep(POLL_SECONDS)
 
-    async def _edit_message(self, request: build_gate.BuildRequest, embed: discord.Embed) -> None:
+    async def _edit_message(
+        self, request: build_gate.BuildRequest, embed: discord.Embed, *, view: discord.ui.View | None = None
+    ) -> None:
         if request.channel_id is None or request.message_id is None:
             return
         try:
             channel = await self._channel(request.channel_id)
-            await channel.get_partial_message(request.message_id).edit(embed=embed, view=None)
+            await channel.get_partial_message(request.message_id).edit(embed=embed, view=view)
         except discord.HTTPException:
             log.exception("Couldn't edit build gate message %s", request.message_id)
 

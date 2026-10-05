@@ -10,12 +10,12 @@ from urllib.parse import quote
 
 import discord
 from discord.ext import commands
-from openai import AsyncOpenAI
 
 from bulmaai.services.dev_jar_download_records import (
     has_completed_dev_jar_download,
     record_completed_dev_jar_download,
 )
+from bulmaai.services import build_gate
 from bulmaai.services.dev_jar_downloads import (
     DevJarArtifact,
     DevJarCommit,
@@ -39,7 +39,6 @@ from bulmaai.services.dev_jar_published_state import (
     get_published_dev_jar_file_name,
     set_published_dev_jar_file_name,
 )
-from bulmaai.services.dev_jar_release_notes import generate_dev_jar_release_notes
 from bulmaai.services.patch_notes import build_patch_notes_url
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
@@ -150,7 +149,6 @@ class DevJarDownloadsCog(commands.Cog):
         self.bot = bot
         self.settings = bot.settings
         self.token_store = OneTimeDownloadTokenStore(now=time.time)
-        self._openai_client = AsyncOpenAI(api_key=self.settings.openai_key)
         self._release_webhook_route_registered = False
         self._release_get_routes_registered = False
         self._pending_review_lock = asyncio.Lock()
@@ -368,14 +366,12 @@ class DevJarDownloadsCog(commands.Cog):
         workflow_run_url: str | None = None,
         previous_size_bytes: int | None = None,
         is_manual: bool = False,
+        changelog: str | None = None,
     ) -> None:
-        release_notes = await generate_dev_jar_release_notes(
-            commits, client=self._openai_client, model=self.settings.openai_model
-        )
         embeds, commit_list_text = build_dev_jar_download_embeds(
             artifact,
             commits=commits,
-            release_notes=release_notes,
+            changelog=changelog,
             sha256=sha256,
             workflow_run_url=workflow_run_url,
             previous_size_bytes=previous_size_bytes,
@@ -534,6 +530,13 @@ class DevJarDownloadsCog(commands.Cog):
         current = await get_pending_dev_jar_review()
         return current is not None and current.artifact.file_name == review.artifact.file_name
 
+    async def _staff_changelog(self, artifact: DevJarArtifact) -> str | None:
+        try:
+            return await build_gate.changelog_for_commit(artifact.commit_sha)
+        except Exception:
+            log.exception("Failed to load the changelog for dev jar %s; publishing without one", artifact.file_name)
+            return None
+
     async def _publish_pending_review(
         self,
         interaction: discord.Interaction,
@@ -562,6 +565,7 @@ class DevJarDownloadsCog(commands.Cog):
                 sha256=review.sha256,
                 workflow_run_url=review.workflow_run_url,
                 previous_size_bytes=self._get_previous_artifact_size(artifact.file_name),
+                changelog=await self._staff_changelog(artifact),
             )
             await clear_pending_dev_jar_review()
 

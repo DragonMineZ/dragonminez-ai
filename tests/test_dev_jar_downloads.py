@@ -239,12 +239,12 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         field_values = [field.value for field in embed.fields]
         self.assertIn("`222222222222`", field_values)
 
-    def test_download_embed_shows_release_notes_not_raw_changelog(self) -> None:
+    def test_download_embed_shows_staff_changelog_not_raw_commits(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__086afb963f2c.jar")
 
         embeds, commit_list_text = build_dev_jar_download_embeds(
             artifact,
-            release_notes="Big balance changes and a shiny new form!",
+            changelog="Big balance changes and a shiny new form!",
             commits=(
                 DevJarCommit(
                     sha="93066058a79b",
@@ -264,9 +264,12 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         )
 
         # The public embed shows the short blurb, not a raw commit dump.
-        field_values = {field.name: field.value for embed in embeds for field in embed.fields}
-        self.assertEqual(field_values["What's New"], "Big balance changes and a shiny new form!")
+        whats_new = [embed for embed in embeds if embed.title == "What's New"]
+        self.assertEqual(len(whats_new), 1)
+        self.assertEqual(whats_new[0].description, "Big balance changes and a shiny new form!")
         self.assertNotIn("Commits Changelog", [embed.title for embed in embeds])
+        self.assertIn("What's New", embeds[0].description)
+        self.assertEqual(embeds[-1].footer.text, "Downloads require Discord access authorization. Download links are one-time per user per jar.")
 
         # The full commit list is still available in full, unconditionally, as
         # the text handed back for the always-attached commits file.
@@ -283,6 +286,32 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("fix: race selection screen fix", commit_list_text)
         self.assertNotIn("Adds support for new drain behavior.", commit_list_text)
+
+    def test_download_embed_without_changelog_has_no_whats_new(self) -> None:
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+
+        for changelog in (None, "", "   \n"):
+            embeds, _ = build_dev_jar_download_embeds(artifact, commits=(), changelog=changelog)
+
+            self.assertEqual(len(embeds), 1)
+            self.assertNotIn("What's New", embeds[0].description)
+            self.assertNotIn("What's New", [field.name for field in embeds[0].fields])
+            self.assertIsNotNone(embeds[0].footer.text)
+
+    def test_download_embed_with_max_length_changelog_fits_discord_limits(self) -> None:
+        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
+
+        embeds, _ = build_dev_jar_download_embeds(
+            artifact,
+            commits=(),
+            changelog="x" * 4000,
+            sha256="a" * 64,
+            workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
+            previous_size_bytes=123456789,
+        )
+
+        self.assertLessEqual(sum(len(embed) for embed in embeds), 6000)
+        self.assertLessEqual(len(embeds), 10)
 
     async def test_download_view_includes_dated_patch_notes_link_button(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
@@ -1035,7 +1064,6 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
                 openai_model="gpt-5-mini",
             )
-            cog._openai_client = None
             cog._pending_review_lock = asyncio.Lock()
 
             review = SimpleNamespace(
@@ -1062,6 +1090,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
+                    "bulmaai.cogs.dev_jar_downloads.build_gate.changelog_for_commit",
+                    new=AsyncMock(return_value="New form drains"),
+                ) as changelog_mock,
+                patch(
                     "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
                     new=AsyncMock(return_value=review),
                 ),
@@ -1078,6 +1110,10 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(patreon_channel.sent), 1)
         self.assertEqual(len(testing_channel.sent), 1)
+        changelog_mock.assert_awaited_once_with("222222222222")
+        for channel in (patreon_channel, testing_channel):
+            whats_new = [embed for embed in channel.sent[0]["embeds"] if embed.title == "What's New"]
+            self.assertEqual([embed.description for embed in whats_new], ["New form drains"])
         clear_mock.assert_awaited_once()
         set_published_mock.assert_awaited_once_with(artifact.file_name)
         self.assertEqual(len(message.edits), 1)
@@ -1201,7 +1237,6 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
                 openai_model="gpt-5-mini",
             )
-            cog._openai_client = None
 
             with patch(
                 "bulmaai.cogs.dev_jar_downloads.set_published_dev_jar_file_name",
@@ -1253,7 +1288,6 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
                 openai_model="gpt-5-mini",
             )
-            cog._openai_client = None
 
             published: list[str] = []
 

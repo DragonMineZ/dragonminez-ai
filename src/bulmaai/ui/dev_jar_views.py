@@ -15,8 +15,7 @@ DEV_JAR_REVIEW_EMBED_COLOR = discord.Colour.blurple()
 # Discord caps embeds at 25 fields; leave headroom for trailing fields appended
 # after the commit changelog (e.g. Patch Notes).
 MAX_FIELDS_PER_EMBED = 24
-# Discord caps a single embed field value at 1024 characters.
-MAX_FIELD_VALUE_CHARS = 1024
+MAX_EMBED_DESCRIPTION_CHARS = 4096
 
 
 def _format_size(size_bytes: int | None) -> str:
@@ -26,10 +25,12 @@ def _format_size(size_bytes: int | None) -> str:
     return f"{size_mb:.3f} MB"
 
 
-def _truncate_field(text: str, limit: int = MAX_FIELD_VALUE_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
+def build_whats_new_embed(changelog: str) -> discord.Embed:
+    return discord.Embed(
+        title="What's New",
+        description=changelog.strip()[:MAX_EMBED_DESCRIPTION_CHARS],
+        colour=DEV_JAR_EMBED_COLOR,
+    )
 
 
 def artifact_day(artifact: DevJarArtifact) -> str:
@@ -154,24 +155,29 @@ def build_dev_jar_download_embeds(
     artifact: DevJarArtifact,
     *,
     commits: tuple[DevJarCommit, ...],
-    release_notes: str = "",
+    changelog: str | None = None,
     sha256: str | None = None,
     workflow_run_url: str | None = None,
     previous_size_bytes: int | None = None,
 ) -> tuple[list[discord.Embed], str | None]:
     """Build the public dev jar announcement embed(s).
 
-    `release_notes` is the short player-facing "what's new" blurb (AI-written,
-    or the raw-commit-rendering fallback — see dev_jar_release_notes.py); the
-    full commit list is never rendered inline here, only handed back as the
-    second return value so the caller can always attach it as a file.
+    `changelog` is the staff-written text shown in a trailing "What's New" embed;
+    without one there is no What's New section at all. The full commit list is
+    never rendered inline here, only handed back as the second return value so
+    the caller can always attach it as a file.
     """
+    changelog = (changelog or "").strip()
     description = (
         "A push has been detected in GitHub and a .jar has successfully passed tests and is ready to be "
         "downloaded! These versions are automatically built by the latest commits, meaning they can be "
         "unstable or not run at all on your machine. For stable (and mostly tested) beta/alpha releases, "
-        "look for them in Discord. Click the button to download the latest dev jar, and see What's New "
-        "below for a summary of what changed (the full commit list is attached)."
+        "look for them in Discord. Click the button to download the latest dev jar"
+        + (
+            ", and see What's New below for a summary of what changed (the full commit list is attached)."
+            if changelog
+            else " (the full commit list is attached)."
+        )
     )
     footer_text = "Downloads require Discord access authorization. Download links are one-time per user per jar."
     notes_day = artifact_day(artifact)
@@ -179,7 +185,6 @@ def build_dev_jar_download_embeds(
         f"The **Patch Notes** button below opens the patch notes for {notes_day} "
         "with everything that changed in this update."
     )
-    whats_new_value = _truncate_field(release_notes.strip() or "No changes recorded.")
 
     embeds, layout = _build_dev_jar_embeds(
         artifact,
@@ -191,10 +196,12 @@ def build_dev_jar_download_embeds(
         previous_size_bytes=previous_size_bytes,
         workflow_run_url=workflow_run_url,
         timestamp=artifact.modified_at,
-        trailing_fields=(("What's New", whats_new_value), ("Patch Notes", patch_notes_value)),
-        footer_text=footer_text,
+        trailing_fields=(("Patch Notes", patch_notes_value),),
         show_commit_changelog=False,
     )
+    if changelog:
+        embeds.append(build_whats_new_embed(changelog))
+    embeds[-1].set_footer(text=footer_text)
     return embeds, (layout.full_changelog_text or None)
 
 
@@ -202,7 +209,7 @@ def build_dev_jar_download_embed(
     artifact: DevJarArtifact,
     *,
     commits: tuple[DevJarCommit, ...],
-    release_notes: str = "",
+    changelog: str | None = None,
     sha256: str | None = None,
     workflow_run_url: str | None = None,
     previous_size_bytes: int | None = None,
@@ -211,7 +218,7 @@ def build_dev_jar_download_embed(
     embeds, _ = build_dev_jar_download_embeds(
         artifact,
         commits=commits,
-        release_notes=release_notes,
+        changelog=changelog,
         sha256=sha256,
         workflow_run_url=workflow_run_url,
         previous_size_bytes=previous_size_bytes,

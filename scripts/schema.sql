@@ -389,6 +389,9 @@ CREATE TABLE IF NOT EXISTS build_requests (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE build_requests ADD COLUMN IF NOT EXISTS changelog TEXT;
+ALTER TABLE build_requests ADD COLUMN IF NOT EXISTS preview_message_id BIGINT;
+
 CREATE INDEX IF NOT EXISTS idx_build_requests_created ON build_requests (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_build_requests_open ON build_requests (status) WHERE status IN ('pending', 'building');
 

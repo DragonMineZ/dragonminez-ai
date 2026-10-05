@@ -50,6 +50,7 @@ from bulmaai.utils.permissions import (
     can_use_ai_support,
     has_any_allowed_role,
     has_patreon_access_role,
+    is_allowed_guild_id,
     is_staff,
 )
 
@@ -486,11 +487,12 @@ class AITicketsCog(commands.Cog):
         await ctx.respond(f"AI support is now **{'on' if enable else 'off'}** in this channel.")
 
     async def _resolve_member_for_user(self, user: discord.abc.User) -> discord.Member | None:
-        for guild in self.bot.guilds:
+        guilds = [g for g in self.bot.guilds if is_allowed_guild_id(g.id, self.bot.settings)]
+        for guild in guilds:
             member = guild.get_member(user.id)
             if member is not None:
                 return member
-        for guild in self.bot.guilds:
+        for guild in guilds:
             try:
                 return await guild.fetch_member(user.id)
             except discord.NotFound:

@@ -5,11 +5,14 @@ import discord
 from bulmaai.config import Settings, load_settings
 
 
-def in_main_guild(member: discord.Member, settings: Settings) -> bool:
-    """Commands are global, so a member object can come from any server the bot is in; only the main
-    server (and the dev server, when set) may grant anything."""
-    guild_id = getattr(getattr(member, "guild", None), "id", None)
+def is_allowed_guild_id(guild_id: int | None, settings: Settings) -> bool:
     return guild_id is not None and guild_id in (settings.panel_guild_id, settings.dev_guild_id)
+
+
+def in_main_guild(member: discord.Member, settings: Settings) -> bool:
+    """The bot is public (Discord requires it for verified apps), so a member object can come from any
+    server it was added to; only the main server (and the dev server, when set) may grant anything."""
+    return is_allowed_guild_id(getattr(getattr(member, "guild", None), "id", None), settings)
 
 
 def is_admin(member: discord.Member, *, settings: Settings | None = None) -> bool:

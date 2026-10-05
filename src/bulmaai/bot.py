@@ -20,8 +20,22 @@ from .services import ai_budget
 from .services.db_schema import ensure_schema
 from .services.message_presets import ensure_message_presets_file
 from .services.support_traces import sum_tokens_by_model_since
+from .utils.permissions import is_allowed_guild_id
 
 log = logging.getLogger("bulmaai")
+
+UNGATED_EVENTS = frozenset({"interaction", "guild_join", "guild_remove"})
+
+
+def event_guild_id(arg: object) -> int | None:
+    """The server an event argument belongs to (Guild, message/member/channel, or raw payload), else None."""
+    if isinstance(arg, discord.Guild):
+        return arg.id
+    guild = getattr(arg, "guild", None)
+    if isinstance(guild, discord.Guild):
+        return guild.id
+    guild_id = getattr(arg, "guild_id", None)
+    return guild_id if isinstance(guild_id, int) else None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESTART_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
@@ -175,6 +189,9 @@ class BulmaAI(discord.Bot):
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%s)", self.user, getattr(self.user, "id", None))
+        for guild in self.guilds:
+            if not is_allowed_guild_id(guild.id, self.settings):
+                log.info("Bot is in other server %s (%s); ignoring everything there", guild.name, guild.id)
         if self._restart_announcement_sent:
             return
 
@@ -190,6 +207,26 @@ class BulmaAI(discord.Bot):
         await close_db_pool()
         log.info("Database pool closed")
         await super().close()
+
+    async def invoke_application_command(self, ctx: discord.ApplicationContext) -> None:
+        # Public-bot gate: every command is global, so refuse anything run outside our servers.
+        if not is_allowed_guild_id(ctx.guild_id, self.settings):
+            await ctx.respond("This bot only works in the official DragonMineZ server.", ephemeral=True)
+            return
+        await super().invoke_application_command(ctx)
+
+    def dispatch(self, event: str, *args, **kwargs) -> None:
+        # Public-bot gate for events: the bot may sit in other servers but does nothing there (no automod,
+        # XP, welcome, log parsing...). Interactions still pass so commands get the refusal above; DMs pass.
+        if event not in UNGATED_EVENTS and any(
+            not is_allowed_guild_id(guild_id, self.settings) for guild_id in map(event_guild_id, args) if guild_id
+        ):
+            return
+        super().dispatch(event, *args, **kwargs)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        if not is_allowed_guild_id(guild.id, self.settings):
+            log.info("Added to other server %s (%s); staying but ignoring it", guild.name, guild.id)
 
     async def on_application_command_error(
             self,

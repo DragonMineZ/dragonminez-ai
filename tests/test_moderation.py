@@ -419,6 +419,31 @@ class IsAdminTests(unittest.TestCase):
         self.assertTrue(is_admin(SimpleNamespace(guild=SimpleNamespace(id=2), guild_permissions=admin_perms), settings=settings))
         self.assertFalse(is_admin(SimpleNamespace(guild=SimpleNamespace(id=3), guild_permissions=admin_perms), settings=settings))
 
+    def test_is_allowed_guild_id(self) -> None:
+        from bulmaai.utils.permissions import is_allowed_guild_id
+
+        settings = SimpleNamespace(panel_guild_id=1, dev_guild_id=None)
+        self.assertTrue(is_allowed_guild_id(1, settings))
+        self.assertFalse(is_allowed_guild_id(3, settings))
+        self.assertFalse(is_allowed_guild_id(None, settings))
+
+    def test_events_from_other_servers_are_dropped(self) -> None:
+        from unittest.mock import patch
+
+        import discord
+
+        from bulmaai.bot import BulmaAI
+
+        bot = BulmaAI.__new__(BulmaAI)
+        bot.__dict__["settings"] = SimpleNamespace(panel_guild_id=1, dev_guild_id=None)
+        ours, theirs = SimpleNamespace(guild_id=1), SimpleNamespace(guild_id=3)
+        with patch.object(discord.Bot, "dispatch") as parent:
+            bot.dispatch("message", SimpleNamespace(guild=None))  # DM
+            bot.dispatch("raw_reaction_add", ours)
+            bot.dispatch("raw_reaction_add", theirs)
+            bot.dispatch("interaction", theirs)  # still answered, with the refusal
+        self.assertEqual([c.args[0] for c in parent.call_args_list], ["message", "raw_reaction_add", "interaction"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -405,8 +405,8 @@ class FalsePositiveTests(Base):
     def alert(self, actions=("timeout", "ban", "falsepos")):
         return staff_message(quick_actions_view(5, actions=actions))
 
-    async def test_helper_below_moderator_refused(self):
-        helper = self.member(2, HELPER_ROLE)
+    async def test_non_staff_refused(self):
+        helper = self.member(2, 99)
         alert = self.alert()
         inter = self.interaction("modqa:falsepos:5", helper, guild=self.guild, message=alert)
         with patch(HIT_FOR_ALERT, AsyncMock()) as lookup:

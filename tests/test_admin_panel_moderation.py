@@ -123,7 +123,7 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
     async def post(self, path, body):
         return await self.client.post(path, json=body, headers={"Origin": self.origin})
 
-    async def test_helper_can_warn_but_not_kick(self):
+    async def test_helper_can_warn_but_not_ban(self):
         self.login(HELPER_ID)
         response = await self.post(f"/api/users/{RANDOM_ID}/warn", {"reason": "spam"})
         self.assertEqual(response.status, 200, await response.text())
@@ -132,9 +132,8 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.record.await_args.kwargs["action"], "warn")
         self.assertEqual(self.record.await_args.kwargs["moderator_id"], HELPER_ID)
 
-        response = await self.post(f"/api/users/{RANDOM_ID}/kick", {"reason": "spam"})
+        response = await self.post(f"/api/users/{RANDOM_ID}/ban", {"reason": "spam"})
         self.assertEqual(response.status, 403)
-        self.members[RANDOM_ID].kick.assert_not_awaited()
 
     async def test_reason_required(self):
         self.login(MOD_ID)
@@ -225,8 +224,38 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         deactivate.assert_awaited_once_with(1, 9)
 
         self.login(HELPER_ID)
-        response = await self.client.delete("/api/cases/9", headers={"Origin": self.origin})
-        self.assertEqual(response.status, 403)
+        with (
+            patch("bulmaai.services.mod_cases.get_case", AsyncMock(return_value=warn)),
+            patch("bulmaai.services.mod_cases.deactivate_case", AsyncMock(return_value=warn)),
+        ):
+            response = await self.client.delete("/api/cases/9", headers={"Origin": self.origin})
+        self.assertEqual(response.status, 200, await response.text())
+
+    async def test_helper_can_timeout_and_clear_warns_but_not_a_moderators(self):
+        self.login(HELPER_ID)
+        response = await self.post(f"/api/users/{RANDOM_ID}/timeout", {"reason": "spam", "minutes": 10})
+        self.assertEqual(response.status, 200, await response.text())
+        clear = AsyncMock(return_value=3)
+        with patch("bulmaai.services.mod_cases.deactivate_user_cases", clear):
+            response = await self.post(f"/api/users/{RANDOM_ID}/clearwarns", {})
+            self.assertEqual((await response.json())["count"], 3)
+            self.assertEqual((await self.post(f"/api/users/{MOD_ID}/clearwarns", {})).status, 403)
+        clear.assert_awaited_once_with(1, RANDOM_ID, "warn")
+
+    async def test_scam_images_list_and_remove(self):
+        self.login(HELPER_ID)
+        item = SimpleNamespace(id=3, hash=1, source="manual", added_by=MOD_ID, note="phish", hits=2, last_hit_at=None, created_at=NOW)
+        remove = AsyncMock(side_effect=[True, False])
+        with (
+            patch("bulmaai.services.scam_images.list_hashes", AsyncMock(return_value=[item])),
+            patch("bulmaai.services.scam_images.remove", remove),
+        ):
+            data = await (await self.client.get("/api/scam-images")).json()
+            first = await self.client.delete("/api/scam-images/3", headers={"Origin": self.origin})
+            second = await self.client.delete("/api/scam-images/3", headers={"Origin": self.origin})
+        self.assertEqual(data["images"][0]["added_by_id"], str(MOD_ID))
+        self.assertEqual((first.status, second.status), (200, 404))
+        remove.assert_awaited_with(3)
 
     async def test_case_edits_respect_self_and_hierarchy(self):
         self.login(MOD_ID)

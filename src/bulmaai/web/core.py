@@ -41,10 +41,12 @@ PERMISSIONS: dict[str, Tier] = {
     "users.view": Tier.HELPER,
     "mod.cases.view": Tier.HELPER,
     "mod.warn": Tier.HELPER,
-    "mod.timeout": Tier.MODERATOR,
-    "mod.kick": Tier.MODERATOR,
-    "mod.cases.edit": Tier.MODERATOR,
-    "logs.view": Tier.MODERATOR,
+    "mod.cases.remove": Tier.HELPER,  # delwarn / delnote / clearwarns
+    "mod.cases.edit": Tier.HELPER,
+    "mod.timeout": Tier.HELPER,
+    "mod.kick": Tier.HELPER,
+    "mod.tools": Tier.HELPER,  # nick, scam images, automod false positives
+    "mod.channels": Tier.MODERATOR,  # purge, lock, slowmode, lockdown, /role
     "tickets.manage": Tier.MODERATOR,
     "patreon.view": Tier.MODERATOR,
     "mod.ban": Tier.ADMIN,

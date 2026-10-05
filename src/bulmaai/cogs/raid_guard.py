@@ -81,7 +81,7 @@ class RaidGuardCog(commands.Cog):
         # discord.User with no guild_permissions, which is never allowed here.
         if getattr(member, "guild_permissions", None) is None:
             return False
-        return tier_for(member, self._settings()) >= PERMISSIONS["mod.kick"]
+        return tier_for(member, self._settings()) >= PERMISSIONS["mod.channels"]
 
     def _end_raid_mode(self) -> None:
         self._raid_until = None

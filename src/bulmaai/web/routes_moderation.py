@@ -10,7 +10,7 @@ import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
-from bulmaai.services import automod_hits, mod_actions, mod_cases
+from bulmaai.services import automod_hits, mod_actions, mod_cases, scam_images
 from bulmaai.services.mod_actions import ModActionError, parse_duration_seconds
 from bulmaai.services.bug_reports import list_bug_reports_by_reporter
 from bulmaai.services.member_activity import get_member_activity, xp_threshold
@@ -499,8 +499,23 @@ async def edit_case_reason(request: web.Request, actor: Actor) -> web.Response:
     return web.json_response({"ok": True})
 
 
+@routes.post("/api/users/{user_id}/clearwarns")
+@requires("mod.cases.remove")
+async def clear_warns(request: web.Request, actor: Actor) -> web.Response:
+    guild = actor.member.guild
+    user_id = _snowflake(request.match_info["user_id"])
+    target = await resolve_member(guild, user_id)
+    try:
+        mod_actions.check_hierarchy(request.app[BOT], guild, actor.member, user_id, target, discord_action=False)
+    except ModActionError as error:
+        raise api_error(error.status, str(error))
+    count = await mod_cases.deactivate_user_cases(guild.id, user_id, "warn")
+    await audit(actor, "mod.clearwarns", str(user_id), count=count)
+    return web.json_response({"ok": True, "count": count})
+
+
 @routes.delete("/api/cases/{case_id}")
-@requires("mod.cases.edit")
+@requires("mod.cases.remove")
 async def remove_case(request: web.Request, actor: Actor) -> web.Response:
     """Soft-deletes a warn or note (Dyno's delwarn/delnote): it stops counting toward the warn ladder."""
     guild_id = actor.member.guild.id
@@ -551,3 +566,43 @@ async def automod_stats(request: web.Request, actor: Actor) -> web.Response:
             ],
         }
     )
+
+
+# --- Scam images ------------------------------------------------------------------------------
+
+
+@routes.get("/api/scam-images")
+@requires("mod.cases.view")
+async def list_scam_images(request: web.Request, actor: Actor) -> web.Response:
+    """Known scam image hashes; added with the "Mark as scam image" message command or learned from automod hits."""
+    bot, guild = request.app[BOT], actor.member.guild
+    hashes = await scam_images.list_hashes(limit=_query_int(request, "limit", 200, 1000))
+    return web.json_response(
+        {
+            "images": [
+                {
+                    "id": item.id,
+                    "source": item.source,
+                    "added_by": user_json(_cached_user(bot, guild, item.added_by)) if item.added_by else None,
+                    "added_by_id": str(item.added_by) if item.added_by else None,
+                    "note": item.note,
+                    "hits": item.hits,
+                    "last_hit_at": item.last_hit_at.isoformat() if item.last_hit_at else None,
+                    "created_at": item.created_at.isoformat(),
+                }
+                for item in hashes
+            ]
+        }
+    )
+
+
+@routes.delete("/api/scam-images/{id}")
+@requires("mod.tools")
+async def remove_scam_image(request: web.Request, actor: Actor) -> web.Response:
+    raw = request.match_info["id"]
+    if not raw.isdigit() or len(raw) > 18:
+        raise api_error(400, "Invalid id.")
+    if not await scam_images.remove(int(raw)):
+        raise api_error(404, "That scam image was already removed.")
+    await audit(actor, "mod.scam_image_remove", raw)
+    return web.json_response({"ok": True})

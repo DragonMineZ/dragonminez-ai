@@ -1,5 +1,4 @@
-"""Weekly moderation digest: posts services.mod_digest's embeds to a staff channel every Monday,
-and exposes /digest preview (a dry run only the caller sees) and /digest send (post it now)."""
+"""Weekly moderation digest: posts services.mod_digest's embeds to a staff channel every Monday."""
 
 import logging
 from datetime import datetime, time, timezone
@@ -8,7 +7,6 @@ import discord
 from discord.ext import commands, tasks
 
 from bulmaai.services import mod_actions, mod_digest
-from bulmaai.web.core import PERMISSIONS, tier_for
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +14,6 @@ log = logging.getLogger(__name__)
 DIGEST_WEEKDAY = 0  # Monday
 DIGEST_HOUR_UTC = 14
 STAFF_GENERAL_CHANNEL_NAME = "staff-general"
-STAFF_ONLY = discord.Permissions(moderate_members=True)
 
 
 async def resolve_digest_channel(bot: discord.Bot, guild: discord.Guild) -> discord.abc.Messageable | None:
@@ -28,9 +25,6 @@ async def resolve_digest_channel(bot: discord.Bot, guild: discord.Guild) -> disc
 
 
 class ModDigestCog(commands.Cog):
-    digest_group = discord.SlashCommandGroup(
-        "digest", "Weekly moderation digest", default_member_permissions=STAFF_ONLY
-    )
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -71,34 +65,6 @@ class ModDigestCog(commands.Cog):
         data = await mod_digest.collect(guild_id, now=now, settings=self.bot.settings)
         embeds = mod_digest.build_embeds(data, self.bot.settings)
         await channel.send(embeds=embeds, allowed_mentions=discord.AllowedMentions.none())
-
-    # --- /digest ---------------------------------------------------------------------------------
-
-    async def _allowed(self, ctx: discord.ApplicationContext, capability: str) -> bool:
-        if tier_for(ctx.user, self.bot.settings) >= PERMISSIONS[capability]:
-            return True
-        await ctx.respond("Your staff tier can't do that.", ephemeral=True)
-        return False
-
-    @digest_group.command(name="preview", description="Preview the weekly moderation digest (only visible to you)")
-    async def preview(self, ctx: discord.ApplicationContext):
-        if not await self._allowed(ctx, "mod.cases.view"):
-            return
-        await ctx.defer(ephemeral=True)
-        data = await mod_digest.collect(ctx.guild.id, now=discord.utils.utcnow(), settings=self.bot.settings)
-        embeds = mod_digest.build_embeds(data, self.bot.settings)
-        await ctx.respond(embeds=embeds, ephemeral=True)
-
-    @digest_group.command(name="send", description="Post the weekly moderation digest to the digest channel now")
-    async def send(self, ctx: discord.ApplicationContext):
-        if not await self._allowed(ctx, "settings.edit"):
-            return
-        await ctx.defer(ephemeral=True)
-        channel = await resolve_digest_channel(self.bot, ctx.guild)
-        if channel is None:
-            return await ctx.respond("No digest channel is configured, and there's no #staff-general.", ephemeral=True)
-        await self._send_to(channel, ctx.guild.id, discord.utils.utcnow())
-        await ctx.respond(f"Sent to {channel.mention}.", ephemeral=True)
 
 
 def setup(bot: discord.Bot) -> None:

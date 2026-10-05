@@ -2,7 +2,7 @@
 
 Flow: GitHub push webhook -> prompt (Build jar / Skip, auto-closes after build_gate_expire_minutes) -> on
 approval the bot dispatches the mod repo's dev-jar workflow and live-edits the message with the run's
-progress. /buildjar does the same for one of the last 3 pushes without a prompt.
+progress.
 ponytail: all state lives in build_requests (services/build_gate.py), so prompts expire and running builds
 keep being tracked across a bot restart; nothing is held only in memory except the poll tasks, which
 on_ready re-creates from the 'building' rows."""
@@ -42,32 +42,7 @@ POLL_SECONDS = 5
 FIND_RUN_ATTEMPTS = 36  # 36 x 5s: the dispatched run normally shows up within seconds
 TRACK_TIMEOUT_SECONDS = 45 * 60
 MAX_POLL_FAILURES = 5
-PUSH_CHOICES = 3
-AUTOCOMPLETE_CACHE_SECONDS = 60
 NO_PINGS = discord.AllowedMentions.none()
-
-
-def push_choice_label(*, rank: int, branch: str, sha: str, title: str, author: str) -> str:
-    """Autocomplete row: the latest push is starred; always carries branch, title and author."""
-    star = "★ Latest · " if rank == 0 else ""
-    return f"{star}{branch} · {title} — {author} · {sha[:7]}"[:100]
-
-
-async def push_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
-    cog = ctx.bot.get_cog("BuildGateCog")
-    if cog is None or not is_admin(ctx.interaction.user):
-        return []
-    try:
-        pushes = await asyncio.wait_for(cog._recent_pushes(), timeout=2.5)
-    except Exception:
-        log.exception("Couldn't list recent pushes for /buildjar autocomplete")
-        return []
-    return [
-        discord.OptionChoice(
-            push_choice_label(rank=i, branch=p["branch"], sha=p["sha"], title=p["title"], author=p["author"]), p["sha"]
-        )
-        for i, p in enumerate(pushes)
-    ]
 
 
 class BuildGateCog(commands.Cog):
@@ -88,7 +63,6 @@ class BuildGateCog(commands.Cog):
         self._lock = asyncio.Lock()
         self._trackers: dict[int, asyncio.Task] = {}
         self._route_registered = False
-        self._push_cache: tuple[float, list[dict]] = (0.0, [])
 
     # --- lifecycle ------------------------------------------------------------------------------
 
@@ -387,94 +361,6 @@ class BuildGateCog(commands.Cog):
             await channel.get_partial_message(request.message_id).edit(embed=embed, view=None)
         except discord.HTTPException:
             log.exception("Couldn't edit build gate message %s", request.message_id)
-
-    # --- /buildjar ------------------------------------------------------------------------------
-
-    async def _recent_pushes(self) -> list[dict]:
-        """Last PUSH_CHOICES pushes to feature branches, newest first: {branch, sha, title, author, url}."""
-        cached_at, cached = self._push_cache
-        if cached and time.monotonic() - cached_at < AUTOCOMPLETE_CACHE_SECONDS:
-            return cached
-        events = await self.github.list_repo_events()
-        heads: list[tuple[str, str]] = []
-        for event in events:
-            payload = event.get("payload") or {}
-            ref = payload.get("ref") or ""
-            sha = payload.get("head") or ""
-            if event.get("type") != "PushEvent" or not ref.startswith("refs/heads/") or sha == build_gate.NULL_SHA:
-                continue
-            branch = ref.removeprefix("refs/heads/")
-            if branch != self.settings.GITHUB_BASE_BRANCH and all(sha != h[1] for h in heads):
-                heads.append((branch, sha))
-            if len(heads) == PUSH_CHOICES:
-                break
-
-        async def describe(branch: str, sha: str) -> dict:
-            try:
-                commit = (await self.github.get_commit(sha))
-                message = (commit["commit"]["message"] or "").splitlines()
-                return {
-                    "branch": branch,
-                    "sha": sha,
-                    "title": message[0] if message else "",
-                    "description": "\n".join(message[1:]).strip(),
-                    "author": commit["commit"]["author"]["name"],
-                    "url": commit["html_url"],
-                }
-            except Exception:
-                log.exception("Couldn't load commit %s", sha)
-                return {"branch": branch, "sha": sha, "title": "(commit unavailable)", "description": "", "author": "unknown", "url": ""}
-
-        pushes = list(await asyncio.gather(*(describe(b, s) for b, s in heads)))
-        self._push_cache = (time.monotonic(), pushes)
-        return pushes
-
-    @discord.slash_command(name="buildjar", description="Build a dev jar from one of the latest pushes (admins only)")
-    @discord.option("push", description="One of the last 3 pushes", autocomplete=push_autocomplete)
-    async def buildjar(self, ctx: discord.ApplicationContext, push: str) -> None:
-        if not is_admin(ctx.author):
-            await ctx.respond("Only administrators can build dev jars.", ephemeral=True)
-            return
-        await ctx.defer(ephemeral=True)
-        try:
-            pushes = await self._recent_pushes()
-        except Exception as error:
-            log.exception("Couldn't list recent pushes for /buildjar")
-            await ctx.followup.send(f"Couldn't read the latest pushes from GitHub: {error}")
-            return
-        chosen = next((p for p in pushes if p["sha"] == push), None)
-        if chosen is None:
-            await ctx.followup.send("That push isn't among the last 3 anymore. Pick one from the list.")
-            return
-
-        commit = {"sha": chosen["sha"], "title": chosen["title"], "author": chosen["author"], "url": chosen["url"]}
-        if chosen["description"]:
-            commit["description"] = chosen["description"]
-        channel = await self._channel()
-        if channel is None:
-            await ctx.followup.send("No build gate channel is configured.")
-            return
-        async with self._lock:
-            busy = await self._active_build()
-            if busy is not None:
-                await ctx.followup.send(f"A build is already running (#{busy.id} on **{busy.branch}**). Wait for it to finish.")
-                return
-            request = await build_gate.create(
-                repo=self.repo_full_name,
-                branch=chosen["branch"],
-                head_sha=chosen["sha"],
-                pusher=ctx.author.display_name,
-                commits=(commit,),
-                source="buildjar",
-                expires_at=discord.utils.utcnow() + timedelta(minutes=5),
-            )
-            message = await channel.send(
-                embed=progress_embed(request, job=None, run=None, approver_id=ctx.author.id, note="Starting…"),
-                allowed_mentions=NO_PINGS,
-            )
-            await build_gate.set_message(request.id, channel.id, message.id)
-            error = await self._start_build(replace(request, channel_id=channel.id, message_id=message.id), ctx.author.id)
-        await ctx.followup.send(error or f"Building **{chosen['branch']}** @ `{chosen['sha'][:7]}`. Progress: {message.jump_url}")
 
 
 def setup(bot: discord.Bot):

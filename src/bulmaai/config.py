@@ -214,7 +214,7 @@ DEFAULT_DEV_JAR_PATREON_ROLE_IDS: Sequence[int] = (
 DEFAULT_DEV_JAR_TESTER_ROLE_IDS: Sequence[int] = (1286814599215317034,)
 # Patch notes location moves per release. PATCH_NOTES_FILE_PATH may be a folder
 # (the highest-versioned .md inside is used, e.g. PATCH_NOTES-v2.2.md) or a
-# specific .md file. Runtime settings, so /settings set repoints without a redeploy.
+# specific .md file. Runtime settings, so the panel's settings page repoints without a redeploy.
 DEFAULT_PATCH_NOTES_REPO = DEFAULT_GITHUB_DEFAULT_REPO
 DEFAULT_PATCH_NOTES_BRANCH = "v2.2"
 DEFAULT_PATCH_NOTES_FILE_PATH = "PATCH_NOTES"

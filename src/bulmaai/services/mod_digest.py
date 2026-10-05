@@ -1,6 +1,6 @@
 """Weekly moderation digest: aggregate queries over mod_cases/automod_hits/scam_image_hashes
 (collect) and a pure embed builder (build_embeds) that turns that data into one or two embeds
-for staff. Sent by cogs/mod_digest.py every Monday, and available on demand via /digest."""
+for staff. Sent by cogs/mod_digest.py every Monday."""
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta

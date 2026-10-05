@@ -27,7 +27,6 @@ from bulmaai.services.dev_jar_downloads import (
 from bulmaai.ui.dev_jar_views import (
     build_dev_jar_download_embed,
     build_dev_jar_download_embeds,
-    build_dev_jar_review_embeds,
 )
 
 MAIN_GUILD = SimpleNamespace(id=Settings.panel_guild_id)
@@ -1497,125 +1496,6 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("remain queued" in content.lower() for content, _ in interaction.followup.messages)
         )
-
-    async def test_changelog_show_rejects_non_staff(self) -> None:
-        class FakeContext:
-            def __init__(self, author) -> None:
-                self.author = author
-                self.responses: list[tuple[str, dict]] = []
-
-            async def respond(self, content: str, **kwargs) -> None:
-                self.responses.append((content, kwargs))
-
-        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
-        ctx = FakeContext(
-            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False), roles=[])
-        )
-
-        await cog.changelog_show.callback(cog, ctx)
-
-        self.assertEqual(len(ctx.responses), 1)
-        content, kwargs = ctx.responses[0]
-        self.assertIn("Only staff", content)
-        self.assertTrue(kwargs["ephemeral"])
-
-    async def test_changelog_show_reports_cached_commit_count_for_staff(self) -> None:
-        class FakeContext:
-            def __init__(self, author) -> None:
-                self.author = author
-                self.responses: list[tuple[str, dict]] = []
-
-            async def respond(self, content: str, **kwargs) -> None:
-                self.responses.append((content, kwargs))
-
-        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
-        ctx = FakeContext(
-            SimpleNamespace(guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True), roles=[])
-        )
-        review = SimpleNamespace(
-            commits=(
-                DevJarCommit(
-                    sha="111111111111",
-                    title="feat: first commit",
-                    description=None,
-                    author="Shokkoh",
-                    url="https://github.com/DragonMineZ/dragonminez/commit/111111111111",
-                ),
-                DevJarCommit(
-                    sha="222222222222",
-                    title="fix: second commit",
-                    description=None,
-                    author="Shokkoh",
-                    url="https://github.com/DragonMineZ/dragonminez/commit/222222222222",
-                ),
-            )
-        )
-
-        with patch(
-            "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
-            new=AsyncMock(return_value=review),
-        ):
-            await cog.changelog_show.callback(cog, ctx)
-
-        self.assertEqual(len(ctx.responses), 1)
-        content, kwargs = ctx.responses[0]
-        self.assertIn("2 commit", content)
-        self.assertIn("feat: first commit", content)
-        self.assertTrue(kwargs["ephemeral"])
-
-    async def test_changelog_reset_rejects_non_staff_and_does_not_clear(self) -> None:
-        class FakeContext:
-            def __init__(self, author) -> None:
-                self.author = author
-                self.responses: list[tuple[str, dict]] = []
-
-            async def respond(self, content: str, **kwargs) -> None:
-                self.responses.append((content, kwargs))
-
-        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
-        ctx = FakeContext(
-            SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False), roles=[])
-        )
-
-        with patch(
-            "bulmaai.cogs.dev_jar_downloads.reset_pending_dev_jar_commits",
-            new=AsyncMock(),
-        ) as reset_mock:
-            await cog.changelog_reset.callback(cog, ctx)
-
-        reset_mock.assert_not_awaited()
-        content, kwargs = ctx.responses[0]
-        self.assertIn("Only staff", content)
-        self.assertTrue(kwargs["ephemeral"])
-
-    async def test_changelog_reset_clears_commits_for_staff(self) -> None:
-        class FakeContext:
-            def __init__(self, author) -> None:
-                self.author = author
-                self.responses: list[tuple[str, dict]] = []
-
-            async def respond(self, content: str, **kwargs) -> None:
-                self.responses.append((content, kwargs))
-
-        cog = DevJarDownloadsCog.__new__(DevJarDownloadsCog)
-        cog.settings = SimpleNamespace(discord_staff_role_ids=(1352882775304175668,))
-        ctx = FakeContext(
-            SimpleNamespace(guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True), roles=[])
-        )
-
-        with patch(
-            "bulmaai.cogs.dev_jar_downloads.reset_pending_dev_jar_commits",
-            new=AsyncMock(),
-        ) as reset_mock:
-            await cog.changelog_reset.callback(cog, ctx)
-
-        reset_mock.assert_awaited_once()
-        content, kwargs = ctx.responses[0]
-        self.assertIn("cleared", content.lower())
-        self.assertTrue(kwargs["ephemeral"])
 
 if __name__ == "__main__":
     unittest.main()

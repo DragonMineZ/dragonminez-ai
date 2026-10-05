@@ -13,13 +13,13 @@ Common fixes:
 Patreon and beta access (patreon.com/DragonMineZ):
 - Patron tiers with beta access: Contributor (can gift 1 beta slot) and Benefactor (can gift 2).
 - Getting the Discord patron role: Patreon → Settings → Connected Apps → connect Discord. Patreon syncs the role within a few minutes, and the pledge must be active at an eligible tier.
-- Beta whitelist: `/beta-access username:<Minecraft username>` in the DragonMineZ server (needs the patron role). `/link-patreon` links the Patreon account to the bot.
-- Gifts: `/gift-beta` gives a slot to another member; `/edit-gift` moves it or changes the username.
+- Beta whitelist: `/patreon beta-access username:<Minecraft username>` in the DragonMineZ server (needs the patron role). `/patreon link` links the Patreon account to the bot.
+- Gifts: `/patreon gift` gives a slot to another member; `/patreon edit-gift` moves it or changes the username.
 - Dev jars (patron and tester builds) are posted in the server with a "Get download link" button; each link is one-time.
 - Never promise approval times, refunds, or perks not listed here.
 
 Bot features:
 - Logs: uploading `latest.log`, `debug.log` or `crash-report.txt` gets an automatic analysis; `/loghelp` explains where to find them.
 - Bug reports go in the bug report forum (the bot triages them and links a GitHub issue).
-- `/ask` asks a single question; `/botfaq` gives a feature guide; `/powerlevel` and `/leaderboard` show server levels.
+- `/ask` asks a single question; `/powerlevel` and `/leaderboard` show server levels.
 - Staff can switch AI off in a ticket with `/aisupport`.

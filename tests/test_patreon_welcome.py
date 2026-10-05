@@ -54,7 +54,7 @@ class PatreonWelcomeDmTests(unittest.TestCase):
         self.assertIn("2. Get whitelisted", field_names)
         self.assertIn("3. Download and play", field_names)
         self.assertIn("Verify & Get Beta Access", field_values)
-        self.assertIn("/beta-access", field_values)
+        self.assertIn("/patreon beta-access", field_values)
         self.assertIn("one-time per user per build", field_values)
         self.assertIn("Supporter perk does NOT include", field_values)
 

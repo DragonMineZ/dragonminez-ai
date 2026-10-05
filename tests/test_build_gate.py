@@ -2,14 +2,11 @@ import hashlib
 import hmac
 import os
 import unittest
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
-from bulmaai.cogs.build_gate import push_autocomplete, push_choice_label
 from bulmaai.services import build_gate
 
 REPO = "DragonMineZ/dragonminez"
@@ -86,23 +83,6 @@ class HelperTests(unittest.TestCase):
         self.assertEqual([build_gate.step_icon(s) for s in steps], ["✅", "🔄", "⬜"])
         self.assertTrue(build_gate.progress_bar(1, 3).endswith("33%"))
         self.assertEqual(build_gate.step_icon({"status": "completed", "conclusion": "failure"}), "❌")
-
-    def test_choice_label_marks_latest_and_fits_discord_limit(self):
-        label = push_choice_label(rank=0, branch="b" * 60, sha="abcdef123", title="t" * 80, author="Goku")
-        self.assertTrue(label.startswith("★ Latest"))
-        self.assertLessEqual(len(label), 100)
-        self.assertNotIn("Latest", push_choice_label(rank=1, branch="b", sha="abcdef123", title="t", author="Goku"))
-
-
-class AutocompleteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_non_admin_sees_no_pushes(self):
-        cog = SimpleNamespace(_recent_pushes=AsyncMock(return_value=[]))
-        ctx = SimpleNamespace(
-            bot=SimpleNamespace(get_cog=lambda _name: cog),
-            interaction=SimpleNamespace(user=SimpleNamespace(id=1, guild_permissions=SimpleNamespace(administrator=False))),
-        )
-        self.assertEqual(await push_autocomplete(ctx), [])
-        cog._recent_pushes.assert_not_awaited()
 
 
 if __name__ == "__main__":

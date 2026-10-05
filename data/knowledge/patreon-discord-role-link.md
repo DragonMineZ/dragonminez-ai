@@ -4,7 +4,7 @@
 
 Use this guide when a user:
 - Says they are a Patreon supporter but has no Patreon role in the DragonMineZ Discord server
-- Gets an error from `/beta-access` or `/gift-beta` saying they need a Patreon beta access role
+- Gets an error from `/patreon beta-access` or `/patreon gift` saying they need a Patreon beta access role
 - Says their Patreon perks or Discord role are missing
 - Cannot access Patreon-only channels or commands despite being a patron
 
@@ -28,7 +28,7 @@ https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access
 
 Once linked, the user should:
 - Receive their Patreon tier role in the DragonMineZ Discord server automatically
-- Be able to run `/beta-access <MinecraftUsername>` to register for beta whitelist access
+- Be able to run `/patreon beta-access <MinecraftUsername>` to register for beta whitelist access
 - Contact staff if the role does not appear after a few minutes
 
 ## Important notes

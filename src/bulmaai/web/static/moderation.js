@@ -95,6 +95,10 @@
     "Save": "Guardar",
     "Actions": "Acciones",
     "Automod": "Automod",
+    "Clear warnings": "Borrar advertencias",
+    "Clear warnings ({n})": "Borrar advertencias ({n})",
+    "Remove all {n} active warnings? They stop counting toward the warn ladder.":
+      "¿Eliminar las {n} advertencias activas? Dejan de contar para la escalera de advertencias.",
   });
 
   const ACTION_KIND = { warn: "warn", note: "", timeout: "warn", kick: "danger", ban: "danger", softban: "danger", delete: "danger", alert: "warn", unban: "ok", untimeout: "ok", appeal: "" };
@@ -132,14 +136,14 @@
         user(c.moderator || c.moderator_id),
         c.source === "dyno" ? badge(t("Dyno (deprecated)"), "warn") : c.source === "discord" ? badge(t("via Discord")) : null)) },
     ];
-    if (can("mod.cases.edit")) {
+    if (can("mod.cases.edit") || can("mod.cases.remove")) {
       cols.push({
         label: t("Actions"),
         render: (c) => {
           const buttons = [];
-          const editBtn = h("button", { class: "btn small ghost", type: "button" }, t("Edit reason"));
-          const removeBtn = (c.action === "warn" || c.action === "note") && c.active !== false ? h("button", { class: "btn small danger", type: "button" }, t("Remove")) : null;
-          editBtn.addEventListener("click", async (e) => {
+          const editBtn = can("mod.cases.edit") ? h("button", { class: "btn small ghost", type: "button" }, t("Edit reason")) : null;
+          const removeBtn = can("mod.cases.remove") && (c.action === "warn" || c.action === "note") && c.active !== false ? h("button", { class: "btn small danger", type: "button" }, t("Remove")) : null;
+          if (editBtn) editBtn.addEventListener("click", async (e) => {
             e.stopPropagation();
             const reasonInput = h("textarea", { rows: "3", maxlength: "400", value: c.reason || "" });
             const ok = await dialog(t("Edit reason"), [field(t("Reason"), reasonInput)], { confirmLabel: t("Save"), danger: false });
@@ -147,7 +151,7 @@
             await run(editBtn, () => api(`/api/cases/${c.id}/reason`, { method: "POST", body: { reason: reasonInput.value.trim() } }), t("{action}: done", { action: t("Edit reason") }));
             Panel.refresh();
           });
-          buttons.push(editBtn);
+          if (editBtn) buttons.push(editBtn);
           if (removeBtn) {
             removeBtn.addEventListener("click", async (e) => {
               e.stopPropagation();
@@ -334,6 +338,17 @@
     Panel.refresh();
   }
 
+  function clearWarnsButton(profile, count) {
+    const button = h("button", { class: "btn", type: "button" }, t("Clear warnings ({n})", { n: count }));
+    button.addEventListener("click", async () => {
+      const ok = await dialog(t("Clear warnings"), [h("p", {}, t("Remove all {n} active warnings? They stop counting toward the warn ladder.", { n: count }))], { confirmLabel: t("Clear warnings"), danger: true });
+      if (!ok) return;
+      await run(button, () => api(`/api/users/${profile.user.id}/clearwarns`, { method: "POST", body: {} }), t("{action}: done", { action: t("Clear warnings") }));
+      Panel.refresh();
+    });
+    return button;
+  }
+
   function actionBar(profile) {
     const buttons = ACTIONS
       .filter((a) => can(a.perm) && (!a.member || profile.member) && (!a.show || a.show(profile)))
@@ -342,6 +357,9 @@
         button.addEventListener("click", () => runAction(button, profile, a));
         return button;
       });
+    const cases = profile.sections.cases && profile.sections.cases.data;
+    const activeWarns = (cases || []).filter((c) => c.action === "warn" && c.active !== false).length;
+    if (can("mod.cases.remove") && activeWarns) buttons.push(clearWarnsButton(profile, activeWarns));
     return buttons.length ? h("div", { class: "row" }, buttons) : null;
   }
 

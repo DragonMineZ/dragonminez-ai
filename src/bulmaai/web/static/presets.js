@@ -1,58 +1,97 @@
 "use strict";
 
+// Default embeds page: pick an embed (rules / support us) and a language from the dropdowns, edit it
+// on the left, watch the Discord preview update on the right, save, then post it to a channel.
+
 (() => {
-  const { h, api, run, badge, field, dialog, t, i18n } = Panel;
+  const { h, api, run, badge, field, dialog, channelSelect, channelName, toast, t, i18n } = Panel;
   const LANGS = { en: "English", es: "Español", pt: "Português" };
-  const KINDS = { rules: "Rules", support: "Support us" };
-  const LONG_SUPPORT_FIELDS = /(description|_value)$/;
+  const KINDS = {
+    rules: { label: "Server rules", help: "The rules message with English / Español / Português buttons." },
+    support: { label: "Support us", help: "The Patreon / GitHub / server boosting message with language buttons." },
+  };
+  // Support-us fields, grouped the way they appear in the message. [key, label, long text?]
+  const SUPPORT_GROUPS = [
+    ["Intro", [["description", "Intro text", true]]],
+    ["Patreon perks", [["perks_title", "Heading"], ["perks_value", "Text", true]]],
+    ["Development", [["development_title", "Heading"], ["development_value", "Text", true]]],
+    ["Credits", [["credits_title", "Heading"], ["credits_value", "Text", true]]],
+    ["Community", [["community_title", "Heading"], ["community_value", "Text", true]]],
+    ["Server boosting (second embed)", [
+      ["boosting_title", "Title"], ["boosting_description", "Text", true],
+      ["boost_tier1_title", "Tier 1 heading"], ["boost_tier1_value", "Tier 1 text", true],
+      ["boost_tier2_title", "Tier 2 heading"], ["boost_tier2_value", "Tier 2 text", true],
+      ["boost_tier3_title", "Tier 3 heading"], ["boost_tier3_value", "Tier 3 text", true],
+      ["boosting_footer", "Footer"]]],
+    ["Buttons", [["patreon_label", "Patreon button label"], ["github_label", "GitHub button label"]]],
+  ];
 
-  const hex = (n) => (typeof n === "number" ? `#${n.toString(16).padStart(6, "0").toUpperCase()}` : "");
+  const hex = (n) => (typeof n === "number" ? `#${n.toString(16).padStart(6, "0")}` : "");
 
-  // Text-only stand-in for a Discord embed (e = embed.to_dict()); Markdown is shown as typed.
-  function embedView(e) {
-    return h("div", { class: "card stack" },
-      e.color !== undefined ? h("div", { class: "row" }, badge(hex(e.color))) : null,
-      e.title ? h("h3", {}, e.title) : null,
-      e.url ? h("div", { class: "muted small" }, t("Title link: {url}", { url: e.url })) : null,
-      e.description ? h("pre", {}, e.description) : null,
-      (e.fields || []).map((f) => h("div", {},
-        h("div", { class: "row" }, h("strong", {}, f.name), f.inline ? badge(t("inline")) : null),
-        h("pre", {}, f.value))),
-      e.thumbnail && e.thumbnail.url ? h("div", { class: "muted small" }, t("Thumbnail: {url}", { url: e.thumbnail.url })) : null,
-      e.image && e.image.url ? h("div", { class: "muted small" }, t("Image: {url}", { url: e.image.url })) : null,
-      e.footer && e.footer.text ? h("div", { class: "muted small" }, e.footer.text) : null);
+  // embed.to_dict() (what the bot sends) -> the shape Panel.messagePreview draws.
+  function fromDiscord(e) {
+    return {
+      title: e.title || "", url: e.url || "", description: e.description || "", color: hex(e.color),
+      fields: (e.fields || []).map((f) => ({ name: f.name, value: f.value, inline: Boolean(f.inline) })),
+      footer: (e.footer && e.footer.text) || "", image_url: (e.image && e.image.url) || "",
+      thumbnail_url: (e.thumbnail && e.thumbnail.url) || "", author_name: (e.author && e.author.name) || "",
+    };
   }
 
-  function presetPreview(preset) {
-    return [
-      preset.embeds.map(embedView),
-      preset.buttons.length
-        ? h("div", { class: "row" }, preset.buttons.map((label) => h("button", { class: "btn small", type: "button", disabled: true }, label)))
-        : null,
-    ];
+  function preview(preset) {
+    return Panel.messagePreview({ content: "", embeds: preset.embeds.map(fromDiscord), buttons: preset.buttons });
   }
 
-  function rulesForm(container, data) {
-    const title = h("input", { type: "text", value: data.title, maxlength: "256", size: "60" });
+  function counter(input, limit) {
+    const el = h("div", { class: "muted small" });
+    const update = () => {
+      const max = typeof limit === "function" ? limit() : limit;
+      el.textContent = `${input.value.length} / ${max}`;
+      el.classList.toggle("error", input.value.length > max);
+    };
+    input.addEventListener("input", update);
+    update();
+    return { el, update };
+  }
+
+  function rulesForm(container, data, onChange) {
+    const title = h("input", { type: "text", value: data.title, maxlength: "256" });
     const list = h("div", { class: "stack" });
     const makeSection = (s) => ({
-      title: h("input", { type: "text", value: s.title || "", maxlength: "256", size: "60" }),
-      content: h("textarea", { rows: "6", value: s.content || "" }),
+      title: h("input", { type: "text", value: s.title || "", maxlength: "256", placeholder: t("Optional") }),
+      content: h("textarea", { rows: "8", value: s.content || "" }),
+      open: !s.content,
     });
     const sections = data.sections.map(makeSection);
-    const move = (from, to) => { sections.splice(to, 0, sections.splice(from, 1)[0]); draw(); };
+    const move = (from, to) => { sections.splice(to, 0, sections.splice(from, 1)[0]); draw(); onChange(); };
 
-    const draw = () => list.replaceChildren(...sections.map((s, i) => h("div", { class: "card stack" },
-      h("div", { class: "row spread" },
-        h("strong", {}, i === 0 ? t("Section {n} (first embed, carries the title)", { n: i + 1 }) : t("Section {n}", { n: i + 1 })),
-        h("div", { class: "row" },
-          h("button", { class: "btn small ghost", type: "button", disabled: i === 0, onclick: () => move(i, i - 1) }, t("Move up")),
-          h("button", { class: "btn small ghost", type: "button", disabled: sections.length === 1, onclick: () => { sections.splice(i, 1); draw(); } }, t("Remove")))),
-      field(t("Heading (optional; without one the content is the embed text, up to 4096 chars, with one it's a field, up to 1024)"), s.title),
-      field(t("Content"), s.content))));
+    const draw = () => list.replaceChildren(...sections.map((s, i) => {
+      const count = counter(s.content, () => (s.title.value.trim() ? 1024 : 4096));
+      s.title.oninput = () => { count.update(); onChange(); };
+      const name = () => s.title.value.trim() || t("(no heading)");
+      const summary = h("summary", {}, t("Section {n}", { n: i + 1 }), " · ", h("span", { class: "muted" }, name()));
+      s.title.addEventListener("input", () => { summary.lastChild.textContent = name(); });
+      const card = h("details", { class: "card section-card", open: s.open || undefined },
+        summary,
+        h("div", { class: "stack" },
+          field(t("Heading"), s.title),
+          h("p", { class: "muted small" }, t("With a heading the section is a field (1024 characters max); without one it's the embed's main text (4096 max).")),
+          field(t("Text"), s.content),
+          count.el,
+          h("div", { class: "row" },
+            h("button", { class: "btn small ghost", type: "button", disabled: i === 0, onclick: () => move(i, i - 1) }, t("Move up")),
+            h("button", { class: "btn small ghost", type: "button", disabled: i === sections.length - 1, onclick: () => move(i, i + 1) }, t("Move down")),
+            h("button", { class: "btn small danger", type: "button", disabled: sections.length === 1, onclick: () => { sections.splice(i, 1); draw(); onChange(); } }, t("Delete section")))));
+      card.addEventListener("toggle", () => { s.open = card.open; });
+      return card;
+    }));
 
-    const add = h("button", { class: "btn small", type: "button", onclick: () => { sections.push(makeSection({})); draw(); } }, t("Add section"));
-    container.append(field(t("Title (shown on the first embed)"), title), list, h("div", { class: "row" }, add, h("span", { class: "muted small" }, t("Each section is its own embed; Discord allows 10 per message."))));
+    const add = h("button", { class: "btn small", type: "button", onclick: () => { sections.push(makeSection({})); draw(); onChange(); } }, t("Add section"));
+    container.addEventListener("input", onChange);
+    container.append(
+      field(t("Title (top of the message)"), title),
+      list,
+      h("div", { class: "row" }, add, h("span", { class: "muted small" }, t("Each section is its own embed; Discord allows 10 per message."))));
     draw();
     return () => ({
       title: title.value,
@@ -60,107 +99,206 @@
     });
   }
 
-  function supportForm(container, data) {
-    const inputs = Object.fromEntries(Object.entries(data).map(([key, value]) => [key,
-      LONG_SUPPORT_FIELDS.test(key) ? h("textarea", { rows: "4", value }) : h("input", { type: "text", value, size: "60" })]));
-    container.append(...Object.entries(inputs).map(([key, input]) => field(key, input)));
+  function supportForm(container, data, onChange) {
+    const inputs = {};
+    container.addEventListener("input", onChange);
+    for (const [group, fields] of SUPPORT_GROUPS) {
+      container.append(h("details", { class: "card section-card", open: group === "Intro" || undefined },
+        h("summary", {}, t(group)),
+        h("div", { class: "stack" }, fields.map(([key, label, long]) => {
+          inputs[key] = long ? h("textarea", { rows: "5", value: data[key] }) : h("input", { type: "text", value: data[key] });
+          return field(t(label), inputs[key]);
+        }))));
+    }
     return () => Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value]));
   }
 
-  async function presetEditor(view, kind, language) {
-    const preset = (await api("/api/presets")).presets.find((p) => p.kind === kind && p.language === language);
-    if (!preset) { view.append(h("p", { class: "error" }, t("Unknown preset."))); return; }
-    const url = `/api/presets/${encodeURIComponent(kind)}/${encodeURIComponent(language)}`;
-    const status = h("span");
-    const preview = h("div", { class: "stack" });
-    const show = (p) => {
-      status.replaceChildren(p.customized ? badge(t("customized"), "accent") : badge(t("default")));
-      preview.replaceChildren(...presetPreview(p).flat().filter(Boolean));
+  function postCard(kind) {
+    const channel = channelSelect(null, { types: ["text", "news"], includeNone: true });
+    const post = h("button", { class: "btn primary", type: "button" }, t("Post"));
+    post.addEventListener("click", async () => {
+      if (!channel.value) { toast(t("Pick a channel first."), true); return; }
+      const where = await channelName(channel.value);
+      const ok = await dialog(t("Post {name}?", { name: t(KINDS[kind].label) }),
+        h("p", {}, t("Posts the saved English version in #{channel}. Members can switch language with the buttons under it.", { channel: where })),
+        { confirmLabel: t("Post"), danger: false });
+      if (!ok) return;
+      const result = await run(post, () => api(`/api/presets/${kind}/post`, { method: "POST", body: { channel_id: channel.value } }), t("Posted"));
+      if (result) toast(t("Posted in #{channel}", { channel: where }));
+    });
+    return h("div", { class: "card stack" },
+      h("strong", {}, t("Post to a channel")),
+      h("p", { class: "muted" }, t("Posting sends the saved version (save first). An old copy already in a channel isn't changed: delete it and post again.")),
+      h("div", { class: "embed-picker" }, field(t("Channel"), channel), post));
+  }
+
+  async function render(view, kind, language) {
+    const { presets } = await api("/api/presets");
+    const preset = presets.find((p) => p.kind === kind && p.language === language);
+    if (!preset) { view.append(h("p", { class: "error" }, t("Unknown embed."))); return; }
+    const url = `/api/presets/${kind}/${language}`;
+
+    let dirty = false;
+    const status = h("span", { class: "row" });
+    const showStatus = (p) => status.replaceChildren(...[
+      p.customized ? badge(t("edited"), "accent") : badge(t("default text")),
+      dirty ? badge(t("unsaved changes"), "warn") : null].filter(Boolean));
+
+    const previewBox = h("div", { class: "stack" });
+    const problem = h("p", { class: "error", hidden: true });
+    const showPreview = (p) => previewBox.replaceChildren(preview(p));
+
+    // Pickers: switching asks first when there are unsaved edits.
+    const kindSelect = h("select", {}, Object.entries(KINDS).map(([id, k]) => h("option", { value: id }, t(k.label))));
+    const langSelect = h("select", {}, Object.entries(LANGS).map(([id, label]) => h("option", { value: id }, label)));
+    kindSelect.value = kind;
+    langSelect.value = language;
+    const switchTo = async () => {
+      if (dirty && !(await dialog(t("Discard unsaved changes?"), h("p", {}, t("Your edits to this embed haven't been saved.")), { confirmLabel: t("Discard"), danger: true }))) {
+        kindSelect.value = kind;
+        langSelect.value = language;
+        return;
+      }
+      dirty = false;
+      Panel.go(`#/presets/${kindSelect.value}/${langSelect.value}`);
     };
+    kindSelect.addEventListener("change", switchTo);
+    langSelect.addEventListener("change", switchTo);
 
+    // Live preview: re-render the draft through the bot's own builder after a short pause in typing.
+    let timer;
+    let collect = () => preset.data;
+    const onChange = () => {
+      dirty = true;
+      showStatus(preset);
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        try {
+          showPreview(await api(`${url}/preview`, { method: "POST", body: { data: collect() } }));
+          problem.hidden = true;
+        } catch (error) {
+          problem.textContent = error.message;
+          problem.hidden = false;
+        }
+      }, 400);
+    };
     const form = h("div", { class: "stack" });
-    const collect = kind === "rules" ? rulesForm(form, preset.data) : supportForm(form, preset.data);
+    collect = kind === "rules" ? rulesForm(form, preset.data, onChange) : supportForm(form, preset.data, onChange);
 
-    const previewBtn = h("button", { class: "btn", type: "button" }, t("Preview"));
-    previewBtn.addEventListener("click", () => run(previewBtn, async () => {
-      const draft = await api(`${url}/preview`, { method: "POST", body: { data: collect() } });
-      preview.replaceChildren(h("p", { class: "muted small" }, t("Unsaved draft:")), ...presetPreview(draft).flat().filter(Boolean));
-    }));
     const save = h("button", { class: "btn primary", type: "button" }, t("Save"));
     save.addEventListener("click", () => run(save, async () => {
-      show(await api(url, { method: "PUT", body: { data: collect() } }));
-    }, t("Preset saved")));
+      const saved = await api(url, { method: "PUT", body: { data: collect() } });
+      dirty = false;
+      Object.assign(preset, saved);
+      showStatus(saved);
+      showPreview(saved);
+      problem.hidden = true;
+    }, t("Saved")));
+    const discard = h("button", { class: "btn ghost", type: "button" }, t("Discard changes"));
+    discard.addEventListener("click", () => { dirty = false; Panel.refresh(); });
     const reset = h("button", { class: "btn ghost", type: "button" }, t("Reset to default"));
     reset.addEventListener("click", async () => {
-      const ok = await dialog(t("Reset preset?"), h("p", {}, t("Replace {name} with the built-in default text. The current text is kept in the audit log.", { name: `${t(KINDS[kind])} (${LANGS[language] || language})` })), { confirmLabel: t("Reset"), danger: true });
-      if (ok) await run(reset, async () => { await api(url, { method: "DELETE" }); await Panel.refresh(); }, t("Preset reset"));
+      const ok = await dialog(t("Reset to the default text?"), h("p", {}, t("Replaces this embed's text with the built-in default. The current text is kept in the audit log.")), { confirmLabel: t("Reset"), danger: true });
+      if (ok) await run(reset, async () => { await api(url, { method: "DELETE" }); dirty = false; await Panel.refresh(); }, t("Reset to default"));
     });
 
     view.append(
-      h("p", {}, h("a", { href: "#/presets" }, t("← All presets"))),
-      h("div", { class: "row" }, h("h1", {}, `${t(KINDS[kind])} · ${LANGS[language] || language}`), status),
-      h("div", { class: "card stack" }, form, h("div", { class: "row" }, previewBtn, save, reset)),
-      h("h2", {}, t("What the bot posts")),
-      preview);
-    show(preset);
+      h("h1", {}, t("Default embeds")),
+      h("div", { class: "card stack" },
+        h("div", { class: "embed-picker" }, field(t("Embed"), kindSelect), field(t("Language"), langSelect), status),
+        h("p", { class: "muted small" }, t(KINDS[kind].help))),
+      postCard(kind),
+      h("div", { class: "embed-workbench" },
+        h("div", { class: "stack" },
+          form,
+          h("div", { class: "card row" }, save, discard, reset)),
+        h("div", { class: "stack preview-pane" },
+          h("h2", {}, t("Preview")),
+          problem,
+          previewBox,
+          h("p", { class: "muted small" }, t("Buttons are shown as they'll appear; they only work in Discord.")))));
+    showStatus(preset);
+    showPreview(preset);
   }
 
   Panel.page({
     id: "presets",
-    title: "Presets",
+    title: "Default embeds",
     perm: "presets.edit",
     group: "Community",
     async render(view, args) {
-      if (args.length === 2) { await presetEditor(view, args[0], args[1]); return; }
-      const { presets } = await api("/api/presets");
-      view.append(
-        h("h1", {}, t("Message presets")),
-        h("p", { class: "muted" }, t("Text for the rules and support-us messages (/rules setup, /supportus setup). Language buttons read these live; a message that's already posted keeps its old English text until it's posted again.")),
-        h("div", { class: "tiles" }, presets.map((p) => h("a", { class: "tile", href: `#/presets/${p.kind}/${p.language}` },
-          h("div", { class: "grow" },
-            h("div", {}, `${t(KINDS[p.kind]) || p.kind} · ${LANGS[p.language] || p.language}`),
-            h("div", { class: "muted small" }, t("{n} embeds", { n: p.embeds.length }))),
-          p.customized ? badge(t("customized"), "accent") : badge(t("default")),
-          h("span", { class: "go" }, t("Edit ›"))))));
+      const kind = KINDS[args[0]] ? args[0] : "rules";
+      const language = LANGS[args[1]] ? args[1] : "en";
+      await render(view, kind, language);
     },
   });
 
   i18n({
-    "Rules": "Reglas",
+    "Default embeds": "Embeds predeterminados",
+    "Server rules": "Reglas del servidor",
     "Support us": "Apóyanos",
-    "Title link: {url}": "Enlace del título: {url}",
-    "inline": "en línea",
-    "Thumbnail: {url}": "Miniatura: {url}",
-    "Image: {url}": "Imagen: {url}",
-    "Section {n} (first embed, carries the title)": "Sección {n} (primer embed, lleva el título)",
+    "The rules message with English / Español / Português buttons.": "El mensaje de reglas con botones English / Español / Português.",
+    "The Patreon / GitHub / server boosting message with language buttons.": "El mensaje de Patreon / GitHub / boosts del servidor con botones de idioma.",
+    "Intro": "Introducción",
+    "Intro text": "Texto de introducción",
+    "Patreon perks": "Beneficios de Patreon",
+    "Development": "Desarrollo",
+    "Credits": "Créditos",
+    "Community": "Comunidad",
+    "Server boosting (second embed)": "Boosts del servidor (segundo embed)",
+    "Buttons": "Botones",
+    "Heading": "Encabezado",
+    "Text": "Texto",
+    "Title": "Título",
+    "Tier 1 heading": "Encabezado nivel 1",
+    "Tier 1 text": "Texto nivel 1",
+    "Tier 2 heading": "Encabezado nivel 2",
+    "Tier 2 text": "Texto nivel 2",
+    "Tier 3 heading": "Encabezado nivel 3",
+    "Tier 3 text": "Texto nivel 3",
+    "Footer": "Pie",
+    "Patreon button label": "Texto del botón de Patreon",
+    "GitHub button label": "Texto del botón de GitHub",
+    "Optional": "Opcional",
+    "(no heading)": "(sin encabezado)",
     "Section {n}": "Sección {n}",
+    "With a heading the section is a field (1024 characters max); without one it's the embed's main text (4096 max).":
+      "Con encabezado la sección es un campo (máx. 1024 caracteres); sin él es el texto principal del embed (máx. 4096).",
     "Move up": "Subir",
-    "Remove": "Quitar",
-    "Heading (optional; without one the content is the embed text, up to 4096 chars, with one it's a field, up to 1024)":
-      "Encabezado (opcional; sin uno el contenido es el texto del embed, hasta 4096 caracteres; con uno es un campo, hasta 1024)",
-    "Content": "Contenido",
+    "Move down": "Bajar",
+    "Delete section": "Eliminar sección",
     "Add section": "Agregar sección",
-    "Title (shown on the first embed)": "Título (se muestra en el primer embed)",
+    "Title (top of the message)": "Título (arriba del mensaje)",
     "Each section is its own embed; Discord allows 10 per message.": "Cada sección es su propio embed; Discord permite 10 por mensaje.",
-    "Unknown preset.": "Preset desconocido.",
-    "customized": "personalizado",
-    "default": "por defecto",
-    "Preview": "Vista previa",
-    "Unsaved draft:": "Borrador sin guardar:",
+    "Post": "Publicar",
+    "Post {name}?": "¿Publicar {name}?",
+    "Posts the saved English version in #{channel}. Members can switch language with the buttons under it.":
+      "Publica la versión en inglés guardada en #{channel}. Los miembros pueden cambiar de idioma con los botones de abajo.",
+    "Posted": "Publicado",
+    "Posted in #{channel}": "Publicado en #{channel}",
+    "Pick a channel first.": "Primero elige un canal.",
+    "Post to a channel": "Publicar en un canal",
+    "Posting sends the saved version (save first). An old copy already in a channel isn't changed: delete it and post again.":
+      "Se publica la versión guardada (guarda primero). Una copia anterior en un canal no cambia: bórrala y publica de nuevo.",
+    "Channel": "Canal",
+    "Unknown embed.": "Embed desconocido.",
+    "edited": "editado",
+    "default text": "texto predeterminado",
+    "unsaved changes": "cambios sin guardar",
+    "Discard unsaved changes?": "¿Descartar los cambios sin guardar?",
+    "Your edits to this embed haven't been saved.": "Tus cambios en este embed no se han guardado.",
+    "Discard": "Descartar",
     "Save": "Guardar",
-    "Preset saved": "Preset guardado",
-    "Reset to default": "Restablecer al valor por defecto",
-    "Reset preset?": "¿Restablecer el preset?",
-    "Replace {name} with the built-in default text. The current text is kept in the audit log.":
-      "Reemplaza {name} con el texto original. El texto actual se conserva en el registro de auditoría.",
+    "Saved": "Guardado",
+    "Discard changes": "Descartar cambios",
+    "Reset to default": "Restablecer al predeterminado",
+    "Reset to the default text?": "¿Restablecer el texto predeterminado?",
+    "Replaces this embed's text with the built-in default. The current text is kept in the audit log.":
+      "Reemplaza el texto de este embed por el predeterminado. El texto actual se conserva en el registro de auditoría.",
     "Reset": "Restablecer",
-    "Preset reset": "Preset restablecido",
-    "← All presets": "← Todos los presets",
-    "What the bot posts": "Lo que publica el bot",
-    "Message presets": "Presets de mensajes",
-    "Text for the rules and support-us messages (/rules setup, /supportus setup). Language buttons read these live; a message that's already posted keeps its old English text until it's posted again.":
-      "Texto de los mensajes de reglas y apóyanos (/rules setup, /supportus setup). Los botones de idioma leen esto en vivo; un mensaje ya publicado conserva su texto en inglés anterior hasta que se publique de nuevo.",
-    "{n} embeds": "{n} embeds",
-    "Edit ›": "Editar ›",
+    "Embed": "Embed",
+    "Language": "Idioma",
+    "Preview": "Vista previa",
+    "Buttons are shown as they'll appear; they only work in Discord.": "Los botones se ven como aparecerán; solo funcionan en Discord.",
   });
 })();

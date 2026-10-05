@@ -22,7 +22,6 @@ from bulmaai.services.dev_jar_downloads import (
     DevJarDownloadClaim,
     DevJarUploadPayload,
     OneTimeDownloadTokenStore,
-    find_latest_dev_jar,
     iter_dev_jars,
     merge_dev_jar_commits,
     parse_dev_jar_upload_payload,
@@ -33,7 +32,6 @@ from bulmaai.services.dev_jar_pending_review import (
     clear_pending_dev_jar_review,
     clear_pending_dev_jar_review_message,
     get_pending_dev_jar_review,
-    reset_pending_dev_jar_commits,
     set_pending_dev_jar_review_message,
     upsert_pending_dev_jar_review,
 )
@@ -92,16 +90,6 @@ def can_download_dev_jar(
         is_admin(member)  # type: ignore[arg-type]
         or has_any_allowed_role(member, patreon_role_ids)  # type: ignore[arg-type]
         or has_any_allowed_role(member, tester_role_ids)  # type: ignore[arg-type]
-    )
-
-
-def _manual_artifact_commit(artifact: DevJarArtifact, *, author: object) -> DevJarCommit:
-    return DevJarCommit(
-        sha=artifact.commit_sha,
-        title="Manual dev jar announcement",
-        description=None,
-        author=str(author),
-        url=f"https://github.com/DragonMineZ/dragonminez/commit/{artifact.commit_sha}",
     )
 
 
@@ -635,92 +623,6 @@ class DevJarDownloadsCog(commands.Cog):
             "for the next push.",
             ephemeral=True,
         )
-
-    @discord.slash_command(name="post-download", description="Post the latest DragonMineZ dev jar download announcement")
-    @discord.option(
-        "file_name",
-        description="Specific uploaded jar filename; defaults to the latest dev jar",
-        required=False,
-    )
-    @discord.option(
-        "channel",
-        description="Channel to post the announcement in (default: configured dev jar channel)",
-        required=False,
-    )
-    async def post_download(
-        self,
-        ctx: discord.ApplicationContext,
-        file_name: str | None = None,
-        channel: discord.TextChannel | None = None,
-    ) -> None:
-        author = ctx.author
-        if not can_post_download_announcement(
-            author,
-            staff_role_ids=tuple(self.settings.discord_staff_role_ids),
-        ):
-            await ctx.respond("Only staff can post dev jar download announcements.", ephemeral=True)
-            return
-
-        await ctx.defer(ephemeral=True)
-        try:
-            if file_name:
-                artifact = self._refresh_artifact_stat(parse_dev_jar_filename(file_name.strip()))
-            else:
-                artifact = find_latest_dev_jar(self._upload_dir())
-            target_channel = channel or await self._resolve_channel()
-            await self._post_download_announcement(
-                artifact,
-                commits=(_manual_artifact_commit(artifact, author=ctx.author),),
-                channel=target_channel,
-                previous_size_bytes=self._get_previous_artifact_size(artifact.file_name),
-                is_manual=True,
-            )
-        except Exception as error:
-            log.exception("Failed to post dev jar download announcement")
-            await ctx.followup.send(f"Failed to post download announcement: {error}", ephemeral=True)
-            return
-
-        await ctx.followup.send("Dev jar download announcement posted.", ephemeral=True)
-
-    devjar = discord.SlashCommandGroup("devjar", "Dev jar administration commands")
-    changelog = devjar.create_subgroup("changelog", "Pending dev jar review commit cache")
-
-    def _is_devjar_staff(self, member: object) -> bool:
-        return can_post_download_announcement(
-            member,
-            staff_role_ids=tuple(self.settings.discord_staff_role_ids),
-        )
-
-    @changelog.command(name="show", description="Show the commits cached in the pending dev jar review")
-    async def changelog_show(self, ctx: discord.ApplicationContext) -> None:
-        if not self._is_devjar_staff(ctx.author):
-            await ctx.respond("Only staff can view the pending dev jar changelog.", ephemeral=True)
-            return
-
-        review = await get_pending_dev_jar_review()
-        if review is None or not review.commits:
-            await ctx.respond("No commits are cached in the pending dev jar review.", ephemeral=True)
-            return
-
-        preview_limit = 10
-        preview = "\n".join(
-            f"`{commit.sha[:7]}` {commit.title}" for commit in review.commits[:preview_limit]
-        )
-        if len(review.commits) > preview_limit:
-            preview += f"\n... and {len(review.commits) - preview_limit} more"
-        await ctx.respond(
-            f"{len(review.commits)} commit(s) cached in the pending dev jar review:\n{preview}",
-            ephemeral=True,
-        )
-
-    @changelog.command(name="reset", description="Empty the cached commit changelog for the pending dev jar review")
-    async def changelog_reset(self, ctx: discord.ApplicationContext) -> None:
-        if not self._is_devjar_staff(ctx.author):
-            await ctx.respond("Only staff can reset the pending dev jar changelog.", ephemeral=True)
-            return
-
-        await reset_pending_dev_jar_commits()
-        await ctx.respond("Pending dev jar changelog cleared.", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:

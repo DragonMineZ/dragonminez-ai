@@ -11,7 +11,6 @@ import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
-from bulmaai.logging_setup import LOG_BUFFER
 from bulmaai.services import ai_budget
 from bulmaai.web.core import (
     BOT,
@@ -35,7 +34,6 @@ routes = web.RouteTableDef()
 STARTED_AT = datetime.now(timezone.utc)
 PANEL_EXTENSION = "bulmaai.cogs.admin_panel"
 DB_TIMEOUT_SECONDS = 3
-LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 AUDIT_PAGE_MAX = 200
 
 
@@ -119,17 +117,6 @@ async def reload_extension(request: web.Request, actor: Actor) -> web.Response:
         raise api_error(502, f"Reload failed, previous version kept: {error}")
     await audit(actor, "bot.reload", name)
     return web.json_response({"ok": True, "extensions": sorted(bot.extensions)})
-
-
-@routes.get("/api/logs")
-@requires("logs.view")
-async def logs(request: web.Request, actor: Actor) -> web.Response:
-    after = _int_param(request, "after", 0)
-    level = request.query.get("level", "DEBUG").strip().upper() or "DEBUG"
-    if level not in LOG_LEVELS:
-        raise api_error(400, f"level must be one of {', '.join(LOG_LEVELS)}.")
-    records, last_id = LOG_BUFFER.since(after, logging.getLevelName(level))
-    return web.json_response({"records": records, "last_id": last_id})
 
 
 def _match_member_ids(guild: discord.Guild, query: str) -> list[int]:

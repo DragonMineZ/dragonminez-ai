@@ -4,10 +4,23 @@
 // Default settings tab. Everything saved here is a plain setting, so it also shows on the Settings page.
 
 (() => {
-  const { h, api, run, can, field, badge, dialog, guild, channelName, roleName, t } = Panel;
+  const { h, api, run, can, field, badge, dialog, guild, channelName, roleName, table, time, user, t } = Panel;
 
   Panel.i18n({
     "Automod": "Automod",
+    "Added": "Agregada",
+    "How": "Origen",
+    "learned from automod": "aprendida del automod",
+    "marked by staff": "marcada por el staff",
+    "Note": "Nota",
+    "Matches": "Coincidencias",
+    "Last match": "Última coincidencia",
+    "never": "nunca",
+    "Remove scam image #{id}?": "¿Quitar la imagen de estafa #{id}?",
+    "Automod stops matching this image. Use this for false positives.": "El automod deja de detectar esta imagen. Úsalo para falsos positivos.",
+    "Scam image removed": "Imagen de estafa quitada",
+    "To add one, right-click a message with the image → Apps → Mark as scam image.": "Para agregar una, haz clic derecho en un mensaje con la imagen → Apps → Mark as scam image.",
+    "No scam images saved yet.": "Aún no hay imágenes de estafa guardadas.",
     "Filters": "Filtros",
     "Default settings": "Configuración predeterminada",
     "Enable automod": "Activar automod",
@@ -452,6 +465,34 @@
     ], rows, { hint: null }));
   }
 
+  // Known scam image hashes: added with the "Mark as scam image" message command (Apps menu) or learned
+  // from confirmed automod hits. Only the hash is stored, so there's no picture to show.
+  async function renderScamImages(pane) {
+    const { images } = await api("/api/scam-images");
+    const columns = [
+      { label: "#", render: (i) => h("span", { class: "mono" }, String(i.id)) },
+      { label: t("Added"), render: (i) => time(i.created_at) },
+      { label: t("How"), render: (i) => badge(i.source === "learned" ? t("learned from automod") : t("marked by staff"), i.source === "learned" ? "accent" : "") },
+      { label: t("By"), render: (i) => (i.added_by || i.added_by_id ? user(i.added_by || i.added_by_id) : h("span", { class: "muted" }, "—")) },
+      { label: t("Note"), render: (i) => i.note || h("span", { class: "muted" }, "—") },
+      { label: t("Matches"), render: (i) => String(i.hits) },
+      { label: t("Last match"), render: (i) => (i.last_hit_at ? time(i.last_hit_at) : h("span", { class: "muted" }, t("never"))) },
+    ];
+    if (can("mod.tools")) columns.push({ label: "", render: (i) => {
+      const button = h("button", { class: "btn small danger", type: "button" }, t("Remove"));
+      button.addEventListener("click", async () => {
+        const ok = await dialog(t("Remove scam image #{id}?", { id: i.id }), [h("p", {}, t("Automod stops matching this image. Use this for false positives."))], { confirmLabel: t("Remove"), danger: true });
+        if (!ok) return;
+        await run(button, () => api(`/api/scam-images/${i.id}`, { method: "DELETE" }), t("Scam image removed"));
+        await renderScamImages(pane);
+      });
+      return button;
+    } });
+    pane.replaceChildren(
+      h("p", { class: "muted" }, t("To add one, right-click a message with the image → Apps → Mark as scam image.")),
+      table(columns, images, { empty: t("No scam images saved yet.") }));
+  }
+
   Panel.page({
     id: "automod",
     title: "Automod",
@@ -459,7 +500,7 @@
     group: "Moderation",
     async render(view, args) {
       const canSettings = can("settings.view");
-      let tab = args[0] === "defaults" && canSettings ? "defaults" : "filters";
+      let tab = args[0] === "defaults" && canSettings ? "defaults" : args[0] === "scam-images" ? "scam-images" : "filters";
       const master = h("div", { class: "row" });
       const banner = h("div");
       const tabsEl = h("div", { class: "tabs", role: "tablist" });
@@ -480,6 +521,7 @@
         grid, other,
         h("p", { class: "muted small" }, t("Use the False positive button on automod alerts; each click undoes the automod action and feeds these numbers.")));
       const defaultsPane = h("div");
+      const scamPane = h("div");
 
       const ctx = { s: null, g: null, stats: null, suggestions: null, reload: null };
 
@@ -496,15 +538,16 @@
       };
 
       const drawTabs = () => {
-        tabsEl.replaceChildren(...[["filters", "Filters"], ["defaults", "Default settings"]]
-          .filter(([id]) => id === "filters" || canSettings)
+        tabsEl.replaceChildren(...[["filters", "Filters"], ["scam-images", "Scam images"], ["defaults", "Default settings"]]
+          .filter(([id]) => id !== "defaults" || canSettings)
           .map(([id, label]) => h("button", { type: "button", role: "tab", "aria-selected": String(tab === id), "aria-current": String(tab === id),
-            onclick: () => { tab = id; history.replaceState(null, "", `#/automod${id === "defaults" ? "/defaults" : ""}`); drawTabs(); drawBody(); } }, t(label))));
+            onclick: () => { tab = id; history.replaceState(null, "", `#/automod${id === "filters" ? "" : `/${id}`}`); drawTabs(); drawBody(); } }, t(label))));
       };
 
       const drawBody = () => {
-        body.replaceChildren(tab === "filters" ? filtersPane : defaultsPane);
+        body.replaceChildren({ filters: filtersPane, defaults: defaultsPane, "scam-images": scamPane }[tab]);
         if (tab === "defaults" && ctx.s) run(null, () => renderDefaults(defaultsPane, ctx.s, ctx.reload));
+        if (tab === "scam-images") run(null, () => renderScamImages(scamPane));
       };
 
       const drawMaster = () => {

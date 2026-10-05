@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
@@ -58,6 +59,22 @@ class PresetsPanelTests(unittest.IsolatedAsyncioTestCase):
         rules_en = next(p for p in data["presets"] if p["kind"] == "rules" and p["language"] == "en")
         self.assertFalse(rules_en["customized"])
         self.assertEqual(len(rules_en["embeds"]), len(DEFAULT_MESSAGE_PRESETS["rules"]["en"]["sections"]))
+
+    async def test_post_sends_english_with_its_buttons(self):
+        channel = SimpleNamespace(id=5, send=AsyncMock(return_value=SimpleNamespace(id=9, jump_url="https://discord.com/x")))
+        with (
+            patch("bulmaai.web.routes_presets.resolve_channel", return_value=channel),
+            patch("bulmaai.web.routes_presets.check_bot_can"),
+        ):
+            response = await self.write("POST", "/api/presets/support/post", {"channel_id": "5"})
+            self.assertEqual(response.status, 200, await response.text())
+            self.assertEqual((await self.write("POST", "/api/presets/nope/post", {"channel_id": "5"})).status, 404)
+            self.login(HELPER_ID)
+            self.assertEqual((await self.write("POST", "/api/presets/rules/post", {"channel_id": "5"})).status, 403)
+        kwargs = channel.send.await_args.kwargs
+        self.assertEqual(len(kwargs["embeds"]), 2)
+        self.assertTrue({"English", "Espanol", "Portugues", "Become a Patron"} <= {b.label for b in kwargs["view"].children})
+        self.assertEqual(self.audit.await_args.args[1:3], ("presets.post", "support"))
 
     async def test_save_rules_preset(self):
         body = {"data": {"title": "Rules", "sections": [{"title": None, "content": "Be nice"}, {"title": "1. X", "content": "Y"}]}}

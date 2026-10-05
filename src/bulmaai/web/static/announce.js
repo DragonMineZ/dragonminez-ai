@@ -176,8 +176,11 @@
           h("span", { class: "d-timestamp" }, new Date().toLocaleTimeString(Panel.locale(), { hour: "numeric", minute: "2-digit" }))),
         content ? renderContent(content) : null,
         embeds.map(embedPreview),
-        buttons.length ? h("div", { class: "d-buttons" }, buttons.map((b) => h("a", { class: "d-link-button", href: b.url, target: "_blank", rel: "noopener noreferrer" }, b.label, " ↗"))) : null));
+        buttons.length ? h("div", { class: "d-buttons" }, buttons.map((b) => (b.url
+          ? h("a", { class: "d-link-button", href: b.url, target: "_blank", rel: "noopener noreferrer" }, b.label, " ↗")
+          : h("span", { class: "d-link-button" }, b.label)))) : null));
   }
+  Panel.messagePreview = messagePreview;  // also used by the Default embeds page (presets.js)
 
   // ---------- composer sub-editors ----------------------------------------------------------------
 

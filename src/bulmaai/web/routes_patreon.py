@@ -254,7 +254,7 @@ async def person(request: web.Request, actor: Actor) -> web.Response:
 @routes.post("/api/patreon/grant")
 @requires("patreon.manage")
 async def grant_access(request: web.Request, actor: Actor) -> web.Response:
-    """Staff override of /beta-access: same whitelist PR + auto-merge + grant row, minus the Patreon checks."""
+    """Staff override of /patreon beta-access: same whitelist PR + auto-merge + grant row, minus the Patreon checks."""
     guild = require_guild(request)
     cog = _flow_cog(request)
     payload = await read_json(request)

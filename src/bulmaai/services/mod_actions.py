@@ -12,7 +12,7 @@ import discord
 
 from bulmaai.services import mod_cases
 from bulmaai.ui.mod_views import appeal_view
-from bulmaai.web.core import Tier, resolve_member, tier_for
+from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
 
 log = logging.getLogger(__name__)
 
@@ -142,8 +142,8 @@ def pick_step(steps: tuple[LadderStep, ...], counts: dict[int | None, int]) -> L
 async def escalate(
     bot: discord.Bot, guild: discord.Guild, user_id: int, warner: discord.Member | None = None
 ) -> ActionResult | None:
-    """warner=None (automod) gets the whole ladder; a staff warn only runs steps up to the warner's
-    own level: timeouts for helpers, kicks and bans need a moderator."""
+    """warner=None (automod) gets the whole ladder; a staff warn only runs steps the warner could take
+    themselves per PERMISSIONS (timeouts and kicks for helpers); moderators get every step."""
     steps = parse_ladder(bot.settings.moderation_warn_ladder)
     if not steps:
         return None
@@ -155,8 +155,9 @@ async def escalate(
     step = pick_step(steps, counts)
     if step is None:
         return None
-    if warner is not None and step.action != "timeout" and tier_for(warner, bot.settings) < Tier.MODERATOR:
-        raise LadderStepSkipped(f"ladder step {step.action} skipped: needs a moderator")
+    needed = min(PERMISSIONS.get(f"mod.{step.action}", Tier.MODERATOR), Tier.MODERATOR)
+    if warner is not None and tier_for(warner, bot.settings) < needed:
+        raise LadderStepSkipped(f"ladder step {step.action} skipped: needs a {needed.name.lower()}")
     reason = f"Automatic: {counts[step.window_seconds]} warnings"
     if step.window_seconds:
         reason += f" in {format_duration(step.window_seconds)}"

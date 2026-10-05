@@ -235,6 +235,15 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 .d-link-button { display: inline-flex; align-items: center; gap: 4px; background: #4e5058; color: #dbdee1; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 13px; }
 .d-link-button:hover { background: #6d6f78; }
 
+/* Default embeds page (presets.js): editor on the left, live Discord preview pinned on the right */
+.embed-workbench { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.embed-workbench .preview-pane { position: sticky; top: 16px; }
+.embed-workbench input[type="text"] { width: 100%; }
+.embed-picker { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.section-card[open] > summary { margin-bottom: 8px; }
+.section-card > summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 1000px) { .embed-workbench { grid-template-columns: 1fr; } .embed-workbench .preview-pane { position: static; } }
+
 .embed-editor { border: 1px dashed var(--border); border-radius: var(--radius); padding: 12px; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 8px; align-items: end; }
 .role-picker { display: flex; flex-wrap: wrap; gap: 6px; max-height: 140px; overflow-y: auto; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }

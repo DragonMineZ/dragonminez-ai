@@ -256,57 +256,5 @@ class LoopBodyTests(unittest.IsolatedAsyncioTestCase):
         collect.assert_not_awaited()
 
 
-def make_member(user_id, guild, role_ids=()):
-    return SimpleNamespace(
-        id=user_id,
-        guild=guild,
-        roles=[SimpleNamespace(id=role_id) for role_id in role_ids],
-        guild_permissions=SimpleNamespace(administrator=False),
-    )
-
-
-class SlashCommandTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.guild = SimpleNamespace(id=1, owner_id=OWNER_ID, text_channels=[])
-        self.helper = make_member(HELPER_ID, self.guild, [HELPER_ROLE])
-        self.admin = make_member(ADMIN_ID, self.guild, [ADMIN_ROLE])
-        self.bot = SimpleNamespace(
-            settings=fake_settings(),
-            get_guild=lambda guild_id: self.guild if guild_id == 1 else None,
-            wait_until_ready=AsyncMock(),
-        )
-        self.cog = digest_cog.ModDigestCog(self.bot)
-
-    async def asyncTearDown(self):
-        self.cog.cog_unload()
-
-    def ctx(self, member):
-        return SimpleNamespace(user=member, guild=self.guild, respond=AsyncMock(), defer=AsyncMock())
-
-    async def test_send_refuses_a_helper(self):
-        ctx = self.ctx(self.helper)
-        with patch("bulmaai.services.mod_digest.collect", AsyncMock()) as collect:
-            await self.cog.send.callback(self.cog, ctx)
-        collect.assert_not_awaited()
-        ctx.defer.assert_not_awaited()
-        ctx.respond.assert_awaited_once_with("Your staff tier can't do that.", ephemeral=True)
-
-    async def test_send_posts_to_the_resolved_channel_for_an_admin(self):
-        ctx = self.ctx(self.admin)
-        fake_channel = SimpleNamespace(send=AsyncMock(), mention="#staff-general")
-        with (
-            patch("bulmaai.cogs.mod_digest.resolve_digest_channel", AsyncMock(return_value=fake_channel)),
-            patch("bulmaai.services.mod_digest.collect", AsyncMock(return_value="DATA")),
-            patch("bulmaai.services.mod_digest.build_embeds", return_value=["EMBED"]),
-        ):
-            await self.cog.send.callback(self.cog, ctx)
-        ctx.defer.assert_awaited_once_with(ephemeral=True)
-        fake_channel.send.assert_awaited_once()
-        ctx.respond.assert_awaited_once_with("Sent to #staff-general.", ephemeral=True)
-
-    async def test_digest_group_is_hidden_from_regular_members(self):
-        self.assertTrue(digest_cog.ModDigestCog.digest_group.default_member_permissions.moderate_members)
-
-
 if __name__ == "__main__":
     unittest.main()

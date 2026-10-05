@@ -1,4 +1,4 @@
-"""Message presets: the rules and support-us embeds posted by /rules setup and /supportus setup."""
+"""Default embeds: the rules and support-us messages. Edited, previewed and posted from the panel."""
 
 from typing import Any
 
@@ -6,16 +6,19 @@ import discord
 from aiohttp import web
 
 from bulmaai.services.message_presets import DEFAULT_MESSAGE_PRESETS, load_message_presets, replace_preset, reset_preset
-from bulmaai.ui.rules_views import build_rules_embeds
-from bulmaai.ui.support_views import build_support_embeds
-from bulmaai.web.core import Actor, api_error, audit, read_json, requires
+from bulmaai.services.panel_announcements import AnnouncementError, check_bot_can, resolve_channel
+from bulmaai.ui.rules_views import RulesLanguageView, build_rules_embeds
+from bulmaai.ui.support_views import GITHUB_URL, PATREON_URL, SupportPresetView, build_support_embeds
+from bulmaai.web.core import Actor, api_error, audit, read_json, require_guild, requires
 
 
 routes = web.RouteTableDef()
 
 # The bot renders presets through these builders; validating a draft by rendering it with them
-# guarantees the panel only saves what /rules setup and /supportus setup can actually post.
+# guarantees the panel only saves what it can actually post.
 BUILDERS = {"rules": build_rules_embeds, "support": build_support_embeds}
+VIEWS = {"rules": lambda: RulesLanguageView(), "support": lambda: SupportPresetView("en")}
+LANGUAGE_BUTTONS = [{"label": label} for label in ("English", "Espanol", "Portugues")]
 SUPPORT_KEYS = tuple(DEFAULT_MESSAGE_PRESETS["support"]["en"])
 SUPPORT_BUTTON_KEYS = ("patreon_label", "github_label")
 
@@ -114,8 +117,15 @@ def _preset_json(kind: str, language: str, data: dict[str, Any]) -> dict[str, An
         "data": data,
         "customized": data != DEFAULT_MESSAGE_PRESETS[kind][language],
         "embeds": [embed.to_dict() for embed in BUILDERS[kind](language, data)],
-        "buttons": [data[key] for key in SUPPORT_BUTTON_KEYS] if kind == "support" else [],
+        "buttons": _buttons(kind, data),
     }
+
+
+def _buttons(kind: str, data: dict[str, Any]) -> list[dict[str, str]]:
+    """Mirrors the posted message's view: support's two link buttons, then the language switcher."""
+    if kind != "support":
+        return LANGUAGE_BUTTONS
+    return [{"label": data["patreon_label"], "url": PATREON_URL}, {"label": data["github_label"], "url": GITHUB_URL}, *LANGUAGE_BUTTONS]
 
 
 def all_presets() -> list[dict[str, Any]]:
@@ -161,3 +171,24 @@ async def reset_preset_route(request: web.Request, actor: Actor) -> web.Response
     saved = reset_preset(kind, language)
     await audit(actor, "presets.reset", f"{kind}/{language}", before=before)
     return web.json_response(_preset_json(kind, language, saved))
+
+
+@routes.post("/api/presets/{kind}/post")
+@requires("presets.edit")
+async def post_preset(request: web.Request, actor: Actor) -> web.Response:
+    """Posts the saved English version with its buttons; members switch language with the buttons."""
+    kind = request.match_info["kind"]
+    if kind not in BUILDERS:
+        raise api_error(404, "Unknown preset.")
+    guild = require_guild(request)
+    try:
+        channel = resolve_channel(guild, (await read_json(request)).get("channel_id"))
+        check_bot_can(guild, channel, embed=True, edit=False)
+    except AnnouncementError as error:
+        raise api_error(400, str(error))
+    try:
+        message = await channel.send(embeds=BUILDERS[kind]("en"), view=VIEWS[kind]())
+    except discord.HTTPException as error:
+        raise api_error(502, f"Discord refused the message: {error.text or error}")
+    await audit(actor, "presets.post", f"{kind}", channel_id=str(channel.id), message_id=str(message.id))
+    return web.json_response({"jump_url": message.jump_url})

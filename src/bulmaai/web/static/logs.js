@@ -1,6 +1,5 @@
 "use strict";
-// Logs group: Bot logs (Python log stream), Server logs (Discord audit log + Dyno moderation),
-// Audit log (mod cases) and Website logs (panel actions).
+// Logs group: Audit log (mod cases), Flagged joiners and Website logs (panel actions).
 
 (() => {
   const { h, api, run, time, user, badge, table, field, suggest, userSuggest, t, i18n } = Panel;
@@ -9,29 +8,15 @@
     "Actor": "Autor",
     "Moderator": "Moderador",
     "Filter text…": "Filtrar texto…",
-    "Pause": "Pausar",
-    "Resume": "Reanudar",
-    "{count} lines · updated {time}": "{count} líneas · actualizado {time}",
-    "Bot logs": "Registros del bot",
-    "Recent bot log records kept in memory (last ~2000); cleared on restart.":
-      "Registros recientes del bot guardados en memoria (últimos ~2000); se borran al reiniciar.",
-    "Minimum level": "Nivel mínimo",
     "Filter": "Filtro",
     "Name or Discord ID": "Nombre o ID de Discord",
-    "All actions": "Todas las acciones",
     "Apply": "Aplicar",
     "Load more": "Cargar más",
     "When": "Cuándo",
     "Action": "Acción",
-    "Executor": "Ejecutor",
-    "Target": "Objetivo",
     "Reason": "Motivo",
-    "Changes": "Cambios",
     "Dyno (deprecated)": "Dyno (obsoleto)",
     "No entries match.": "Ninguna entrada coincide.",
-    "Server logs": "Registros del servidor",
-    "Discord's server audit log, live from Discord, plus Dyno's moderation actions from its mod-log channel.":
-      "El registro de auditoría del servidor, en vivo desde Discord, más las acciones de moderación de Dyno desde su canal de mod-log.",
     "Website logs": "Registros del sitio",
     "Every change made through this panel. Action filter matches by prefix.":
       "Cada cambio hecho a través de este panel. El filtro de acción coincide por prefijo.",
@@ -56,154 +41,6 @@
     "Reviewer": "Revisor",
     "Reviewed": "Revisado",
     "No flagged joiners match.": "Ningún ingreso marcado coincide.",
-  });
-
-  const MAX_LINES = 1500;
-
-  // ---- Bot logs -------------------------------------------------------------------------------
-
-  Panel.page({
-    id: "bot-logs",
-    title: "Bot logs",
-    group: "Moderation",
-    perm: "logs.view",
-    async render(view) {
-      const level = h("select", {}, ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].map((l) => h("option", { value: l }, l)));
-      level.value = "INFO";
-      const filter = h("input", { type: "search", placeholder: t("Filter text…") });
-      const pause = h("button", { class: "btn small", type: "button" }, t("Pause"));
-      const status = h("span", { class: "muted small" });
-      const log = h("div", { class: "log", role: "log", "aria-live": "off" });
-      let lines = [];
-      let after = 0;
-      let paused = false;
-      let busy = false;
-      let gen = 0;  // bumped when the level changes so stale responses are dropped
-
-      const matches = (r) => {
-        const q = filter.value.trim().toLowerCase();
-        return !q || r.message.toLowerCase().includes(q) || r.logger.toLowerCase().includes(q);
-      };
-      const lineFor = (r) => h("pre", { class: r.levelno >= 40 ? "error" : r.levelno < 20 ? "muted" : null },
-        `${new Date(r.time).toLocaleTimeString()} ${r.level.padEnd(8)} ${r.logger} | ${r.message}`);
-      const redraw = () => {
-        log.replaceChildren(...lines.filter((l) => matches(l.record)).map((l) => l.node));
-        log.scrollTop = log.scrollHeight;
-      };
-
-      const poll = async () => {
-        if (busy) return;
-        busy = true;
-        const mine = gen;
-        try {
-          const data = await api(`/api/logs?after=${after}&level=${encodeURIComponent(level.value)}`);
-          if (mine !== gen) return;
-          if (data.last_id < after) { lines = []; log.replaceChildren(); }  // bot restarted
-          after = data.last_id;
-          const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
-          for (const record of data.records) {
-            const entry = { record, node: lineFor(record) };
-            lines.push(entry);
-            if (matches(record)) log.append(entry.node);
-          }
-          while (lines.length > MAX_LINES) lines.shift().node.remove();
-          if (atBottom) log.scrollTop = log.scrollHeight;
-          status.textContent = t("{count} lines · updated {time}", { count: lines.length, time: new Date().toLocaleTimeString() });
-        } catch (error) {
-          status.textContent = error.message;
-        } finally {
-          busy = false;
-        }
-      };
-
-      const timer = setInterval(() => {
-        if (!log.isConnected) { clearInterval(timer); return; }  // navigated away
-        if (!paused) poll();
-      }, 3000);
-      level.addEventListener("change", () => { gen += 1; lines = []; after = 0; log.replaceChildren(); poll(); });
-      filter.addEventListener("input", redraw);
-      pause.addEventListener("click", () => {
-        paused = !paused;
-        pause.textContent = paused ? t("Resume") : t("Pause");
-        if (!paused) poll();
-      });
-
-      view.append(
-        h("h1", {}, t("Bot logs")),
-        h("p", { class: "muted" }, t("Recent bot log records kept in memory (last ~2000); cleared on restart.")),
-        h("div", { class: "card stack" },
-          h("div", { class: "row" }, field(t("Minimum level"), level), field(t("Filter"), filter), pause, status),
-          log));
-      await poll();
-    },
-  });
-
-  // ---- Server logs -----------------------------------------------------------------------------
-
-  function targetCell(tgt) {
-    if (!tgt) return h("span", { class: "muted" }, "—");
-    if ("avatar" in tgt) return user(tgt);
-    return h("span", {}, tgt.name || tgt.id || "—", tgt.type ? h("span", { class: "muted small" }, ` (${tgt.type})`) : null);
-  }
-
-  function changesCell(changes) {
-    if (!changes || !changes.length) return h("span", { class: "muted" }, "—");
-    return h("div", { class: "stack" }, changes.map((c) =>
-      h("div", { class: "small mono" }, `${c.key}: ${c.before ?? "—"} → ${c.after ?? "—"}`)));
-  }
-
-  Panel.page({
-    id: "server-logs",
-    title: "Server logs",
-    group: "Moderation",
-    perm: "logs.view",
-    async render(view) {
-      const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22" });
-      const actionInput = h("input", { type: "text", placeholder: t("All actions"), size: "26" });
-      const apply = h("button", { class: "btn primary", type: "submit" }, t("Apply"));
-      const more = h("button", { class: "btn", type: "button", hidden: true }, t("Load more"));
-      const results = h("div");
-      let entries = [];
-      let cursor = null;
-
-      const actionsData = await api("/api/server-logs/actions").catch(() => ({ actions: [] }));
-      const userField = userSuggest(userInput);
-      const actionField = suggest(actionInput, actionsData.actions);
-
-      const draw = () => {
-        results.replaceChildren(table([
-          { label: t("When"), render: (e) => time(e.created_at) },
-          { label: t("Action"), render: (e) => h("div", { class: "row" }, badge(e.action), e.source === "dyno" ? badge(t("Dyno (deprecated)"), "warn") : null) },
-          { label: t("Executor"), render: (e) => user(e.executor) },
-          { label: t("Target"), render: (e) => targetCell(e.target) },
-          { label: t("Reason"), render: (e) => e.reason || h("span", { class: "muted" }, "—") },
-          { label: t("Changes"), render: (e) => changesCell(e.changes) },
-        ], entries, { empty: t("No entries match.") }));
-      };
-
-      const load = async (reset) => {
-        const params = new URLSearchParams({ limit: "50" });
-        if (userInput.value.trim()) params.set("user", userInput.value.trim());
-        if (actionInput.value.trim()) params.set("action", actionInput.value.trim());
-        if (!reset && cursor) params.set("before", cursor);
-        const data = await api(`/api/server-logs?${params}`);
-        entries = reset ? data.entries : entries.concat(data.entries);
-        cursor = data.next_cursor;
-        more.hidden = !cursor;
-        draw();
-      };
-
-      apply.addEventListener("click", () => run(apply, () => load(true)));
-      more.addEventListener("click", () => run(more, () => load(false)));
-      const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(true)); } },
-        field(t("User"), userField), field(t("Action"), actionField), apply);
-
-      view.append(
-        h("h1", {}, t("Server logs")),
-        h("p", { class: "muted" }, t("Discord's server audit log, live from Discord, plus Dyno's moderation actions from its mod-log channel.")),
-        h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
-      await load(true);
-    },
   });
 
   // ---- Website logs -----------------------------------------------------------------------------

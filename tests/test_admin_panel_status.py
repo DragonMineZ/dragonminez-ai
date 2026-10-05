@@ -1,4 +1,3 @@
-import logging
 import os
 import unittest
 from datetime import datetime, timezone
@@ -12,7 +11,6 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 import discord
 from aiohttp.test_utils import TestClient, TestServer
 
-from bulmaai.logging_setup import RingBufferHandler
 from bulmaai.web.core import SESSION_COOKIE, sign_session
 from bulmaai.web.server import create_app
 from test_admin_panel import HELPER_ID, OWNER_ID, RANDOM_ID, SECRET, make_bot, make_member
@@ -34,41 +32,6 @@ def make_status_bot():
     bot.extensions = {"bulmaai.cogs.meta": None, "bulmaai.cogs.admin_panel": None}
     bot.reload_extension = MagicMock()
     return bot
-
-
-class RingBufferTests(unittest.TestCase):
-    def test_since_filters_and_caps(self):
-        buffer = RingBufferHandler(capacity=3)
-        logger = logging.getLogger("test.ring")
-        logger.propagate = False
-        logger.setLevel(logging.DEBUG)
-        logger.addHandler(buffer)
-        self.addCleanup(logger.removeHandler, buffer)
-        for i in range(4):
-            logger.info("line %s", i)
-        try:
-            raise ValueError("boom")
-        except ValueError:
-            logger.exception("failed")
-
-        records, last_id = buffer.since(0)
-        self.assertEqual(last_id, 5)
-        self.assertEqual([r["id"] for r in records], [3, 4, 5])
-        self.assertIn("ValueError: boom", records[-1]["message"])
-        self.assertEqual([r["id"] for r in buffer.since(3, logging.ERROR)[0]], [5])
-        self.assertEqual(len(buffer.since(99)[0]), 3)  # stale cursor from before a restart
-
-    def test_messages_are_sanitized_before_serving(self):
-        buffer = RingBufferHandler(capacity=3)
-        logger = logging.getLogger("test.ring.sanitize")
-        logger.propagate = False
-        logger.addHandler(buffer)
-        self.addCleanup(logger.removeHandler, buffer)
-        logger.warning("retrying with token=abc123secret")
-
-        message = buffer.since(0)[0][0]["message"]
-        self.assertNotIn("abc123secret", message)
-        self.assertIn("[redacted]", message)
 
 
 class StatusApiTests(unittest.IsolatedAsyncioTestCase):
@@ -127,18 +90,6 @@ class StatusApiTests(unittest.IsolatedAsyncioTestCase):
         self.bot.reload_extension.side_effect = discord.ExtensionFailed("bulmaai.cogs.meta", RuntimeError("bad"))
         with self.assertLogs("bulmaai.web.routes_status", "ERROR"):
             self.assertEqual((await self.post("/api/status/extensions/bulmaai.cogs.meta/reload")).status, 502)
-
-    async def test_logs_requires_moderator_and_validates(self):
-        self.login(HELPER_ID)
-        self.assertEqual((await self.client.get("/api/logs")).status, 403)
-        self.login(MOD_ID)
-        self.assertEqual((await self.client.get("/api/logs?level=LOUD")).status, 400)
-        self.assertEqual((await self.client.get("/api/logs?after=-1")).status, 400)
-        with patch("bulmaai.web.routes_status.LOG_BUFFER") as buffer:
-            buffer.since.return_value = ([{"id": 1, "message": "hi"}], 1)
-            data = await (await self.client.get("/api/logs?after=0&level=warning")).json()
-        buffer.since.assert_called_once_with(0, logging.WARNING)
-        self.assertEqual(data["last_id"], 1)
 
     async def test_audit_query_filters_and_actor_resolution(self):
         self.pool.fetch.return_value = [

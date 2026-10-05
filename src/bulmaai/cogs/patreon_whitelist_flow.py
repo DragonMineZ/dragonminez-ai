@@ -233,7 +233,7 @@ async def _pick_staff_channel(
 
 
 class PatreonWhitelistFlowCog(commands.Cog):
-    """Patreon beta whitelist workflow used by the /beta-access command."""
+    """Patreon beta whitelist workflow used by the /patreon beta-access command."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -304,7 +304,9 @@ class PatreonWhitelistFlowCog(commands.Cog):
         self._ensure_runtime_state()
         self._processed_patreon_oauth_states[state] = time.monotonic()
 
-    @discord.slash_command(
+    patreon = discord.SlashCommandGroup("patreon", "Patreon beta access")
+
+    @patreon.command(
         name="beta-access",
         description="Request DragonMineZ Patreon beta access for a Minecraft username",
     )
@@ -316,12 +318,12 @@ class PatreonWhitelistFlowCog(commands.Cog):
     async def beta_access(self, ctx: discord.ApplicationContext, username: str) -> None:
         await self._handle_beta_access_command(ctx, username)
 
-    @discord.slash_command(name="link-patreon", description="Link your Patreon account")
+    @patreon.command(name="link", description="Link your Patreon account")
     async def link_patreon(self, ctx: discord.ApplicationContext) -> None:
         await self._handle_link_patreon_command(ctx)
 
-    @discord.slash_command(
-        name="gift-beta",
+    @patreon.command(
+        name="gift",
         description="Gift your Patreon beta access to another Discord member's Minecraft username",
     )
     @discord.option(
@@ -342,7 +344,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
     ) -> None:
         await self._handle_gift_beta_command(ctx, recipient, username)
 
-    @discord.slash_command(
+    @patreon.command(
         name="edit-gift",
         description="Reassign a Patreon beta gift to another member and/or change the Minecraft username",
     )
@@ -742,7 +744,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
         if not isinstance(ctx.author, discord.Member):
             await ctx.followup.send(
-                "Use `/beta-access` inside the DragonMineZ server so I can verify your Patreon role.",
+                "Use `/patreon beta-access` inside the DragonMineZ server so I can verify your Patreon role.",
                 ephemeral=True,
             )
             return
@@ -758,7 +760,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         await ctx.defer(ephemeral=True)
         if not isinstance(ctx.author, discord.Member):
             await ctx.followup.send(
-                "Use `/link-patreon` inside the DragonMineZ server.",
+                "Use `/patreon link` inside the DragonMineZ server.",
                 ephemeral=True,
             )
             return
@@ -844,7 +846,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         active_link: PatreonLink | None = None,
     ) -> None:
         """
-        Core Patreon whitelist workflow used by /beta-access.
+        Core Patreon whitelist workflow used by /patreon beta-access.
         """
         nickname = initial_nickname.strip() if initial_nickname is not None else ""
         if not MC_NAME_RE.match(nickname):
@@ -961,7 +963,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
             await _send_message(
                 destination,
                 f"You are already whitelisted as `{old_nickname}`. "
-                f"Run `/beta-access username:{new_nickname}` in Discord to confirm updating your username.",
+                f"Run `/patreon beta-access username:{new_nickname}` in Discord to confirm updating your username.",
                 ephemeral=ephemeral,
             )
             return
@@ -998,7 +1000,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
             current_grant = _active_self_grant(await list_active_grants_for_owner(member.id), member.id)
             if current_grant is None:
                 await interaction.followup.send(
-                    "I could not find your active Patreon beta whitelist grant. Please run `/beta-access` again.",
+                    "I could not find your active Patreon beta whitelist grant. Please run `/patreon beta-access` again.",
                     ephemeral=True,
                 )
                 return
@@ -1013,7 +1015,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
             if current_nickname.casefold() != old_nickname.casefold():
                 await interaction.followup.send(
                     "Your active Patreon beta whitelist username changed while this confirmation was open. "
-                    "Please run `/beta-access` again.",
+                    "Please run `/patreon beta-access` again.",
                     ephemeral=True,
                 )
                 return
@@ -1360,7 +1362,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
 
         if not isinstance(ctx.author, discord.Member):
             await ctx.followup.send(
-                "Use `/edit-gift` inside the DragonMineZ server.",
+                "Use `/patreon edit-gift` inside the DragonMineZ server.",
                 ephemeral=True,
             )
             return
@@ -1575,7 +1577,7 @@ class PatreonWhitelistFlowCog(commands.Cog):
         await ctx.defer(ephemeral=True)
         if not isinstance(ctx.author, discord.Member):
             await ctx.followup.send(
-                "Use `/gift-beta` inside the DragonMineZ server.",
+                "Use `/patreon gift` inside the DragonMineZ server.",
                 ephemeral=True,
             )
             return

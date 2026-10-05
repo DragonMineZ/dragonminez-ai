@@ -28,31 +28,6 @@ log = logging.getLogger(__name__)
 
 MAX_REASON_LENGTH = 400  # the panel's cap; leaves room for the audit-log suffix under Discord's 512
 BAN_DELETE_SECONDS = {"none": 0, "1h": 3600, "24h": 86400, "7d": 7 * 86400}
-DANGEROUS_ROLE_PERMISSIONS = (
-    "administrator",
-    "manage_guild",
-    "manage_roles",
-    "ban_members",
-    "kick_members",
-    "moderate_members",
-    "mention_everyone",
-    "manage_messages",
-    "manage_channels",
-    "manage_nicknames",
-    "manage_webhooks",
-    "manage_threads",
-    "view_audit_log",
-)
-PROTECTED_ROLE_SETTINGS = (
-    "discord_staff_role_ids",
-    "panel_owner_role_ids",
-    "panel_admin_role_ids",
-    "panel_moderator_role_ids",
-    "panel_helper_role_ids",
-    "patreon_access_role_ids",
-    "dev_jar_patreon_role_ids",
-    "dev_jar_tester_role_ids",
-)
 STAFF_ONLY = discord.Permissions(moderate_members=True)
 VERBS = {
     "warn": "Warned",
@@ -96,20 +71,6 @@ def purge_check(
     return check
 
 
-def role_refusal(role: discord.Role, moderator: discord.Member, guild: discord.Guild, settings) -> str | None:
-    if role.managed or role.is_default():
-        return "That role is managed by Discord or an integration."
-    if any(getattr(role.permissions, name) for name in DANGEROUS_ROLE_PERMISSIONS):
-        return "Roles with moderation or server-management permissions can't be changed with /role."
-    if any(role.id in getattr(settings, name) for name in PROTECTED_ROLE_SETTINGS):
-        return "Staff, panel, Patreon and tester roles can't be changed with /role."
-    if moderator.id != guild.owner_id and role.position >= moderator.top_role.position:
-        return "That role is equal to or above your top role."
-    if role.position >= guild.me.top_role.position:
-        return "That role is equal to or above the bot's top role, so Discord won't allow it."
-    return None
-
-
 def _step_text(step: LadderStep) -> str:
     return f"timeout {format_duration(step.duration_seconds)}" if step.action == "timeout" else step.action
 
@@ -139,14 +100,9 @@ class ModCommandsCog(commands.Cog):
     lockdown_group = discord.SlashCommandGroup(
         "lockdown", "Lock or unlock every public channel", default_member_permissions=STAFF_ONLY
     )
-    role_group = discord.SlashCommandGroup("role", "Give or take a member's role", default_member_permissions=STAFF_ONLY)
-    scamimage_group = discord.SlashCommandGroup(
-        "scamimage", "Manage known scam images", default_member_permissions=STAFF_ONLY
-    )
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self._import_task: asyncio.Task | None = None
 
     async def _allowed(self, ctx: discord.ApplicationContext, capability: str) -> bool:
         if tier_for(ctx.user, self.bot.settings) >= PERMISSIONS[capability]:
@@ -225,13 +181,25 @@ class ModCommandsCog(commands.Cog):
         embed.set_footer(text=f"{len(warns)} active warning(s)")
         await ctx.respond(embed=embed, ephemeral=True)
 
+    async def _outranks(self, ctx: discord.ApplicationContext, user_id: int) -> bool:
+        """Removing cases follows the same rules as acting on the user (helpers can't clear a mod's warns)."""
+        target = await resolve_member(ctx.guild, user_id)
+        try:
+            mod_actions.check_hierarchy(self.bot, ctx.guild, ctx.user, user_id, target, discord_action=False)
+        except ModActionError as error:
+            await ctx.respond(str(error), ephemeral=True)
+            return False
+        return True
+
     async def _remove_case(self, ctx: discord.ApplicationContext, case_id: int, action: str) -> None:
-        if not await self._allowed(ctx, "mod.cases.edit"):
+        if not await self._allowed(ctx, "mod.cases.remove"):
             return
         label = "warning" if action == "warn" else action
         case = await mod_cases.get_case(ctx.guild.id, case_id)
         if case is None or case.action != action:
             return await ctx.respond(f"Case #{case_id} isn't a {label}.", ephemeral=True)
+        if not await self._outranks(ctx, case.user_id):
+            return
         if await mod_cases.deactivate_case(ctx.guild.id, case_id) is None:
             return await ctx.respond(f"Case #{case_id} was already removed.", ephemeral=True)
         await ctx.respond(f"Removed {label} #{case_id} for <@{case.user_id}>.", ephemeral=True)
@@ -252,7 +220,7 @@ class ModCommandsCog(commands.Cog):
     @discord.default_permissions(moderate_members=True)
     @discord.option("user", discord.User, description="Member whose warnings to clear")
     async def clearwarns(self, ctx: discord.ApplicationContext, user: discord.User):
-        if await self._allowed(ctx, "mod.cases.edit"):
+        if await self._allowed(ctx, "mod.cases.remove") and await self._outranks(ctx, user.id):
             count = await mod_cases.deactivate_user_cases(ctx.guild.id, user.id, "warn")
             await ctx.respond(f"Cleared {count} warning(s) for <@{user.id}>.", ephemeral=True)
 
@@ -370,7 +338,7 @@ class ModCommandsCog(commands.Cog):
         contains: str = None,
         kind: str = None,
     ):
-        if not await self._allowed(ctx, "mod.timeout"):
+        if not await self._allowed(ctx, "mod.channels"):
             return
         await ctx.defer(ephemeral=True)
         try:
@@ -425,16 +393,28 @@ class ModCommandsCog(commands.Cog):
             embed.title += " (inactive)"
         await ctx.respond(embed=embed, ephemeral=True)
 
-    @discord.slash_command(name="reason", description="Change a case's reason")
+    @discord.slash_command(
+        name="reason", description="Fix the reason on an existing case (find case numbers with /modlogs or /warnings)"
+    )
     @discord.default_permissions(moderate_members=True)
-    @discord.option("case_id", int, description="Case number", min_value=1)
-    @discord.option("reason", str, description="New reason", max_length=MAX_REASON_LENGTH)
+    @discord.option("case_id", int, description="The case number, e.g. 42 for case #42", min_value=1)
+    @discord.option(
+        "reason", str, description="Replaces the old reason; the user isn't DMed again", max_length=MAX_REASON_LENGTH
+    )
     async def case_reason(self, ctx: discord.ApplicationContext, case_id: int, reason: str):
         if not await self._allowed(ctx, "mod.cases.edit"):
             return
-        if not await mod_cases.update_reason(ctx.guild.id, case_id, reason.strip()):
-            return await ctx.respond("Unknown case.", ephemeral=True)
-        await ctx.respond(f"Updated the reason for case #{case_id}.", ephemeral=True)
+        case = await mod_cases.get_case(ctx.guild.id, case_id)
+        if case is None:
+            return await ctx.respond(f"There's no case #{case_id}. Check /modlogs for the user's case numbers.", ephemeral=True)
+        if not await self._outranks(ctx, case.user_id):
+            return
+        await mod_cases.update_reason(ctx.guild.id, case_id, reason.strip())
+        await ctx.respond(
+            f"Case #{case_id} ({case.action} on <@{case.user_id}>) reason changed:\n"
+            f"~~{case.reason or 'No reason'}~~ → {reason.strip()}",
+            ephemeral=True,
+        )
 
     @discord.slash_command(name="modlogs", description="A user's last 25 moderation cases")
     @discord.default_permissions(moderate_members=True)
@@ -475,7 +455,7 @@ class ModCommandsCog(commands.Cog):
     @discord.option("channel", discord.TextChannel, description="Default: this channel", required=False)
     @discord.option("reason", str, description="Optional", max_length=MAX_REASON_LENGTH, required=False)
     async def lock(self, ctx: discord.ApplicationContext, channel: discord.TextChannel = None, reason: str = ""):
-        if not await self._allowed(ctx, "mod.timeout"):
+        if not await self._allowed(ctx, "mod.channels"):
             return
         channel = channel or ctx.channel
         if isinstance(channel, discord.Thread):
@@ -492,7 +472,7 @@ class ModCommandsCog(commands.Cog):
     @discord.default_permissions(moderate_members=True)
     @discord.option("channel", discord.TextChannel, description="Default: this channel", required=False)
     async def unlock(self, ctx: discord.ApplicationContext, channel: discord.TextChannel = None):
-        if not await self._allowed(ctx, "mod.timeout"):
+        if not await self._allowed(ctx, "mod.channels"):
             return
         channel = channel or ctx.channel
         if isinstance(channel, discord.Thread):
@@ -506,7 +486,7 @@ class ModCommandsCog(commands.Cog):
     @lockdown_group.command(name="start", description="Lock every public channel (or the configured list)")
     @discord.option("reason", str, description="Why", max_length=MAX_REASON_LENGTH)
     async def lockdown_start(self, ctx: discord.ApplicationContext, reason: str):
-        if not await self._allowed(ctx, "mod.kick"):
+        if not await self._allowed(ctx, "mod.channels"):
             return
         await ctx.defer(ephemeral=True)
         locked, failed = await mod_actions.lockdown(
@@ -516,7 +496,7 @@ class ModCommandsCog(commands.Cog):
 
     @lockdown_group.command(name="end", description="Unlock every channel the bot locked")
     async def lockdown_end(self, ctx: discord.ApplicationContext):
-        if not await self._allowed(ctx, "mod.kick"):
+        if not await self._allowed(ctx, "mod.channels"):
             return
         await ctx.defer(ephemeral=True)
         unlocked, failed = await mod_actions.end_lockdown(
@@ -529,7 +509,7 @@ class ModCommandsCog(commands.Cog):
     @discord.option("seconds", int, description="0 turns it off (max 21600 = 6h)", min_value=0, max_value=21600)
     @discord.option("channel", discord.TextChannel, description="Default: this channel", required=False)
     async def slowmode(self, ctx: discord.ApplicationContext, seconds: int, channel: discord.TextChannel = None):
-        if not await self._allowed(ctx, "mod.timeout"):
+        if not await self._allowed(ctx, "mod.channels"):
             return
         channel = channel or ctx.channel
         try:
@@ -568,77 +548,6 @@ class ModCommandsCog(commands.Cog):
             name="Cases", value=", ".join(f"{action} {n}" for action, n in counts.most_common()) or "None", inline=False
         )
         await ctx.respond(embed=embed, ephemeral=True)
-
-    async def _change_role(self, ctx: discord.ApplicationContext, user: discord.User, role: discord.Role, *, add: bool):
-        if not await self._allowed(ctx, "mod.kick"):
-            return
-        member = await resolve_member(ctx.guild, user.id)
-        if member is None:
-            return await ctx.respond("That user isn't in the server.", ephemeral=True)
-        refusal = role_refusal(role, ctx.user, ctx.guild, self.bot.settings)
-        if refusal is None:
-            try:
-                mod_actions.check_hierarchy(self.bot, ctx.guild, ctx.user, user.id, member, discord_action=True)
-            except ModActionError as error:
-                refusal = str(error)
-        if refusal:
-            return await ctx.respond(refusal, ephemeral=True)
-        try:
-            if add:
-                await member.add_roles(role, reason=f"/role add by {ctx.user.name}")
-            else:
-                await member.remove_roles(role, reason=f"/role remove by {ctx.user.name}")
-        except discord.HTTPException:
-            return await ctx.respond("Discord refused: the bot couldn't change that role.", ephemeral=True)
-        await ctx.respond(f"{'Gave' if add else 'Removed'} {role.mention} {'to' if add else 'from'} <@{user.id}>.", ephemeral=True)
-
-    @role_group.command(name="add", description="Give a member a role")
-    @discord.option("user", discord.User, description="Member")
-    @discord.option("role", discord.Role, description="Role to give")
-    async def role_add(self, ctx: discord.ApplicationContext, user: discord.User, role: discord.Role):
-        await self._change_role(ctx, user, role, add=True)
-
-    @role_group.command(name="remove", description="Take a role from a member")
-    @discord.option("user", discord.User, description="Member")
-    @discord.option("role", discord.Role, description="Role to take")
-    async def role_remove(self, ctx: discord.ApplicationContext, user: discord.User, role: discord.Role):
-        await self._change_role(ctx, user, role, add=False)
-
-    @discord.slash_command(name="nick", description="Change or reset a member's nickname")
-    @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="Member")
-    @discord.option("nickname", str, description="Empty resets it", max_length=32, required=False)
-    async def nick(self, ctx: discord.ApplicationContext, user: discord.User, nickname: str = None):
-        if not await self._allowed(ctx, "mod.timeout"):
-            return
-        member = await resolve_member(ctx.guild, user.id)
-        if member is None:
-            return await ctx.respond("That user isn't in the server.", ephemeral=True)
-        try:
-            mod_actions.check_hierarchy(self.bot, ctx.guild, ctx.user, user.id, member, discord_action=True)
-            await member.edit(nick=nickname or None, reason=f"/nick by {ctx.user.name}")
-        except ModActionError as error:
-            return await ctx.respond(str(error), ephemeral=True)
-        except discord.HTTPException:
-            return await ctx.respond("Discord refused: the bot couldn't change that nickname.", ephemeral=True)
-        await ctx.respond(f"{'Set' if nickname else 'Reset'} <@{user.id}>'s nickname.", ephemeral=True)
-
-    @discord.slash_command(name="modimport-dyno", description="Import the full Dyno mod-log history into the case log")
-    @discord.default_permissions(moderate_members=True)
-    async def modimport_dyno(self, ctx: discord.ApplicationContext):
-        if not await self._allowed(ctx, "settings.edit"):
-            return
-        sync = self.bot.get_cog("ModLogSyncCog")
-        if sync is None or self.bot.settings.dyno_modlog_channel_id is None:
-            return await ctx.respond("The Dyno mod-log sync isn't set up (cog or channel missing).", ephemeral=True)
-        if self._import_task is not None and not self._import_task.done():
-            return await ctx.respond("An import is already running.", ephemeral=True)
-        self._import_task = asyncio.create_task(sync._backfill_dyno_modlog(self.bot.settings, limit=None))
-        await ctx.respond(
-            "Importing the whole Dyno mod-log channel in the background. Already-imported cases are skipped, "
-            "so re-running is safe.",
-            ephemeral=True,
-        )
 
     # --- context menus -----------------------------------------------------------------------
 
@@ -679,7 +588,7 @@ class ModCommandsCog(commands.Cog):
     @discord.message_command(name="Mark as scam image")
     @discord.default_permissions(moderate_members=True)
     async def mark_scam_image_menu(self, ctx: discord.ApplicationContext, message: discord.Message):
-        if not await self._allowed(ctx, "mod.timeout"):
+        if not await self._allowed(ctx, "mod.tools"):
             return
         await ctx.defer(ephemeral=True)
         hashes = [
@@ -711,39 +620,6 @@ class ModCommandsCog(commands.Cog):
         await ctx.respond(f"Added scam image {ids} and {deleted}.", ephemeral=True)
 
     # --- scam images -------------------------------------------------------------------------
-
-    @scamimage_group.command(name="list", description="Show the last 25 known scam image hashes")
-    async def scamimage_list(self, ctx: discord.ApplicationContext):
-        if not await self._allowed(ctx, "mod.cases.view"):
-            return
-        hashes = await scam_images.list_hashes(25)
-        if not hashes:
-            return await ctx.respond("No known scam images.", ephemeral=True)
-
-        lines = []
-        for scam_hash in hashes:
-            line = (
-                f"`#{scam_hash.id}` · {scam_hash.source} · hits {scam_hash.hits} · "
-                f"added {discord.utils.format_dt(scam_hash.created_at, 'R')}"
-            )
-            lines.append(line)
-
-        embed = discord.Embed(
-            title="Known scam images",
-            description="\n".join(lines)[:4096],
-            color=discord.Color.red(),
-        )
-        await ctx.respond(embed=embed, ephemeral=True)
-
-    @scamimage_group.command(name="remove", description="Remove a scam image hash by ID")
-    @discord.option("id", int, description="Scam image hash ID", min_value=1)
-    async def scamimage_remove(self, ctx: discord.ApplicationContext, id: int):
-        if not await self._allowed(ctx, "mod.timeout"):
-            return
-        removed = await scam_images.remove(id)
-        if not removed:
-            return await ctx.respond(f"Scam image #{id} doesn't exist or was already removed.", ephemeral=True)
-        await ctx.respond(f"Removed scam image #{id}.", ephemeral=True)
 
     # --- tempban expiry ----------------------------------------------------------------------
 

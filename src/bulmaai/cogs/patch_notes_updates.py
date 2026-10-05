@@ -108,7 +108,7 @@ class PatchNotesUpdatesCog(commands.Cog):
     async def _poll_once(self) -> None:
         if self.gh is None:
             return
-        # Read fresh from bot.settings so /settings set (which calls
+        # Read fresh from bot.settings so a panel settings change (which calls
         # reload_settings) repoints the file on the next poll without a restart.
         branch = self.bot.settings.patch_notes_branch
         # State is keyed by the configured path (usually the PATCH_NOTES folder), so

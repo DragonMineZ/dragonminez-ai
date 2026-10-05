@@ -8,9 +8,8 @@ os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
-import discord
 
-from bulmaai.cogs.mod_commands import DANGEROUS_ROLE_PERMISSIONS, ModCommandsCog, purge_check, role_refusal
+from bulmaai.cogs.mod_commands import ModCommandsCog, purge_check
 from bulmaai.services.mod_actions import MAX_TIMEOUT_SECONDS, ActionResult, ModActionError
 from bulmaai.services.mod_cases import ModCase
 
@@ -29,18 +28,6 @@ def make_member(user_id, guild, role_ids=(), position=0):
         guild_permissions=SimpleNamespace(administrator=False),
         add_roles=AsyncMock(),
         remove_roles=AsyncMock(),
-    )
-
-
-def make_role(position=5, managed=False, default=False, role_id=77, **perms):
-    permissions = dict.fromkeys(DANGEROUS_ROLE_PERMISSIONS, False) | perms
-    return SimpleNamespace(
-        id=role_id,
-        position=position,
-        managed=managed,
-        is_default=lambda: default,
-        permissions=SimpleNamespace(**permissions),
-        mention="@role",
     )
 
 
@@ -167,25 +154,6 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(perform.await_args.kwargs["duration_seconds"], MAX_TIMEOUT_SECONDS)
         self.assertEqual(self.reply(ctx), f"Timed out <@{RANDOM_ID}> for 28d (case #5).")
 
-    async def test_role_add_respects_tier_and_hierarchy(self):
-        role = make_role(position=5)
-        ctx = self.ctx(HELPER_ID)
-        await self.cog.role_add.callback(self.cog, ctx, self.target, role)
-        self.assertEqual(self.reply(ctx), "Your staff tier can't do that.")
-
-        ctx = self.ctx(MOD_ID)
-        await self.cog.role_add.callback(self.cog, ctx, SimpleNamespace(id=MOD2_ID), role)
-        self.assertEqual(self.reply(ctx), "That user's panel tier is equal to or above yours.")
-        self.members[MOD2_ID].add_roles.assert_not_awaited()
-
-        await self.cog.role_add.callback(self.cog, ctx, self.target, make_role(position=5, manage_roles=True))
-        self.assertIn("can't be changed with /role", self.reply(ctx))
-        self.members[RANDOM_ID].add_roles.assert_not_awaited()
-
-        await self.cog.role_add.callback(self.cog, ctx, self.target, role)
-        self.members[RANDOM_ID].add_roles.assert_awaited_once()
-        self.assertEqual(self.reply(ctx), f"Gave @role to <@{RANDOM_ID}>.")
-
     async def test_tempban_expiry(self):
         due = [
             ModCase(1, 1, 50, MOD_ID, "ban", "raid", 3600, "command", NOW, expires_at=NOW),  # unbanned by hand
@@ -267,8 +235,8 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         message.delete.assert_not_awaited()
         self.assertEqual(self.reply(ctx), "No usable images on that message.")
 
-    async def test_mark_scam_image_helper_tier_refused(self):
-        ctx = self.ctx(HELPER_ID)
+    async def test_mark_scam_image_non_staff_refused(self):
+        ctx = self.ctx(RANDOM_ID)
         message = make_message(
             author_id=RANDOM_ID,
             attachments=[make_attachment(hashable=True)],
@@ -278,14 +246,6 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
 
         ctx.respond.assert_awaited_once_with("Your staff tier can't do that.", ephemeral=True)
         message.delete.assert_not_awaited()
-
-    async def test_scamimage_remove_unknown_id(self):
-        ctx = self.ctx(MOD_ID)
-
-        with patch("bulmaai.services.scam_images.remove", AsyncMock(return_value=False)):
-            await self.cog.scamimage_remove.callback(self.cog, ctx, 999)
-
-        self.assertIn("doesn't exist", self.reply(ctx))
 
 
 class PurgeCheckTests(unittest.TestCase):
@@ -314,46 +274,6 @@ class PurgeCheckTests(unittest.TestCase):
         self.assertFalse(check(make_message(5, content="hello")))
         self.assertFalse(check(make_message(5, content="free nitro", pinned=True)))
         self.assertTrue(purge_check()(make_message()))
-
-
-class RoleRefusalTests(unittest.TestCase):
-    def setUp(self):
-        self.guild = SimpleNamespace(owner_id=OWNER_ID, me=SimpleNamespace(top_role=SimpleNamespace(position=50)))
-        self.moderator = SimpleNamespace(id=MOD_ID, top_role=SimpleNamespace(position=20))
-        self.settings = SimpleNamespace(
-            discord_staff_role_ids=(10,),
-            panel_owner_role_ids=(),
-            panel_admin_role_ids=(),
-            panel_moderator_role_ids=(),
-            panel_helper_role_ids=(),
-            patreon_access_role_ids=(11,),
-            dev_jar_patreon_role_ids=(),
-            dev_jar_tester_role_ids=(12,),
-        )
-
-    def test_refusals(self):
-        cases = {
-            "managed": make_role(managed=True),
-            "@everyone": make_role(default=True),
-            "admin": make_role(administrator=True),
-            "manage server": make_role(manage_guild=True),
-            "ban members": make_role(ban_members=True),
-            "above moderator": make_role(position=20),
-            "mention everyone": make_role(mention_everyone=True),
-            "timeout members": make_role(moderate_members=True),
-            "audit log": make_role(view_audit_log=True),
-            "staff": make_role(role_id=10),
-            "patreon": make_role(role_id=11),
-            "tester": make_role(role_id=12),
-        }
-        for label, role in cases.items():
-            self.assertIsNotNone(role_refusal(role, self.moderator, self.guild, self.settings), label)
-        self.assertIsNone(role_refusal(make_role(position=19), self.moderator, self.guild, self.settings))
-
-    def test_owner_skips_own_role_check_but_not_the_bots(self):
-        owner = SimpleNamespace(id=OWNER_ID, top_role=SimpleNamespace(position=1))
-        self.assertIsNone(role_refusal(make_role(position=40), owner, self.guild, self.settings))
-        self.assertIn("bot's top role", role_refusal(make_role(position=50), owner, self.guild, self.settings))
 
 
 if __name__ == "__main__":

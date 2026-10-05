@@ -97,7 +97,7 @@ class AiAnnTranslation(commands.Cog):
 
     @property
     def settings(self):
-        # Read through to the bot so /settings set takes effect without a restart.
+        # Read through to the bot so a panel settings change takes effect without a restart.
         return self.bot.settings
 
     async def _send_translation(

@@ -30,10 +30,10 @@ log = logging.getLogger(__name__)
 
 QUICK_PERMISSIONS = {
     "delete": "mod.warn",
-    "learn": "mod.timeout",
+    "learn": "mod.tools",
     "warn": "mod.warn",
     "dismiss": "mod.warn",
-    "falsepos": "mod.timeout",
+    "falsepos": "mod.tools",
     "timeout": "mod.timeout",
     "untimeout": "mod.timeout",
     "kick": "mod.kick",

@@ -3,7 +3,7 @@ joins spike (applying an action to each joiner while it lasts), and outside raid
 accounts and returning offenders.
 ponytail: raid mode itself is in-memory only — a restart silently ends it, an acceptable trade for
 staying simple. Flagged-joiner alerts are different: they're logged to joiner_alerts (services/joiner_alerts.py)
-the moment they're posted, and a tasks.loop sweep (not an in-memory timer) auto-dismisses an alert 1h after
+the moment they're posted (on the flagged user's first message, not on join), and a tasks.loop sweep (not an in-memory timer) auto-dismisses an alert 1h after
 it's posted if no staff quick-action click resolved it first — so the deadline survives a restart."""
 
 import asyncio
@@ -63,6 +63,8 @@ class RaidGuardCog(ReloadableCog):
         self._raid_until: float | None = None
         self._raid_message: discord.Message | None = None
         self._raid_joiners: list[tuple[int, str, str]] = []  # (user_id, display_name, action_taken)
+        # ponytail: flagged joiners wait here for their first message, in-memory (a restart drops them), DB-backed if that ever matters
+        self._pending_joiners: dict[int, tuple[bool, dict[str, int], str]] = {}
         self._raid_revision = 0
         self._raid_update_task: asyncio.Task | None = None
         self._debounce_seconds = RAID_ALERT_DEBOUNCE_SECONDS  # tests set this to 0
@@ -187,7 +189,18 @@ class RaidGuardCog(ReloadableCog):
                 reason="New Discord account joined",
             )
 
-        await self._post_joiner_alert(member, is_new=is_new, breakdown=breakdown, action_taken=action_taken)
+        self._pending_joiners[member.id] = (is_new, breakdown, action_taken)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or message.author.id not in self._pending_joiners or not self._active_in(message.guild):
+            return
+        is_new, breakdown, action_taken = self._pending_joiners.pop(message.author.id)
+        await self._post_joiner_alert(message.author, is_new=is_new, breakdown=breakdown, action_taken=action_taken)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        self._pending_joiners.pop(member.id, None)
 
     async def _post_joiner_alert(self, member: discord.Member, *, is_new: bool, breakdown: dict[str, int], action_taken: str) -> None:
         channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self._settings()))
@@ -205,7 +218,7 @@ class RaidGuardCog(ReloadableCog):
         try:
             alert = await channel.send(
                 embed=embed,
-                view=quick_actions_view(member.id, actions=("timeout", "kick", "ban", "dismiss")),
+                view=quick_actions_view(member.id, actions=("kick", "ban", "dismiss")),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
@@ -237,7 +250,7 @@ class RaidGuardCog(ReloadableCog):
 
     def export_state(self) -> dict | None:
         # Raid mode must survive a reload or a code push mid-raid would silently stop quarantining joiners.
-        if not self._join_times and self._raid_until is None:
+        if not self._join_times and self._raid_until is None and not self._pending_joiners:
             return None
         return {
             "join_times": list(self._join_times),
@@ -245,6 +258,7 @@ class RaidGuardCog(ReloadableCog):
             "raid_message": self._raid_message,
             "raid_joiners": list(self._raid_joiners),
             "raid_revision": self._raid_revision,
+            "pending_joiners": dict(self._pending_joiners),
         }
 
     def import_state(self, state: dict) -> None:
@@ -253,6 +267,7 @@ class RaidGuardCog(ReloadableCog):
         self._raid_message = state.get("raid_message")
         self._raid_joiners = list(state.get("raid_joiners", ()))
         self._raid_revision = state.get("raid_revision", 0)
+        self._pending_joiners = dict(state.get("pending_joiners", {}))
         if self._raid_message is not None and self._in_raid(time.monotonic()):
             # An embed edit the old instance had pending was cancelled with it.
             self._schedule_raid_update()

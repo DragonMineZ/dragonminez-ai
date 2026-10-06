@@ -65,6 +65,10 @@ def make_member(user_id, *, guild, bot=False, created_at=None, roles=(), admin=F
     )
 
 
+def say(member):
+    return SimpleNamespace(author=member, guild=member.guild)
+
+
 def make_cog(settings) -> RaidGuardCog:
     return RaidGuardCog(SimpleNamespace(settings=settings))
 
@@ -233,9 +237,14 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
     async def test_alert_posted_when_active_cases_exist(self):
         cases = [SimpleNamespace(active=True, action="timeout"), SimpleNamespace(active=True, action="warn")]
         with patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=cases)):
-            await self.cog._handle_join(make_member(3, guild=self.guild))
+            member = make_member(3, guild=self.guild)
+            await self.cog._handle_join(member)
+            self.channel.send.assert_not_awaited()
+            await self.cog.on_message(say(member))
+            await self.cog.on_message(say(member))
         self.channel.send.assert_awaited_once()
         _, kwargs = self.channel.send.await_args
+        self.assertEqual([b.label for b in kwargs["view"].children], ["Kick", "Ban", "Dismiss"])
         embed = kwargs["embed"]
         history_field = next(f for f in embed.fields if f.name == "Case history")
         self.assertIn("timeout", history_field.value)
@@ -244,11 +253,22 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
     async def test_alert_is_recorded_to_joiner_alerts_for_the_durable_sweep(self):
         cases = [SimpleNamespace(active=True, action="warn")]
         with patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=cases)):
-            await self.cog._handle_join(make_member(3, guild=self.guild))
+            member = make_member(3, guild=self.guild)
+            await self.cog._handle_join(member)
+            await self.cog.on_message(say(member))
         self.record_alert.assert_awaited_once()
         kwargs = self.record_alert.await_args.kwargs
         self.assertEqual(kwargs["reason"], "returning_offender")
         self.assertEqual(kwargs["alert_message_id"], self.channel.send.return_value.id)
+
+    async def test_leaving_before_speaking_drops_the_pending_alert(self):
+        cases = [SimpleNamespace(active=True, action="warn")]
+        with patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=cases)):
+            member = make_member(9, guild=self.guild)
+            await self.cog._handle_join(member)
+            await self.cog.on_member_remove(member)
+            await self.cog.on_message(say(member))
+        self.channel.send.assert_not_awaited()
 
     async def test_db_failure_is_logged_and_join_handling_continues(self):
         with (
@@ -320,6 +340,8 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
                 5, guild=self.guild, created_at=discord.utils.utcnow() - timedelta(days=1)
             )
             await cog._handle_join(new_member)
+            cog_channel.send.assert_not_awaited()
+            await cog.on_message(say(new_member))
         perform.assert_awaited_once()
         self.assertEqual(perform.await_args.kwargs["action"], "timeout")
         self.assertEqual(perform.await_args.kwargs["source"], "antiraid")

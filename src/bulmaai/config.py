@@ -481,6 +481,8 @@ class Settings:
     # In-house tickets (cogs/tickets.py); category and archive channel reuse the ai_ticket_* ids.
     ticket_tester_role_ids: Sequence[int] = DEFAULT_TICKET_TESTER_ROLE_IDS
     ticket_max_open_per_user: int = 2
+    # Closed tickets move here; re-opening moves them back to ai_ticket_category_id.
+    ticket_closed_category_id: int | None = 1303543643377893466
     ticket_dm_transcript: bool = True
     # HTML transcripts are files under ticket_transcript_dir, served at ticket_transcript_public_url/t/<token>
     # (a public hostname on the same cloudflared tunnel as the panel). 0 retention days keeps them forever.
@@ -857,6 +859,7 @@ def _build_settings_from_env() -> Settings:
         ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
         ticket_tester_role_ids=_get_env_int_list("TICKET_TESTER_ROLE_IDS", DEFAULT_TICKET_TESTER_ROLE_IDS),
         ticket_max_open_per_user=_get_env_int("TICKET_MAX_OPEN_PER_USER", 2) or 2,
+        ticket_closed_category_id=_get_env_int("TICKET_CLOSED_CATEGORY_ID", 1303543643377893466),
         welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID", DEFAULT_WELCOME_CHANNEL_ID),
         member_role_id=_get_env_int("MEMBER_ROLE_ID", DEFAULT_MEMBER_ROLE_ID),
         member_role_name=_get_env("MEMBER_ROLE_NAME", "Member") or "Member",

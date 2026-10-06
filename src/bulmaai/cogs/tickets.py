@@ -1,12 +1,15 @@
-"""In-house ticket system: dropdown panel → intake modal → private channel, close = archive, hosted HTML transcript.
+"""In-house ticket system: dropdown panel → intake modal → private channel → close (moves to the closed category).
+Transcripts (hosted HTML) are only made when staff press Transcript, or when the AI solved the ticket on its own.
 
 AI answers inside tickets still come from AITicketsCog (same category); this cog owns the lifecycle.
 """
 
 import asyncio
 import base64
+import html as html_lib
 import io
 import logging
+import re
 from enum import IntEnum
 
 import chat_exporter
@@ -14,17 +17,15 @@ import discord
 from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget
+from bulmaai.services import ai_budget, mod_actions
 from bulmaai.services.ai_guard import defuse_mentions
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
 from bulmaai.services.ticket_pages import StoredPage, get_page_for_channel, page_url, purge, save_page
-from bulmaai.services.ticket_transcripts import has_transcript
 from bulmaai.services.tickets import (
     STATUS_OPEN,
     Ticket,
     abandon_ticket,
     attach_channel,
-    claim_ticket,
     closed_channel_name,
     get_open_tickets_by_owner,
     get_ticket_by_channel,
@@ -33,26 +34,25 @@ from bulmaai.services.tickets import (
     mark_deleted,
     mark_reopened,
     open_channel_name,
-    release_ticket,
     reserve_ticket,
 )
+from bulmaai.ui.support_views import PATREON_URL
 from bulmaai.ui.ticket_views import (
+    CATEGORIES,
     MSG,
     TicketCategory,
+    TicketClosedView,
     TicketControlView,
-    TicketModeratorView,
     TicketPanelView,
     build_panel_embed,
     build_ticket_embed,
-    msg_claimed_by,
+    closed_embed,
+    dm_created,
+    dm_transcript,
     msg_created,
-    msg_dm_created,
-    msg_dm_transcript,
     msg_limit,
-    notice_claimed,
-    notice_closed,
-    notice_released,
-    notice_reopened,
+    msg_transcript_ready,
+    reopened_embed,
 )
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -70,6 +70,10 @@ INLINE_IMAGE_LIMIT = 1_500_000
 INLINE_TOTAL_LIMIT = 5_000_000
 RENAME_TIMEOUT_SECONDS = 10
 REASON_LEFT = "User left the server."
+PING_WARN_REASON = "Pinged staff in a ticket"
+# chat_exporter's <head> puts raw HTML (emoji <img>) into the link-preview meta tags; ours replaces it.
+_HEAD_META = re.compile(r"<title>.*?(?=<style>)", re.S)
+_DONATE = re.compile(r'<a href="https://ko-fi\.com/mahtoid">DONATE</a>')
 
 
 class Rank(IntEnum):
@@ -136,6 +140,46 @@ def build_overwrites(
     return overwrites
 
 
+def staff_role_ids(settings) -> set[int]:
+    return _ids(
+        settings.panel_owner_role_ids,
+        settings.panel_admin_role_ids,
+        settings.panel_moderator_role_ids,
+        settings.panel_helper_role_ids,
+    )
+
+
+def pings_staff(message: discord.Message, settings) -> bool:
+    """Typed <@user>/<@&role> mentions of staff only; reply pings aren't in the content, so they don't count."""
+    if set(message.raw_role_mentions) & staff_role_ids(settings):
+        return True
+    guild = message.guild
+    return any(
+        (target := guild.get_member(user_id)) is not None and member_rank(target, None, settings) >= Rank.HELPER
+        for user_id in message.raw_mentions
+    )
+
+
+def polish_transcript(html: str, *, title: str, description: str, image: str | None) -> str:
+    """Clean link preview + our Patreon instead of chat_exporter's donate link."""
+    esc = lambda text: html_lib.escape(text, quote=True)
+    meta = [
+        f"<title>{esc(title)}</title>",
+        '<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />',
+        '<meta name="viewport" content="width=device-width" />',
+        '<meta name="theme-color" content="#5865f2" />',
+        f'<meta name="description" content="{esc(description)}" />',
+        '<meta property="og:type" content="website" />',
+        '<meta property="og:site_name" content="DragonMine Z Tickets" />',
+        f'<meta property="og:title" content="{esc(title)}" />',
+        f'<meta property="og:description" content="{esc(description)}" />',
+    ]
+    if image:
+        meta.append(f'<meta property="og:image" content="{esc(image)}" />')
+    html = _HEAD_META.sub(lambda _: "\n    ".join(meta) + "\n    ", html, count=1)
+    return _DONATE.sub(lambda _: f'<a href="{esc(PATREON_URL)}">PATREON</a>', html, count=1)
+
+
 class InlineImageHandler(AttachmentHandler):
     """Swaps small image attachments for data URIs, within a total budget."""
 
@@ -170,7 +214,7 @@ class TicketsCog(ReloadableCog):
         return self.bot.settings
 
     async def on_startup(self) -> None:
-        for view in (TicketPanelView(), TicketControlView(), TicketModeratorView()):
+        for view in (TicketPanelView(), TicketControlView(), TicketClosedView()):
             self.bot.add_view(view)
         if not self._purge_pages.is_running():
             self._purge_pages.start()
@@ -203,6 +247,41 @@ class TicketsCog(ReloadableCog):
             log.exception("Failed to mark ticket channel deleted", extra={"channel_id": channel.id})
 
     @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        settings = self.settings
+        if (
+            message.author.bot
+            or not isinstance(message.author, discord.Member)
+            or not (message.raw_mentions or message.raw_role_mentions)
+            or getattr(message.channel, "category_id", None) != settings.ai_ticket_category_id
+            or member_rank(message.author, None, settings) >= Rank.HELPER
+            or not pings_staff(message, settings)
+        ):
+            return
+        try:
+            if await get_ticket_by_channel(message.channel.id) is None:
+                return
+            await mod_actions.perform(
+                self.bot,
+                message.guild,
+                action="warn",
+                target_id=message.author.id,
+                moderator=None,
+                reason=PING_WARN_REASON,
+                source="automod",
+            )
+        except Exception:
+            log.exception("Staff-ping warn failed", extra={"user_id": message.author.id})
+            return
+        await self._safely(
+            message.reply(
+                f"{message.author.mention}, {MSG['no_staff_pings']}",
+                allowed_mentions=discord.AllowedMentions(users=[message.author], replied_user=False),
+            ),
+            message.channel,
+        )
+
+    @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
         try:
             tickets = await get_open_tickets_by_owner(member.id)
@@ -215,7 +294,7 @@ class TicketsCog(ReloadableCog):
                 continue
             closed = await self.close_ticket(channel, closer_id=None, reason=REASON_LEFT)
             if closed is not None:
-                await self.delete_ticket(channel, closed, closed_by_id=None)
+                await self.delete_ticket(channel, closed)
 
     # ---- ticket creation -------------------------------------------------------------------------
 
@@ -226,7 +305,8 @@ class TicketsCog(ReloadableCog):
         answers: list[tuple[str, str]],
     ) -> None:
         guild, member, settings = interaction.guild, interaction.user, self.settings
-        await interaction.response.defer(ephemeral=True)
+        # invisible=False: a modal submit's default ("invisible") defer would edit the public panel message instead.
+        await interaction.response.defer(ephemeral=True, invisible=False)
         if guild is None or not isinstance(member, discord.Member):
             return
         await interaction.edit_original_response(content=MSG["creating"])
@@ -258,9 +338,7 @@ class TicketsCog(ReloadableCog):
             )
             welcome = await channel.send(
                 content=member.mention,
-                embed=build_ticket_embed(
-                    number=ticket.ticket_id, category=category, answers=answers, summary=intake.summary
-                ),
+                embed=build_ticket_embed(number=ticket.ticket_id, category=category, answers=answers),
                 view=TicketControlView(),
                 allowed_mentions=discord.AllowedMentions(users=[member]),
             )
@@ -283,7 +361,8 @@ class TicketsCog(ReloadableCog):
 
         await interaction.edit_original_response(content=msg_created(channel.mention))
         try:
-            await member.send(msg_dm_created(ticket.ticket_id, channel.jump_url))
+            embed, view = dm_created(ticket.ticket_id, category, channel)
+            await member.send(embed=embed, view=view)
         except discord.HTTPException:
             pass  # DMs closed; the ephemeral message above already has the link
 
@@ -310,12 +389,12 @@ class TicketsCog(ReloadableCog):
             log.exception("Ticket intake triage failed", extra={"ticket_id": ticket.ticket_id})
             return fallback
 
-    # ---- close / reopen / claim ------------------------------------------------------------------
+    # ---- close / reopen ---------------------------------------------------------------------------
 
     async def close_ticket(
         self, channel: discord.TextChannel, *, closer_id: int | None, reason: str | None
     ) -> Ticket | None:
-        """Lock the owner out, rename, swap the buttons, then archive the transcript. None if the ticket wasn't open."""
+        """Lock the owner out, move to the closed category, rename, post the closed embed. None if it wasn't open."""
         ticket = await mark_closed(channel.id, closed_by=closer_id, reason=reason)
         if ticket is None:
             return None
@@ -324,16 +403,17 @@ class TicketsCog(ReloadableCog):
             overwrite = channel.overwrites_for(owner)
             overwrite.send_messages = False
             await self._safely(channel.set_permissions(owner, overwrite=overwrite, reason="Ticket closed"), channel)
+        await self._move(channel, self.settings.ticket_closed_category_id)
         await self._rename(channel, closed_channel_name(ticket.ticket_id))
-        await self._set_buttons(channel, ticket, TicketModeratorView())
+        await self._set_buttons(channel, ticket, None)
         await self._safely(
             channel.send(
-                notice_closed(f"<@{closer_id}>" if closer_id else None, reason and defuse_mentions(reason)),
+                embed=closed_embed(f"<@{closer_id}>" if closer_id else None, reason and defuse_mentions(reason)),
+                view=TicketClosedView(),
                 allowed_mentions=discord.AllowedMentions.none(),
             ),
             channel,
         )
-        await self.archive(channel, ticket, closed_by_id=closer_id)
         return ticket
 
     async def reopen_ticket(self, channel: discord.TextChannel, *, opener_id: int) -> Ticket | None:
@@ -347,10 +427,12 @@ class TicketsCog(ReloadableCog):
             overwrite = channel.overwrites_for(owner)
             overwrite.send_messages = True
             await self._safely(channel.set_permissions(owner, overwrite=overwrite, reason="Ticket re-opened"), channel)
+        await self._move(channel, self.settings.ai_ticket_category_id)
         await self._rename(channel, ticket.channel_name or open_channel_name("ticket", ticket.ticket_id))
-        await self._set_buttons(channel, ticket, TicketControlView(claimed=ticket.claimed_by is not None))
+        await self._set_buttons(channel, ticket, TicketControlView())
         await self._safely(
-            channel.send(notice_reopened(f"<@{opener_id}>"), allowed_mentions=discord.AllowedMentions.none()), channel
+            channel.send(embed=reopened_embed(f"<@{opener_id}>"), allowed_mentions=discord.AllowedMentions.none()),
+            channel,
         )
         return ticket
 
@@ -367,7 +449,13 @@ class TicketsCog(ReloadableCog):
         except (asyncio.TimeoutError, discord.HTTPException):
             log.warning("Could not rename ticket channel", extra={"channel_id": channel.id, "name": name})
 
-    async def _set_buttons(self, channel: discord.TextChannel, ticket: Ticket, view: discord.ui.View) -> None:
+    async def _move(self, channel: discord.TextChannel, category_id: int | None) -> None:
+        category = channel.guild.get_channel(category_id) if category_id else None
+        if isinstance(category, discord.CategoryChannel) and channel.category_id != category.id:
+            # Overwrites stay as they are (sync_permissions defaults to False).
+            await self._safely(channel.edit(category=category), channel)
+
+    async def _set_buttons(self, channel: discord.TextChannel, ticket: Ticket, view: discord.ui.View | None) -> None:
         if ticket.control_message_id is None:
             return
         await self._safely(channel.get_partial_message(ticket.control_message_id).edit(view=view), channel)
@@ -390,25 +478,6 @@ class TicketsCog(ReloadableCog):
             return None
         return ticket
 
-    async def on_claim(self, interaction: discord.Interaction) -> None:
-        ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only")
-        if ticket is None:
-            return
-        user_id = interaction.user.id
-        if ticket.claimed_by in (None, user_id):
-            claimed = ticket.claimed_by is None
-            changed = await (claim_ticket(ticket.ticket_id, user_id) if claimed else release_ticket(ticket.ticket_id, user_id))
-            if not changed:
-                return await interaction.response.send_message(MSG["failed"], ephemeral=True)
-        else:
-            return await interaction.response.send_message(msg_claimed_by(f"<@{ticket.claimed_by}>"), ephemeral=True)
-        # Announced as a new message: rewriting the ticket's first message reads like the ticket itself changed.
-        await interaction.response.send_message(
-            (notice_claimed if claimed else notice_released)(interaction.user.mention),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        await self._set_buttons(interaction.channel, ticket, TicketControlView(claimed=claimed))
-
     async def on_close(self, interaction: discord.Interaction) -> None:
         ticket = await self._gate(interaction, Rank.OWNER)
         if ticket is None:
@@ -416,13 +485,25 @@ class TicketsCog(ReloadableCog):
         await interaction.response.defer()
         await self.close_ticket(interaction.channel, closer_id=interaction.user.id, reason=None)
 
+    async def on_transcript(self, interaction: discord.Interaction) -> None:
+        ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only", want_open=None)
+        if ticket is None:
+            return
+        await interaction.response.defer(ephemeral=True)
+        await self.archive(interaction.channel, ticket, closed_by_id=ticket.closed_by or interaction.user.id)
+        page = await get_page_for_channel(interaction.channel.id)
+        await interaction.followup.send(
+            msg_transcript_ready(page_url(self.settings, page.token)) if page else MSG["transcript_failed"],
+            ephemeral=True,
+        )
+
     async def on_reopen(self, interaction: discord.Interaction) -> None:
         ticket = await self._gate(interaction, Rank.MOD, denied="mod_only", want_open=False)
         if ticket is None:
             return
         if interaction.guild.get_member(ticket.owner_id) is None:
             return await interaction.response.send_message(MSG["owner_left"], ephemeral=True)
-        await interaction.response.defer()
+        await interaction.response.edit_message(view=None)  # this closed embed's buttons are spent
         await self.reopen_ticket(interaction.channel, opener_id=interaction.user.id)
 
     async def on_delete(self, interaction: discord.Interaction) -> None:
@@ -430,16 +511,16 @@ class TicketsCog(ReloadableCog):
         if ticket is None:
             return
         await interaction.response.send_message(MSG["deleting"])
-        if not await self.delete_ticket(interaction.channel, ticket, closed_by_id=interaction.user.id):
-            await interaction.followup.send(MSG["archive_failed"], ephemeral=True)
+        if not await self.delete_ticket(interaction.channel, ticket):
+            await interaction.followup.send(MSG["delete_failed"], ephemeral=True)
 
     # ---- transcript + archive --------------------------------------------------------------------
 
     async def export_html(self, channel: discord.TextChannel) -> bytes | None:
         """Standalone .html of the newest messages, or None if it failed or is implausibly large."""
         try:
+            # Newest first on purpose: chat_exporter reverses the list itself, so the page reads top-down like Discord.
             messages = [message async for message in channel.history(limit=TRANSCRIPT_MESSAGE_LIMIT)]
-            messages.reverse()
             html = await chat_exporter.raw_export(
                 channel,
                 messages,
@@ -451,11 +532,25 @@ class TicketsCog(ReloadableCog):
         except Exception:
             log.exception("HTML transcript export failed", extra={"channel_id": channel.id})
             return None
+        if html:
+            html = polish_transcript(html, **self._preview(channel, len(messages)))
         data = (html or "").encode("utf-8")
         if not data or len(data) > PAGE_MAX_BYTES:
             log.warning("HTML transcript empty or too large", extra={"channel_id": channel.id, "bytes": len(data)})
             return None
         return data
+
+    def _preview(self, channel: discord.TextChannel, message_count: int) -> dict:
+        topic = channel.topic or ""
+        number = re.search(r"#(\d+)", topic)
+        category = next((c for c in CATEGORIES.values() if f"· {c.key} ·" in topic), None)
+        title = f"Ticket #{number.group(1)}" if number else f"#{channel.name}"
+        parts = [f"{category.emoji} {category.name}" if category else None, f"{message_count} messages"]
+        return {
+            "title": f"{title} · {channel.guild.name}",
+            "description": " · ".join(part for part in parts if part),
+            "image": channel.guild.icon.url if channel.guild.icon else None,
+        }
 
     async def build_page(self, channel: discord.TextChannel) -> StoredPage | None:
         """Export the channel and host it on disk; AITicketsCog records the token with the rest of the close-out."""
@@ -465,7 +560,7 @@ class TicketsCog(ReloadableCog):
     async def archive(self, channel: discord.TextChannel, ticket: Ticket, *, closed_by_id: int | None) -> bool:
         """Transcript + summary into the archive channel and the DB, then the owner gets the hosted link by DM."""
         archived = await self._archive(channel, ticket, closed_by_id)
-        if self.settings.ticket_dm_transcript:
+        if archived and self.settings.ticket_dm_transcript:
             await self._dm_transcript_link(channel, ticket)
         return archived
 
@@ -479,21 +574,17 @@ class TicketsCog(ReloadableCog):
         if owner is None or page is None:
             return
         try:
-            await owner.send(msg_dm_transcript(ticket.ticket_id, page_url(self.settings, page.token), page.expires_at))
+            embed, view = dm_transcript(ticket.ticket_id, channel.guild, page_url(self.settings, page.token), page.expires_at)
+            await owner.send(embed=embed, view=view)
         except discord.HTTPException:
             log.info("Could not DM ticket transcript", extra={"user_id": ticket.owner_id})
 
-    async def delete_ticket(self, channel: discord.TextChannel, ticket: Ticket, *, closed_by_id: int | None) -> bool:
-        """Delete the channel. Its transcript was saved when the ticket closed; one that never was gets saved first,
-        and the channel is only deleted once a transcript exists."""
+    async def delete_ticket(self, channel: discord.TextChannel, ticket: Ticket) -> bool:
+        """Just deletes; a transcript exists only if staff asked for one (or the AI solved it, see AITicketsCog)."""
         if channel.id in self._deleting:
             return False
         self._deleting.add(channel.id)
         try:
-            if not await has_transcript(channel.id):
-                await self.archive(channel, ticket, closed_by_id=closed_by_id)
-                if not await has_transcript(channel.id):
-                    return False
             await mark_deleted(channel.id)
             await channel.delete(reason=f"Ticket #{ticket.ticket_id:04d} deleted")
             return True

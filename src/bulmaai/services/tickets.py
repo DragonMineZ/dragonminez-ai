@@ -159,26 +159,6 @@ async def list_active_tickets(*, pool: Any | None = None) -> list[Ticket]:
     return [_ticket(row) for row in rows]
 
 
-async def claim_ticket(ticket_id: int, user_id: int, *, pool: Any | None = None) -> bool:
-    resolved_pool = pool or await get_pool()
-    row = await resolved_pool.fetchrow(
-        "UPDATE tickets SET claimed_by = $2 WHERE ticket_id = $1 AND claimed_by IS NULL RETURNING ticket_id",
-        ticket_id,
-        user_id,
-    )
-    return row is not None
-
-
-async def release_ticket(ticket_id: int, user_id: int, *, pool: Any | None = None) -> bool:
-    resolved_pool = pool or await get_pool()
-    row = await resolved_pool.fetchrow(
-        "UPDATE tickets SET claimed_by = NULL WHERE ticket_id = $1 AND claimed_by = $2 RETURNING ticket_id",
-        ticket_id,
-        user_id,
-    )
-    return row is not None
-
-
 async def mark_closed(
     channel_id: int,
     *,

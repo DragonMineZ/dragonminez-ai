@@ -294,21 +294,22 @@ async def _cog_or_error(interaction: discord.Interaction):
 class TicketModal(discord.ui.DesignerModal):
     # Label-wrapped inputs: Discord shows legacy action-row inputs as required even with required=false.
     def __init__(self, category: TicketCategory) -> None:
-        super().__init__(
-            *(
-                discord.ui.Label(
-                    field.label,
-                    discord.ui.InputText(
-                        placeholder=field.placeholder,
-                        style=discord.InputTextStyle.paragraph if field.paragraph else discord.InputTextStyle.short,
-                        required=field.required,
-                        max_length=field.max_length,
-                    ),
-                )
-                for field in category.fields
-            ),
-            title=category.modal_title,
-        )
+        labels = [
+            discord.ui.Label(
+                field.label,
+                discord.ui.InputText(
+                    placeholder=field.placeholder,
+                    style=discord.InputTextStyle.paragraph if field.paragraph else discord.InputTextStyle.short,
+                    required=field.required,
+                    max_length=field.max_length,
+                ),
+            )
+            for field in category.fields
+        ]
+        for field, label in zip(category.fields, labels):
+            # py-cord 2.7.x drops required=False in the constructor (`required or self.required`), leaving None.
+            label.item.required = field.required
+        super().__init__(*labels, title=category.modal_title)
         self.category = category
 
     async def callback(self, interaction: discord.Interaction) -> None:

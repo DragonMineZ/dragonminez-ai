@@ -41,6 +41,7 @@ from bulmaai.ui.ticket_views import (
     CATEGORIES,
     MSG,
     TicketCategory,
+    TRANSCRIPT_BUTTON_ID,
     TicketClosedView,
     TicketControlView,
     TicketPanelView,
@@ -489,13 +490,15 @@ class TicketsCog(ReloadableCog):
         ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only", want_open=None)
         if ticket is None:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         await self.archive(interaction.channel, ticket, closed_by_id=ticket.closed_by or interaction.user.id)
         page = await get_page_for_channel(interaction.channel.id)
-        await interaction.followup.send(
-            msg_transcript_ready(page_url(self.settings, page.token)) if page else MSG["transcript_failed"],
-            ephemeral=True,
-        )
+        if page is None:
+            return await interaction.followup.send(MSG["transcript_failed"], ephemeral=True)
+        view = TicketClosedView()
+        view.get_item(TRANSCRIPT_BUTTON_ID).disabled = True
+        await self._safely(interaction.message.edit(view=view), interaction.channel)
+        await interaction.followup.send(msg_transcript_ready(page_url(self.settings, page.token)))
 
     async def on_reopen(self, interaction: discord.Interaction) -> None:
         ticket = await self._gate(interaction, Rank.MOD, denied="mod_only", want_open=False)
@@ -597,7 +600,7 @@ class TicketsCog(ReloadableCog):
     async def _archive(self, channel: discord.TextChannel, ticket: Ticket, closed_by_id: int | None) -> bool:
         ai_cog = self.bot.get_cog(AI_COG)
         if ai_cog is not None:
-            # Posts the summary embed + .txt to the archive channel and records it (with the hosted page) for the panel.
+            # Posts the summary embed to the archive channel and records it (with the hosted page) for the panel.
             return await ai_cog._close_ticket(
                 channel,
                 closed_by_id=closed_by_id,

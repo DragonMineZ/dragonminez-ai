@@ -531,10 +531,11 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
                 await handler(interaction)
                 interaction.response.send_message.assert_awaited_once()
 
-    async def test_helper_gets_transcript_link_ephemerally(self):
+    async def test_helper_gets_public_transcript_link_and_button_is_disabled(self):
         cog = make_cog()
         interaction = self.interaction(member(STAFF_ID, HELPER_ROLE))
         interaction.channel = make_channel()
+        interaction.message = SimpleNamespace(edit=AsyncMock())
         interaction.followup = SimpleNamespace(send=AsyncMock())
         page = StoredPage(token="c" * 32, expires_at=None)
         with (
@@ -546,7 +547,11 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
         archive.assert_awaited_once()
         self.assertEqual(archive.await_args.kwargs["closed_by_id"], OWNER_ID)
         self.assertIn("c" * 32, interaction.followup.send.await_args.args[0])
-        self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
+        self.assertNotIn("ephemeral", interaction.followup.send.await_args.kwargs)
+        interaction.response.defer.assert_awaited_once_with()
+        view = interaction.message.edit.await_args.kwargs["view"]
+        self.assertTrue(view.get_item("ticket_btn_transcript").disabled)
+        self.assertFalse(view.get_item("ticket_btn_reopen").disabled)
 
     async def test_reopen_strips_the_closed_embed_buttons(self):
         cog = make_cog()

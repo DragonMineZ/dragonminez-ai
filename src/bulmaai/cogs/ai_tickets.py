@@ -1,5 +1,4 @@
 import asyncio
-import io
 import logging
 import random
 import re
@@ -1174,14 +1173,13 @@ class AITicketsCog(ReloadableCog):
         """A re-opened ticket must be archivable again when it closes."""
         self._archived_channels.discard(channel_id)
 
-    async def _post_close_embed(self, embed: discord.Embed, transcript: str, channel_name: str) -> bool:
+    async def _post_close_embed(self, embed: discord.Embed) -> bool:
         channel_id = self.bot.settings.ai_ticket_transcript_channel_id
         if channel_id is None:
             return False
-        files = [discord.File(io.BytesIO(transcript.encode("utf-8")), filename=f"{channel_name}-transcript.txt")]
         try:
             target = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-            await target.send(embed=embed, files=files)
+            await target.send(embed=embed)
             return True
         except discord.HTTPException:
             log.exception("Failed to post ticket transcript", extra={"transcript_channel_id": channel_id})
@@ -1280,7 +1278,7 @@ class AITicketsCog(ReloadableCog):
                 page_link=page_url(settings, page.token) if page else None,
                 page_expires_at=page.expires_at if page else None,
             )
-            archived = await self._post_close_embed(embed, transcript, channel.name)
+            archived = await self._post_close_embed(embed)
 
             try:
                 await record_ticket_transcript(

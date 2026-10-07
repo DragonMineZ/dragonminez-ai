@@ -12,7 +12,6 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 from aiohttp.test_utils import TestClient, TestServer
 
 from bulmaai.cogs.ai_tickets import AITicketsCog
-from bulmaai.cogs.patreon_whitelist_flow import AutoApprovalResult
 from bulmaai.services.patreon_grants import PatreonGrant, PatreonGrantKind
 from bulmaai.web.core import SESSION_COOKIE, sign_session
 from bulmaai.web.server import create_app
@@ -44,9 +43,9 @@ class FakeTicketsCog:
 
 
 class FakeFlowCog:
-    def __init__(self, approval):
+    def __init__(self, commit_url):
         self._lock = asyncio.Lock()
-        self._auto_approve_beta_access = AsyncMock(return_value=approval)
+        self._auto_approve_beta_access = AsyncMock(return_value=commit_url)
         self._record_self_grant = AsyncMock()
         self._log_staff_info = AsyncMock()
         self._remove_whitelist_grants = AsyncMock()
@@ -64,7 +63,7 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
         category = SimpleNamespace(id=CATEGORY_ID, text_channels=[ticket])
         guild.get_channel = lambda channel_id: category if channel_id == CATEGORY_ID else None
         self.tickets_cog = FakeTicketsCog()
-        self.flow_cog = FakeFlowCog(AutoApprovalResult(pr_url="https://github.com/pr/1", approved=True))
+        self.flow_cog = FakeFlowCog("https://github.com/commit/1")
         cogs = {"AITicketsCog": self.tickets_cog, "PatreonWhitelistFlowCog": self.flow_cog}
         self.bot.get_cog = cogs.get
 
@@ -181,10 +180,10 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bad.status, 400)
             response = await self.post("/api/patreon/grant", {"user_id": str(HELPER_ID), "minecraft_username": "Steve_1"})
         self.assertEqual(response.status, 200, await response.text())
-        self.assertTrue((await response.json())["merged"])
+        self.assertEqual((await response.json())["commit_url"], "https://github.com/commit/1")
         member = self.bot.guilds[0].get_member(HELPER_ID)
         self.flow_cog._auto_approve_beta_access.assert_awaited_once_with(member, "Steve_1")
-        self.flow_cog._record_self_grant.assert_awaited_once_with(member, "Steve_1", "https://github.com/pr/1")
+        self.flow_cog._record_self_grant.assert_awaited_once_with(member, "Steve_1", "https://github.com/commit/1")
         self.routes_patreon_audit.assert_awaited_once()
 
     async def test_grant_refuses_existing_self_grant(self):

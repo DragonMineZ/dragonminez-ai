@@ -1,56 +1,10 @@
 import base64
 import re
-from requests import HTTPError
 
 from bulmaai.services.http import request
 from bulmaai.github.github_app_auth import GitHubAppAuth
 
 _SEARCH_QUALIFIER_RE = re.compile(r"(?i)(?<!\S)-?[a-z][a-z_-]*:\S+")
-
-
-def _is_ref_already_exists_response(response) -> bool:
-    try:
-        payload = response.json()
-    except ValueError:
-        return False
-
-    message = str(payload.get("message", "")).lower()
-    if "reference already exists" in message:
-        return True
-
-    errors = payload.get("errors")
-    if not isinstance(errors, list):
-        return False
-    for error in errors:
-        if not isinstance(error, dict):
-            continue
-        code = str(error.get("code", "")).lower()
-        error_message = str(error.get("message", "")).lower()
-        if code == "already_exists" or "reference already exists" in error_message:
-            return True
-    return False
-
-
-def _is_pull_request_already_exists_response(response) -> bool:
-    try:
-        payload = response.json()
-    except ValueError:
-        return False
-
-    message = str(payload.get("message", "")).lower()
-    if "pull request already exists" in message:
-        return True
-
-    errors = payload.get("errors")
-    if not isinstance(errors, list):
-        return False
-    for error in errors:
-        if not isinstance(error, dict):
-            continue
-        error_message = str(error.get("message", "")).lower()
-        if "pull request already exists" in error_message:
-            return True
-    return False
 
 
 class GitHubService:
@@ -195,36 +149,6 @@ class GitHubService:
         r.raise_for_status()
         return r.json().get("items", [])
 
-    # ==================== BRANCHES & REFS ====================
-
-    async def get_ref_sha(self, branch: str) -> str:
-        r = await request("GET", f"{self.api}/git/ref/heads/{branch}", headers=await self._headers())
-        r.raise_for_status()
-        return r.json()["object"]["sha"]
-
-    async def create_branch(self, new_branch: str, from_branch: str) -> None:
-        sha = await self.get_ref_sha(from_branch)
-        payload = {"ref": f"refs/heads/{new_branch}", "sha": sha}
-        r = await request("POST", f"{self.api}/git/refs", headers=await self._headers(), json=payload)
-        if r.status_code == 201:
-            return
-        if r.status_code == 422 and _is_ref_already_exists_response(r):
-            return
-        r.raise_for_status()
-
-    async def remove_branch(self, branch: str) -> None:
-        r = await request("DELETE", f"{self.api}/git/refs/heads/{branch}", headers=await self._headers())
-        r.raise_for_status()
-
-    async def reset_branch(self, branch: str, sha: str) -> None:
-        r = await request(
-            "PATCH",
-            f"{self.api}/git/refs/heads/{branch}",
-            headers=await self._headers(),
-            json={"sha": sha, "force": True},
-        )
-        r.raise_for_status()
-
     # ==================== FILE OPERATIONS ====================
 
     async def get_file(self, path: str, ref: str) -> tuple[str, str]:
@@ -240,7 +164,8 @@ class GitHubService:
         j = r.json()
         return [item["path"] for item in j if item.get("type") == "file"] if isinstance(j, list) else []
 
-    async def put_file(self, *, path: str, branch: str, new_text: str, sha: str, message: str) -> None:
+    async def put_file(self, *, path: str, branch: str, new_text: str, sha: str, message: str) -> str:
+        """Commit straight to `branch`. A stale `sha` gets a 409 instead of clobbering someone else's commit. Returns the commit URL."""
         payload = {
             "message": message,
             "content": base64.b64encode(new_text.encode("utf-8")).decode("utf-8"),
@@ -249,6 +174,7 @@ class GitHubService:
         }
         r = await request("PUT", f"{self.api}/contents/{path}", headers=await self._headers(), json=payload)
         r.raise_for_status()
+        return r.json()["commit"]["html_url"]
 
     # ==================== PULL REQUESTS ====================
 
@@ -264,39 +190,6 @@ class GitHubService:
         r = await request("GET", f"{self.api}/pulls/{pr_number}", headers=await self._headers())
         r.raise_for_status()
         return r.json()
-
-    async def create_pr(self, *, head_branch: str, title: str, body: str) -> dict:
-        payload = {"title": title, "head": head_branch, "base": self.base_branch, "body": body}
-        r = await request("POST", f"{self.api}/pulls", headers=await self._headers(), json=payload)
-        r.raise_for_status()
-        return r.json()
-
-    async def get_pr_by_head_branch(self, head_branch: str, *, state: str = "open") -> dict | None:
-        prs = await self.list_prs(
-            state=state,
-            per_page=1,
-            head=f"{self.owner}:{head_branch}",
-        )
-        return prs[0] if prs else None
-
-    async def create_or_get_pr(self, *, head_branch: str, title: str, body: str) -> dict:
-        try:
-            return await self.create_pr(
-                head_branch=head_branch,
-                title=title,
-                body=body,
-            )
-        except HTTPError as exc:
-            response = getattr(exc, "response", None)
-            if (
-                response is not None
-                and response.status_code == 422
-                and _is_pull_request_already_exists_response(response)
-            ):
-                existing_pr = await self.get_pr_by_head_branch(head_branch)
-                if existing_pr is not None:
-                    return existing_pr
-            raise
 
     async def merge_pr(self, pr_number: int, *, merge_method: str = "squash") -> dict:
         r = await request("PUT", f"{self.api}/pulls/{pr_number}/merge", headers=await self._headers(), json={"merge_method": merge_method})
@@ -320,10 +213,10 @@ class GitHubService:
 
     # ==================== WHITELIST HELPERS ====================
 
-    async def put_whitelist_file(self, *, branch: str, new_text: str, sha: str, message: str) -> None:
+    async def put_whitelist_file(self, *, branch: str, new_text: str, sha: str, message: str) -> str:
         if not self.whitelist_file_path:
             raise ValueError("whitelist_file_path not configured")
-        await self.put_file(path=self.whitelist_file_path, branch=branch, new_text=new_text, sha=sha, message=message)
+        return await self.put_file(path=self.whitelist_file_path, branch=branch, new_text=new_text, sha=sha, message=message)
 
     async def get_whitelist_file(self, ref: str) -> tuple[str, str]:
         if not self.whitelist_file_path:

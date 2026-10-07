@@ -253,7 +253,7 @@ async def person(request: web.Request, actor: Actor) -> web.Response:
 @routes.post("/api/patreon/grant")
 @requires("patreon.manage")
 async def grant_access(request: web.Request, actor: Actor) -> web.Response:
-    """Staff override of /patreon beta-access: same whitelist PR + auto-merge + grant row, minus the Patreon checks."""
+    """Staff override of /patreon beta-access: same direct whitelist commit + grant row, minus the Patreon checks."""
     guild = require_guild(request)
     cog = _flow_cog(request)
     payload = await read_json(request)
@@ -275,27 +275,23 @@ async def grant_access(request: web.Request, actor: Actor) -> web.Response:
         if existing is not None:
             raise api_error(409, f"Already whitelisted as {existing.minecraft_username}. Revoke it first.")
         try:
-            approval = await cog._auto_approve_beta_access(member, nickname)
+            commit_url = await cog._auto_approve_beta_access(member, nickname)
         except Exception:
             log.exception("Admin panel beta access grant failed for %s (%s)", member.id, nickname)
             raise api_error(502, "The GitHub whitelist update failed, check the bot logs.")
-        if approval.pr_url is None:
+        if commit_url is None:
             raise api_error(409, f"{nickname} is already in the whitelist file.")
-        if approval.approved:
-            await cog._record_self_grant(member, nickname, approval.pr_url)
+        await cog._record_self_grant(member, nickname, commit_url)
 
-    await audit(
-        actor, "patreon.grant", str(member.id), minecraft_username=nickname, pr_url=approval.pr_url, merged=approval.approved
-    )
-    if approval.approved:
-        try:
-            await cog._log_staff_info(
-                f"<@{actor.id}> granted beta access to <@{member.id}> as `{nickname}` from the admin panel.\n"
-                f"-# [GitHub PR](<{approval.pr_url}>)"
-            )
-        except Exception:
-            log.exception("Failed to post admin panel beta grant to the Patreon staff channel")
-    return web.json_response({"ok": True, "merged": approval.approved, "pr_url": approval.pr_url})
+    await audit(actor, "patreon.grant", str(member.id), minecraft_username=nickname, commit_url=commit_url)
+    try:
+        await cog._log_staff_info(
+            f"<@{actor.id}> granted beta access to <@{member.id}> as `{nickname}` from the admin panel.\n"
+            f"-# [GitHub commit](<{commit_url}>)"
+        )
+    except Exception:
+        log.exception("Failed to post admin panel beta grant to the Patreon staff channel")
+    return web.json_response({"ok": True, "commit_url": commit_url})
 
 
 @routes.post("/api/patreon/revoke")

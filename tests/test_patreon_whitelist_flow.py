@@ -6,12 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 from requests import HTTPError
 
-from bulmaai.cogs.patreon_whitelist_flow import (
-    PatreonWhitelistFlowCog,
-    _patreon_branch_name,
-    _patreon_gift_branch_name,
-    _patreon_remove_branch_name,
-)
+from bulmaai.cogs.patreon_whitelist_flow import PatreonWhitelistFlowCog
 from bulmaai.services.discord_oauth import build_discord_oauth_state, parse_discord_oauth_state
 from bulmaai.services.patreon_access import (
     PatreonIdentity,
@@ -117,144 +112,67 @@ class FakeUser:
         self.dms.append(content)
 
 
+COMMIT_URL = "https://example.test/commit/abc"
+
+
+def _conflict() -> HTTPError:
+    error = HTTPError("409 Client Error: Conflict")
+    error.response = SimpleNamespace(status_code=409)
+    return error
+
+
 class FakeGitHub:
+    """The whitelist file on main; every edit is a direct commit guarded by the file sha."""
+
+    initial_text = "ExistingUser\n"
+
     def __init__(self):
         self.base_branch = "main"
-        self.created_branches = []
+        self.text = self.initial_text
         self.put_calls = []
-        self.merged_prs = []
-        self.closed_prs = []
-        self.removed_branches = []
-        self.comments = []
-        self.reset_branches = []
-
-    async def create_branch(self, new_branch, from_branch):
-        self.created_branches.append((new_branch, from_branch))
-
-    async def get_ref_sha(self, branch):
-        return "base-sha"
-
-    async def reset_branch(self, branch, sha):
-        self.reset_branches.append((branch, sha))
 
     async def get_whitelist_file(self, ref):
-        if ref == "main":
-            return "ExistingUser\n", "base-sha"
-        return "ExistingUser\n", "branch-sha"
+        return self.text, f"sha-{len(self.put_calls)}"
 
     async def put_whitelist_file(self, *, branch, new_text, sha, message):
-        self.put_calls.append(
-            {
-                "branch": branch,
-                "new_text": new_text,
-                "sha": sha,
-                "message": message,
-            }
-        )
-
-    async def create_pr(self, *, head_branch, title, body):
-        return {"number": 12, "html_url": "https://example.test/pr/12"}
-
-    async def create_or_get_pr(self, *, head_branch, title, body):
-        return await self.create_pr(head_branch=head_branch, title=title, body=body)
-
-    async def merge_pr(self, pr_number):
-        self.merged_prs.append(pr_number)
-
-    async def close_pr(self, pr_number):
-        self.closed_prs.append(pr_number)
-
-    async def add_pr_comment(self, pr_number, comment):
-        self.comments.append((pr_number, comment))
-
-    async def remove_branch(self, branch):
-        self.removed_branches.append(branch)
+        self.put_calls.append({"branch": branch, "new_text": new_text, "sha": sha, "message": message})
+        self.text = new_text
+        return COMMIT_URL
 
 
 class FakeGitHubWithGrantNames(FakeGitHub):
-    async def get_whitelist_file(self, ref):
-        return "OwnerMC\nGiftedMC\nKeepMe\n", "sha"
+    initial_text = "OwnerMC\nGiftedMC\nKeepMe\n"
 
 
 class FakeGitHubWithBaseNick(FakeGitHub):
-    async def get_whitelist_file(self, ref):
-        if ref == "main":
-            return "ExistingUser\nNewTester\n", "base-sha"
-        return "ExistingUser\nNewTester\n", "branch-sha"
+    initial_text = "ExistingUser\nNewTester\n"
 
 
 class FakeGitHubWithOldSelfGrantNick(FakeGitHub):
-    async def get_whitelist_file(self, ref):
-        return "ExistingUser\nOldTester\n", "sha"
+    initial_text = "ExistingUser\nOldTester\n"
 
 
-class FakeGitHubSlowMerge(FakeGitHub):
-    def __init__(self):
-        super().__init__()
-        self.base_text = "ExistingUser\n"
-        self.branch_text = "ExistingUser\n"
-
-    async def get_whitelist_file(self, ref):
-        if ref == "main":
-            return self.base_text, "base-sha"
-        return self.branch_text, "branch-sha"
-
-    async def put_whitelist_file(self, *, branch, new_text, sha, message):
-        await super().put_whitelist_file(branch=branch, new_text=new_text, sha=sha, message=message)
-        self.branch_text = new_text
-
-    async def merge_pr(self, pr_number):
-        self.merged_prs.append(pr_number)
+class FakeGitHubSlowCommit(FakeGitHub):
+    async def put_whitelist_file(self, **kwargs):
         await asyncio.sleep(0.01)
-        self.base_text = self.branch_text
+        return await super().put_whitelist_file(**kwargs)
 
 
-class FakeGitHubMergeMethodNotAllowed(FakeGitHub):
-    async def merge_pr(self, pr_number):
-        self.merged_prs.append(pr_number)
-        error = HTTPError("405 Client Error: Method Not Allowed")
-        error.response = SimpleNamespace(status_code=405)
-        raise error
+class FakeGitHubStaleShaOnce(FakeGitHub):
+    """Someone else commits OtherGift between our read and our write."""
 
-    async def get_pr(self, pr_number):
-        return {
-            "number": pr_number,
-            "html_url": "https://example.test/pr/12",
-            "merged": False,
-            "state": "open",
-        }
+    async def put_whitelist_file(self, **kwargs):
+        if not self.put_calls:
+            self.put_calls.append({**kwargs, "rejected": True})
+            self.text = "ExistingUser\nOtherGift\n"
+            raise _conflict()
+        return await super().put_whitelist_file(**kwargs)
 
 
-class FakeGitHubConflictThenRebases(FakeGitHub):
-    """Base moved (another whitelist PR merged) before our first merge attempt."""
-
-    def __init__(self):
-        super().__init__()
-        self.merge_attempts = 0
-        self.base_text = "ExistingUser\nOtherGift\n"
-
-    async def get_whitelist_file(self, ref):
-        if ref == "main":
-            return self.base_text, "base-sha"
-        if self.reset_branches:
-            return self.base_text, "branch-sha-after-reset"
-        return "ExistingUser\n", "branch-sha"
-
-    async def merge_pr(self, pr_number):
-        self.merge_attempts += 1
-        self.merged_prs.append(pr_number)
-        if self.merge_attempts == 1:
-            error = HTTPError("405 Client Error: Method Not Allowed")
-            error.response = SimpleNamespace(status_code=405)
-            raise error
-
-    async def get_pr(self, pr_number):
-        return {
-            "number": pr_number,
-            "html_url": "https://example.test/pr/12",
-            "merged": False,
-            "state": "open",
-        }
+class FakeGitHubAlwaysStale(FakeGitHub):
+    async def put_whitelist_file(self, **kwargs):
+        self.put_calls.append(kwargs)
+        raise _conflict()
 
 
 class CapturingOAuthPatreonWhitelistFlowCog(PatreonWhitelistFlowCog):
@@ -554,7 +472,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertIn("NewTester", body)
         self.assertIn("has been whitelisted", body)
-        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(cog.gh.text, "ExistingUser\nNewTester\n")
         self.assertEqual(upsert_grant.await_args.args[0].minecraft_username, "NewTester")
 
     async def test_beta_access_command_passes_ephemeral_destination_to_flow(self) -> None:
@@ -641,9 +559,10 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 ephemeral=True,
             )
 
-        self.assertEqual(cog.gh.merged_prs, [12])
-        self.assertEqual(cog.gh.removed_branches, [_patreon_branch_name(456)])
+        self.assertEqual(cog.gh.put_calls[0]["branch"], "main")
+        self.assertEqual(cog.gh.text, "ExistingUser\nNewTester\n")
         self.assertEqual(upsert_grant.await_args.args[0].kind, PatreonGrantKind.SELF)
+        self.assertEqual(upsert_grant.await_args.args[0].source_pr_url, COMMIT_URL)
         self.assertIn("approved automatically", destination.sent[-1][0][0])
 
     async def test_duplicate_active_beta_access_approval_runs_once(self) -> None:
@@ -661,7 +580,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
-        cog.gh = FakeGitHubSlowMerge()
+        cog.gh = FakeGitHubSlowCommit()
         link = PatreonLink(
             discord_user_id=456,
             discord_username="Requester",
@@ -696,7 +615,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(len(cog.gh.put_calls), 1)
         self.assertEqual(upsert_grant.await_count, 1)
         all_messages = [call[0][0] for call in first_destination.sent + second_destination.sent]
         self.assertIn("`NewTester` was approved automatically for Patreon beta access.", all_messages)
@@ -718,7 +637,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
-        cog.gh = FakeGitHubSlowMerge()
+        cog.gh = FakeGitHubSlowCommit()
         link = PatreonLink(
             discord_user_id=456,
             discord_username="Requester",
@@ -760,7 +679,6 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        self.assertEqual(cog.gh.merged_prs, [12])
         self.assertEqual(len(cog.gh.put_calls), 1)
         self.assertEqual(upsert_grant_mock.await_count, 1)
         all_messages = [call[0][0] for call in first_destination.sent + second_destination.sent]
@@ -813,7 +731,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(destination.sent[-1][0][0], "`NewTester` is already whitelisted. Nothing to do.")
         self.assertEqual(staff_channel.sent, [])
 
-    async def test_auto_approval_falls_back_to_staff_review_when_github_refuses_merge(self) -> None:
+    async def test_auto_approval_gives_up_after_repeated_stale_sha(self) -> None:
         staff_channel = FakeChannel()
         author = SimpleNamespace(
             id=456,
@@ -828,7 +746,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
-        cog.gh = FakeGitHubMergeMethodNotAllowed()
+        cog.gh = FakeGitHubAlwaysStale()
         destination = FakeFollowup()
         link = PatreonLink(
             discord_user_id=456,
@@ -854,16 +772,11 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 ephemeral=True,
             )
 
-        self.assertEqual(cog.gh.merged_prs, [12, 12])
+        self.assertEqual(len(cog.gh.put_calls), 3)
         self.assertEqual(upsert_grant.await_count, 0)
-        self.assertIn(
-            "Whitelist PR created, but GitHub would not auto-merge it yet.",
-            destination.sent[-1][0][0],
-        )
-        self.assertIn("https://example.test/pr/12", destination.sent[-1][0][0])
-        self.assertIn("could not be auto-merged", staff_channel.sent[-1][0][0])
+        self.assertIn("could not submit the whitelist change", destination.sent[-1][0][0])
 
-    async def test_auto_approval_rebases_and_retries_after_merge_conflict(self) -> None:
+    async def test_auto_approval_rereads_and_retries_after_stale_sha(self) -> None:
         staff_channel = FakeChannel()
         author = SimpleNamespace(
             id=456,
@@ -878,7 +791,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
-        cog.gh = FakeGitHubConflictThenRebases()
+        cog.gh = FakeGitHubStaleShaOnce()
         destination = FakeFollowup()
         link = PatreonLink(
             discord_user_id=456,
@@ -904,10 +817,8 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 ephemeral=True,
             )
 
-        self.assertEqual(cog.gh.merged_prs, [12, 12])
-        self.assertEqual(cog.gh.reset_branches, [(_patreon_branch_name(456), "base-sha")])
-        self.assertEqual(cog.gh.put_calls[-1]["new_text"], "ExistingUser\nOtherGift\nNewTester\n")
-        self.assertEqual(cog.gh.removed_branches, [_patreon_branch_name(456)])
+        self.assertEqual(len(cog.gh.put_calls), 2)
+        self.assertEqual(cog.gh.text, "ExistingUser\nOtherGift\nNewTester\n")
         self.assertEqual(upsert_grant.await_count, 1)
         self.assertIn("approved automatically", destination.sent[-1][0][0])
 
@@ -969,7 +880,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`OldTester`", args[0])
         self.assertIn("`NewTester`", args[0])
         self.assertIn("view", kwargs)
-        self.assertEqual(cog.gh.merged_prs, [])
+        self.assertEqual(cog.gh.put_calls, [])
         self.assertEqual(upsert_grant.await_count, 0)
 
     async def test_confirmed_self_grant_username_update_replaces_old_whitelist_entry(self) -> None:
@@ -1029,10 +940,8 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             interaction = FakeButtonInteraction(user=author)
             await update_view.children[0].callback(interaction)
 
-        self.assertEqual(cog.gh.created_branches, [(_patreon_branch_name(456), "main")])
         self.assertEqual(cog.gh.put_calls[0]["new_text"], "ExistingUser\nNewTester\n")
         self.assertEqual(cog.gh.put_calls[0]["message"], "Update beta tester: OldTester -> NewTester")
-        self.assertEqual(cog.gh.merged_prs, [12])
         self.assertEqual(upsert_grant.await_args.args[0].minecraft_username, "NewTester")
         self.assertIn("updated from `OldTester` to `NewTester`", interaction.followup.sent[-1][0][0])
         self.assertIn("updated Patreon beta access", staff_channel.sent[-1][0][0])
@@ -1186,9 +1095,8 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             await cog._handle_gift_beta_command(ctx, recipient, "GiftedMC")
 
         self.assertEqual(ctx.deferred, [{"ephemeral": True}])
-        self.assertEqual(cog.gh.created_branches, [(_patreon_gift_branch_name(456, 789), "main")])
-        self.assertEqual(cog.gh.merged_prs, [12])
-        self.assertEqual(cog.gh.removed_branches, [_patreon_gift_branch_name(456, 789)])
+        self.assertEqual(cog.gh.put_calls[0]["message"], "Gift beta tester: GiftedMC")
+        self.assertEqual(upsert_grant.await_args.args[0].source_pr_url, COMMIT_URL)
         self.assertEqual(upsert_grant.await_args.args[0].kind, PatreonGrantKind.GIFT)
         self.assertEqual(upsert_grant.await_args.args[0].beneficiary_discord_user_id, 789)
         self.assertIn("Gift approved automatically", ctx.followup.sent[-1][0][0])
@@ -1319,7 +1227,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             await cog._handle_edit_gift_command(ctx, recipient, None, "NewMC")
 
         self.assertEqual(deactivate.await_count, 0)
-        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(len(cog.gh.put_calls), 1)
         grant = upsert_grant.await_args.args[0]
         self.assertEqual(grant.beneficiary_discord_user_id, 789)
         self.assertEqual(grant.minecraft_username, "NewMC")
@@ -1344,7 +1252,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             await cog._handle_edit_gift_command(ctx, recipient, new_recipient, None)
 
         deactivate.assert_awaited_once_with(456, 789)
-        self.assertEqual(cog.gh.merged_prs, [])
+        self.assertEqual(cog.gh.put_calls, [])
         grant = upsert_grant.await_args.args[0]
         self.assertEqual(grant.beneficiary_discord_user_id, 999)
         self.assertEqual(grant.minecraft_username, "GiftedMC")
@@ -1369,7 +1277,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             await cog._handle_edit_gift_command(ctx, recipient, new_recipient, "NewMC")
 
         deactivate.assert_awaited_once_with(456, 789)
-        self.assertEqual(cog.gh.merged_prs, [12])
+        self.assertEqual(len(cog.gh.put_calls), 1)
         grant = upsert_grant.await_args.args[0]
         self.assertEqual(grant.beneficiary_discord_user_id, 999)
         self.assertEqual(grant.minecraft_username, "NewMC")
@@ -1496,10 +1404,9 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await cog._remove_whitelist_grants(456, grants, "declined_patron")
 
-        self.assertEqual(cog.gh.created_branches, [(_patreon_remove_branch_name(456), "main")])
+        self.assertEqual(len(cog.gh.put_calls), 1)
         self.assertEqual(cog.gh.put_calls[0]["new_text"], "KeepMe\n")
-        self.assertEqual(cog.gh.merged_prs, [12])
-        self.assertEqual(cog.gh.removed_branches, [_patreon_remove_branch_name(456)])
+        self.assertNotIn("456", cog.gh.put_calls[0]["message"])  # public repo: no Discord IDs
 
     def _revoke_cog(self, gh):
         staff_channel = FakeChannel()
@@ -1543,7 +1450,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_revoke_keeps_grants_active_when_github_fails(self) -> None:
         cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())
-        cog.gh.merge_pr = AsyncMock(side_effect=RuntimeError("github down"))
+        cog.gh.put_whitelist_file = AsyncMock(side_effect=RuntimeError("github down"))
         with (
             patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
             patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=None)),

@@ -35,7 +35,7 @@
 
   function prLink(url) {
     return url
-      ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer", onclick: (e) => e.stopPropagation() }, t("PR"))
+      ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer", onclick: (e) => e.stopPropagation() }, "GitHub")
       : h("span", { class: "muted" }, "—");
   }
 
@@ -46,7 +46,7 @@
       const userId = h("input", { type: "text", inputmode: "numeric", placeholder: t("Discord user ID"), size: "24", value: prefillUserId || "" });
       const nick = h("input", { type: "text", placeholder: t("Minecraft username"), maxlength: "16", size: "24" });
       const ok = await dialog(t("Grant beta access"), [
-        h("p", { class: "muted" }, t("Adds the username to the beta whitelist through the same GitHub PR + auto-merge as /patreon beta-access, and records a self grant. Patreon checks are skipped, so the Patreon webhook won't revoke it if the user has no linked pledge.")),
+        h("p", { class: "muted" }, t("Adds the username to the beta whitelist with the same GitHub commit as /patreon beta-access, and records a self grant. Patreon checks are skipped, so the Patreon webhook won't revoke it if the user has no linked pledge.")),
         field(t("Discord user ID"), userId),
         field(t("Minecraft username"), nick),
       ], { confirmLabel: t("Grant") });
@@ -56,8 +56,7 @@
           method: "POST",
           body: { user_id: userId.value.trim(), minecraft_username: nick.value.trim() },
         });
-        if (result.merged) toast(t("Granted {name}", { name: nick.value.trim() }));
-        else toast(t("PR created but GitHub wouldn't auto-merge it; review it: {url}", { url: result.pr_url }), true);
+        toast(t("Granted {name}", { name: nick.value.trim() }));
         await reload();
       });
     });
@@ -213,15 +212,13 @@
     "Page": "Página",
     "Active only": "Solo activos",
     "Search": "Buscar",
-    "PR": "PR",
     "Grant beta access": "Dar acceso beta",
-    "Adds the username to the beta whitelist through the same GitHub PR + auto-merge as /patreon beta-access, and records a self grant. Patreon checks are skipped, so the Patreon webhook won't revoke it if the user has no linked pledge.":
-      "Agrega el nombre de usuario a la lista blanca beta mediante el mismo PR de GitHub + auto-merge que /patreon beta-access, y registra un grant propio. Se omiten las verificaciones de Patreon, así que el webhook de Patreon no lo revocará si el usuario no tiene un pledge vinculado.",
+    "Adds the username to the beta whitelist with the same GitHub commit as /patreon beta-access, and records a self grant. Patreon checks are skipped, so the Patreon webhook won't revoke it if the user has no linked pledge.":
+      "Agrega el nombre de usuario a la lista blanca beta con el mismo commit de GitHub que /patreon beta-access, y registra un grant propio. Se omiten las verificaciones de Patreon, así que el webhook de Patreon no lo revocará si el usuario no tiene un pledge vinculado.",
     "Discord user ID": "ID de usuario de Discord",
     "Minecraft username": "Usuario de Minecraft",
     "Grant": "Otorgar",
     "Granted {name}": "Se otorgó a {name}",
-    "PR created but GitHub wouldn't auto-merge it; review it: {url}": "Se creó el PR pero GitHub no pudo hacer auto-merge; revísalo: {url}",
     "Revoke gift": "Revocar regalo",
     "Revoke": "Revocar",
     "Revoke beta access": "Revocar acceso beta",

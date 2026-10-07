@@ -940,7 +940,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 ephemeral=ephemeral,
             )
             await self._log_staff_info(
-                f"{member.mention} linked Patreon access and `{nickname}` was approved automatically.\nPR: {approval.pr_url}"
+                f"{member.mention} linked Patreon access and `{nickname}` was approved automatically.\n-# [GitHub PR](<{approval.pr_url}>)"
             )
             if mojang_ok is False:
                 await self._flag_unresolved_mojang_username(
@@ -1058,7 +1058,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 ephemeral=True,
             )
             await self._log_staff_info(
-                f"{member.mention} updated Patreon beta access from `{old_nickname}` to `{new_nickname}`.\nPR: {approval.pr_url}"
+                f"{member.mention} updated Patreon beta access from `{old_nickname}` to `{new_nickname}`.\n-# [GitHub PR](<{approval.pr_url}>)"
             )
 
     async def _record_self_grant(self, member: discord.Member, nickname: str, pr_url: str | None) -> None:
@@ -1276,7 +1276,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             )
         await self._log_staff_info(
             f"{member.mention} linked Patreon access and `{nickname}` has a whitelist PR, "
-            f"but it could not be auto-merged ({reason}).\nPR: {pr_url}"
+            f"but it could not be auto-merged ({reason}).\n-# [GitHub PR](<{pr_url}>)"
         )
 
     async def _create_whitelist_add_pr(
@@ -1499,7 +1499,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             f"`{old_nickname}` -> `{nickname}`)."
         )
         if pr_url is not None:
-            staff_note += f"\nPR: {pr_url}"
+            staff_note += f"\n-# [GitHub PR](<{pr_url}>)"
         await self._log_staff_info(staff_note)
 
     @staticmethod
@@ -1669,7 +1669,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         )
         await self._log_staff_info(
             f"{ctx.author.mention} gifted Patreon beta access to {recipient.mention} as `{nickname}` "
-            f"(auto-approved).\nPR: {approval.pr_url}"
+            f"(auto-approved).\n-# [GitHub PR](<{approval.pr_url}>)"
         )
         if mojang_ok is False:
             await self._flag_unresolved_mojang_username(
@@ -2005,7 +2005,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         )
         await self.gh.remove_branch(branch)
         await self._log_staff_info(
-            f"Patreon access expired for <@{owner_discord_user_id}>; removed `{', '.join(nicknames)}`.\nPR: {pr_data['html_url']}"
+            f"Patreon access expired for <@{owner_discord_user_id}>; removed `{', '.join(nicknames)}`.\n-# [GitHub PR](<{pr_data['html_url']}>)"
         )
 
 def setup(bot: discord.Bot):

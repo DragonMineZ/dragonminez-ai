@@ -291,7 +291,7 @@ async def grant_access(request: web.Request, actor: Actor) -> web.Response:
         try:
             await cog._log_staff_info(
                 f"<@{actor.id}> granted beta access to <@{member.id}> as `{nickname}` from the admin panel.\n"
-                f"PR: {approval.pr_url}"
+                f"-# [GitHub PR](<{approval.pr_url}>)"
             )
         except Exception:
             log.exception("Failed to post admin panel beta grant to the Patreon staff channel")

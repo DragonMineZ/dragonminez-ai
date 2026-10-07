@@ -261,8 +261,7 @@ def case_embed(
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="User", value=f"<@{user_id}> (`{user_id}`)", inline=True)
-    automatic = "Console" if source == "console" else "BulmaAI (automatic)"
-    embed.add_field(name="Moderator", value=f"<@{moderator_id}>" if moderator_id else automatic, inline=True)
+    embed.add_field(name="Moderator", value=f"<@{moderator_id}>" if moderator_id else "BulmaAI (automatic)", inline=True)
     if duration_seconds:
         embed.add_field(name="Duration", value=format_duration(duration_seconds), inline=True)
     if expires_at:
@@ -321,9 +320,11 @@ async def perform(
     source: str = "command",
     notify: bool = True,
     log_case: bool = True,
+    record: bool = True,
 ) -> ActionResult:
     """action: warn | note | timeout | untimeout | kick | ban | softban | unban.
-    duration_seconds: required for timeout; makes a ban a tempban. Raises ModActionError."""
+    duration_seconds: required for timeout; makes a ban a tempban. Raises ModActionError.
+    record=False leaves no case, mod-log post or "via" tag in Discord's audit log (the private VPS console)."""
     settings = bot.settings
     member = await resolve_member(guild, target_id)
     if member is None and action in MEMBER_ONLY_ACTIONS:
@@ -339,8 +340,8 @@ async def perform(
     elif action != "ban":
         duration_seconds = None
     expires_at = discord.utils.utcnow() + timedelta(seconds=duration_seconds) if action == "ban" and duration_seconds else None
-    by = moderator.name if moderator is not None else ("Console" if source == "console" else "BulmaAI")
-    audit_reason = f"{reason or 'No reason given'} (via {source} by {by})"[:512]
+    by = moderator.name if moderator is not None else "BulmaAI"
+    audit_reason = (f"{reason or 'No reason given'} (via {source} by {by})" if record else reason or "")[:512] or None
 
     dm_sent = None
     if notify and settings.moderation_dm_on_action and member is not None and action in DM_ACTIONS:
@@ -377,6 +378,8 @@ async def perform(
     try:
         if action == "unban":
             await mod_cases.deactivate_user_cases(guild.id, target_id, "ban")  # stops a pending tempban expiry
+        if not record:
+            return ActionResult(action=action, case_id=None, dm_sent=dm_sent, duration_seconds=duration_seconds)
         case_id = await mod_cases.record_case(
             guild_id=guild.id,
             user_id=target_id,

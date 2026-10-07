@@ -149,6 +149,20 @@ class PerformTests(unittest.IsolatedAsyncioTestCase):
             await mod_actions.perform(self.bot, self.guild, action="kick", target_id=5, moderator=None, reason="x")
         self.assertEqual(raised.exception.status, 409)
 
+    async def test_unrecorded_action_leaves_no_case_log_or_via_tag(self):
+        with (
+            patch("bulmaai.services.mod_cases.record_case", AsyncMock()) as record,
+            patch("bulmaai.services.mod_actions.post_case_log", AsyncMock()) as post,
+        ):
+            result = await mod_actions.perform(
+                self.bot, self.guild, action="ban", target_id=5, moderator=None, reason="phishing",
+                source="console", record=False,
+            )
+        self.assertIsNone(result.case_id)
+        record.assert_not_awaited()
+        post.assert_not_awaited()
+        self.assertEqual(self.guild.ban.await_args.kwargs["reason"], "phishing")
+
     async def test_helper_warn_runs_timeouts_but_leaves_a_ban_step_to_a_moderator(self):
         self.bot.settings.moderation_warn_ladder = "1=ban"
         with (

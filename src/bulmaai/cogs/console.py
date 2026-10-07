@@ -1,8 +1,8 @@
 """VPS console for the running bot: scripts/dmz-bot sends one command over a Unix socket and prints the reply.
 
 The socket is chmod 600, so file permissions are the auth: only the bot's own user (and root) can connect.
-Actions go through mod_actions.perform with moderator=None and source="console", so they land in the case
-log and mod log like any other moderation.
+Console actions are private: no case, no mod-log post, nothing in the panel. Each command is reported only to
+Bruno's personal channel, and nothing is logged at WARNING+ (that level is forwarded to a staff channel).
 """
 
 import asyncio
@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 SOCKET_PATH = Path(os.environ.get("DMZ_BOT_SOCKET") or Path(__file__).resolve().parents[3] / ".dmz-bot.sock")
 SOURCE = "console"
 READ_TIMEOUT_SECONDS = 10
+PRIVATE_LOG_CHANNEL_ID = 1557490771328770198  # Bruno's Spaceship, personal
 MENTION_RE = re.compile(r"^<@!?(\d+)>$")
 
 HELP = """dmz-bot commands:
@@ -68,12 +69,12 @@ class ConsoleCog(ReloadableCog):
             if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
                 reply = "Bad request."
             else:
-                log.warning("Console command: %s", " ".join(argv))
                 reply = await self.run(argv)
+                await self._report(argv, reply)
         except (asyncio.TimeoutError, json.JSONDecodeError, UnicodeDecodeError):
             reply = "Bad request."
         except Exception as error:
-            log.exception("Console command failed")
+            log.info("Console command failed", exc_info=True)  # INFO: journal only, never forwarded
             reply = f"Failed: {error}"
         writer.write(reply.encode() + b"\n")
         with suppress(ConnectionError):
@@ -124,7 +125,7 @@ class ConsoleCog(ReloadableCog):
         user_id = await self._user_id(guild, who)
         result = await mod_actions.perform(
             self.bot, guild, action=action, target_id=user_id, moderator=None,
-            reason=reason, source=SOURCE, **kwargs,
+            reason=reason, source=SOURCE, record=False, **kwargs,
         )
         case = f", case #{result.case_id}" if result.case_id else ""
         return f"{action.title()} done for {await self._label(user_id)}{case}."
@@ -141,9 +142,9 @@ class ConsoleCog(ReloadableCog):
             return f"The bot can't manage {role.name}: it's managed by an integration or not below the bot's top role."
         try:
             if verb == "add":
-                await member.add_roles(role, reason="via console")
+                await member.add_roles(role)
             else:
-                await member.remove_roles(role, reason="via console")
+                await member.remove_roles(role)
         except discord.Forbidden:
             return "Discord refused: the bot is missing Manage Roles."
         return f"{'Added' if verb == 'add' else 'Removed'} {role.name} {'to' if verb == 'add' else 'from'} {member}."
@@ -169,6 +170,18 @@ class ConsoleCog(ReloadableCog):
         if member is None:
             raise ModActionError(f"No member named {who!r}. Use their Discord ID instead.", 404)
         return member.id
+
+    async def _report(self, argv: list[str], reply: str) -> None:
+        if argv and argv[0] in ("help", "-h", "--help"):
+            return
+        try:
+            channel = self.bot.get_channel(PRIVATE_LOG_CHANNEL_ID) or await self.bot.fetch_channel(PRIVATE_LOG_CHANNEL_ID)
+            command = " ".join(argv).replace("`", "'")[:500]
+            await channel.send(
+                f"`dmz-bot {command}`\n{reply[:1500]}", allowed_mentions=discord.AllowedMentions.none()
+            )
+        except Exception:
+            log.info("Console report to the private channel failed", exc_info=True)
 
     async def _label(self, user_id: int) -> str:
         user = self.bot.get_user(user_id)

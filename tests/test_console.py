@@ -27,8 +27,8 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
             reply = await self.cog.run(["ban", "<@123>", "phishing", "links", "--delete-days", "2"])
         kwargs = perform.await_args.kwargs
         self.assertEqual(
-            (kwargs["action"], kwargs["target_id"], kwargs["moderator"], kwargs["source"], kwargs["reason"]),
-            ("ban", 123, None, "console", "phishing links"),
+            (kwargs["action"], kwargs["target_id"], kwargs["moderator"], kwargs["source"], kwargs["reason"], kwargs["record"]),
+            ("ban", 123, None, "console", "phishing links", False),
         )
         self.assertEqual(kwargs["delete_message_seconds"], 2 * 86400)
         self.assertIn("case #7", reply)
@@ -47,6 +47,15 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.cog.run(["unban", "1"]), "You can't moderate the server owner.")
         self.assertIn("No member named", await self.cog.run(["unban", "nobody"]))
         self.assertIn("dmz-bot commands", await self.cog.run(["frobnicate"]))
+
+    async def test_commands_are_reported_only_to_the_private_channel(self):
+        channel = SimpleNamespace(send=AsyncMock())
+        self.cog.bot.get_channel = lambda channel_id: channel if channel_id == 1557490771328770198 else None
+        await self.cog._report(["ban", "123", "`spam`"], "Ban done for 123.")
+        content = channel.send.await_args.args[0]
+        self.assertEqual(content, "`dmz-bot ban 123 'spam'`\nBan done for 123.")
+        await self.cog._report(["help"], "...")
+        self.assertEqual(channel.send.await_count, 1)
 
 
 if __name__ == "__main__":

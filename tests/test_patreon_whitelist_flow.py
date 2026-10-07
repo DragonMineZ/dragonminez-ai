@@ -6,7 +6,12 @@ from urllib.parse import parse_qs, urlparse
 
 from requests import HTTPError
 
-from bulmaai.cogs.patreon_whitelist_flow import PatreonWhitelistFlowCog
+from bulmaai.cogs.patreon_whitelist_flow import (
+    PatreonWhitelistFlowCog,
+    _patreon_branch_name,
+    _patreon_gift_branch_name,
+    _patreon_remove_branch_name,
+)
 from bulmaai.services.discord_oauth import build_discord_oauth_state, parse_discord_oauth_state
 from bulmaai.services.patreon_access import (
     PatreonIdentity,
@@ -548,7 +553,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         body = response.body.decode("utf-8")
         self.assertEqual(response.status, 200)
         self.assertIn("NewTester", body)
-        self.assertIn("approved automatically", body)
+        self.assertIn("has been whitelisted", body)
         self.assertEqual(cog.gh.merged_prs, [12])
         self.assertEqual(upsert_grant.await_args.args[0].minecraft_username, "NewTester")
 
@@ -637,7 +642,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(cog.gh.merged_prs, [12])
-        self.assertEqual(cog.gh.removed_branches, ["patreon/user-456"])
+        self.assertEqual(cog.gh.removed_branches, [_patreon_branch_name(456)])
         self.assertEqual(upsert_grant.await_args.args[0].kind, PatreonGrantKind.SELF)
         self.assertIn("approved automatically", destination.sent[-1][0][0])
 
@@ -900,9 +905,9 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(cog.gh.merged_prs, [12, 12])
-        self.assertEqual(cog.gh.reset_branches, [("patreon/user-456", "base-sha")])
+        self.assertEqual(cog.gh.reset_branches, [(_patreon_branch_name(456), "base-sha")])
         self.assertEqual(cog.gh.put_calls[-1]["new_text"], "ExistingUser\nOtherGift\nNewTester\n")
-        self.assertEqual(cog.gh.removed_branches, ["patreon/user-456"])
+        self.assertEqual(cog.gh.removed_branches, [_patreon_branch_name(456)])
         self.assertEqual(upsert_grant.await_count, 1)
         self.assertIn("approved automatically", destination.sent[-1][0][0])
 
@@ -1024,7 +1029,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             interaction = FakeButtonInteraction(user=author)
             await update_view.children[0].callback(interaction)
 
-        self.assertEqual(cog.gh.created_branches, [("patreon/user-456", "main")])
+        self.assertEqual(cog.gh.created_branches, [(_patreon_branch_name(456), "main")])
         self.assertEqual(cog.gh.put_calls[0]["new_text"], "ExistingUser\nNewTester\n")
         self.assertEqual(cog.gh.put_calls[0]["message"], "Update beta tester: OldTester -> NewTester")
         self.assertEqual(cog.gh.merged_prs, [12])
@@ -1055,7 +1060,8 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         body = response.body.decode("utf-8")
         self.assertEqual(response.status, 200)
-        self.assertIn("Discord account attacker (789)", body)
+        self.assertIn("@attacker", body)
+        self.assertNotIn("789", body)
         self.assertIn(patreon_link_confirm_token("patreon-client-secret", "oauth-code", state), body)
         fetch_identity.assert_not_awaited()
         upsert_link.assert_not_awaited()
@@ -1180,9 +1186,9 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             await cog._handle_gift_beta_command(ctx, recipient, "GiftedMC")
 
         self.assertEqual(ctx.deferred, [{"ephemeral": True}])
-        self.assertEqual(cog.gh.created_branches, [("patreon/gift-456-789", "main")])
+        self.assertEqual(cog.gh.created_branches, [(_patreon_gift_branch_name(456, 789), "main")])
         self.assertEqual(cog.gh.merged_prs, [12])
-        self.assertEqual(cog.gh.removed_branches, ["patreon/gift-456-789"])
+        self.assertEqual(cog.gh.removed_branches, [_patreon_gift_branch_name(456, 789)])
         self.assertEqual(upsert_grant.await_args.args[0].kind, PatreonGrantKind.GIFT)
         self.assertEqual(upsert_grant.await_args.args[0].beneficiary_discord_user_id, 789)
         self.assertIn("Gift approved automatically", ctx.followup.sent[-1][0][0])
@@ -1490,10 +1496,10 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await cog._remove_whitelist_grants(456, grants, "declined_patron")
 
-        self.assertEqual(cog.gh.created_branches, [("patreon/remove-456", "main")])
+        self.assertEqual(cog.gh.created_branches, [(_patreon_remove_branch_name(456), "main")])
         self.assertEqual(cog.gh.put_calls[0]["new_text"], "KeepMe\n")
         self.assertEqual(cog.gh.merged_prs, [12])
-        self.assertEqual(cog.gh.removed_branches, ["patreon/remove-456"])
+        self.assertEqual(cog.gh.removed_branches, [_patreon_remove_branch_name(456)])
 
     def _revoke_cog(self, gh):
         staff_channel = FakeChannel()

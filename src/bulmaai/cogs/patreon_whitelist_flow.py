@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import time
 import json
@@ -21,6 +22,7 @@ from bulmaai.services.discord_oauth import (
     build_discord_oauth_state,
     parse_discord_oauth_state,
 )
+from bulmaai.services import patron_page
 from bulmaai.services.mojang import minecraft_username_exists
 from bulmaai.services.patreon_access import (
     PatreonCreatorClient,
@@ -106,16 +108,25 @@ def _manual_whitelist_keys(lines: list[str]) -> set[str]:
     return keys
 
 
+def _branch_key(*user_ids: int) -> str:
+    # The whitelist repo is public, so branch names carry a stable hash instead of raw Discord IDs.
+    return hashlib.sha256("-".join(map(str, user_ids)).encode()).hexdigest()[:12]
+
+
 def _patreon_branch_name(user_id: int) -> str:
-    return f"patreon/user-{user_id}"
+    return f"patreon/user-{_branch_key(user_id)}"
 
 
 def _patreon_gift_branch_name(owner_id: int, recipient_id: int) -> str:
-    return f"patreon/gift-{owner_id}-{recipient_id}"
+    return f"patreon/gift-{_branch_key(owner_id, recipient_id)}"
+
+
+def _patreon_gift_edit_branch_name(owner_id: int, recipient_id: int) -> str:
+    return f"patreon/gift-edit-{_branch_key(owner_id, recipient_id)}"
 
 
 def _patreon_remove_branch_name(owner_id: int) -> str:
-    return f"patreon/remove-{owner_id}"
+    return f"patreon/remove-{_branch_key(owner_id)}"
 
 
 def _cookie_value(headers, name: str) -> str:
@@ -196,6 +207,17 @@ def _active_self_grant(grants: list[PatreonGrant], member_id: int) -> PatreonGra
     return None
 
 
+def _discord_card(member, fallback_user_id: int) -> patron_page.DiscordCard:
+    if member is None:
+        return patron_page.DiscordCard(display_name=str(fallback_user_id), username=str(fallback_user_id))
+    username = getattr(member, "name", None) or str(member)
+    return patron_page.DiscordCard(
+        display_name=getattr(member, "display_name", None) or username,
+        username=username,
+        avatar_url=getattr(getattr(member, "display_avatar", None), "url", None),
+    )
+
+
 async def _send_message(destination, content: str, *, ephemeral: bool = False, **kwargs) -> None:
     if ephemeral:
         kwargs["ephemeral"] = True
@@ -205,6 +227,9 @@ async def _send_message(destination, content: str, *, ephemeral: bool = False, *
 class BrowserFlowDestination:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        # Set by the flow so the browser page can show the right outcome instead of parsing messages.
+        self.whitelisted: str | None = None
+        self.patreon_url: str | None = None
 
     async def send(self, content: str, **kwargs) -> None:
         self.messages.append(str(content))
@@ -562,6 +587,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 return text_http_response(500, "Patreon webhook failed")
 
         def handle_beta_access(path: str, query: dict[str, list[str]], headers) -> ReleaseWebhookHttpResponse:
+            if path.startswith(patron_page.ASSET_PREFIX):
+                return patron_page.asset_response(path) or text_http_response(404, "Not found")
             if path == BETA_ACCESS_START_PATH:
                 return self._handle_beta_access_start(query)
             if path != discord_callback_path:
@@ -693,6 +720,18 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             minecraft_username,
             ephemeral=False,
         )
+        if destination.whitelisted:
+            return self._whitelisted_page(destination.whitelisted, patreon_just_linked=False)
+        if destination.patreon_url:
+            return patron_page.page_response(
+                title="Link your Patreon",
+                body_html=(
+                    "Discord verified. Now link the Patreon account with your <b>Contributor</b> or "
+                    f"<b>Benefactor</b> pledge to whitelist <b>{html.escape(minecraft_username)}</b>."
+                ),
+                steps=(True, False, False),
+                actions=patron_page.button("Continue with Patreon", destination.patreon_url),
+            )
         message = destination.messages[-1] if destination.messages else "Verification request accepted."
         return self._html_response(f"{message} (Minecraft username: {minecraft_username})")
 
@@ -822,6 +861,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 ephemeral=ephemeral,
             )
             return
+        if isinstance(destination, BrowserFlowDestination):
+            destination.patreon_url = url
         if minecraft_username:
             await _send_message(
                 destination,
@@ -881,6 +922,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             if self_grant is not None:
                 old_nickname = self_grant.minecraft_username.strip()
                 if old_nickname.casefold() == nickname.casefold():
+                    if isinstance(destination, BrowserFlowDestination):
+                        destination.whitelisted = old_nickname
                     await _send_message(
                         destination,
                         f"`{nickname}` is already your active Patreon beta whitelist username.",
@@ -917,6 +960,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 return
 
             if approval.pr_url is None:
+                if isinstance(destination, BrowserFlowDestination):
+                    destination.whitelisted = nickname
                 await _send_message(
                     destination,
                     f"`{nickname}` is already whitelisted. Nothing to do.",
@@ -934,6 +979,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 return
 
             await self._record_self_grant(member, nickname, approval.pr_url)
+            if isinstance(destination, BrowserFlowDestination):
+                destination.whitelisted = nickname
             await _send_message(
                 destination,
                 f"`{nickname}` was approved automatically for Patreon beta access.",
@@ -1082,7 +1129,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             nickname=nickname,
             title=f"Add beta tester: {nickname}",
             commit_message=f"Add beta tester: {nickname}",
-            body=f"Automatically approved through Patreon OAuth for Discord user {member} ({member.id}).",
+            body=f"Automatically approved through Patreon OAuth for Discord user {member}.",
         )
         if pr_data is None:
             return AutoApprovalResult(pr_url=None, approved=False)
@@ -1094,7 +1141,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             branch=branch,
             pr_number=pr_number,
             pr_url=pr_url,
-            success_comment=f"Automatically approved through Patreon OAuth for {member} ({member.id}).",
+            success_comment=f"Automatically approved through Patreon OAuth for {member}.",
             pending_description="Automatic Patreon approval",
             rebase_mutate=_add_nickname_mutate(nickname),
             rebase_commit_message=f"Add beta tester: {nickname}",
@@ -1114,7 +1161,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             title=f"Update beta tester: {old_nickname} -> {new_nickname}",
             commit_message=f"Update beta tester: {old_nickname} -> {new_nickname}",
             body=(
-                f"Automatically updated through Patreon OAuth for Discord user {member} ({member.id}). "
+                f"Automatically updated through Patreon OAuth for Discord user {member}. "
                 f"Replacing `{old_nickname}` with `{new_nickname}`."
             ),
         )
@@ -1129,7 +1176,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             pr_number=pr_number,
             pr_url=pr_url,
             success_comment=(
-                f"Automatically updated Patreon beta access for {member} ({member.id}): "
+                f"Automatically updated Patreon beta access for {member}: "
                 f"{old_nickname} -> {new_nickname}."
             ),
             pending_description="Automatic Patreon username update",
@@ -1422,7 +1469,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
 
             pr_url: str | None = None
             if nickname_changed:
-                branch = f"patreon/gift-edit-{ctx.author.id}-{target.id}"
+                branch = _patreon_gift_edit_branch_name(ctx.author.id, target.id)
                 try:
                     approval = await self._auto_update_gift_access(
                         owner=ctx.author,
@@ -1543,8 +1590,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             title=f"Update gifted beta tester: {old_nickname} -> {new_nickname}",
             commit_message=f"Update gifted beta tester: {old_nickname} -> {new_nickname}",
             body=(
-                f"Username update requested by Discord user {owner} ({owner.id}) "
-                f"for gift recipient {recipient} ({recipient.id}). "
+                f"Username update requested by Discord user {owner} "
+                f"for gift recipient {recipient}. "
                 f"Replacing `{old_nickname}` with `{new_nickname}`."
             ),
         )
@@ -1559,8 +1606,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             pr_number=pr_number,
             pr_url=pr_url,
             success_comment=(
-                f"Gift username update by {owner} ({owner.id}): "
-                f"`{old_nickname}` -> `{new_nickname}` for {recipient} ({recipient.id})."
+                f"Gift username update by {owner}: "
+                f"`{old_nickname}` -> `{new_nickname}` for {recipient}."
             ),
             pending_description="Gift username update",
             rebase_mutate=_rename_nickname_mutate(old_nickname, new_nickname),
@@ -1691,8 +1738,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             title=f"Gift beta tester: {nickname}",
             commit_message=f"Gift beta tester: {nickname}",
             body=(
-                f"Gift requested by Discord user {owner} ({owner.id}) "
-                f"for {recipient} ({recipient.id}). Automatically approved."
+                f"Gift requested by Discord user {owner} "
+                f"for {recipient}. Automatically approved."
             ),
         )
         if pr_data is None:
@@ -1706,7 +1753,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             pr_number=pr_number,
             pr_url=pr_url,
             success_comment=(
-                f"Automatically approved gift from {owner} ({owner.id}) for {recipient} ({recipient.id})."
+                f"Automatically approved gift from {owner} for {recipient}."
             ),
             pending_description="Automatic Patreon gift approval",
             rebase_mutate=_add_nickname_mutate(nickname),
@@ -1760,7 +1807,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             now=time.time,
         )
         if parsed_state is None:
-            return text_http_response(403, "Patreon authorization expired")
+            return self._expired_page()
 
         async with self._patreon_oauth_state_lock(state):
             if self._patreon_oauth_state_processed(state):
@@ -1781,17 +1828,19 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         # The state is minted by whoever ran the Discord command, so show whose account gets the
         # pledge and make the patron click once more before anything is linked.
         member = await self._resolve_member(parsed_state.guild_id, parsed_state.discord_user_id)
-        discord_name = str(member) if member is not None else str(parsed_state.discord_user_id)
-        message = f"This links your Patreon membership to the Discord account {discord_name} ({parsed_state.discord_user_id})."
+        card = _discord_card(member, parsed_state.discord_user_id)
+        body = "Click below to link your Patreon membership to the Discord account above"
         if parsed_state.action == "beta_access":
-            message += f" It also requests beta access for the Minecraft username {parsed_state.minecraft_username}."
-        message += " Only continue if that is your own Discord account."
-        fields = "".join(
-            f'<input type="hidden" name="{name}" value="{html.escape(value, quote=True)}">'
-            for name, value in (("code", code), ("state", state), ("confirm", confirm))
+            body += f" and link your Minecraft username <b>{html.escape(parsed_state.minecraft_username or '')}</b>"
+        return patron_page.page_response(
+            title="Is this you?",
+            body_html=body + ".",
+            steps=(True, False, False) if parsed_state.action == "beta_access" else None,
+            card=card,
+            actions=patron_page.form_button(
+                f"Link to {card.username}", {"code": code, "state": state, "confirm": confirm}
+            ),
         )
-        button = f'<button type="submit">Link to {html.escape(discord_name)}</button>'
-        return self._html_response(message, extra_html=f'<form method="get">{fields}{button}</form>')
 
     async def _complete_patreon_oauth_callback(
         self,
@@ -1832,7 +1881,19 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             f"Patreon link updated for <@{parsed_state.discord_user_id}>: status `{identity.status.patron_status}`, tiers `{', '.join(identity.status.tier_ids) or 'none'}`."
         )
         if not active:
-            return self._html_response("Patreon linked, but active Contributor/Benefactor access was not found.")
+            return patron_page.page_response(
+                title="Almost there",
+                tone="aqua",
+                body_html="Your Patreon has been linked, but we haven't found that you are a <b>Contributor</b> or <b>Benefactor</b>.",
+                steps=(True, True, False) if parsed_state.action == "beta_access" else None,
+                actions=patron_page.button("Become a patron", patron_page.PATREON_URL, new_tab=True),
+                note_html='Have you signed in with the correct account? If not, <a href="#switch">click here</a>.',
+                switch_url=self._build_patreon_oauth_url(
+                    member,
+                    action=parsed_state.action,
+                    minecraft_username=parsed_state.minecraft_username,
+                ) if member is not None else None,
+            )
         if parsed_state.action == "beta_access":
             minecraft_username = parsed_state.minecraft_username
             if not MC_NAME_RE.match(minecraft_username or ""):
@@ -1854,9 +1915,15 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 ephemeral=False,
                 active_link=link,
             )
+            if destination.whitelisted:
+                return self._whitelisted_page(destination.whitelisted, patreon_just_linked=True)
             message = destination.messages[-1] if destination.messages else "Verification request accepted."
             return self._html_response(message)
-        return self._html_response("Patreon linked. You can close this tab and return to Discord.")
+        return patron_page.page_response(
+            title="Patreon linked",
+            tone="green",
+            body_html="Your Patreon is linked to your Discord account. You can close this tab and go back to Discord.",
+        )
 
     async def _resolve_member(self, guild_id: int, user_id: int) -> discord.Member | None:
         guild = self.bot.get_guild(guild_id)
@@ -1875,20 +1942,36 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         message: str,
         *,
         status: int = 200,
-        title: str = "DragonMineZ Beta Access",
+        title: str | None = None,
         extra_html: str = "",
     ) -> ReleaseWebhookHttpResponse:
-        safe_message = self._linkify_message(message)
-        body = (
-            "<!doctype html><html><head><meta charset=\"utf-8\">"
-            f"<title>{html.escape(title)}</title></head><body>"
-            f"<main><h1>{html.escape(title)}</h1><p>{safe_message}</p>{extra_html}</main>"
-            "</body></html>"
-        )
-        return ReleaseWebhookHttpResponse(
+        failed = status >= 400
+        return patron_page.page_response(
             status=status,
-            body=body.encode("utf-8"),
-            content_type="text/html; charset=utf-8",
+            title=title or ("Something went wrong" if failed else "DragonMineZ Beta Access"),
+            tone="red" if failed else "gold",
+            body_html=self._linkify_message(message),
+            actions=extra_html,
+        )
+
+    def _expired_page(self) -> ReleaseWebhookHttpResponse:
+        return self._html_response(
+            "This authorization timed out or was already used. Start again from Discord.",
+            status=403,
+            title="Link expired",
+        )
+
+    def _whitelisted_page(self, nickname: str, *, patreon_just_linked: bool) -> ReleaseWebhookHttpResponse:
+        prefix = "Patreon linked and " if patreon_just_linked else ""
+        downloads = patron_page.link("download", patron_page.DOWNLOADS_CHANNEL_URL)
+        return patron_page.page_response(
+            title="You're in!",
+            tone="green",
+            body_html=(
+                f"{prefix}<b>{html.escape(nickname)}</b> has been whitelisted. "
+                f"You now have access to {downloads} DragonMineZ early-access versions!"
+            ),
+            steps=(True, True, True),
         )
 
     def _linkify_message(self, message: str) -> str:
@@ -1903,7 +1986,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             parts.append(html.escape(trailing))
             last = match.end()
         parts.append(html.escape(message[last:]))
-        return "".join(parts)
+        return re.sub(r"`([^`<>]+)`", r"<b>\1</b>", "".join(parts))
 
     async def _handle_patreon_webhook(self, body: bytes, headers) -> ReleaseWebhookHttpResponse:
         settings = self.bot.settings

@@ -106,7 +106,6 @@ CATEGORIES: dict[str, TicketCategory] = {
                     max_length=800,
                 ),
                 FormField(tri("Links (GitHub, portfolio)", "Enlaces"), OPTIONAL, required=False, max_length=200),
-                FormField(tri("Availability", "Horario"), tri("Hours per week", "Horas por semana"), required=False),
             ),
         ),
         TicketCategory(

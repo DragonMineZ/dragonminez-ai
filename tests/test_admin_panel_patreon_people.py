@@ -77,6 +77,7 @@ class PatreonPeoplePanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 400)
 
     async def test_link_and_grants_without_creator_token(self):
+        object.__setattr__(self.bot.settings, "PATREON_CREATOR_TOKEN", None)  # the VPS env has a real one
         self.login(OWNER_ID)
         pool = self._pool(link=link_row(), grants=[grant_row(TARGET_ID, TARGET_ID, "Steve")])
         with patch("bulmaai.web.routes_patreon.get_pool", AsyncMock(return_value=pool)):

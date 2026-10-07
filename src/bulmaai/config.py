@@ -90,6 +90,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.self_update",
     "bulmaai.cogs.mod_log_sync",
     "bulmaai.cogs.scheduled_announcements",
+    "bulmaai.cogs.console",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"

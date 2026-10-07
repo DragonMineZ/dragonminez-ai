@@ -261,7 +261,8 @@ def case_embed(
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="User", value=f"<@{user_id}> (`{user_id}`)", inline=True)
-    embed.add_field(name="Moderator", value=f"<@{moderator_id}>" if moderator_id else "BulmaAI (automatic)", inline=True)
+    automatic = "Console" if source == "console" else "BulmaAI (automatic)"
+    embed.add_field(name="Moderator", value=f"<@{moderator_id}>" if moderator_id else automatic, inline=True)
     if duration_seconds:
         embed.add_field(name="Duration", value=format_duration(duration_seconds), inline=True)
     if expires_at:
@@ -338,7 +339,7 @@ async def perform(
     elif action != "ban":
         duration_seconds = None
     expires_at = discord.utils.utcnow() + timedelta(seconds=duration_seconds) if action == "ban" and duration_seconds else None
-    by = moderator.name if moderator is not None else "BulmaAI"
+    by = moderator.name if moderator is not None else ("Console" if source == "console" else "BulmaAI")
     audit_reason = f"{reason or 'No reason given'} (via {source} by {by})"[:512]
 
     dm_sent = None

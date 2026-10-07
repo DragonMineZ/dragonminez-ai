@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""dmz-bot: run moderation commands on the live bot from the VPS console.
+
+Install once:  sudo ln -s "$(pwd)/scripts/dmz-bot" /usr/local/bin/dmz-bot
+Stdlib only, so it runs with the system python3 (no venv needed).
+"""
+
+import json
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+SOCKET_PATH = os.environ.get("DMZ_BOT_SOCKET") or str(Path(__file__).resolve().parents[1] / ".dmz-bot.sock")
+UNIT = os.environ.get("DMZ_BOT_UNIT", "dragonminez-ai-discord.service")
+
+
+def systemd(*cmd: str) -> list[str]:
+    return list(cmd) if os.geteuid() == 0 else ["sudo", *cmd]
+
+
+def restart() -> int:
+    # Same as `systemctl restart <unit>`, then a short status so you see it came back.
+    print(f"Restarting {UNIT}…")
+    code = subprocess.call(systemd("systemctl", "restart", UNIT))
+    if code == 0:
+        subprocess.call(systemd("systemctl", "--no-pager", "status", "-n", "5", UNIT))
+    return code
+
+
+def send(argv: list[str]) -> int:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(60)
+            sock.connect(SOCKET_PATH)
+            sock.sendall(json.dumps(argv).encode() + b"\n")
+            reply = b""
+            while chunk := sock.recv(65536):
+                reply += chunk
+    except (FileNotFoundError, ConnectionRefusedError):
+        print(f"The bot isn't running (no console at {SOCKET_PATH}). Check it with: dmz-bot status", file=sys.stderr)
+        return 1
+    except PermissionError:
+        print("Permission denied: run this as the bot's user or with sudo.", file=sys.stderr)
+        return 1
+    except socket.timeout:
+        print("The bot didn't answer within 60s; check: dmz-bot logs", file=sys.stderr)
+        return 1
+    print(reply.decode().rstrip())
+    return 0
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    command = argv[0] if argv else "help"
+    if command == "restart":
+        return restart()
+    if command == "status":
+        return subprocess.call(systemd("systemctl", "--no-pager", "status", "-n", "15", UNIT))
+    if command == "logs":
+        cmd = systemd("journalctl", "-u", UNIT, "-n", "50", "-f")
+        os.execvp(cmd[0], cmd)  # replaces this process, so Ctrl+C stops journalctl cleanly
+    return send(argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

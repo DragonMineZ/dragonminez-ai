@@ -20,6 +20,7 @@ venv/
 *.log
 data/evals/*.jsonl
 data/ticket_transcripts/
+.dmz-bot.sock
 
 # OS / editors
 .DS_Store

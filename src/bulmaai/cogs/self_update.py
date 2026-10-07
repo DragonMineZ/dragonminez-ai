@@ -77,7 +77,10 @@ class ApplyUpdateView(discord.ui.View):
         if bot.update_lock.locked():
             await interaction.response.send_message("An update is already running.", ephemeral=True)
             return
-        await interaction.response.defer()
+        # Pull + full suite takes a while, so show it's working right away instead of a silent defer.
+        button.disabled = True
+        button.label = "Pulling & testing…"
+        await interaction.response.edit_message(view=self)
         async with bot.update_lock:
             old = await git("rev-parse", "HEAD")
             try:
@@ -92,8 +95,10 @@ class ApplyUpdateView(discord.ui.View):
                 sha_from=old, sha_to=new, mode="full", result="restarting" if ok else "failed", detail=message
             )
             if not ok:
+                button.disabled = False
+                button.label = "Pull & restart"
+                await interaction.message.edit(view=self)
                 return
-            button.disabled = True
             button.label = "Restarting…"
             await interaction.message.edit(view=self)
             bot.restart_requested = True

@@ -43,6 +43,97 @@
     "No flagged joiners match.": "Ningún ingreso marcado coincide.",
   });
 
+  // ---- Bot logs (replaces the Discord log channel) -------------------------------------------------
+
+  i18n({
+    "Bot logs": "Registros del bot",
+    "Errors, automod/purge/case notices and update news, kept for a year. Names and IDs open a quick profile.":
+      "Errores, avisos de automod/purge/casos y novedades de actualización, guardados un año. Los nombres e IDs abren un perfil rápido.",
+    "Level": "Nivel",
+    "All levels": "Todos los niveles",
+    "Warnings and up": "Advertencias o más",
+    "Errors and up": "Errores o más",
+    "Text": "Texto",
+    "Search text…": "Buscar texto…",
+    "Loading…": "Cargando…",
+    "Close": "Cerrar",
+    "Open profile": "Abrir perfil",
+    "Not in server": "No está en el servidor",
+    "Banned": "Baneado",
+    "Timed out": "Aislado",
+    "Account created": "Cuenta creada",
+    "Joined": "Se unió",
+    "No recent cases.": "Sin casos recientes.",
+    "No logs match.": "Ningún registro coincide.",
+    "Traceback": "Traceback",
+  });
+
+  const LOG_LEVEL_KINDS = { info: "", warning: "warn", error: "danger", critical: "danger" };
+
+  Panel.page({
+    id: "bot-logs",
+    title: "Bot logs",
+    group: "Moderation",
+    perm: "logs.view",
+    async render(view, args) {
+      const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: args[0] || "" });
+      const textInput = h("input", { type: "text", placeholder: t("Search text…"), size: "22" });
+      const sourceSelect = h("select", {}, h("option", { value: "" }, t("All sources")));
+      const levelSelect = h("select", {},
+        h("option", { value: "" }, t("All levels")),
+        h("option", { value: "warning" }, t("Warnings and up")),
+        h("option", { value: "error" }, t("Errors and up")));
+      const apply = h("button", { class: "btn primary", type: "submit" }, t("Apply"));
+      const more = h("button", { class: "btn", type: "button", hidden: true }, t("Load more"));
+      const results = h("div");
+      let logs = [];
+      let nextBefore = null;
+      let sourcesLoaded = false;
+
+      const load = async (append) => {
+        const params = new URLSearchParams();
+        if (userInput.value.trim()) params.set("user_id", userInput.value.trim());
+        if (textInput.value.trim()) params.set("q", textInput.value.trim());
+        if (sourceSelect.value) params.set("source", sourceSelect.value);
+        if (levelSelect.value) params.set("level", levelSelect.value);
+        if (append && nextBefore) params.set("before_id", String(nextBefore));
+        const data = await api(`/api/logs?${params}`);
+        logs = append ? logs.concat(data.logs) : data.logs;
+        nextBefore = data.next_before_id;
+        more.hidden = !nextBefore;
+        if (!sourcesLoaded) {
+          sourcesLoaded = true;
+          for (const s of data.sources) sourceSelect.append(h("option", { value: s }, s));
+        }
+        results.replaceChildren(table([
+          { label: t("When"), render: (l) => time(l.created_at) },
+          { label: t("Level"), render: (l) => badge(l.level, LOG_LEVEL_KINDS[l.level] || "") },
+          { label: t("Source"), render: (l) => badge(l.source, "accent") },
+          { label: t("User"), render: (l) => (l.user_id ? Panel.mention(l.user_id, l.user && l.user.display_name) : "") },
+          {
+            label: t("Details"),
+            render: (l) => h("div", {},
+              h("strong", {}, l.title),
+              h("pre", { class: "log-body small" }, Panel.richText(l.body)),
+              l.data && l.data.traceback
+                ? h("details", {}, h("summary", { class: "small muted" }, t("Traceback")), h("pre", { class: "small" }, l.data.traceback))
+                : null),
+          },
+        ], logs, { empty: t("No logs match.") }));
+      };
+
+      more.addEventListener("click", () => run(more, () => load(true)));
+      const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(false)); } },
+        field(t("User"), userSuggest(userInput)), field(t("Source"), sourceSelect), field(t("Level"), levelSelect),
+        field(t("Text"), textInput), apply);
+      view.append(
+        h("h1", {}, t("Bot logs")),
+        h("p", { class: "muted" }, t("Errors, automod/purge/case notices and update news, kept for a year. Names and IDs open a quick profile.")),
+        h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
+      await load(false);
+    },
+  });
+
   // ---- Website logs -----------------------------------------------------------------------------
 
   function detailsText(details) {

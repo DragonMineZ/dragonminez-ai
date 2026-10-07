@@ -30,6 +30,7 @@ from bulmaai.ui.dev_jar_views import (
 )
 
 MAIN_GUILD = SimpleNamespace(id=Settings.panel_guild_id)
+STAFF_USER = type("StaffUser", (str,), {"mention": "<@1>"})("StaffUser#0001")  # str() like a real user, plus .mention
 
 
 class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
@@ -929,7 +930,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                     response=FakeResponse(),
                     followup=FakeFollowup(),
                     message=first_message,
-                    user="StaffUser#0001",
+                    user=STAFF_USER,
                 )
                 await cog._discard_pending_review(
                     interaction,
@@ -1085,7 +1086,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 response=FakeResponse(),
                 followup=FakeFollowup(),
                 message=message,
-                user="StaffUser#0001",
+                user=STAFF_USER,
             )
 
             with (
@@ -1362,7 +1363,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 response=FakeResponse(),
                 followup=FakeFollowup(),
                 message=message,
-                user="StaffUser#0001",
+                user=STAFF_USER,
             )
 
             with (
@@ -1504,7 +1505,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             response=FakeResponse(),
             followup=FakeFollowup(),
             message=FakeMessage(),
-            user="StaffUser#0001",
+            user=STAFF_USER,
         )
 
         with (

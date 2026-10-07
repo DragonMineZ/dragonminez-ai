@@ -116,6 +116,7 @@ class _Incident:
     hit_id: int | None = None
     # Images taught to "Delete & learn" so far; merged into on every update_hit(image_hashes=...) call.
     image_hashes: tuple[int, ...] = field(default_factory=tuple)
+    auto_learned: int = 0  # image-burst timeouts learn their images automatically
 
 
 class ModerationCog(ReloadableCog):
@@ -231,7 +232,7 @@ class ModerationCog(ReloadableCog):
 
     async def _resolve_log_channel(self) -> discord.abc.Messageable | None:
         settings = self._settings()
-        channel_id = settings.moderation_log_channel_id or settings.discord_log_channel_id
+        channel_id = settings.moderation_log_channel_id
         if channel_id is None:
             return None
 
@@ -287,6 +288,11 @@ class ModerationCog(ReloadableCog):
         if message.attachments:
             filenames = ", ".join(f"`{attachment.filename}`" for attachment in message.attachments[:8])
             embed.add_field(name="Attachments", value=filenames, inline=False)
+        if incident.auto_learned:
+            plural = "s" if incident.auto_learned != 1 else ""
+            embed.add_field(
+                name="Auto-learned", value=f"{incident.auto_learned} image{plural} added to the scam list", inline=False
+            )
         handled = self._existing_handled_field(incident)
         if handled is not None:
             embed.add_field(name=handled.name, value=handled.value, inline=handled.inline)
@@ -350,7 +356,7 @@ class ModerationCog(ReloadableCog):
     @staticmethod
     def _quick_actions_view_for(incident: "_Incident") -> discord.ui.View:
         message = incident.first_message
-        if ModerationCog._first_image_attachment(message) is not None:
+        if ModerationCog._first_image_attachment(message) is not None and not incident.auto_learned:
             # Image alerts get "Delete & learn" instead of a plain delete; message=(...) lets it
             # remove the flagged message the way the plain "delete" action does.
             actions = (
@@ -848,6 +854,20 @@ class ModerationCog(ReloadableCog):
             incident = self._incidents.get(key)
             if incident is not None:
                 await self._add_image_hashes(incident, image_hashes)
+                if incident.timed_out and incident.hit_id is not None and incident.image_hashes:
+                    await self._auto_learn(incident)
+
+    async def _auto_learn(self, incident: "_Incident") -> None:
+        """A confirmed burst that earned a timeout is scam spam: learn its images now and drop the
+        "Delete & learn" button (the purge already deleted the messages). "False positive" unlearns them."""
+        try:
+            incident.auto_learned = await automod_hits.auto_learn(
+                incident.hit_id, incident.image_hashes, self.bot.user.id
+            )
+        except Exception:
+            log.exception("Couldn't auto-learn image burst images", extra={"event": "automod_auto_learn_failed"})
+            return
+        self._schedule_log_update(incident)
 
     @staticmethod
     async def _hash_flagged_images(messages: list[discord.Message]) -> tuple[int, ...]:

@@ -296,3 +296,8 @@ dialog .role-picker, .defaults .role-picker { overflow-x: hidden; }
 .switch:checked::after { transform: translateX(18px); background: #fff; }
 .switch:disabled { opacity: .5; cursor: not-allowed; }
 .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+button.mention { font: inherit; cursor: pointer; background: rgba(88,101,242,.3); color: #c9cdfb; border: 0; border-radius: 3px; padding: 0 3px; font-weight: 500; }
+button.mention:hover { background: rgba(88,101,242,.5); }
+dialog.user-card { max-width: 420px; }
+.log-body { white-space: pre-wrap; word-break: break-word; margin: 0; font: inherit; }

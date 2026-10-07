@@ -100,8 +100,8 @@ class ReleaseApprovalCog(commands.Cog):
                 view=None,
             )
         await interaction.followup.send(
-            f"DragonMineZ {candidate.version} approval dispatched to GitHub.",
-            ephemeral=True,
+            f"🚀 DragonMineZ {candidate.version} approved by {interaction.user.mention}, dispatched to GitHub.",
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         return True
 
@@ -121,8 +121,8 @@ class ReleaseApprovalCog(commands.Cog):
                 view=None,
             )
         await interaction.followup.send(
-            f"DragonMineZ {candidate.version} release candidate rejected.",
-            ephemeral=True,
+            f"⛔ DragonMineZ {candidate.version} release candidate rejected by {interaction.user.mention}.",
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         return True
 

@@ -27,6 +27,7 @@ from bulmaai.web.core import (
     BOT,
     PERMISSIONS,
     SESSION_COOKIE,
+    REMEMBER_TTL_SECONDS,
     SESSION_TTL_SECONDS,
     Actor,
     Tier,
@@ -44,6 +45,7 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATE_COOKIE = "panel_oauth_state"
+REMEMBER_COOKIE = "panel_remember"
 MODULES = (
     routes_status,
     routes_logs,
@@ -140,6 +142,10 @@ async def login(request: web.Request) -> web.StreamResponse:
     response.set_cookie(
         STATE_COOKIE, state, max_age=600, httponly=True, secure=_cookie_secure(bot), samesite="Lax", path="/auth"
     )
+    if request.query.get("remember") == "1":
+        response.set_cookie(
+            REMEMBER_COOKIE, "1", max_age=600, httponly=True, secure=_cookie_secure(bot), samesite="Lax", path="/auth"
+        )
     return response
 
 
@@ -184,17 +190,19 @@ async def callback(request: web.Request) -> web.StreamResponse:
         return _plain_page("This panel is for DragonMineZ staff only.", 403)
 
     await audit(Actor(member=member, tier=tier), "auth.login")
+    ttl = REMEMBER_TTL_SECONDS if request.cookies.get(REMEMBER_COOKIE) == "1" else SESSION_TTL_SECONDS
     response = _redirect("/")
     response.set_cookie(
         SESSION_COOKIE,
-        sign_session(bot.settings.panel_session_secret or "", user_id),
-        max_age=SESSION_TTL_SECONDS,
+        sign_session(bot.settings.panel_session_secret or "", user_id, ttl=ttl),
+        max_age=ttl,
         httponly=True,
         secure=_cookie_secure(bot),
         samesite="Lax",
         path="/",
     )
     response.del_cookie(STATE_COOKIE, path="/auth")
+    response.del_cookie(REMEMBER_COOKIE, path="/auth")
     return response
 
 

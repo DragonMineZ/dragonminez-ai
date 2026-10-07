@@ -161,7 +161,9 @@ class SaveChangelogTests(unittest.IsolatedAsyncioTestCase):
 
     def make_interaction(self):
         return SimpleNamespace(
-            response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock())
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+            user=SimpleNamespace(mention="<@1>"),
         )
 
     async def test_pending_request_refreshes_prompt(self):

@@ -58,6 +58,7 @@ def make_member(user_id, *, guild, bot=False, created_at=None, roles=(), admin=F
         bot=bot,
         guild=guild,
         name=f"user{user_id}",
+        mention=f"<@{user_id}>",
         created_at=created_at or discord.utils.utcnow(),
         roles=list(roles),
         guild_permissions=SimpleNamespace(administrator=admin),

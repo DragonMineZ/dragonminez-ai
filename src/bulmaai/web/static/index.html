@@ -23,7 +23,10 @@
     <div class="login-card">
       <h1>BulmaAI Panel</h1>
       <p class="muted" data-i18n="DragonMineZ staff only.">DragonMineZ staff only.</p>
-      <a class="btn primary" href="/auth/login" data-i18n="Log in with Discord">Log in with Discord</a>
+      <form action="/auth/login" method="get" class="stack">
+        <label class="row"><input type="checkbox" name="remember" value="1" checked> <span data-i18n="Remember me for 30 days">Remember me for 30 days</span></label>
+        <button class="btn primary" type="submit" data-i18n="Log in with Discord">Log in with Discord</button>
+      </form>
     </div>
   </div>
   <div id="app" class="app" hidden>

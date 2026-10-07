@@ -603,8 +603,8 @@ class DevJarDownloadsCog(ReloadableCog):
             )
             await interaction.message.edit(embeds=embeds, view=None, attachments=[])
         await interaction.followup.send(
-            f"DragonMineZ dev jar `{artifact.file_name}` published.",
-            ephemeral=True,
+            f"📦 DragonMineZ dev jar `{artifact.file_name}` published by {interaction.user.mention}.",
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     async def _discard_pending_review(
@@ -646,9 +646,9 @@ class DevJarDownloadsCog(ReloadableCog):
                 "upload-directory permissions)"
             )
         await interaction.followup.send(
-            f"Dev jar build discarded {outcome}. Accumulated commits remain queued "
+            f"🗑️ Dev jar build discarded by {interaction.user.mention} {outcome}. Accumulated commits remain queued "
             "for the next push.",
-            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     @commands.Cog.listener()

@@ -390,21 +390,21 @@ class RaidGuardCog(ReloadableCog):
 
         settings = self._settings()
         if action == "lockdown":
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
             locked, failed = await mod_actions.lockdown(
                 interaction.guild, settings, moderator_id=interaction.user.id, reason="Raid lockdown"
             )
             await interaction.message.edit(view=raid_view(locked=True))
-            await interaction.followup.send(f"Locked {locked} channel(s), {failed} failed.", ephemeral=True)
+            await interaction.followup.send(f"🔒 Raid lockdown: locked {locked} channel(s), {failed} failed.")
         elif action == "unlock":
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
             unlocked, failed = await mod_actions.end_lockdown(interaction.guild, reason="Raid lockdown lifted")
             await interaction.message.edit(view=raid_view(locked=False))
-            await interaction.followup.send(f"Unlocked {unlocked} channel(s), {failed} failed.", ephemeral=True)
+            await interaction.followup.send(f"🔓 Raid lockdown lifted: unlocked {unlocked} channel(s), {failed} failed.")
         elif action == "end":
             self._end_raid_mode()
             await interaction.response.edit_message(view=None)
-            await interaction.followup.send("Raid mode ended.", ephemeral=True)
+            await interaction.followup.send(f"🛡️ Raid mode ended by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
 
     # --- /raidmode -------------------------------------------------------------------------------
 
@@ -422,7 +422,7 @@ class RaidGuardCog(ReloadableCog):
         length = minutes or settings.moderation_raid_mode_minutes
         self._raid_until = time.monotonic() + length * 60
         await self._post_raid_alert()
-        await ctx.respond(f"Raid mode is now on for {length} minute(s).", ephemeral=True)
+        await ctx.respond(f"🚨 Raid mode is now on for {length} minute(s).")
 
     @raidmode.command(name="off", description="Manually end raid mode")
     async def raidmode_off(self, ctx: discord.ApplicationContext) -> None:
@@ -430,7 +430,7 @@ class RaidGuardCog(ReloadableCog):
             await ctx.respond("You need moderator permissions for that.", ephemeral=True)
             return
         self._end_raid_mode()
-        await ctx.respond("Raid mode turned off.", ephemeral=True)
+        await ctx.respond("🛡️ Raid mode turned off.")
 
     @raidmode.command(name="status", description="Show the current raid mode status")
     async def raidmode_status(self, ctx: discord.ApplicationContext) -> None:
@@ -441,11 +441,10 @@ class RaidGuardCog(ReloadableCog):
         if self._in_raid(now):
             remaining = int(self._raid_until - now)
             await ctx.respond(
-                f"Raid mode is ON, {remaining}s remaining. {len(self._raid_joiners)} joiner(s) tracked this raid.",
-                ephemeral=True,
+                f"🚨 Raid mode is ON, {remaining}s remaining. {len(self._raid_joiners)} joiner(s) tracked this raid.",
             )
         else:
-            await ctx.respond(f"Raid mode is off. {len(self._join_times)} recent join(s) tracked.", ephemeral=True)
+            await ctx.respond(f"🛡️ Raid mode is off. {len(self._join_times)} recent join(s) tracked.")
 
 
 def setup(bot: discord.Bot):

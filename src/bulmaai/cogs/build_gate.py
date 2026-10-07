@@ -280,8 +280,8 @@ class BuildGateCog(ReloadableCog):
                 await self._refresh_gate_message(request)
             else:
                 await self._edit_preview(request, locked=False)
-        saved = "Changelog saved." if request.changelog else "Changelog cleared. The public post will have no What's New."
-        await interaction.followup.send(saved, ephemeral=True)
+        saved = "📝 Changelog saved" if request.changelog else "📝 Changelog cleared (the public post will have no What's New)"
+        await interaction.followup.send(f"{saved} by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
 
     async def _refresh_gate_message(self, request: build_gate.BuildRequest) -> None:
         if request.channel_id is None or request.message_id is None:

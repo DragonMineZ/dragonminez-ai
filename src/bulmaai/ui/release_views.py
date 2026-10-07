@@ -159,4 +159,4 @@ class ReleaseCandidateView(discord.ui.View):
                 ),
                 view=self,
             )
-        await interaction.followup.send("Release publishing args updated.", ephemeral=True)
+        await interaction.followup.send(f"✏️ Release publishing args updated by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())

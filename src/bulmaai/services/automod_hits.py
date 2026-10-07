@@ -262,7 +262,21 @@ async def mark_false_positive(
             undone.append(f"timeout not removed: {error}")
     if hit.scam_hash_id and await scam_images.remove(hit.scam_hash_id):
         undone.append(f"scam image #{hit.scam_hash_id} removed from the list")
+    if unlearned := await scam_images.remove_by_note(auto_learn_note(hit.id)):
+        undone.append(f"{unlearned} auto-learned image(s) unlearned")
     return undone
+
+
+def auto_learn_note(hit_id: int) -> str:
+    return f"automod hit #{hit_id} (auto)"
+
+
+async def auto_learn(hit_id: int, image_hashes: tuple[int, ...], bot_id: int) -> int:
+    """Confirmed image bursts teach their images straight away (no "Delete & learn" click). Hashes already
+    listed keep their old note, so "False positive" only unlearns what this hit newly added."""
+    for value in image_hashes:
+        await scam_images.add(value, source="learned", added_by=bot_id, note=auto_learn_note(hit_id))
+    return len(image_hashes)
 
 
 async def mark_confirmed(hit: AutomodHit, moderator_id: int, *, learn: bool = False) -> int:

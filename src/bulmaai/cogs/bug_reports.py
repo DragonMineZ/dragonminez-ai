@@ -289,9 +289,7 @@ class BugReportsCog(ReloadableCog):
                 embed=apply_status(interaction.message.embeds[0], "tracked"),
                 view=None,
             )
-        await interaction.followup.send(
-            f"Issue created and now tracked: {issue['html_url']}", ephemeral=True
-        )
+        await interaction.followup.send(f"🐛 Issue created and now tracked: {issue['html_url']}")
 
     async def _handle_not_a_bug(self, interaction: discord.Interaction, thread_id: int) -> None:
         if not is_staff(interaction.user, settings=self.settings):
@@ -321,11 +319,13 @@ class BugReportsCog(ReloadableCog):
                     "need to act on, so we're closing this post. Feel free to open a new one "
                     "if you run into something else. 🙂"
                 )
+                # Public ack before archiving: a webhook message would reopen the thread.
+                await interaction.followup.send(f"🗂️ Marked as not a bug by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
                 await thread.edit(archived=True, locked=True)
             except Exception:
                 log.exception("Failed to close dismissed bug thread %s", thread_id)
-
-        await interaction.followup.send("Marked as not a bug and closed the post.", ephemeral=True)
+        else:
+            await interaction.followup.send("Marked as not a bug.", ephemeral=True)
 
     async def _handle_close_duplicate(self, interaction: discord.Interaction, thread_id: int) -> None:
         issue_number = self._suggested_issue_number(interaction, "🔁 Possible duplicate")
@@ -405,11 +405,13 @@ class BugReportsCog(ReloadableCog):
                     message_builder(report),
                     allowed_mentions=_reporter_only(report),
                 )
+                # Public ack before archiving: a webhook message would reopen the thread.
+                await interaction.followup.send(f"🗂️ {ack} By {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
                 await thread.edit(archived=True, locked=True)
             except Exception:
                 log.exception("Failed to close bug thread %s", thread_id)
-
-        await interaction.followup.send(ack, ephemeral=True)
+        else:
+            await interaction.followup.send(ack, ephemeral=True)
 
     @staticmethod
     def _suggested_issue_number(interaction: discord.Interaction, field_name: str) -> int | None:

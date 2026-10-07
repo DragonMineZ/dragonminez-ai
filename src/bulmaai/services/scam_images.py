@@ -170,6 +170,15 @@ async def remove(hash_id: int) -> bool:
     return result.endswith(" 1")
 
 
+async def remove_by_note(note: str) -> int:
+    """Drops every row carrying this exact note (e.g. one hit's auto-learned images); returns how many."""
+    pool = await get_pool()
+    rows = await pool.fetch("DELETE FROM scam_image_hashes WHERE note = $1 RETURNING id", note)
+    for row in rows:
+        _hashes.pop(row["id"], None)
+    return len(rows)
+
+
 async def note_hit(hash_id: int) -> None:
     pool = await get_pool()
     await pool.execute(

@@ -11,7 +11,7 @@ from datetime import timedelta
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.services import mod_actions, mod_cases, scam_images
+from bulmaai.services import mod_actions, mod_cases, panel_logs, scam_images
 from bulmaai.services.mod_actions import (
     MAX_TIMEOUT_SECONDS,
     ActionResult,
@@ -30,16 +30,19 @@ log = logging.getLogger(__name__)
 MAX_REASON_LENGTH = 400  # the panel's cap; leaves room for the audit-log suffix under Discord's 512
 BAN_DELETE_SECONDS = {"none": 0, "1h": 3600, "24h": 86400, "7d": 7 * 86400}
 STAFF_ONLY = discord.Permissions(moderate_members=True)
+# Dyno-style confirmation: emoji, "<name> <phrase>", accent colour.
 VERBS = {
-    "warn": "Warned",
-    "note": "Added a note to",
-    "timeout": "Timed out",
-    "untimeout": "Removed the timeout from",
-    "kick": "Kicked",
-    "ban": "Banned",
-    "softban": "Softbanned",
-    "unban": "Unbanned",
+    "warn": ("⚠️", "has been warned", discord.Color.gold()),
+    "note": ("📝", "has a new staff note", discord.Color.blurple()),
+    "timeout": ("🔇", "has been timed out", discord.Color.orange()),
+    "untimeout": ("🔊", "is no longer timed out", discord.Color.green()),
+    "kick": ("👢", "has been kicked", discord.Color.dark_orange()),
+    "ban": ("🔨", "has been banned", discord.Color.red()),
+    "softban": ("🧹", "has been softbanned", discord.Color.dark_orange()),
+    "unban": ("🕊️", "has been unbanned", discord.Color.green()),
 }
+WARNINGS_PER_PAGE = 5
+NO_PINGS = discord.AllowedMentions.none()
 
 _LINK_RE = re.compile(r"https?://", re.IGNORECASE)
 _INVITE_RE = re.compile(r"discord(?:\.gg|(?:app)?\.com/invite)/", re.IGNORECASE)
@@ -76,6 +79,11 @@ def _step_text(step: LadderStep) -> str:
     return f"timeout {format_duration(step.duration_seconds)}" if step.action == "timeout" else step.action
 
 
+def _ladder_bar(count: int, needed: int) -> str:
+    filled = min(count, needed, 10)
+    return "▰" * filled + "▱" * (min(needed, 10) - filled)
+
+
 def _case_lines(cases: list[mod_cases.ModCase]) -> str:
     lines = []
     for case in cases:
@@ -97,6 +105,30 @@ class ReasonModal(discord.ui.Modal):
         await self._submit(interaction, self.reason_input.value.strip())
 
 
+class ConfirmView(discord.ui.View):
+    """Private "are you sure?" prompt. On confirm the prompt turns into "Working…" and on_confirm runs;
+    on_confirm posts its own (public) result with interaction.followup.send."""
+
+    def __init__(self, label: str, on_confirm: Callable[[discord.Interaction], Awaitable[object]]):
+        super().__init__(timeout=120, disable_on_timeout=True)
+        self._on_confirm = on_confirm
+        confirm = discord.ui.Button(label=label, style=discord.ButtonStyle.danger)
+        cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        confirm.callback, cancel.callback = self._confirm, self._cancel
+        self.add_item(confirm)
+        self.add_item(cancel)
+
+    async def _confirm(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content="Working…", view=None)
+        await self._on_confirm(interaction)
+        await interaction.delete_original_response()
+
+    async def _cancel(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content="Cancelled.", view=None)
+
+
 class ModCommandsCog(ReloadableCog):
     lockdown_group = discord.SlashCommandGroup(
         "lockdown", "Lock or unlock every public channel", default_member_permissions=STAFF_ONLY
@@ -105,37 +137,78 @@ class ModCommandsCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
-    async def _allowed(self, ctx: discord.ApplicationContext, capability: str) -> bool:
+    async def _allowed(self, ctx: discord.ApplicationContext | discord.Interaction, capability: str) -> bool:
         if tier_for(ctx.user, self.bot.settings) >= PERMISSIONS[capability]:
             return True
         await ctx.respond("Your staff tier can't do that.", ephemeral=True)
         return False
 
+    @staticmethod
+    async def _private_error(ctx: discord.ApplicationContext, text: str) -> None:
+        """An error after a public defer: drop the public "thinking…" so only the moderator sees it."""
+        interaction = getattr(ctx, "interaction", ctx)
+        if interaction.response.is_done():
+            try:
+                await interaction.delete_original_response()
+            except discord.HTTPException:
+                pass
+            await ctx.followup.send(text, ephemeral=True)
+        else:
+            await ctx.respond(text, ephemeral=True)
+
+    async def _post_mod_log(self, kind: str, embed: discord.Embed, *, user_id: int, data: dict | None = None) -> None:
+        """Best effort: the panel log plus the moderation log channel."""
+        try:
+            await panel_logs.record(kind, embed.title, panel_logs.embed_text(embed), user_id=user_id, data=data)
+            channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self.bot.settings))
+            if channel is not None:
+                await channel.send(embed=embed, allowed_mentions=NO_PINGS)
+        except Exception:
+            log.warning("Failed to post %s to the moderation log", kind, exc_info=True)
+
+    async def _display_name(self, user_id: int) -> str:
+        user = self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(user_id)
+            except discord.HTTPException:
+                return f"<@{user_id}>"
+        return discord.utils.escape_markdown(user.name)
+
     async def _perform(self, ctx, action: str, target_id: int, reason: str, **options) -> ActionResult | None:
-        """ctx is an ApplicationContext or a modal's Interaction; replies to it either way."""
+        """ctx is an ApplicationContext or a modal's Interaction; replies to it either way.
+        Confirmations are public like Dyno's (the reason isn't shown); errors stay private."""
+        interaction = getattr(ctx, "interaction", ctx)
         # DM + Discord call + DB + mod-log post (+ a ladder step) can outlast the 3s interaction window.
-        if not ctx.response.is_done():
-            await ctx.response.defer(ephemeral=True)
+        deferred_here = not interaction.response.is_done()
+        if deferred_here:
+            await interaction.response.defer()
         try:
             result = await mod_actions.perform(
                 self.bot, ctx.guild, action=action, target_id=target_id, moderator=ctx.user, reason=reason, **options
             )
         except ModActionError as error:
-            await ctx.respond(str(error), ephemeral=True)
+            if deferred_here:
+                await interaction.delete_original_response()  # drop the public "thinking…" so the error stays private
+            await interaction.followup.send(f"❌ {error}", ephemeral=True)
             return None
-        text = f"{VERBS[action]} <@{target_id}>"
+        emoji, phrase, color = VERBS[action]
+        text = f"{emoji} ***{await self._display_name(target_id)} {phrase}"
         if options.get("duration_seconds"):
             text += f" for {format_duration(options['duration_seconds'])}"
-        text += f" (case #{result.case_id})." if result.case_id else " (the case couldn't be recorded)."
-        if result.dm_sent is not None:
-            text += " DM delivered." if result.dm_sent else " Couldn't DM them."
+        text += ".***"
         if escalation := result.escalation:
             duration = escalation.duration_seconds
-            text += f"\n→ auto {escalation.action}" + (f" {format_duration(duration)}" if duration else "")
+            text += f"\n⚡ Warn ladder kicked in: **{escalation.action}"
+            text += (f" {format_duration(duration)}" if duration else "") + "**"
             text += f" (case #{escalation.case_id})" if escalation.case_id else ""
         if result.ladder_skipped:
-            text += f"\n→ {result.ladder_skipped}"
-        await ctx.respond(text, ephemeral=True)
+            text += f"\n⚠️ Warn ladder: {result.ladder_skipped}"
+        footer = [f"Case #{result.case_id}" if result.case_id else "The case couldn't be recorded"]
+        if result.dm_sent is not None:
+            footer.append("DM delivered" if result.dm_sent else "Couldn't DM them")
+        embed = discord.Embed(description=text, color=color).set_footer(text=" · ".join(footer))
+        await ctx.respond(embed=embed, allowed_mentions=NO_PINGS)
         return result
 
     # --- warnings and notes ------------------------------------------------------------------
@@ -152,37 +225,100 @@ class ModCommandsCog(ReloadableCog):
     @discord.default_permissions(moderate_members=True)
     @discord.option("user", discord.User, description="Member to look up")
     async def warnings(self, ctx: discord.ApplicationContext, user: discord.User):
-        if not await self._allowed(ctx, "mod.cases.view"):
-            return
-        guild_id = ctx.guild.id
-        cases = await mod_cases.list_cases(guild_id, user_id=user.id, action="warn", limit=100)
-        warns = [case for case in cases if case.active]
-        embed = discord.Embed(
-            title=f"Warnings for {user}",
-            description=_case_lines(warns[:25]) or "No active warnings.",
-            color=discord.Color.gold(),
-        )
-        steps = parse_ladder(self.bot.settings.moderation_warn_ladder)
-        if steps:
-            now = discord.utils.utcnow()
-            counts = {
-                window: await mod_cases.count_active_since(
-                    guild_id, user.id, "warn", now - timedelta(seconds=window) if window else None
-                )
-                for window in {step.window_seconds for step in steps}
-            }
-            lines = [
-                f"{counts[step.window_seconds]}/{step.warns} in "
-                f"{format_duration(step.window_seconds) if step.window_seconds else 'all time'} → {_step_text(step)}"
-                for step in steps
-            ]
-            upcoming = pick_step(steps, {window: count + 1 for window, count in counts.items()})
-            lines.append(f"Next warn: {_step_text(upcoming) if upcoming else 'no automatic action'}")
-            embed.add_field(name="Warn ladder", value="\n".join(lines), inline=False)
-        embed.set_footer(text=f"{len(warns)} active warning(s)")
-        await ctx.respond(embed=embed, ephemeral=True)
+        if await self._allowed(ctx, "mod.cases.view"):
+            await ctx.respond(view=await self._warnings_view(ctx.guild.id, user), allowed_mentions=NO_PINGS)
 
-    async def _outranks(self, ctx: discord.ApplicationContext, user_id: int) -> bool:
+    async def _ladder_text(self, guild_id: int, user_id: int) -> str | None:
+        steps = parse_ladder(self.bot.settings.moderation_warn_ladder)
+        if not steps:
+            return None
+        now = discord.utils.utcnow()
+        counts = {
+            window: await mod_cases.count_active_since(
+                guild_id, user_id, "warn", now - timedelta(seconds=window) if window else None
+            )
+            for window in {step.window_seconds for step in steps}
+        }
+        lines = [
+            f"`{_ladder_bar(counts[step.window_seconds], step.warns)}` **{counts[step.window_seconds]}/{step.warns}** in "
+            f"{format_duration(step.window_seconds) if step.window_seconds else 'all time'} → {_step_text(step)}"
+            for step in steps
+        ]
+        upcoming = pick_step(steps, {window: count + 1 for window, count in counts.items()})
+        lines.append(f"-# Next warn → {f'**{_step_text(upcoming)}**' if upcoming else 'no automatic action'}")
+        return "### Warn ladder\n" + "\n".join(lines)
+
+    async def _warnings_view(self, guild_id: int, user: discord.abc.User, page: int = 0) -> discord.ui.DesignerView:
+        """Components V2 card in Dyno's layout: one row per warning with a delete button, then the ladder."""
+        warns = [c for c in await mod_cases.list_cases(guild_id, user_id=user.id, action="warn", limit=100) if c.active]
+        pages = max(1, -(-len(warns) // WARNINGS_PER_PAGE))
+        page = max(0, min(page, pages - 1))
+        items: list[discord.ui.Item] = [
+            discord.ui.Section(
+                discord.ui.TextDisplay(
+                    f"## Warnings for {discord.utils.escape_markdown(user.name)}\n-# {user.mention} · `{user.id}`"
+                ),
+                accessory=discord.ui.Thumbnail(user.display_avatar.url),
+            ),
+            discord.ui.Separator(),
+        ]
+        for case in warns[page * WARNINGS_PER_PAGE : (page + 1) * WARNINGS_PER_PAGE]:
+            reason = (case.reason or "No reason").replace("\n", " ")
+            reason = discord.utils.escape_markdown(reason if len(reason) <= 200 else reason[:199] + "…")
+            moderator = f"<@{case.moderator_id}>" if case.moderator_id else case.source
+            delete = discord.ui.Button(emoji="🗑️", style=discord.ButtonStyle.danger)
+            delete.callback = self._warn_delete_callback(guild_id, user, case.id, page)
+            when = discord.utils.format_dt(case.created_at, "R")
+            items.append(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(f"**{reason}**\n-# Mod: {moderator} · {when} · Case #{case.id}"),
+                    accessory=delete,
+                )
+            )
+        if not warns:
+            items.append(discord.ui.TextDisplay("✨ No active warnings, clean record."))
+        if ladder := await self._ladder_text(guild_id, user.id):
+            items += [discord.ui.Separator(), discord.ui.TextDisplay(ladder)]
+        items += [
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"-# Page {page + 1}/{pages} ({len(warns)} warning{'' if len(warns) == 1 else 's'})"),
+        ]
+        view_items: list[discord.ui.Item] = [
+            discord.ui.Container(*items, color=discord.Color.red() if warns else discord.Color.green())
+        ]
+        if pages > 1:
+            buttons = []
+            for label, target, disabled in (("◀", page - 1, page == 0), ("▶", page + 1, page >= pages - 1)):
+                button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=disabled)
+                button.callback = self._warn_page_callback(guild_id, user, target)
+                buttons.append(button)
+            view_items.append(discord.ui.ActionRow(*buttons))
+        return discord.ui.DesignerView(*view_items, timeout=900, disable_on_timeout=True)
+
+    def _warn_page_callback(self, guild_id: int, user: discord.abc.User, page: int):
+        async def callback(interaction: discord.Interaction):
+            if await self._allowed(interaction, "mod.cases.view"):
+                view = await self._warnings_view(guild_id, user, page)
+                await interaction.response.edit_message(view=view, allowed_mentions=NO_PINGS)
+
+        return callback
+
+    def _warn_delete_callback(self, guild_id: int, user: discord.abc.User, case_id: int, page: int):
+        async def callback(interaction: discord.Interaction):
+            if not (await self._allowed(interaction, "mod.cases.remove") and await self._outranks(interaction, user.id)):
+                return
+            removed = await mod_cases.deactivate_case(guild_id, case_id)
+            view = await self._warnings_view(guild_id, user, page)
+            await interaction.response.edit_message(view=view, allowed_mentions=NO_PINGS)
+            if removed is None:
+                await interaction.followup.send(f"Case #{case_id} was already removed.", ephemeral=True)
+            else:
+                text = f"Removed warning #{case_id} for <@{user.id}>."
+                await self._log_removal("Warning removed", text, interaction.user.id, user.id)
+
+        return callback
+
+    async def _outranks(self, ctx: discord.ApplicationContext | discord.Interaction, user_id: int) -> bool:
         """Removing cases follows the same rules as acting on the user (helpers can't clear a mod's warns)."""
         target = await resolve_member(ctx.guild, user_id)
         try:
@@ -203,7 +339,14 @@ class ModCommandsCog(ReloadableCog):
             return
         if await mod_cases.deactivate_case(ctx.guild.id, case_id) is None:
             return await ctx.respond(f"Case #{case_id} was already removed.", ephemeral=True)
-        await ctx.respond(f"Removed {label} #{case_id} for <@{case.user_id}>.", ephemeral=True)
+        text = f"Removed {label} #{case_id} for <@{case.user_id}>."
+        await ctx.respond(text, allowed_mentions=NO_PINGS)
+        await self._log_removal(f"{label.title()} removed", text, ctx.user.id, case.user_id)
+
+    async def _log_removal(self, title: str, text: str, moderator_id: int, user_id: int) -> None:
+        embed = discord.Embed(title=title, description=f"{text}\nBy <@{moderator_id}>", color=discord.Color.dark_grey())
+        embed.timestamp = discord.utils.utcnow()
+        await self._post_mod_log("case_removed", embed, user_id=moderator_id, data={"target_id": user_id})
 
     @discord.slash_command(name="delwarn", description="Remove a warning (it stops counting toward the ladder)")
     @discord.default_permissions(moderate_members=True)
@@ -221,9 +364,18 @@ class ModCommandsCog(ReloadableCog):
     @discord.default_permissions(moderate_members=True)
     @discord.option("user", discord.User, description="Member whose warnings to clear")
     async def clearwarns(self, ctx: discord.ApplicationContext, user: discord.User):
-        if await self._allowed(ctx, "mod.cases.remove") and await self._outranks(ctx, user.id):
+        if not (await self._allowed(ctx, "mod.cases.remove") and await self._outranks(ctx, user.id)):
+            return
+
+        async def clear(interaction: discord.Interaction):
             count = await mod_cases.deactivate_user_cases(ctx.guild.id, user.id, "warn")
-            await ctx.respond(f"Cleared {count} warning(s) for <@{user.id}>.", ephemeral=True)
+            text = f"Cleared {count} warning(s) for <@{user.id}>."
+            await interaction.followup.send(text, allowed_mentions=NO_PINGS)
+            await self._log_removal("Warnings cleared", text, ctx.user.id, user.id)
+
+        await ctx.respond(
+            f"Clear **all** active warnings for <@{user.id}>?", view=ConfirmView("Clear warnings", clear), ephemeral=True
+        )
 
     @discord.slash_command(name="note", description="Add a staff-only note to a user")
     @discord.default_permissions(moderate_members=True)
@@ -242,7 +394,7 @@ class ModCommandsCog(ReloadableCog):
         cases = await mod_cases.list_cases(ctx.guild.id, user_id=user.id, action="note", limit=100)
         notes = [case for case in cases if case.active]
         embed = discord.Embed(title=f"Notes for {user}", description=_case_lines(notes[:25]) or "No notes.")
-        await ctx.respond(embed=embed, ephemeral=True)
+        await ctx.respond(embed=embed)
 
     # --- actions -----------------------------------------------------------------------------
 
@@ -341,32 +493,34 @@ class ModCommandsCog(ReloadableCog):
     ):
         if not await self._allowed(ctx, "mod.channels"):
             return
-        await ctx.defer(ephemeral=True)
-        try:
-            deleted = await ctx.channel.purge(
-                limit=amount,
-                check=purge_check(user_id=user.id if user else None, contains=contains, kind=kind),
-                after=discord.utils.utcnow() - timedelta(days=14),  # older ones can't be bulk-deleted
-                reason=f"/purge by {ctx.user.name}",
-            )
-        except discord.HTTPException:
-            return await ctx.respond("Discord refused: the bot can't delete messages here.", ephemeral=True)
-        await ctx.respond(f"Deleted {len(deleted)} message(s) from the last 14 days.", ephemeral=True)
-        if not deleted:
-            return
         filters = [f"from <@{user.id}>" if user else "", f'containing "{contains}"' if contains else "", kind or ""]
-        embed = discord.Embed(title="Purge", color=discord.Color.dark_grey(), timestamp=discord.utils.utcnow())
-        embed.add_field(name="Channel", value=ctx.channel.mention, inline=True)
-        embed.add_field(name="Moderator", value=ctx.user.mention, inline=True)
-        embed.add_field(name="Deleted", value=str(len(deleted)), inline=True)
-        if any(filters):
-            embed.add_field(name="Filters", value=", ".join(f for f in filters if f)[:1024], inline=False)
-        try:
-            channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self.bot.settings))
-            if channel is not None:
-                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            log.warning("Failed to post a purge to the moderation log", exc_info=True)
+        filter_text = ", ".join(f for f in filters if f)
+
+        async def run(interaction: discord.Interaction):
+            try:
+                deleted = await ctx.channel.purge(
+                    limit=amount,
+                    check=purge_check(user_id=user.id if user else None, contains=contains, kind=kind),
+                    after=discord.utils.utcnow() - timedelta(days=14),  # older ones can't be bulk-deleted
+                    reason=f"/purge by {ctx.user.name}",
+                )
+            except discord.HTTPException:
+                return await interaction.followup.send("Discord refused: the bot can't delete messages here.", ephemeral=True)
+            await interaction.followup.send(f"🧹 Deleted {len(deleted)} message(s) from the last 14 days.")
+            if not deleted:
+                return
+            embed = discord.Embed(title="Purge", color=discord.Color.dark_grey(), timestamp=discord.utils.utcnow())
+            embed.add_field(name="Channel", value=ctx.channel.mention, inline=True)
+            embed.add_field(name="Moderator", value=ctx.user.mention, inline=True)
+            embed.add_field(name="Deleted", value=str(len(deleted)), inline=True)
+            if filter_text:
+                embed.add_field(name="Filters", value=filter_text[:1024], inline=False)
+            await self._post_mod_log("purge", embed, user_id=ctx.user.id, data={"channel_id": ctx.channel.id})
+
+        prompt = f"Scan the last **{amount}** message(s) here and delete " + (
+            f"the ones {filter_text}?" if filter_text else "all of them?"
+        )
+        await ctx.respond(prompt, view=ConfirmView("Purge", run), ephemeral=True, allowed_mentions=NO_PINGS)
 
     # --- cases -------------------------------------------------------------------------------
 
@@ -392,7 +546,7 @@ class ModCommandsCog(ReloadableCog):
         embed.timestamp = case.created_at
         if not case.active:
             embed.title += " (inactive)"
-        await ctx.respond(embed=embed, ephemeral=True)
+        await ctx.respond(embed=embed, allowed_mentions=NO_PINGS)
 
     @discord.slash_command(
         name="reason", description="Fix the reason on an existing case (find case numbers with /modlogs or /warnings)"
@@ -414,7 +568,7 @@ class ModCommandsCog(ReloadableCog):
         await ctx.respond(
             f"Case #{case_id} ({case.action} on <@{case.user_id}>) reason changed:\n"
             f"~~{case.reason or 'No reason'}~~ → {reason.strip()}",
-            ephemeral=True,
+            allowed_mentions=NO_PINGS,
         )
 
     @discord.slash_command(name="modlogs", description="A user's last 25 moderation cases")
@@ -426,7 +580,7 @@ class ModCommandsCog(ReloadableCog):
         cases = await mod_cases.list_cases(ctx.guild.id, user_id=user.id, limit=25)
         embed = discord.Embed(title=f"Mod logs for {user}", description=_case_lines(cases) or "No cases.")
         embed.set_footer(text="Struck-through cases are inactive (removed, cleared or expired).")
-        await ctx.respond(embed=embed, ephemeral=True)
+        await ctx.respond(embed=embed)
 
     @discord.slash_command(name="modstats", description="Moderation actions per moderator")
     @discord.default_permissions(moderate_members=True)
@@ -447,7 +601,7 @@ class ModCommandsCog(ReloadableCog):
             title=f"Moderator stats, last {days} days",
             description="\n".join(lines)[:4096] or "No moderation in that period.",
         )
-        await ctx.respond(embed=embed, ephemeral=True)
+        await ctx.respond(embed=embed, allowed_mentions=NO_PINGS)
 
     # --- channels ----------------------------------------------------------------------------
 
@@ -467,7 +621,7 @@ class ModCommandsCog(ReloadableCog):
             )
         except discord.HTTPException:
             return await ctx.respond("Discord refused: the bot can't edit that channel's permissions.", ephemeral=True)
-        await ctx.respond(f"Locked {channel.mention}.", ephemeral=True)
+        await ctx.respond(f"🔒 Locked {channel.mention}.")
 
     @discord.slash_command(name="unlock", description="Undo /lock on a channel")
     @discord.default_permissions(moderate_members=True)
@@ -482,28 +636,37 @@ class ModCommandsCog(ReloadableCog):
             await mod_actions.unlock_channel(channel, reason=f"Unlocked (via command by {ctx.user.name})")
         except discord.HTTPException:
             return await ctx.respond("Discord refused: the bot can't edit that channel's permissions.", ephemeral=True)
-        await ctx.respond(f"Unlocked {channel.mention}.", ephemeral=True)
+        await ctx.respond(f"🔓 Unlocked {channel.mention}.")
 
     @lockdown_group.command(name="start", description="Lock every public channel (or the configured list)")
     @discord.option("reason", str, description="Why", max_length=MAX_REASON_LENGTH)
     async def lockdown_start(self, ctx: discord.ApplicationContext, reason: str):
         if not await self._allowed(ctx, "mod.channels"):
             return
-        await ctx.defer(ephemeral=True)
-        locked, failed = await mod_actions.lockdown(
-            ctx.guild, self.bot.settings, moderator_id=ctx.user.id, reason=f"{reason} (via command by {ctx.user.name})"
+
+        async def run(interaction: discord.Interaction):
+            locked, failed = await mod_actions.lockdown(
+                ctx.guild, self.bot.settings, moderator_id=ctx.user.id, reason=f"{reason} (via command by {ctx.user.name})"
+            )
+            await interaction.followup.send(
+                f"🔒 Lockdown: locked {locked} channel(s)" + (f", {failed} failed." if failed else ".")
+            )
+
+        await ctx.respond(
+            "Lock **every public channel** (or the configured lockdown list)?",
+            view=ConfirmView("Start lockdown", run),
+            ephemeral=True,
         )
-        await ctx.respond(f"Locked {locked} channel(s)" + (f", {failed} failed." if failed else "."), ephemeral=True)
 
     @lockdown_group.command(name="end", description="Unlock every channel the bot locked")
     async def lockdown_end(self, ctx: discord.ApplicationContext):
         if not await self._allowed(ctx, "mod.channels"):
             return
-        await ctx.defer(ephemeral=True)
+        await ctx.defer()
         unlocked, failed = await mod_actions.end_lockdown(
             ctx.guild, reason=f"Lockdown ended (via command by {ctx.user.name})"
         )
-        await ctx.respond(f"Unlocked {unlocked} channel(s)" + (f", {failed} failed." if failed else "."), ephemeral=True)
+        await ctx.respond(f"🔓 Lockdown over: unlocked {unlocked} channel(s)" + (f", {failed} failed." if failed else "."))
 
     @discord.slash_command(name="slowmode", description="Set a channel's slowmode")
     @discord.default_permissions(moderate_members=True)
@@ -518,7 +681,7 @@ class ModCommandsCog(ReloadableCog):
         except discord.HTTPException:
             return await ctx.respond("Discord refused: the bot can't edit that channel.", ephemeral=True)
         await ctx.respond(
-            f"Slowmode in {channel.mention} is now {format_duration(seconds) if seconds else 'off'}.", ephemeral=True
+            f"🐢 Slowmode in {channel.mention} is now {format_duration(seconds) if seconds else 'off'}."
         )
 
     # --- members -----------------------------------------------------------------------------
@@ -548,7 +711,7 @@ class ModCommandsCog(ReloadableCog):
         embed.add_field(
             name="Cases", value=", ".join(f"{action} {n}" for action, n in counts.most_common()) or "None", inline=False
         )
-        await ctx.respond(embed=embed, ephemeral=True)
+        await ctx.respond(embed=embed)
 
     # --- context menus -----------------------------------------------------------------------
 
@@ -591,7 +754,7 @@ class ModCommandsCog(ReloadableCog):
     async def mark_scam_image_menu(self, ctx: discord.ApplicationContext, message: discord.Message):
         if not await self._allowed(ctx, "mod.tools"):
             return
-        await ctx.defer(ephemeral=True)
+        await ctx.defer()
         hashes = [
             value
             for value in await asyncio.gather(
@@ -600,7 +763,7 @@ class ModCommandsCog(ReloadableCog):
             if value is not None
         ]
         if not hashes:
-            return await ctx.respond("No usable images on that message.", ephemeral=True)
+            return await self._private_error(ctx, "No usable images on that message.")
         try:
             hash_ids = [
                 await scam_images.add(value, source="manual", added_by=ctx.user.id, note=f"message {message.id} by {message.author}")
@@ -608,7 +771,7 @@ class ModCommandsCog(ReloadableCog):
             ]
         except Exception:
             log.exception("Couldn't save scam images from message %s", message.id)
-            return await ctx.respond("Couldn't save, the database is unavailable.", ephemeral=True)
+            return await self._private_error(ctx, "Couldn't save, the database is unavailable.")
         deleted = "deleted the message"
         try:
             await message.delete(reason=f"Marked as a scam image by {ctx.user.name}")
@@ -618,7 +781,7 @@ class ModCommandsCog(ReloadableCog):
             log.warning("Couldn't delete message %s after marking it as a scam image", message.id, exc_info=True)
             deleted = "couldn't delete the message"
         ids = ", ".join(f"#{hash_id}" for hash_id in hash_ids)
-        await ctx.respond(f"Added scam image {ids} and {deleted}.", ephemeral=True)
+        await ctx.respond(f"🛡️ Added scam image {ids} and {deleted}.")
 
     # --- scam images -------------------------------------------------------------------------
 

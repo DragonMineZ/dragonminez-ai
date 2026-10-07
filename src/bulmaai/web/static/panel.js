@@ -200,6 +200,53 @@ const Panel = (() => {
     });
   }
 
+  // Click-to-preview member chip: shows who they are and their moderation history without leaving the page.
+  function mention(id, label) {
+    return h("button", {
+      class: "mention", type: "button", title: String(id),
+      onclick: (e) => { e.stopPropagation(); openUserCard(String(id)); },
+    }, `@${label || id}`);
+  }
+
+  async function openUserCard(id) {
+    const body = h("div", { class: "stack" }, h("span", { class: "muted" }, t("Loading…")));
+    const el = h("dialog", { class: "user-card" }, body,
+      h("div", { class: "row end" },
+        h("button", { class: "btn ghost", type: "button", onclick: () => el.close() }, t("Close")),
+        h("button", { class: "btn primary", type: "button", onclick: () => { el.close(); go(`#/users/${encodeURIComponent(id)}`); } }, t("Open profile"))));
+    el.addEventListener("close", () => el.remove());
+    document.body.append(el);
+    el.showModal();
+    try {
+      const p = await api(`/api/users/${encodeURIComponent(id)}`);
+      const cases = (p.sections.cases && p.sections.cases.data) || [];
+      const counts = {};
+      for (const c of cases) if (c.active !== false) counts[c.action] = (counts[c.action] || 0) + 1;
+      body.replaceChildren(
+        h("div", { class: "row" }, user(p.user), p.member ? null : badge(t("Not in server"), "warn"),
+          p.banned ? badge(t("Banned"), "danger") : null, p.timed_out_until ? badge(t("Timed out"), "danger") : null),
+        h("div", { class: "small muted" }, `${t("Account created")}: `, time(p.created_at), p.joined_at ? ` · ${t("Joined")}: ` : null, p.joined_at ? time(p.joined_at) : null),
+        h("div", { class: "row" }, Object.keys(counts).length
+          ? Object.entries(counts).map(([action, n]) => badge(`${n}× ${action}`, action === "warn" ? "warn" : ""))
+          : h("span", { class: "muted small" }, t("No recent cases."))),
+        cases.slice(0, 5).map((c) => h("div", { class: "small" }, badge(c.action), " ", c.reason || "—", " ", time(c.created_at))));
+    } catch (error) {
+      body.replaceChildren(h("span", { class: "muted" }, error.message));
+    }
+  }
+
+  // Turns <@id> and bare Discord IDs (17-20 digits) in log text into clickable member chips.
+  function richText(text) {
+    const out = [];
+    let last = 0;
+    for (const m of String(text || "").matchAll(/<@!?(\d{17,20})>|\b(\d{17,20})\b/g)) {
+      out.push(text.slice(last, m.index), mention(m[1] || m[2]));
+      last = m.index + m[0].length;
+    }
+    out.push(String(text || "").slice(last));
+    return out;
+  }
+
   async function guild() {
     if (!guildCache) guildCache = await api("/api/guild");
     return guildCache;
@@ -365,6 +412,7 @@ const Panel = (() => {
     "No pages available for your tier.": "No hay páginas disponibles para tu rango.",
     "Log out": "Cerrar sesión",
     "Log in with Discord": "Iniciar sesión con Discord",
+    "Remember me for 30 days": "Recordarme por 30 días",
     "DragonMineZ staff only.": "Solo para el staff de DragonMineZ.",
     "owner": "dueño",
     "admin": "admin",
@@ -376,7 +424,7 @@ const Panel = (() => {
   document.addEventListener("DOMContentLoaded", boot);
 
   return {
-    h, api, toast, run, can, time, user, badge, table, field, dialog, guild, suggest, userSuggest,
+    h, api, toast, run, can, time, user, badge, mention, richText, table, field, dialog, guild, suggest, userSuggest,
     channelName, roleName, userName, channelSelect, page, go, me: () => me, refresh: route,
     t, i18n, locale, lang: () => lang,
   };

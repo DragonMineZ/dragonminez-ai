@@ -350,7 +350,7 @@ class GitHubCog(commands.Cog):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
             return
-        await ctx.defer(ephemeral=not is_staff(ctx.author))
+        await ctx.defer()
 
         try:
             issue = await service.get_issue(issue_number)
@@ -374,7 +374,7 @@ class GitHubCog(commands.Cog):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
             return
-        await ctx.defer(ephemeral=not is_staff(ctx.author))
+        await ctx.defer()
 
         try:
             issues = await service.list_issues(state=state, labels=label)
@@ -431,7 +431,7 @@ class GitHubCog(commands.Cog):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
             return
-        await ctx.defer(ephemeral=not is_staff(ctx.author))
+        await ctx.defer()
 
         try:
             labels = await service.get_labels()
@@ -504,7 +504,7 @@ class GitHubCog(commands.Cog):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
             return
-        await ctx.defer(ephemeral=not is_staff(ctx.author))
+        await ctx.defer()
 
         try:
             prs = await service.list_prs(state=state)
@@ -530,7 +530,7 @@ class GitHubCog(commands.Cog):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
             return
-        await ctx.defer(ephemeral=not is_staff(ctx.author))
+        await ctx.defer()
 
         try:
             pr = await service.get_pr(pr_number)

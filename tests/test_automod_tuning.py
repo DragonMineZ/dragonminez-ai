@@ -123,11 +123,14 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.services.mod_cases.deactivate_case", AsyncMock(return_value=object())) as deactivate,
             patch("bulmaai.services.mod_actions.perform", AsyncMock()) as perform,
             patch("bulmaai.services.scam_images.remove", AsyncMock(return_value=True)) as remove,
+            patch("bulmaai.services.scam_images.remove_by_note", AsyncMock(return_value=2)) as unlearn,
         ):
             undone = await automod_hits.mark_false_positive(
                 SimpleNamespace(), SimpleNamespace(id=1), hit(warn_case_id=3, timed_out=True, scam_hash_id=4), moderator
             )
-        self.assertEqual(len(undone), 3)
+        self.assertEqual(len(undone), 4)
+        self.assertIn("2 auto-learned image(s) unlearned", undone)
+        unlearn.assert_awaited_once_with("automod hit #7 (auto)")
         deactivate.assert_awaited_once_with(1, 3)
         self.assertEqual(perform.await_args.kwargs["action"], "untimeout")
         remove.assert_awaited_once_with(4)
@@ -141,9 +144,18 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("bulmaai.services.automod_hits.set_outcome", AsyncMock(return_value=True)),
             patch("bulmaai.services.mod_actions.perform", AsyncMock(side_effect=mod_actions.ModActionError("gone", 404))),
+            patch("bulmaai.services.scam_images.remove_by_note", AsyncMock(return_value=0)),
         ):
             undone = await automod_hits.mark_false_positive(None, SimpleNamespace(id=1), hit(timed_out=True), SimpleNamespace(id=2))
         self.assertEqual(undone, ["timeout not removed: gone"])
+
+    async def test_image_burst_auto_learn_tags_rows_for_unlearning(self):
+        add = AsyncMock(return_value=1)
+        with patch("bulmaai.services.scam_images.add", add):
+            self.assertEqual(await automod_hits.auto_learn(7, (11, 22), bot_id=99), 2)
+        self.assertEqual(
+            [call.kwargs["note"] for call in add.await_args_list], ["automod hit #7 (auto)", "automod hit #7 (auto)"]
+        )
 
     async def test_only_an_explicit_learn_adds_scam_images(self):
         add = AsyncMock(return_value=1)

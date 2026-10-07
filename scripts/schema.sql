@@ -315,6 +315,22 @@ CREATE TABLE IF NOT EXISTS panel_audit_log (
 CREATE INDEX IF NOT EXISTS idx_panel_audit_log_created_at
     ON panel_audit_log (created_at DESC);
 
+-- Passive bot logs shown in the web panel (services/panel_logs.py); pruned after 365 days.
+CREATE TABLE IF NOT EXISTS panel_logs (
+    id          BIGSERIAL PRIMARY KEY,
+    level       SMALLINT NOT NULL DEFAULT 20,
+    source      TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    user_id     BIGINT,
+    data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_panel_logs_created_at ON panel_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_panel_logs_source ON panel_logs (source, id DESC);
+CREATE INDEX IF NOT EXISTS idx_panel_logs_user ON panel_logs (user_id, id DESC) WHERE user_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS mod_cases (
     id                BIGSERIAL PRIMARY KEY,
     guild_id          BIGINT NOT NULL,

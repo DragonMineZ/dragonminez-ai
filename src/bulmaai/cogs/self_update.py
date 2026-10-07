@@ -15,7 +15,7 @@ import sys
 import discord
 from discord.ext import tasks
 
-from bulmaai.services import update_engine
+from bulmaai.services import panel_logs, update_engine
 from bulmaai.services.update_engine import git, run, tail
 from bulmaai.services.update_plan import plan_update
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -242,16 +242,18 @@ class SelfUpdateCog(ReloadableCog):
         )
 
     async def _send(self, content: str | None = None, *, ping: bool = False, **kwargs) -> None:
-        channel_id = self.bot.settings.discord_log_channel_id
-        channel = channel_id and (self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id))
-        if channel is None:
-            log.warning("Self-update has news but DISCORD_LOG_CHANNEL_ID is unset: %s", content)
-            return
-        await channel.send(
-            content,
-            allowed_mentions=BRUNO_ONLY if ping else discord.AllowedMentions.none(),
-            **kwargs,
+        """Update news, prompts and failures all go to Bruno's DMs; the panel keeps a copy of the text."""
+        embed = kwargs.get("embed")
+        await panel_logs.record(
+            "update",
+            (embed.title if embed else content or "Self-update")[:200],
+            panel_logs.embed_text(embed) if embed else content or "",
         )
+        try:
+            owner = self.bot.get_user(BRUNO_ID) or await self.bot.fetch_user(BRUNO_ID)
+            await owner.send(content, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+        except discord.HTTPException:
+            log.warning("Couldn't DM Bruno the self-update news: %s", content, exc_info=True)
 
 
 def setup(bot: discord.Bot):

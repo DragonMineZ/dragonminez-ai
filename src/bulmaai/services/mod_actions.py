@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 import discord
 
-from bulmaai.services import mod_cases
+from bulmaai.services import mod_cases, panel_logs
 from bulmaai.ui.mod_views import appeal_view
 from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
 
@@ -286,7 +286,7 @@ async def resolve_channel(bot: discord.Bot, channel_id: int | None) -> discord.a
 
 
 def mod_log_channel_id(settings) -> int | None:
-    return settings.moderation_log_channel_id or settings.discord_log_channel_id
+    return settings.moderation_log_channel_id
 
 
 async def staff_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc.Messageable | None:
@@ -297,9 +297,13 @@ async def staff_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc
 async def post_case_log(bot: discord.Bot, **case: object) -> None:
     """Best effort; takes case_embed()'s keyword arguments."""
     try:
+        embed = case_embed(**case)
+        await panel_logs.record(
+            "case", embed.title or "Case", panel_logs.embed_text(embed), user_id=case.get("user_id"), data={"case_id": case.get("case_id")}
+        )
         channel = await resolve_channel(bot, mod_log_channel_id(bot.settings))
         if channel is not None:
-            await channel.send(embed=case_embed(**case), allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     except Exception:
         log.warning("Failed to post a case to the moderation log", exc_info=True)
 

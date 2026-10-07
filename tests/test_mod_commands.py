@@ -86,9 +86,10 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             settings=settings,
             user=SimpleNamespace(id=BOT_ID),
             get_guild=lambda guild_id: self.guild if guild_id == 1 else None,
+            get_user=lambda user_id: self.target if user_id == RANDOM_ID else None,
         )
         self.cog = ModCommandsCog(self.bot)
-        self.target = SimpleNamespace(id=RANDOM_ID, name="target")
+        self.target = SimpleNamespace(id=RANDOM_ID, name="target", mention=f"<@{RANDOM_ID}>")
 
     def ctx(self, user_id):
         member = self.members[user_id]
@@ -101,11 +102,13 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             defer=AsyncMock(),
             response=SimpleNamespace(is_done=lambda: False, defer=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
+            delete_original_response=AsyncMock(),
             send_modal=AsyncMock(),
         )
 
     def reply(self, ctx):
-        return ctx.respond.await_args.args[0]
+        call = ctx.respond.await_args
+        return call.args[0] if call.args else call.kwargs["embed"].description
 
     async def test_helper_cannot_ban(self):
         ctx = self.ctx(HELPER_ID)
@@ -124,7 +127,9 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             await self.cog.ban.callback(self.cog, ctx, self.target, "raid", "7d", "24h")
         kwargs = perform.await_args.kwargs
         self.assertEqual((kwargs["duration_seconds"], kwargs["delete_message_seconds"]), (7 * 86400, 86400))
-        self.assertEqual(self.reply(ctx), f"Banned <@{RANDOM_ID}> for 7d (case #7).")
+        self.assertEqual(self.reply(ctx), "🔨 ***target has been banned for 7d.***")
+        self.assertEqual(ctx.respond.await_args.kwargs["embed"].footer.text, "Case #7")
+        self.assertNotIn("ephemeral", ctx.respond.await_args.kwargs)
 
     async def test_warn_calls_perform_and_renders_escalation(self):
         ctx = self.ctx(HELPER_ID)
@@ -135,12 +140,32 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         perform.assert_awaited_once_with(
             self.bot, self.guild, action="warn", target_id=RANDOM_ID, moderator=ctx.user, reason="spam"
         )
-        self.assertEqual(self.reply(ctx), f"Warned <@{RANDOM_ID}> (case #12). DM delivered.\n→ auto timeout 1d (case #13)")
+        self.assertEqual(
+            self.reply(ctx), "⚠️ ***target has been warned.***\n⚡ Warn ladder kicked in: **timeout 1d** (case #13)"
+        )
+        self.assertEqual(ctx.respond.await_args.kwargs["embed"].footer.text, "Case #12 · DM delivered")
 
         failing = AsyncMock(side_effect=ModActionError("That user's panel tier is equal to or above yours.", 403))
         with patch("bulmaai.services.mod_actions.perform", failing):
             await self.cog.warn.callback(self.cog, ctx, self.target, "spam")
-        ctx.respond.assert_awaited_with("That user's panel tier is equal to or above yours.", ephemeral=True)
+        ctx.delete_original_response.assert_awaited_once()  # the public "thinking…" goes, the error stays private
+        ctx.followup.send.assert_awaited_with("❌ That user's panel tier is equal to or above yours.", ephemeral=True)
+
+    async def test_warnings_card(self):
+        self.target.display_avatar = SimpleNamespace(url="https://example.com/a.png")
+        warns = [ModCase(i, 1, RANDOM_ID, MOD_ID, "warn", f"reason {i}", None, "command", NOW) for i in range(1, 8)]
+        with (
+            patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=warns)),
+            patch("bulmaai.services.mod_cases.count_active_since", AsyncMock(return_value=1)),
+        ):
+            view = await self.cog._warnings_view(1, self.target)
+        payload = str(view.to_components())
+        self.assertIn("Warnings for target", payload)
+        self.assertIn("reason 5", payload)
+        self.assertNotIn("reason 6", payload)  # page 2
+        self.assertIn("Page 1/2 (7 warnings)", payload)
+        self.assertIn("**1/2** in 7d → timeout 1d", payload)
+        self.assertIn("Next warn → **timeout 1d**", payload)
 
     async def test_mute_rejects_bad_duration_and_caps_long_ones(self):
         ctx = self.ctx(MOD_ID)
@@ -152,7 +177,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             await self.cog.mute.callback(self.cog, ctx, self.target, "60d", "spam")
         self.assertEqual(perform.await_args.kwargs["action"], "timeout")
         self.assertEqual(perform.await_args.kwargs["duration_seconds"], MAX_TIMEOUT_SECONDS)
-        self.assertEqual(self.reply(ctx), f"Timed out <@{RANDOM_ID}> for 28d (case #5).")
+        self.assertEqual(self.reply(ctx), "🔇 ***target has been timed out for 28d.***")
 
     async def test_tempban_expiry(self):
         due = [

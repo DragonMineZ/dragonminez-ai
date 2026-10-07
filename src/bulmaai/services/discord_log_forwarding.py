@@ -8,7 +8,9 @@ from typing import Any
 
 import discord
 
-log = logging.getLogger(__name__)
+from bulmaai.services import panel_logs
+
+log =logging.getLogger(__name__)
 
 SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"(?i)\b(authorization\s*:\s*bearer)\s+[\w.\-]+"),
@@ -66,6 +68,12 @@ class LogEmbedPayload:
     color: int
     fields: dict[str, str]
     traceback_text: str | None = None
+    level: int = logging.WARNING
+    user_id: int | None = None
+    source: str = "bot"
+
+
+DISCORD_ALERT_LEVEL = logging.ERROR  # below this, logs go to the panel only
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -142,7 +150,11 @@ def build_log_embed_payload(record: logging.LogRecord) -> LogEmbedPayload:
             fields["exception_type"] = type(exception).__name__
 
     message = sanitize_log_text(record.getMessage())
+    raw_user = getattr(record, "user_id", None)
     return LogEmbedPayload(
+        level=record.levelno,
+        user_id=int(raw_user) if str(raw_user).isdigit() else None,
+        source=record.name.split(".")[-1][:32] or "bot",
         title=f"{record.levelname} | {record.name}",
         description=_truncate(message or "(no message)", MAX_DESCRIPTION_CHARS),
         color=_level_color(record.levelno),
@@ -320,6 +332,16 @@ class DiscordLogForwarder:
         while True:
             payload = await self._queue.get()
             try:
+                await panel_logs.record(
+                    payload.source,
+                    payload.title,
+                    payload.description,
+                    level=payload.level,
+                    user_id=payload.user_id,
+                    data={"fields": payload.fields, "traceback": payload.traceback_text},
+                )
+                if payload.level < DISCORD_ALERT_LEVEL:
+                    continue
                 channel = await self._resolve_channel()
                 if channel is None:
                     log.warning("Log channel %s is not a sendable channel", self._channel_id)

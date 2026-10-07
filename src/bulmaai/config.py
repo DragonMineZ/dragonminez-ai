@@ -91,6 +91,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.mod_log_sync",
     "bulmaai.cogs.scheduled_announcements",
     "bulmaai.cogs.console",
+    "bulmaai.cogs.v2_preview",  # throwaway mockups, remove once the V2 designs are picked
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"

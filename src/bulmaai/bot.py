@@ -321,21 +321,10 @@ class BulmaAI(discord.Bot):
             await ctx.respond("Something went wrong.", ephemeral=True)
 
     async def _send_restart_announcement(self) -> bool:
-        channel_id = self.settings.bot_restart_channel_id
-        if channel_id is None:
-            log.warning("BOT_RESTART_CHANNEL_ID is missing; restart announcement skipped.")
-            return True
-
-        channel = self.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.fetch_channel(channel_id)
-            except Exception:
-                log.exception("Failed to fetch restart announcement channel %s", channel_id)
-                return False
-
-        if not hasattr(channel, "send"):
-            log.error("Configured restart announcement channel %s is not messageable.", channel_id)
+        try:
+            channel = self.get_user(permissions.BRUNO_ID) or await self.fetch_user(permissions.BRUNO_ID)
+        except Exception:
+            log.exception("Failed to fetch Bruno for the restart announcement")
             return False
 
         embed, view = await self._build_restart_announcement()
@@ -347,7 +336,7 @@ class BulmaAI(discord.Bot):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except Exception:
-            log.exception("Failed to send restart announcement to channel %s", channel_id)
+            log.exception("Failed to DM the restart announcement")
             return False
 
         return True
@@ -358,7 +347,7 @@ class BulmaAI(discord.Bot):
         user_name = getattr(self.user, "display_name", "BulmaAI")
 
         embed = discord.Embed(
-            title="Bot Restarted Successfully",
+            title="Bot restarted",
             description="BulmaAI is back online and ready to serve.",
             colour=RESTART_EMBED_COLOR,
             timestamp=now,

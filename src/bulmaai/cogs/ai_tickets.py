@@ -1173,18 +1173,6 @@ class AITicketsCog(ReloadableCog):
         """A re-opened ticket must be archivable again when it closes."""
         self._archived_channels.discard(channel_id)
 
-    async def _post_close_embed(self, embed: discord.Embed) -> bool:
-        channel_id = self.bot.settings.ai_ticket_transcript_channel_id
-        if channel_id is None:
-            return False
-        try:
-            target = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-            await target.send(embed=embed)
-            return True
-        except discord.HTTPException:
-            log.exception("Failed to post ticket transcript", extra={"transcript_channel_id": channel_id})
-            return False
-
     async def _build_page(self, channel: discord.TextChannel) -> StoredPage | None:
         """The in-house ticket cog owns HTML export; without it (or when it fails) the ticket just has no web page."""
         tickets = self.bot.get_cog("TicketsCog")
@@ -1209,7 +1197,7 @@ class AITicketsCog(ReloadableCog):
         """Transcript → hosted HTML page → summarize → learn (vector store) → embed → record → optionally delete.
         Transcript is read first because Ticket Tool may delete the channel seconds later.
         resolved=None lets the summary decide (Ticket Tool closes don't say).
-        Returns whether the transcript reached the archive channel."""
+        Returns whether the transcript was saved for the panel."""
         archived = False
         if channel.id in self._closing_channels or channel.id in self._archived_channels:
             return archived
@@ -1278,8 +1266,6 @@ class AITicketsCog(ReloadableCog):
                 page_link=page_url(settings, page.token) if page else None,
                 page_expires_at=page.expires_at if page else None,
             )
-            archived = await self._post_close_embed(embed)
-
             try:
                 await record_ticket_transcript(
                     channel_id=channel.id,
@@ -1297,6 +1283,7 @@ class AITicketsCog(ReloadableCog):
                     html_expires_at=page.expires_at if page else None,
                 )
                 await delete_image_analyses(channel.id)
+                archived = True  # the panel's transcript row is the archive now
             except Exception:
                 log.exception("Failed to record ticket transcript", extra={"channel_id": channel.id})
 
@@ -1311,6 +1298,8 @@ class AITicketsCog(ReloadableCog):
             try:
                 if announce:
                     await channel.send(embed=embed)
+                elif page is not None:
+                    await channel.send(f"🧾 A transcript of this ticket was created: {page_url(settings, page.token)}")
             except discord.HTTPException:
                 # Expected when Ticket Tool already deleted the channel.
                 log.info("Could not post close embed in ticket", extra={"channel_id": channel.id})

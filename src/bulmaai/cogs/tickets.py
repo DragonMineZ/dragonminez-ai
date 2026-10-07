@@ -648,8 +648,9 @@ class TicketsCog(ReloadableCog):
         if not (is_admin(ctx.author) or member_rank(ctx.author, None, self.settings) >= Rank.MOD):
             return await ctx.respond(MSG["mod_only"], ephemeral=True)
         target = channel or ctx.channel
+        await ctx.defer(ephemeral=True)
         await target.send(embed=build_panel_embed(), view=TicketPanelView())
-        await ctx.respond(MSG["done"], ephemeral=True)
+        await ctx.interaction.delete_original_response()  # the panel appearing is the confirmation
 
     @ticket.command(name="add", description="Let a user or role see this ticket")
     @discord.option("target", discord.abc.Mentionable, description="User or role to add")
@@ -659,7 +660,7 @@ class TicketsCog(ReloadableCog):
         overwrite = ctx.channel.overwrites_for(target)
         overwrite.view_channel = True
         await ctx.channel.set_permissions(target, overwrite=overwrite, reason=f"/ticket add by {ctx.author}")
-        await ctx.respond(MSG["done"], ephemeral=True)
+        await ctx.respond(f"➕ {target.mention} was added to this ticket.", allowed_mentions=discord.AllowedMentions.none())
 
     @ticket.command(name="remove", description="Hide this ticket from a user or role")
     @discord.option("target", discord.abc.Mentionable, description="User or role to remove")
@@ -677,7 +678,7 @@ class TicketsCog(ReloadableCog):
         overwrite = ctx.channel.overwrites_for(target)
         overwrite.view_channel = False
         await ctx.channel.set_permissions(target, overwrite=overwrite, reason=f"/ticket remove by {ctx.author}")
-        await ctx.respond(MSG["done"], ephemeral=True)
+        await ctx.respond(f"➖ {target.mention} was removed from this ticket.", allowed_mentions=discord.AllowedMentions.none())
 
     @ticket.command(name="close", description="Close this ticket")
     @discord.option("reason", str, description="Why it's being closed", required=False, max_length=200)
@@ -687,20 +688,22 @@ class TicketsCog(ReloadableCog):
             return
         await ctx.defer(ephemeral=True)
         closed = await self.close_ticket(ctx.channel, closer_id=ctx.author.id, reason=reason)
-        await ctx.respond(MSG["done"] if closed else MSG["already_closed"], ephemeral=True)
+        if closed:
+            await ctx.interaction.delete_original_response()  # the close message in the channel says it all
+        else:
+            await ctx.respond(MSG["already_closed"], ephemeral=True)
 
     @ticket.command(name="transcript", description="Export this ticket's transcript as HTML")
     async def transcript(self, ctx: discord.ApplicationContext):
         ticket = await self._command_gate(ctx, Rank.HELPER)
         if ticket is None:
             return
-        await ctx.defer(ephemeral=True)
+        await ctx.defer()
         html = await self.export_html(ctx.channel)
         if html is None or len(html) > ctx.guild.filesize_limit - 65_536:
-            return await ctx.respond(MSG["transcript_failed"], ephemeral=True)
-        await ctx.respond(
-            file=discord.File(io.BytesIO(html), filename=f"ticket-{ticket.ticket_id:04d}.html"), ephemeral=True
-        )
+            await ctx.interaction.delete_original_response()  # keep the failure private
+            return await ctx.followup.send(MSG["transcript_failed"], ephemeral=True)
+        await ctx.respond(file=discord.File(io.BytesIO(html), filename=f"ticket-{ticket.ticket_id:04d}.html"))
 
 
 def setup(bot: discord.Bot):

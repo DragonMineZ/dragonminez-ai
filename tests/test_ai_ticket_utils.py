@@ -389,7 +389,9 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(record.await_args.kwargs["html_token"], "p" * 32)
         self.assertEqual(record.await_args.kwargs["html_expires_at"], expires)
-        channel.send.assert_not_awaited()  # announce=False keeps staff-only details out of the ticket
+        # announce=False keeps staff-only details out of the ticket: only the transcript link is posted
+        channel.send.assert_awaited_once_with(f"🧾 A transcript of this ticket was created: https://tickets.example/t/{'p' * 32}")
+        channel.send.reset_mock()
 
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
         cog._archived_channels.clear()

@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 BOT = web.AppKey("bot", discord.Bot)
 SESSION_COOKIE = "panel_session"
 SESSION_TTL_SECONDS = 12 * 3600
+REMEMBER_TTL_SECONDS = 30 * 24 * 3600  # "Remember me"; tier is re-checked on every request, so a demoted user loses access at once
 
 
 class Tier(IntEnum):
@@ -49,6 +50,7 @@ PERMISSIONS: dict[str, Tier] = {
     "mod.channels": Tier.MODERATOR,  # purge, lock, slowmode, lockdown, /role
     "tickets.manage": Tier.MODERATOR,
     "patreon.view": Tier.MODERATOR,
+    "logs.view": Tier.MODERATOR,  # bot logs: tracebacks, automod/update/purge notices
     "mod.ban": Tier.ADMIN,
     "settings.view": Tier.ADMIN,
     "settings.edit": Tier.ADMIN,
@@ -65,8 +67,8 @@ def _sign(secret: str, body: str) -> str:
     return hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
 
 
-def sign_session(secret: str, user_id: int, *, now: float | None = None) -> str:
-    expires_at = int((now or time.time()) + SESSION_TTL_SECONDS)
+def sign_session(secret: str, user_id: int, *, now: float | None = None, ttl: int = SESSION_TTL_SECONDS) -> str:
+    expires_at = int((now or time.time()) + ttl)
     raw = json.dumps({"uid": str(user_id), "exp": expires_at}, separators=(",", ":")).encode()
     body = urlsafe_b64encode(raw).decode().rstrip("=")
     return f"{body}.{_sign(secret, body)}"

@@ -7,12 +7,13 @@ from collections import defaultdict
 import discord
 from discord.ext import commands
 
-from bulmaai.services.ai_guard import defang_embed
+from bulmaai.services.ai_guard import defang
 from bulmaai.services.moderation import ModerationState
 from bulmaai.utils.dmz_addons import check_addons
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
 from bulmaai.utils.log_parser import parse_log, LogReport
 from bulmaai.utils.permissions import is_admin
+from bulmaai.ui.v2 import TEXT_LIMIT, card, fit
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def _clean_error_line(line: str) -> str:
 def _summarise_stacktrace(raw: str) -> str:
     """Return only the exception class/message lines and 'Caused by:' lines.
 
-    Drops all 'at com.mojang...' lines so the embed stays readable.
+    Drops all 'at com.mojang...' lines so the card stays readable.
     Keeps at most 10 meaningful lines.
     """
     keep: list[str] = []
@@ -59,7 +60,7 @@ def _summarise_stacktrace(raw: str) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        # Skip frame lines — they're noise in a short embed snippet
+        # Skip frame lines — they're noise in a short card snippet
         if stripped.startswith("at ") or stripped.startswith("..."):
             continue
         keep.append(stripped)
@@ -79,18 +80,13 @@ def _is_high_confidence_name(filename: str) -> bool:
     return False
 
 
-# ── Embed builder ─────────────────────────────────────────────────────────────
+# ── Card builder ──────────────────────────────────────────────────────────────
 
-def _build_embed(report: LogReport, filename: str) -> discord.Embed:
-    """Construct a Discord embed from a parsed LogReport.
-
-    Field value limits:  1 024 chars each (Discord hard limit).
-    Total embed limit:   6 000 chars (Discord hard limit).
-    We target well under both to stay safe.
-    """
+def _build_card(report: LogReport, filename: str) -> discord.ui.DesignerView:
+    """The analysis as a V2 card: what went wrong first, then the environment, then the mod lists.
+    Everything from the uploaded file is defanged (no live links or pings)."""
     has_errors = bool(report.errors)
     is_valid = report.is_forge or bool(report.mc_version)
-
     # Colour: red = errors present, orange = no Forge detected, green = clean
     if has_errors:
         colour = discord.Colour.red()
@@ -99,119 +95,61 @@ def _build_embed(report: LogReport, filename: str) -> discord.Embed:
     else:
         colour = discord.Colour.green()
 
-    embed = discord.Embed(
-        title="🔍 Log Analysis",
-        colour=colour,
-        timestamp=discord.utils.utcnow(),   # shows a clean timestamp in the footer
-    )
-    embed.set_footer(text=f"📄 {filename}")
-
-    # ── Non-Forge warning ─────────────────────────────────────────────────────
+    title = "## 🔍 Log analysis"
     if not is_valid:
-        embed.description = (
-            "⚠️ This file does not appear to be a Minecraft Forge log.\n"
-            "Results may be incomplete."
-        )
+        title += "\n⚠️ This file does not appear to be a Minecraft Forge log. Results may be incomplete."
+
+    # ── What went wrong ───────────────────────────────────────────────────────
+    if report.errors:
+        cleaned = [_clean_error_line(e) for e in report.errors[:8]]
+        problems = f"**❌ Errors / Fatal ({len(report.errors)})**\n" + "\n".join(f"• {_truncate(e, 120)}" for e in cleaned)
+    else:
+        problems = "**✅ Status**\nNo errors or fatal messages found."
+    if report.stacktrace and (summary := _summarise_stacktrace(report.stacktrace)):
+        problems += f"\n**📋 Exception Summary**\n```\n{_truncate(summary, 800)}\n```"
 
     # ── Environment ───────────────────────────────────────────────────────────
-    env_lines: list[str] = []
-    if report.mc_version:
-        env_lines.append(f"🎮 **Minecraft:** `{report.mc_version}`")
-    if report.forge_version:
-        env_lines.append(f"⚙️ **Forge:** `{report.forge_version}`")
-    if report.java_version:
-        env_lines.append(f"☕ **Java:** `{report.java_version}`")
-    if report.dragonminez_version:
-        env_lines.append(f"🐉 **DragonMineZ:** `{report.dragonminez_version}`")
-    if report.operating_system:
-        env_lines.append(f"💻 **OS:** {report.operating_system}")
-    if report.memory:
-        env_lines.append(f"🧠 **Memory:** {report.memory}")
-
-    if env_lines:
-        embed.add_field(
-            name="🖥️ Environment",
-            value="\n".join(env_lines),
-            inline=False,
+    env_lines = [
+        f"{icon} **{name}** {value}"
+        for icon, name, value in (
+            ("🎮", "Minecraft", report.mc_version and f"`{report.mc_version}`"),
+            ("⚙️", "Forge", report.forge_version and f"`{report.forge_version}`"),
+            ("☕", "Java", report.java_version and f"`{report.java_version}`"),
+            ("🐉", "DragonMineZ", report.dragonminez_version and f"`{report.dragonminez_version}`"),
+            ("💻", "OS", report.operating_system),
+            ("🧠", "Memory", report.memory),
         )
+        if value
+    ]
+    environment = ("**🖥️ Environment**\n" + "\n".join(env_lines)) if env_lines else ""
 
-    # ── Mods ──────────────────────────────────────────────────────────────────
+    # ── Mods + DMZ addons ─────────────────────────────────────────────────────
     mod_count = len(report.mods)
     if mod_count:
         sorted_mods = sorted(report.mods.items())
-        if mod_count <= 20:
-            mods_text = "\n".join(
-                f"`{mid}` — {ver}" for mid, ver in sorted_mods
-            )
-        else:
-            shown = sorted_mods[:15]
-            mods_text = "\n".join(f"`{mid}` — {ver}" for mid, ver in shown)
-            mods_text += f"\n*…and **{mod_count - 15}** more*"
-
-        embed.add_field(
-            name=f"🧩 Mods Detected ({mod_count})",
-            value=_truncate(mods_text, 900),
-            inline=False,
-        )
+        shown = sorted_mods if mod_count <= 20 else sorted_mods[:15]
+        mods = f"**🧩 Mods Detected ({mod_count})**\n" + "\n".join(f"`{mid}` — {ver}" for mid, ver in shown)
+        if mod_count > 20:
+            mods += f"\n*…and **{mod_count - 15}** more*"
+        if not report.dragonminez_version:
+            mods += "\n-# ℹ️ DragonMineZ was not detected among the loaded mods."
     else:
-        embed.add_field(
-            name="🧩 Mods Detected",
-            value="*No mods detected. Log may be incomplete or vanilla.*",
-            inline=False,
-        )
-
-    # ── DragonMineZ absent notice ─────────────────────────────────────────────
-    if mod_count and not report.dragonminez_version:
-        embed.add_field(
-            name="ℹ️ DragonMineZ",
-            value="Not detected among the loaded mods.",
-            inline=False,
-        )
-
-    # ── DMZ addons ────────────────────────────────────────────────────────────
+        mods = "**🧩 Mods Detected**\n*No mods detected. Log may be incomplete or vanilla.*"
     addons = check_addons(report.mods, report.dragonminez_version)
     if addons:
-        lines = []
-        for a in addons:
-            if a.compatible is False:
-                lines.append(
-                    f"⚠️ `{a.mod_id}` — {a.version} *(needs DMZ ≥ {a.min_dmz_version})*"
-                )
-            else:
-                lines.append(f"✅ `{a.mod_id}` — {a.version}")
-        embed.add_field(
-            name=f"🐉 DMZ Addons ({len(addons)})",
-            value=_truncate("\n".join(lines), 900),
-            inline=False,
+        mods += f"\n**🐉 DMZ Addons ({len(addons)})**\n" + "\n".join(
+            f"⚠️ `{a.mod_id}` — {a.version} *(needs DMZ ≥ {a.min_dmz_version})*"
+            if a.compatible is False
+            else f"✅ `{a.mod_id}` — {a.version}"
+            for a in addons
         )
 
-    # ── Errors ────────────────────────────────────────────────────────────────
-    if report.errors:
-        cleaned = [_clean_error_line(e) for e in report.errors[:8]]
-        errors_text = "\n".join(f"• {_truncate(e, 120)}" for e in cleaned)
-        embed.add_field(
-            name=f"❌ Errors / Fatal ({len(report.errors)})",
-            value=_truncate(errors_text, 900),
-            inline=False,
-        )
-    else:
-        embed.add_field(
-            name="✅ Status",
-            value="No errors or fatal messages found.",
-            inline=False,
-        )
-
-    # ── Stacktrace snippet ────────────────────────────────────────────────────
-    if report.stacktrace:
-        summary = _summarise_stacktrace(report.stacktrace)
-        if summary:
-            embed.add_field(
-                name="📋 Exception Summary",
-                value=f"```\n{_truncate(summary, 800)}\n```",
-                inline=False,
-            )
-
-    return embed
+    footer = f"-# 📄 {discord.utils.escape_markdown(_truncate(filename, 100))}"
+    items: list = [title]
+    for block in fit([defang(problems), defang(environment), defang(mods)], TEXT_LIMIT - len(title) - len(footer)):
+        items += [discord.ui.Separator(), block]
+    items.append(footer)
+    return card(*items, color=colour)
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -295,8 +233,8 @@ class LogParserCog(commands.Cog):
                 async with message.channel.typing():
                     # Off the event loop: a multi-MB log still takes about a second to parse.
                     report = await asyncio.to_thread(parse_log, text)
-                    embed = defang_embed(_build_embed(report, attachment.filename))
-                await message.reply(embed=embed, mention_author=False)
+                    view = _build_card(report, attachment.filename)
+                await message.reply(view=view, mention_author=False)
             else:
                 # ── Uncertain name → queue for admin approval ─────────────
                 pending_urls.append(attachment.url)
@@ -359,8 +297,8 @@ class LogParserCog(commands.Cog):
 
             async with message.channel.typing():
                 report = parse_log(text)
-                embed = _build_embed(report, attachment.filename)
-            await message.reply(embed=embed, mention_author=False)
+                view = _build_card(report, attachment.filename)
+            await message.reply(view=view, mention_author=False)
 
 
 # ── Detection helper ──────────────────────────────────────────────────────────

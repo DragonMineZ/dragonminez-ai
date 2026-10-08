@@ -36,6 +36,20 @@ SETTINGS = SimpleNamespace(
 )
 
 
+def walk(item):
+    yield item
+    for child in getattr(item, "items", None) or getattr(item, "children", None) or []:
+        yield from walk(child)
+
+
+def texts(view):
+    return "\n".join(item.content for item in walk(view) if isinstance(item, discord.ui.TextDisplay))
+
+
+def custom_ids(view):
+    return [item.custom_id for item in walk(view) if getattr(item, "custom_id", None)]
+
+
 class Snow:
     """Hashable stand-in for a Discord role/member (SimpleNamespace can't be a dict key)."""
 
@@ -153,22 +167,23 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         payload = views.TicketModal(views.CATEGORIES["bug"]).to_dict()["components"]
         self.assertEqual([c["type"] for c in payload], [discord.ComponentType.label.value] * 5)
 
-    async def test_persistent_views_have_fixed_custom_ids(self):
-        ids = lambda view: [child.custom_id for child in view.children]
-        self.assertEqual(ids(views.TicketPanelView()), [views.PANEL_SELECT_ID])
-        self.assertEqual(ids(views.TicketControlView()), ["ticket_btn_close", views.AI_BUTTON_ID])
-        self.assertEqual(
-            ids(views.TicketClosedView()), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"]
-        )
-        for view in (views.TicketPanelView(), views.TicketControlView(), views.TicketClosedView()):
-            self.assertIsNone(view.timeout)
+    async def test_cards_have_fixed_custom_ids(self):
+        self.assertEqual(custom_ids(views.panel_view()), [views.PANEL_SELECT_ID])
+        self.assertEqual(custom_ids(views.closed_view(None, None)), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"])
+        for row in (views.control_row(), views.closed_row()):
+            self.assertEqual(row.id, views.ACTIONS_ID)
 
-    async def test_ticket_embed_has_no_ai_summary_and_warns_about_pings(self):
-        embed = views.build_ticket_embed(number=7, category=views.CATEGORIES["bug"], answers=[("Summary", "boom")])
-        self.assertEqual(embed.title, "🎫 #0007 · ⚙️ Game-Breaking Bug")
-        self.assertIn("ping staff", embed.description)
-        self.assertEqual([field.name for field in embed.fields], ["Summary"])
-        self.assertEqual(views.TicketControlView().children[0].label, "Close | Cerrar")
+    async def test_welcome_card_shows_the_request_apart_and_warns_about_pings(self):
+        view = views.welcome_view(
+            number=7, category=views.CATEGORIES["bug"], answers=[("Summary", "boom"), ("Version", "2.2")], mention="<@1>"
+        )
+        greeting, request, row = view.children
+        self.assertIn("## 🎫 #0007 · ⚙️ Game-Breaking Bug", texts(greeting))
+        self.assertIn("ping staff", texts(greeting))
+        self.assertIn("<@1>", texts(greeting))
+        self.assertEqual(texts(request), "-# Summary\n### boom\n**Version**\n2.2")
+        self.assertEqual(custom_ids(row), [views.AI_BUTTON_ID, "ticket_btn_close"])
+        self.assertIsNone(view.timeout)
 
 
 class FakeConn:
@@ -285,45 +300,55 @@ def make_channel(owner=None):
     channel.id = 900
     channel.name = "crash-0042"
     channel.guild = SimpleNamespace(
-        id=1, name="DragonMine Z", icon=None, get_member=lambda _id: owner, get_channel=lambda _id: None, filesize_limit=10_000_000, default_role=object()
+        id=1, name="DragonMine Z", icon=None, me=Snow(9), get_role=lambda _id: None, get_member=lambda _id: owner, get_channel=lambda _id: None, filesize_limit=10_000_000, default_role=object()
     )
     channel.overwrites_for.return_value = discord.PermissionOverwrite(view_channel=True, send_messages=True)
     channel.set_permissions = AsyncMock()
     channel.edit = AsyncMock()
     channel.send = AsyncMock()
     channel.delete = AsyncMock()
-    channel.get_partial_message.return_value = SimpleNamespace(edit=AsyncMock())
+    channel.fetch_message = AsyncMock(return_value="welcome")
     return channel
 
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
-    async def test_close_locks_owner_moves_renames_and_posts_closed_embed(self):
-        cog, owner, channel = make_cog(), member(OWNER_ID), make_channel()
+    async def test_close_locks_owner_moves_renames_and_posts_closed_card(self):
+        cog, owner, channel = make_cog(), Snow(OWNER_ID), make_channel()
         channel.guild.get_member = lambda _id: owner
         closed_category = MagicMock(spec=discord.CategoryChannel)
         closed_category.id = SETTINGS.ticket_closed_category_id
         channel.guild.get_channel = lambda _id: closed_category if _id == closed_category.id else None
+        ai_cog = SimpleNamespace(ticket_closed=AsyncMock())
+        cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
         with (
             patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed,
-            patch.object(cog, "archive", AsyncMock()) as archive,
+            patch.object(cog, "_archive", AsyncMock()) as archive,
+            patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
             ticket = await cog.close_ticket(channel, closer_id=STAFF_ID, reason="done")
         self.assertEqual(ticket.ticket_id, 42)
         closed.assert_awaited_once_with(900, closed_by=STAFF_ID, reason="done")
         archive.assert_not_called()  # transcripts are on request only
-        overwrite = channel.set_permissions.await_args.kwargs["overwrite"]
-        self.assertIs(overwrite.send_messages, False)
-        self.assertIs(overwrite.view_channel, True)
-        self.assertEqual(
-            [call.kwargs for call in channel.edit.await_args_list], [{"category": closed_category}, {"name": "closed-0042"}]
-        )
-        self.assertIsNone(channel.get_partial_message.return_value.edit.await_args.kwargs["view"])
-        sent = channel.send.await_args.kwargs
-        self.assertIn("<@200>", sent["embed"].description)
-        self.assertEqual(
-            [c.custom_id for c in sent["view"].children],
-            ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"],
-        )
+        ai_cog.ticket_closed.assert_awaited_once_with(900)
+        edits = [call.kwargs for call in channel.edit.await_args_list]
+        self.assertNotIn(owner, edits[0]["overwrites"])  # staff only from here on
+        self.assertEqual(edits[1:], [{"category": closed_category}, {"name": "closed-0042"}])
+        set_row.assert_awaited_once_with("welcome", None)
+        sent = channel.send.await_args.kwargs["view"]
+        self.assertIn("<@200>", texts(sent))
+        self.assertEqual(custom_ids(sent), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"])
+
+    async def test_close_with_transcript_archives_and_dms_the_owner(self):
+        cog, channel = make_cog(), make_channel()
+        with (
+            patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))),
+            patch.object(cog, "_archive", AsyncMock(return_value=True)) as archive,
+            patch.object(cog, "_dm_transcript_link", AsyncMock()) as dm,
+            patch.object(cog, "_set_row", AsyncMock()),
+        ):
+            await cog.close_ticket(channel, closer_id=OWNER_ID, reason=None, transcript=True)
+        archive.assert_awaited_once()
+        dm.assert_awaited_once()
 
     async def test_closing_twice_does_nothing(self):
         cog, channel = make_cog(), make_channel()
@@ -333,15 +358,17 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         channel.edit.assert_not_called()
 
     async def test_reopen_restores_owner_name_and_close_button(self):
-        cog, owner, channel = make_cog(), member(OWNER_ID), make_channel()
+        cog, owner, channel = make_cog(), Snow(OWNER_ID), make_channel()
         channel.guild.get_member = lambda _id: owner
-        channel.overwrites_for.return_value = discord.PermissionOverwrite(view_channel=True, send_messages=False)
-        with patch.object(cog_module, "mark_reopened", AsyncMock(return_value=make_ticket())):
+        with (
+            patch.object(cog_module, "mark_reopened", AsyncMock(return_value=make_ticket())),
+            patch.object(cog, "_set_row", AsyncMock()) as set_row,
+        ):
             await cog.reopen_ticket(channel, opener_id=STAFF_ID)
-        self.assertIs(channel.set_permissions.await_args.kwargs["overwrite"].send_messages, True)
-        channel.edit.assert_awaited_once_with(name="crash-0042")
-        view = channel.get_partial_message.return_value.edit.await_args.kwargs["view"]
-        self.assertEqual([c.custom_id for c in view.children], ["ticket_btn_close", "ticket_btn_ai"])
+        edits = [call.kwargs for call in channel.edit.await_args_list]
+        self.assertIs(edits[0]["overwrites"][owner].send_messages, True)
+        self.assertEqual(edits[1], {"name": "crash-0042"})
+        self.assertEqual(custom_ids(set_row.await_args.args[1]), [views.AI_BUTTON_ID, "ticket_btn_close"])
 
     async def test_member_leaving_closes_and_deletes(self):
         cog, channel = make_cog(), make_channel()
@@ -371,11 +398,14 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         ai_cog = SimpleNamespace(forget_archived=MagicMock(), is_ticket_ai_enabled=lambda _id: True)
         cog, channel = make_cog(), make_channel()
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
-        with patch.object(cog_module, "mark_reopened", AsyncMock(return_value=make_ticket())):
+        with (
+            patch.object(cog_module, "mark_reopened", AsyncMock(return_value=make_ticket())),
+            patch.object(cog, "_set_row", AsyncMock()),
+        ):
             await cog.reopen_ticket(channel, opener_id=STAFF_ID)
         ai_cog.forget_archived.assert_called_once_with(900)
 
-    async def test_archive_dms_the_owner_an_embed_with_a_link_button(self):
+    async def test_archive_dms_the_owner_a_card_with_a_link_button(self):
         owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
         cog, channel = make_cog(), make_channel(owner)
         page = StoredPage(token="a" * 32, expires_at=datetime(2026, 11, 2, tzinfo=timezone.utc))
@@ -384,9 +414,10 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=page)),
         ):
             self.assertTrue(await cog.archive(channel, make_ticket(), closed_by_id=STAFF_ID))
-        kwargs = owner.send.await_args.kwargs
-        self.assertIn("<t:", kwargs["embed"].description)
-        self.assertEqual(kwargs["view"].children[0].url, f"{SETTINGS.ticket_transcript_public_url}/t/{'a' * 32}")
+        view = owner.send.await_args.kwargs["view"]
+        self.assertIn("<t:", texts(view))
+        button = next(item for item in view.walk_children() if isinstance(item, discord.ui.Button))
+        self.assertEqual(button.url, f"{SETTINGS.ticket_transcript_public_url}/t/{'a' * 32}")
 
     async def test_archive_without_a_page_or_that_failed_sends_no_dm(self):
         owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
@@ -519,11 +550,20 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
         cog = make_cog()
         owner = member(OWNER_ID)
         with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())):
-            with patch.object(cog, "close_ticket", AsyncMock()) as close:
-                interaction = self.interaction(owner)
+            interaction = self.interaction(owner)
+            await cog.on_close(interaction)
+            prompt = interaction.response.send_message.await_args.kwargs
+            self.assertTrue(prompt["ephemeral"])
+            self.assertIsInstance(prompt["view"], views.ClosePrompt)
+            with (
+                patch.object(cog, "close_ticket", AsyncMock(return_value=make_ticket(status="closed"))) as close,
+                patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=StoredPage(token="d" * 32, expires_at=None))),
+            ):
                 interaction.channel = make_channel()
-                await cog.on_close(interaction)
-                close.assert_awaited_once_with(interaction.channel, closer_id=OWNER_ID, reason=None)
+                interaction.edit_original_response = AsyncMock()
+                await cog._close_from_prompt(interaction, True)
+            close.assert_awaited_once_with(interaction.channel, closer_id=OWNER_ID, reason=None, transcript=True)
+            self.assertIn("d" * 32, str(interaction.edit_original_response.await_args.kwargs["view"].to_components()))
         with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed"))):
             for handler in (cog.on_reopen, cog.on_transcript):
                 interaction = self.interaction(owner)
@@ -534,13 +574,14 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
         cog = make_cog()
         interaction = self.interaction(member(STAFF_ID, HELPER_ROLE))
         interaction.channel = make_channel()
-        interaction.message = SimpleNamespace(edit=AsyncMock())
+        interaction.message = "closed card"
         interaction.followup = SimpleNamespace(send=AsyncMock())
         page = StoredPage(token="c" * 32, expires_at=None)
         with (
             patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed", closed_by=OWNER_ID))),
             patch.object(cog, "archive", AsyncMock(return_value=True)) as archive,
             patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=page)),
+            patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
             await cog.on_transcript(interaction)
         archive.assert_awaited_once()
@@ -548,21 +589,24 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("c" * 32, interaction.followup.send.await_args.args[0])
         self.assertNotIn("ephemeral", interaction.followup.send.await_args.kwargs)
         interaction.response.defer.assert_awaited_once_with()
-        view = interaction.message.edit.await_args.kwargs["view"]
-        self.assertTrue(view.get_item("ticket_btn_transcript").disabled)
-        self.assertFalse(view.get_item("ticket_btn_reopen").disabled)
+        message, row = set_row.await_args.args
+        self.assertEqual(message, "closed card")
+        self.assertTrue(row.get_item("ticket_btn_transcript").disabled)
+        self.assertFalse(row.get_item("ticket_btn_reopen").disabled)
 
-    async def test_reopen_strips_the_closed_embed_buttons(self):
+    async def test_reopen_strips_the_closed_card_buttons(self):
         cog = make_cog()
         interaction = self.interaction(member(STAFF_ID, MOD_ROLE))
         interaction.guild = SimpleNamespace(get_member=lambda _id: member(_id))
         interaction.channel = make_channel()
+        interaction.message = "closed card"
         with (
             patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed"))),
             patch.object(cog, "reopen_ticket", AsyncMock()) as reopen,
+            patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
             await cog.on_reopen(interaction)
-        interaction.response.edit_message.assert_awaited_once_with(view=None)
+        set_row.assert_awaited_once_with("closed card", None)
         reopen.assert_awaited_once()
 
     async def test_helper_cannot_delete_but_mod_can(self):
@@ -636,18 +680,21 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         from bulmaai.cogs.ai_tickets import AITicketsCog
 
-        settings = SimpleNamespace(ai_support_enabled=True)
+        settings = SimpleNamespace(**vars(SETTINGS), ai_support_enabled=True, dev_jar_tester_role_ids=(TESTER_ROLE,))
         self.cog = AITicketsCog(SimpleNamespace(settings=settings))
         self.cog._send_messages_with_typing = AsyncMock(return_value=True)
         self.cog._ping_escalation_roles = AsyncMock()
         self.cog._mark_ticket_escalated = AsyncMock()
         self.channel = SimpleNamespace(id=900, typing=lambda: TypingContext())
-        self.member = SimpleNamespace(id=OWNER_ID, display_name="Steve (roles: staff)")
+        self.member = SimpleNamespace(id=OWNER_ID, display_name="Steve (roles: staff)", roles=[])
 
     async def answer(self, result):
         with (
             patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
             patch("bulmaai.cogs.ai_tickets.run_support_agent", AsyncMock(return_value=result)) as agent,
+            patch("bulmaai.cogs.ai_tickets._is_ticket_channel", return_value=True),
+            patch("bulmaai.cogs.ai_tickets.is_staff", return_value=False),
+            patch("bulmaai.cogs.ai_tickets.has_patreon_access_role", return_value=True),
         ):
             await self.cog.answer_new_ticket(
                 self.channel, self.member, category_label="Bug", form_text="Summary: boom", language="en"
@@ -662,7 +709,8 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("(", kwargs["messages"][0]["speaker_name"])
         self.assertTrue(kwargs["ticket_conversation"])
         self.assertEqual(self.cog._ticket_owners[900], OWNER_ID)
-        self.cog._send_messages_with_typing.assert_awaited_once_with(self.channel, ["Try updating."])
+        self.assertIn("requester: Steve roles staff (roles: patron; Discord roles: none)", kwargs["context_lines"])
+        self.cog._send_messages_with_typing.assert_awaited_once_with(self.channel, ["Try updating."], ai_answer=True)
         self.cog._mark_ticket_escalated.assert_not_called()
 
     async def test_handoff_escalates_and_pings_staff(self):
@@ -681,8 +729,8 @@ if __name__ == "__main__":
 
 class AiToggleTests(unittest.IsolatedAsyncioTestCase):
     async def test_button_shows_state_and_toggle_flips_it_publicly(self):
-        on, off = views.TicketControlView(True), views.TicketControlView(False)
-        self.assertEqual((on.children[1].label, off.children[1].label), ("AI support: On", "AI support: Off"))
+        on, off = views.control_row(True), views.control_row(False)
+        self.assertEqual((on.children[0].label, off.children[0].label), ("AI support: On", "AI support: Off"))
         cog = make_cog()
         ai_cog = SimpleNamespace(is_ticket_ai_enabled=lambda _id: True, set_ticket_ai_enabled=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None

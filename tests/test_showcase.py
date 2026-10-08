@@ -1,12 +1,15 @@
 import os
 import unittest
 
+import discord
+
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services.showcase import should_highlight_message
-from bulmaai.ui.showcase_views import build_showcase_highlight_embed
+from bulmaai.ui.showcase_views import build_showcase_highlight_card
+from v2_helpers import buttons, text, walk
 
 
 class ShowcaseDecisionTests(unittest.TestCase):
@@ -40,9 +43,9 @@ class ShowcaseDecisionTests(unittest.TestCase):
         self.assertFalse(self._decide(source_channel_ids=()))
 
 
-class ShowcaseEmbedTests(unittest.TestCase):
-    def test_embed_carries_author_content_reactions_and_jump_link(self) -> None:
-        embed = build_showcase_highlight_embed(
+class ShowcaseCardTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a running loop
+    def _card(self, **overrides):
+        kwargs = dict(
             author_name="Trunks#0001",
             author_avatar_url="https://cdn.example/avatar.png",
             content="Check out my new build!",
@@ -51,42 +54,30 @@ class ShowcaseEmbedTests(unittest.TestCase):
             reaction_emoji="⭐",
             jump_url="https://discord.com/channels/1/2/3",
         )
+        return build_showcase_highlight_card(**(kwargs | overrides))
 
-        self.assertEqual(embed.author.name, "Trunks#0001")
-        self.assertEqual(embed.author.icon_url, "https://cdn.example/avatar.png")
-        self.assertEqual(embed.description, "Check out my new build!")
-        self.assertEqual(embed.image.url, "https://cdn.example/screenshot.png")
+    async def test_card_carries_author_content_reactions_and_jump_link(self) -> None:
+        view = self._card()
+        card_text = text(view)
 
-        field_values = {field.name: field.value for field in embed.fields}
-        self.assertEqual(field_values["Reactions"], "⭐ 7")
-        self.assertIn("https://discord.com/channels/1/2/3", field_values["Original"])
+        self.assertIn("-# by **Trunks#0001**", card_text)
+        self.assertIn("Check out my new build!", card_text)
+        self.assertIn("-# ⭐ 7 reactions", card_text)
+        kinds = {type(item) for item in walk(view)}
+        self.assertIn(discord.ui.Thumbnail, kinds)
+        self.assertIn(discord.ui.MediaGallery, kinds)
+        [button] = buttons(view)
+        self.assertEqual(button.url, "https://discord.com/channels/1/2/3")
 
-    def test_embed_omits_image_when_none_provided(self) -> None:
-        embed = build_showcase_highlight_embed(
-            author_name="Goten#0002",
-            author_avatar_url=None,
-            content="No screenshot here",
-            image_url=None,
-            reaction_count=5,
-            reaction_emoji="⭐",
-            jump_url="https://discord.com/channels/1/2/4",
-        )
+    async def test_card_omits_image_and_avatar_when_none_provided(self) -> None:
+        kinds = {type(item) for item in walk(self._card(image_url=None, author_avatar_url=None))}
+        self.assertNotIn(discord.ui.MediaGallery, kinds)
+        self.assertNotIn(discord.ui.Thumbnail, kinds)
 
-        self.assertFalse(embed.image)
-
-    def test_embed_truncates_long_content(self) -> None:
-        embed = build_showcase_highlight_embed(
-            author_name="Vegeta#0003",
-            author_avatar_url=None,
-            content="x" * 5000,
-            image_url=None,
-            reaction_count=5,
-            reaction_emoji="⭐",
-            jump_url="https://discord.com/channels/1/2/5",
-        )
-
-        self.assertLessEqual(len(embed.description), 4096)
-        self.assertTrue(embed.description.endswith("..."))
+    async def test_card_truncates_long_content(self) -> None:
+        card_text = text(self._card(content="x" * 5000))
+        self.assertLessEqual(len(card_text), 4000)
+        self.assertIn("x…", card_text)
 
 
 if __name__ == "__main__":

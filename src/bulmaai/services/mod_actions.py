@@ -12,8 +12,9 @@ import discord
 
 from bulmaai.services import mod_cases, panel_logs
 from bulmaai.ui import mod_cards
-from bulmaai.ui.mod_views import appeal_view
+from bulmaai.ui.mod_views import appeal_button
 from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
+from bulmaai.ui.v2 import card
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ SOFTBAN_DELETE_SECONDS = 86400
 DISCORD_ACTIONS = {"timeout", "untimeout", "kick", "ban", "softban", "unban"}
 MEMBER_ONLY_ACTIONS = {"warn", "timeout", "untimeout", "kick"}
 DM_ACTIONS = {"warn", "timeout", "kick", "ban", "softban"}
+DM_COLOR = discord.Color.orange()
 
 
 class ModActionError(Exception):
@@ -235,9 +237,10 @@ def dm_text(guild_name: str, action: str, reason: str, duration_seconds: int | N
     return f"{what}\nReason: {reason or 'No reason given'}"
 
 
-async def _dm(member: discord.Member, text: str, view: discord.ui.View | None) -> bool:
+async def _dm(member: discord.Member, text: str, button: discord.ui.Button | None) -> bool:
     try:
-        await member.send(text, view=view, allowed_mentions=discord.AllowedMentions.none())
+        view = card(text, color=DM_COLOR, buttons=[button] if button else None)
+        await member.send(view=view, allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:
         return False
     return True
@@ -453,8 +456,8 @@ async def perform(
     dm_sent = None
     if notify and settings.moderation_dm_on_action and member is not None and action in DM_ACTIONS:
         # Before kick/ban on purpose: once they share no server with the bot the DM can't be delivered.
-        view = appeal_view(guild.id) if action == "ban" and settings.moderation_appeals_enabled else None
-        dm_sent = await _dm(member, dm_text(guild.name, action, reason, duration_seconds), view)
+        button = appeal_button(guild.id) if action == "ban" and settings.moderation_appeals_enabled else None
+        dm_sent = await _dm(member, dm_text(guild.name, action, reason, duration_seconds), button)
 
     try:
         if action == "timeout":

@@ -7,6 +7,7 @@ AI answers inside tickets still come from AITicketsCog (same category); this cog
 import asyncio
 import base64
 import html as html_lib
+import io
 import logging
 import re
 from enum import IntEnum
@@ -37,22 +38,32 @@ from bulmaai.services.tickets import (
 )
 from bulmaai.services.patron_page import PATREON_URL
 from bulmaai.ui.ticket_views import (
+    ACTIONS_ID,
+    AI_BUTTON_ID,
     CATEGORIES,
+    CLOSE_BUTTON_ID,
+    DELETE_BUTTON_ID,
     MSG,
-    TicketCategory,
+    PANEL_SELECT_ID,
+    REOPEN_BUTTON_ID,
     TRANSCRIPT_BUTTON_ID,
-    TicketClosedView,
-    TicketControlView,
-    TicketPanelView,
-    build_panel_embed,
-    build_ticket_embed,
-    closed_embed,
+    CLOSED_RED,
+    ClosePrompt,
+    TicketCategory,
+    TicketModal,
+    closed_row,
+    closed_view,
+    control_row,
     dm_created,
     dm_transcript,
     msg_created,
     msg_limit,
     msg_transcript_ready,
-    reopened_embed,
+    notice,
+    panel_view,
+    reopened_view,
+    transcript_link_view,
+    welcome_view,
 )
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -105,11 +116,12 @@ def member_rank(member: discord.abc.User, owner_id: int | None, settings) -> Ran
 
 
 def build_overwrites(
-    guild: discord.Guild, owner: discord.Member, settings
+    guild: discord.Guild, owner: discord.Member | None, settings, *, closed: bool = False
 ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+    """closed: staff only, so the owner, testers and anyone /ticket add-ed lose the channel."""
     mods = _ids(settings.panel_owner_role_ids, settings.panel_admin_role_ids, settings.panel_moderator_role_ids)
     helpers = _ids(settings.panel_helper_role_ids) - mods
-    testers = _ids(settings.ticket_tester_role_ids) - mods - helpers
+    testers = set() if closed else _ids(settings.ticket_tester_role_ids) - mods - helpers
 
     overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -122,10 +134,11 @@ def build_overwrites(
             manage_channels=True,
             manage_messages=True,
         ),
-        owner: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True, read_message_history=True, attach_files=True
-        ),
     }
+    if owner is not None and not closed:
+        overwrites[owner] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True, attach_files=True
+        )
     staff_kwargs = dict(view_channel=True, send_messages=True, read_message_history=True)
     for role_ids, overwrite in (
         (testers, discord.PermissionOverwrite(
@@ -214,8 +227,6 @@ class TicketsCog(ReloadableCog):
         return self.bot.settings
 
     async def on_startup(self) -> None:
-        for view in (TicketPanelView(), TicketControlView(), TicketClosedView()):
-            self.bot.add_view(view)
         if not self._purge_pages.is_running():
             self._purge_pages.start()
         try:
@@ -238,6 +249,27 @@ class TicketsCog(ReloadableCog):
             return
         if removed:
             log.info("Purged %d expired or orphaned ticket transcript files", removed)
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        if interaction.type != discord.InteractionType.component:
+            return
+        handler = {
+            PANEL_SELECT_ID: self.on_panel_select,
+            CLOSE_BUTTON_ID: self.on_close,
+            AI_BUTTON_ID: self.on_toggle_ai,
+            TRANSCRIPT_BUTTON_ID: self.on_transcript,
+            REOPEN_BUTTON_ID: self.on_reopen,
+            DELETE_BUTTON_ID: self.on_delete,
+        }.get((interaction.data or {}).get("custom_id"))
+        if handler is None:
+            return
+        try:
+            await handler(interaction)
+        except Exception:
+            log.exception("Ticket interaction failed", extra={"channel_id": interaction.channel_id})
+            if not interaction.response.is_done():
+                await interaction.response.send_message(MSG["failed"], ephemeral=True)
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
@@ -337,9 +369,7 @@ class TicketsCog(ReloadableCog):
                 reason=f"Ticket #{ticket.ticket_id:04d} opened",
             )
             welcome = await channel.send(
-                content=member.mention,
-                embed=build_ticket_embed(number=ticket.ticket_id, category=category, answers=answers),
-                view=TicketControlView(),
+                view=welcome_view(number=ticket.ticket_id, category=category, answers=answers, mention=member.mention),
                 allowed_mentions=discord.AllowedMentions(users=[member]),
             )
             await attach_channel(
@@ -361,8 +391,7 @@ class TicketsCog(ReloadableCog):
 
         await interaction.edit_original_response(content=msg_created(channel.mention))
         try:
-            embed, view = dm_created(ticket.ticket_id, category, channel)
-            await member.send(embed=embed, view=view)
+            await member.send(view=dm_created(ticket.ticket_id, category, channel))
         except discord.HTTPException:
             pass  # DMs closed; the ephemeral message above already has the link
 
@@ -392,28 +421,32 @@ class TicketsCog(ReloadableCog):
     # ---- close / reopen ---------------------------------------------------------------------------
 
     async def close_ticket(
-        self, channel: discord.TextChannel, *, closer_id: int | None, reason: str | None
+        self, channel: discord.TextChannel, *, closer_id: int | None, reason: str | None, transcript: bool = False
     ) -> Ticket | None:
-        """Lock the owner out, move to the closed category, rename, post the closed embed. None if it wasn't open."""
+        """Staff-only overwrites, move to the closed category, rename, post the closed card; transcript also
+        archives it and DMs the owner the link. None if it wasn't open."""
         ticket = await mark_closed(channel.id, closed_by=closer_id, reason=reason)
         if ticket is None:
             return None
-        owner = channel.guild.get_member(ticket.owner_id)
-        if owner is not None:
-            overwrite = channel.overwrites_for(owner)
-            overwrite.send_messages = False
-            await self._safely(channel.set_permissions(owner, overwrite=overwrite, reason="Ticket closed"), channel)
+        if (ai_cog := self.bot.get_cog(AI_COG)) is not None:
+            await ai_cog.ticket_closed(channel.id)  # drops an answer or "solved?" prompt still in flight
+        await self._safely(
+            channel.edit(overwrites=build_overwrites(channel.guild, None, self.settings, closed=True), reason="Ticket closed"),
+            channel,
+        )
         await self._move(channel, self.settings.ticket_closed_category_id)
         await self._rename(channel, closed_channel_name(ticket.ticket_id))
         await self._set_buttons(channel, ticket, None)
         await self._safely(
             channel.send(
-                embed=closed_embed(f"<@{closer_id}>" if closer_id else None, reason and defuse_mentions(reason)),
-                view=TicketClosedView(),
+                view=closed_view(f"<@{closer_id}>" if closer_id else None, reason and defuse_mentions(reason)),
                 allowed_mentions=discord.AllowedMentions.none(),
             ),
             channel,
         )
+        if transcript:
+            await self._archive(channel, ticket, closer_id)
+            await self._dm_transcript_link(channel, ticket)
         return ticket
 
     async def reopen_ticket(self, channel: discord.TextChannel, *, opener_id: int) -> Ticket | None:
@@ -422,16 +455,17 @@ class TicketsCog(ReloadableCog):
             return None
         if (ai_cog := self.bot.get_cog(AI_COG)) is not None:
             ai_cog.forget_archived(channel.id)
+        # ponytail: back to the creation overwrites; anyone /ticket add-ed before the close needs adding again.
         owner = channel.guild.get_member(ticket.owner_id)
-        if owner is not None:
-            overwrite = channel.overwrites_for(owner)
-            overwrite.send_messages = True
-            await self._safely(channel.set_permissions(owner, overwrite=overwrite, reason="Ticket re-opened"), channel)
+        await self._safely(
+            channel.edit(overwrites=build_overwrites(channel.guild, owner, self.settings), reason="Ticket re-opened"),
+            channel,
+        )
         await self._move(channel, self.settings.ai_ticket_category_id)
         await self._rename(channel, ticket.channel_name or open_channel_name("ticket", ticket.ticket_id))
-        await self._set_buttons(channel, ticket, TicketControlView(self._ai_enabled(channel.id)))
+        await self._set_buttons(channel, ticket, control_row(self._ai_enabled(channel.id)))
         await self._safely(
-            channel.send(embed=reopened_embed(f"<@{opener_id}>"), allowed_mentions=discord.AllowedMentions.none()),
+            channel.send(view=reopened_view(f"<@{opener_id}>"), allowed_mentions=discord.AllowedMentions.none()),
             channel,
         )
         return ticket
@@ -455,10 +489,23 @@ class TicketsCog(ReloadableCog):
             # Overwrites stay as they are (sync_permissions defaults to False).
             await self._safely(channel.edit(category=category), channel)
 
-    async def _set_buttons(self, channel: discord.TextChannel, ticket: Ticket, view: discord.ui.View | None) -> None:
+    async def _set_buttons(self, channel: discord.TextChannel, ticket: Ticket, row: discord.ui.ActionRow | None) -> None:
         if ticket.control_message_id is None:
             return
-        await self._safely(channel.get_partial_message(ticket.control_message_id).edit(view=view), channel)
+        try:
+            message = await channel.fetch_message(ticket.control_message_id)
+        except discord.HTTPException:
+            return log.warning("Ticket welcome message is gone", extra={"channel_id": channel.id})
+        await self._set_row(message, row)
+
+    async def _set_row(self, message: discord.Message, row: discord.ui.ActionRow | None) -> None:
+        """Swap a card's button row (ACTIONS_ID) for row, or drop it."""
+        view = discord.ui.DesignerView.from_message(message, timeout=None)
+        if view.get_item(ACTIONS_ID) is not None:
+            view.remove_item(ACTIONS_ID)
+        if row is not None:
+            view.add_item(row)
+        await self._safely(message.edit(view=view, allowed_mentions=discord.AllowedMentions.none()), message.channel)
 
     # ---- button handlers (called from ui/ticket_views.py) ----------------------------------------
 
@@ -478,12 +525,33 @@ class TicketsCog(ReloadableCog):
             return None
         return ticket
 
+    async def on_panel_select(self, interaction: discord.Interaction) -> None:
+        category = CATEGORIES.get(((interaction.data or {}).get("values") or [""])[0])
+        if category is None:
+            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
+        await interaction.response.send_modal(TicketModal(category))
+        if interaction.message is not None:
+            # Re-sending the card clears the option the dropdown still shows as picked.
+            await self._safely(interaction.message.edit(view=panel_view()), interaction.channel)
+
     async def on_close(self, interaction: discord.Interaction) -> None:
-        ticket = await self._gate(interaction, Rank.OWNER)
-        if ticket is None:
+        if await self._gate(interaction, Rank.OWNER) is None:
             return
-        await interaction.response.defer()
-        await self.close_ticket(interaction.channel, closer_id=interaction.user.id, reason=None)
+        await interaction.response.send_message(view=ClosePrompt(self._close_from_prompt), ephemeral=True)
+
+    async def _close_from_prompt(self, interaction: discord.Interaction, transcript: bool) -> None:
+        channel = interaction.channel
+        ticket = await self.close_ticket(channel, closer_id=interaction.user.id, reason=None, transcript=transcript)
+        page = await get_page_for_channel(channel.id) if ticket is not None and transcript else None
+        if page is not None:
+            # Also shown here: the owner can't see the channel any more and their DMs may be closed.
+            link = transcript_link_view(ticket.ticket_id, page_url(self.settings, page.token))
+            await interaction.edit_original_response(view=link)
+        elif ticket is not None and not transcript:
+            await interaction.delete_original_response()  # the closed card says it all
+        else:
+            text = MSG["already_closed"] if ticket is None else MSG["transcript_failed"]
+            await interaction.edit_original_response(view=notice(text, CLOSED_RED))
 
     def _ai_enabled(self, channel_id: int) -> bool:
         ai = self.bot.get_cog("AITicketsCog")
@@ -508,7 +576,7 @@ class TicketsCog(ReloadableCog):
         ticket = await get_ticket_by_channel(channel_id)
         channel = self.bot.get_channel(channel_id)
         if ticket is not None and ticket.status == STATUS_OPEN and isinstance(channel, discord.TextChannel):
-            await self._set_buttons(channel, ticket, TicketControlView(enabled))
+            await self._set_buttons(channel, ticket, control_row(enabled))
 
     async def on_transcript(self, interaction: discord.Interaction) -> None:
         ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only", want_open=None)
@@ -519,9 +587,7 @@ class TicketsCog(ReloadableCog):
         page = await get_page_for_channel(interaction.channel.id)
         if page is None:
             return await interaction.followup.send(MSG["transcript_failed"], ephemeral=True)
-        view = TicketClosedView()
-        view.get_item(TRANSCRIPT_BUTTON_ID).disabled = True
-        await self._safely(interaction.message.edit(view=view), interaction.channel)
+        await self._set_row(interaction.message, closed_row(transcript=False))
         await interaction.followup.send(msg_transcript_ready(page_url(self.settings, page.token)))
 
     async def on_reopen(self, interaction: discord.Interaction) -> None:
@@ -530,7 +596,8 @@ class TicketsCog(ReloadableCog):
             return
         if interaction.guild.get_member(ticket.owner_id) is None:
             return await interaction.response.send_message(MSG["owner_left"], ephemeral=True)
-        await interaction.response.edit_message(view=None)  # this closed embed's buttons are spent
+        await interaction.response.defer()
+        await self._set_row(interaction.message, None)  # this closed card's buttons are spent
         await self.reopen_ticket(interaction.channel, opener_id=interaction.user.id)
 
     async def on_delete(self, interaction: discord.Interaction) -> None:
@@ -601,8 +668,8 @@ class TicketsCog(ReloadableCog):
         if owner is None or page is None:
             return
         try:
-            embed, view = dm_transcript(ticket.ticket_id, channel.guild, page_url(self.settings, page.token), page.expires_at)
-            await owner.send(embed=embed, view=view)
+            url = page_url(self.settings, page.token)
+            await owner.send(view=dm_transcript(ticket.ticket_id, channel.guild, url, page.expires_at))
         except discord.HTTPException:
             log.info("Could not DM ticket transcript", extra={"user_id": ticket.owner_id})
 
@@ -660,7 +727,7 @@ class TicketsCog(ReloadableCog):
             return await ctx.respond(MSG["mod_only"], ephemeral=True)
         target = channel or ctx.channel
         await ctx.defer(ephemeral=True)
-        await target.send(embed=build_panel_embed(), view=TicketPanelView())
+        await target.send(view=panel_view())
         await ctx.interaction.delete_original_response()  # the panel appearing is the confirmation
 
     @ticket.command(name="add", description="Let a user or role see this ticket")
@@ -693,14 +760,19 @@ class TicketsCog(ReloadableCog):
 
     @ticket.command(name="close", description="Close this ticket")
     @discord.option("reason", str, description="Why it's being closed", required=False, max_length=200)
-    async def close(self, ctx: discord.ApplicationContext, reason: str | None = None):
+    @discord.option("transcript", bool, description="Save a transcript and DM it to the ticket owner", required=False)
+    async def close(self, ctx: discord.ApplicationContext, reason: str | None = None, transcript: bool = False):
         ticket = await self._command_gate(ctx, Rank.OWNER, denied="no_permission")
         if ticket is None:
             return
         await ctx.defer(ephemeral=True)
-        closed = await self.close_ticket(ctx.channel, closer_id=ctx.author.id, reason=reason)
-        if closed:
-            await ctx.interaction.delete_original_response()  # the close message in the channel says it all
+        closed = await self.close_ticket(ctx.channel, closer_id=ctx.author.id, reason=reason, transcript=transcript)
+        page = await get_page_for_channel(ctx.channel.id) if closed and transcript else None
+        if page is not None:
+            link = transcript_link_view(closed.ticket_id, page_url(self.settings, page.token))
+            await ctx.interaction.edit_original_response(view=link)
+        elif closed:
+            await ctx.interaction.delete_original_response()  # the closed card in the channel says it all
         else:
             await ctx.respond(MSG["already_closed"], ephemeral=True)
 

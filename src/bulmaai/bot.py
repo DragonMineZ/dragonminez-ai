@@ -21,6 +21,7 @@ from .services.release_webhook import ReleaseWebhookServer
 from .utils import permissions
 from .utils.lifecycle import lifecycle_cogs
 from .web import server as panel_server
+from .ui.v2 import card, head
 
 log = logging.getLogger("bulmaai")
 
@@ -38,7 +39,7 @@ def event_guild_id(arg: object) -> int | None:
     return guild_id if isinstance(guild_id, int) else None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESTART_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
+RESTART_COLOR = discord.Colour.from_rgb(46, 204, 113)
 # Every send merges over this: the bot pings nobody unless that call names the exact users/roles
 # (only the person it is answering, or what an admin picked). Without it, AllowedMentions(users=True)
 # or no allowed_mentions at all let AI text and names like "@everyone" ping the whole server.
@@ -327,11 +328,10 @@ class BulmaAI(discord.Bot):
             log.exception("Failed to fetch Bruno for the restart announcement")
             return False
 
-        embed, view = await self._build_restart_announcement()
+        view = await self._build_restart_announcement()
 
         try:
             await channel.send(
-                embed=embed,
                 view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
@@ -341,78 +341,31 @@ class BulmaAI(discord.Bot):
 
         return True
 
-    async def _build_restart_announcement(self) -> tuple[discord.Embed, discord.ui.View | None]:
+    async def _build_restart_announcement(self) -> discord.ui.DesignerView:
         git_info = await asyncio.to_thread(_load_git_runtime_info)
-        now = datetime.now(timezone.utc)
-        user_name = getattr(self.user, "display_name", "BulmaAI")
-
-        embed = discord.Embed(
-            title="Bot restarted",
-            description="BulmaAI is back online and ready to serve.",
-            colour=RESTART_EMBED_COLOR,
-            timestamp=now,
+        stamp = int(datetime.now(timezone.utc).timestamp())
+        avatar = self.user.display_avatar.url if self.user is not None else None
+        top = (
+            "## ✅ Bot restarted\nBulmaAI is back online and connected to Discord.\n"
+            f"**Restarted** <t:{stamp}:F> (<t:{stamp}:R>)"
         )
-        embed.set_author(name=user_name)
-        if self.user is not None:
-            embed.set_thumbnail(url=self.user.display_avatar.url)
-
-        embed.add_field(
-            name="Restart Time",
-            value=f"<t:{int(now.timestamp())}:F>\n<t:{int(now.timestamp())}:R>",
-            inline=True,
-        )
-        embed.add_field(name="Status", value="Connected to Discord", inline=True)
-
-        view: discord.ui.View | None = None
         if git_info is None:
-            embed.add_field(
-                name="GitHub Reference",
-                value="Unavailable for this runtime.",
-                inline=False,
-            )
-            embed.set_footer(text="Runtime source metadata unavailable")
-            return embed, None
+            return card(head(top, avatar), "-# Runtime source metadata unavailable.", color=RESTART_COLOR)
 
-        tree_state = "Dirty" if git_info.dirty else "Clean"
-        embed.add_field(name="Branch", value=f"`{git_info.branch}`", inline=True)
-        embed.add_field(
-            name="Running Commit",
-            value=f"`{git_info.short_sha}`\n{git_info.subject}",
-            inline=True,
+        committed = (
+            f" · committed <t:{int(git_info.committed_at.timestamp())}:R>" if git_info.committed_at is not None else ""
         )
-        embed.add_field(name="Working Tree", value=tree_state, inline=True)
-
-        if git_info.committed_at is not None:
-            embed.add_field(
-                name="GitHub Reference",
-                value=(
-                    f"Commit `{git_info.short_sha}`\n"
-                    f"<t:{int(git_info.committed_at.timestamp())}:F>\n"
-                    f"<t:{int(git_info.committed_at.timestamp())}:R>"
-                ),
-                inline=False,
-            )
-        else:
-            embed.add_field(
-                name="GitHub Reference",
-                value=f"Commit `{git_info.short_sha}`",
-                inline=False,
-            )
-
-        embed.set_footer(text=f"Repo branch: {git_info.branch}")
-
-        if git_info.commit_url or git_info.repo_url:
-            view = discord.ui.View()
-            if git_info.commit_url:
-                view.add_item(
-                    discord.ui.Button(label="View Running Commit", url=git_info.commit_url)
-                )
-            if git_info.repo_url:
-                view.add_item(
-                    discord.ui.Button(label="Open Repository", url=git_info.repo_url)
-                )
-
-        return embed, view
+        source = (
+            f"**Branch** `{git_info.branch}`　**Commit** `{git_info.short_sha}`　"
+            f"**Working tree** {'⚠️ dirty' if git_info.dirty else 'clean'}\n"
+            f"{discord.utils.escape_markdown(git_info.subject)}{committed}"
+        )
+        buttons = [
+            discord.ui.Button(label=label, url=url)
+            for label, url in (("View Running Commit", git_info.commit_url), ("Open Repository", git_info.repo_url))
+            if url
+        ]
+        return card(head(top, avatar), discord.ui.Separator(), source, color=RESTART_COLOR, buttons=buttons)
 
 
 def get_bot_instance() -> BulmaAI:

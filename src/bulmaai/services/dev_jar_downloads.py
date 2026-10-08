@@ -65,14 +65,8 @@ class DevJarUploadPayload:
 
 # Safety cap on a single commit line, well under Discord's 4096-char description limit.
 COMMIT_LINE_CHAR_LIMIT = 1024
-# Discord caps a single embed description at 4096 characters.
+# Default chunk size when splitting commit lines.
 COMMIT_DESCRIPTION_LIMIT = 4096
-# Discord caps the combined character count of every embed in a message at 6000;
-# leave headroom for the base fields (version/artifact/size/etc.) built around the commits.
-COMMIT_EMBED_CHAR_BUDGET = 5300
-# Discord caps messages at 10 embeds; leave headroom for the primary card and
-# trailing embeds (Patch Notes, etc.).
-MAX_COMMIT_EMBEDS = 8
 
 
 def merge_dev_jar_commits(
@@ -118,57 +112,6 @@ def chunk_dev_jar_commit_lines(
     if current:
         chunks.append("\n".join(current))
     return chunks
-
-
-@dataclass(frozen=True, slots=True)
-class DevJarCommitLayout:
-    # One embed description per chunk. Only the first is shown with the
-    # "Commits Changelog" title; the rest are untitled continuations.
-    descriptions: tuple[str, ...]
-    overflowed: bool
-    full_changelog_text: str
-
-
-def build_dev_jar_commit_layout(
-    commits: Iterable[DevJarCommit],
-    *,
-    base_char_count: int,
-    char_budget: int = COMMIT_EMBED_CHAR_BUDGET,
-    max_embeds: int = MAX_COMMIT_EMBEDS,
-) -> DevJarCommitLayout:
-    commits = tuple(commits)
-    if not commits:
-        return DevJarCommitLayout(
-            descriptions=("No commits recorded.",),
-            overflowed=False,
-            full_changelog_text="",
-        )
-
-    lines = [format_dev_jar_commit_line(commit) for commit in commits]
-    full_changelog_text = "\n".join(lines)
-    chunks = chunk_dev_jar_commit_lines(lines)
-
-    descriptions: list[str] = []
-    used = base_char_count
-    overflowed = False
-    for chunk in chunks:
-        if len(descriptions) >= max_embeds or used + len(chunk) > char_budget:
-            overflowed = True
-            break
-        descriptions.append(chunk)
-        used += len(chunk)
-
-    if overflowed:
-        descriptions.append(
-            f"Too many commits to show inline ({len(commits)} total). "
-            "See the attached `dev-jar-commits.md` for the complete list."
-        )
-
-    return DevJarCommitLayout(
-        descriptions=tuple(descriptions),
-        overflowed=overflowed,
-        full_changelog_text=full_changelog_text,
-    )
 
 
 class OneTimeDownloadTokenStore:

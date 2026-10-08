@@ -9,6 +9,7 @@ import discord
 
 from bulmaai.database.db import get_pool
 from bulmaai.services import automod_hits, mod_cases
+from bulmaai.ui.v2 import TEXT_LIMIT, trim
 
 REPEAT_OFFENDER_MIN_CASES = 3
 TOP_LIMIT = 5
@@ -263,8 +264,16 @@ def _suggestion_line(suggestion: automod_hits.Suggestion) -> str:
     return f"**{suggestion.reason}**: {suggestion.note} ({rate})"
 
 
-def build_embeds(data: DigestData, settings) -> list[discord.Embed]:
-    """Pure: no I/O. Returns one embed, or two when there's automod activity to report."""
+@dataclass(frozen=True, slots=True)
+class DigestCard:
+    title: str
+    color: discord.Colour
+    fields: list[tuple[str, str]]
+    note: str | None = None
+
+
+def build_cards(data: DigestData, settings) -> list[DigestCard]:
+    """Pure: no I/O. One card, or two when there's automod activity to report."""
     period = f"{data.period_start:%b %d} – {data.period_end:%b %d, %Y}"
 
     overview_fields: list[tuple[str, str]] = []
@@ -303,16 +312,12 @@ def build_embeds(data: DigestData, settings) -> list[discord.Embed]:
     if data.antiraid_actions:
         overview_fields.append(("Anti-raid actions", str(data.antiraid_actions)))
 
-    overview = discord.Embed(
-        title="Weekly Moderation Digest",
-        description=period,
-        color=discord.Color.blurple(),
-        timestamp=data.period_end,
+    overview = DigestCard(
+        "📊 Weekly Moderation Digest",
+        discord.Color.blurple(),
+        overview_fields,
+        note=f"{period}" + ("" if overview_fields else "\nNo moderation activity recorded this week."),
     )
-    for name, value in overview_fields:
-        overview.add_field(name=name, value=value, inline=False)
-    if not overview_fields:
-        overview.description = f"{period}\n\nNo moderation activity recorded this week."
 
     automod_fields: list[tuple[str, str]] = []
     filter_rows = [stat for stat in data.filter_stats if stat.reason != "scam_image"]
@@ -339,10 +344,22 @@ def build_embeds(data: DigestData, settings) -> list[discord.Embed]:
     if suggestions:
         automod_fields.append(("Tuning suggestions", _join_capped([_suggestion_line(s) for s in suggestions])))
 
-    embeds = [overview]
+    cards = [overview]
     if automod_fields:
-        automod = discord.Embed(title="Automod & Filters", color=discord.Color.dark_gold(), timestamp=data.period_end)
-        for name, value in automod_fields:
-            automod.add_field(name=name, value=value, inline=False)
-        embeds.append(automod)
-    return embeds
+        cards.append(DigestCard("🛡️ Automod & Filters", discord.Color.dark_gold(), automod_fields))
+    return cards
+
+
+def build_view(data: DigestData, settings) -> discord.ui.DesignerView:
+    """One container per card; fields as bold headings, all within a V2 message's text budget."""
+    cards = build_cards(data, settings)
+    budget = TEXT_LIMIT // len(cards)
+    view = discord.ui.DesignerView(timeout=None)
+    for digest_card in cards:
+        title = f"## {digest_card.title}" + (f"\n-# {digest_card.note}" if digest_card.note else "")
+        body = "\n".join(f"**{name}**\n{value}" for name, value in digest_card.fields)
+        items = [discord.ui.TextDisplay(title)]
+        if body:
+            items += [discord.ui.Separator(), discord.ui.TextDisplay(trim(body, budget - len(title)))]
+        view.add_item(discord.ui.Container(*items, color=digest_card.color))
+    return view

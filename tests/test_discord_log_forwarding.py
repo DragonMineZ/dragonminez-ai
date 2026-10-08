@@ -1,17 +1,20 @@
 import logging
 import unittest
 
+import discord
+
 from bulmaai.services.discord_log_forwarding import (
-    build_log_embed_payload,
-    payload_to_embed,
+    build_log_payload,
+    payload_to_card,
     payload_to_files,
     sanitize_log_text,
     should_forward_record,
 )
+from v2_helpers import texts, walk
 
 
-class DiscordLogForwardingTests(unittest.TestCase):
-    def test_long_traceback_keeps_tail_and_attaches_full_text(self) -> None:
+class DiscordLogForwardingTests(unittest.IsolatedAsyncioTestCase):  # cards need a running loop
+    async def test_long_traceback_keeps_tail_and_attaches_full_text(self) -> None:
         # Two functions taking turns: Python collapses runs of identical frames into one line.
         def deep(n: int) -> None:
             if n == 0:
@@ -27,12 +30,16 @@ class DiscordLogForwardingTests(unittest.TestCase):
             import sys
             record = logging.LogRecord("bulmaai.test", logging.ERROR, __file__, 1, "boom", (), sys.exc_info())
 
-        payload = build_log_embed_payload(record)
-        traceback_field = payload_to_embed(payload).fields[-1].value
+        payload = build_log_payload(record)
+        files = payload_to_files(payload)
+        view = payload_to_card(payload, files)
+        traceback_block = next(t for t in texts(view) if t.startswith("```py"))
 
-        self.assertIn("https://example.test/END", traceback_field)
-        self.assertLessEqual(len(traceback_field), 1024)
-        self.assertEqual(len(payload_to_files(payload)), 1)
+        self.assertIn("https://example.test/END", traceback_block)
+        self.assertLessEqual(len(traceback_block), 1100)
+        self.assertEqual(len(files), 1)
+        file_urls = [item.url for item in walk(view) if isinstance(item, discord.ui.File)]
+        self.assertEqual(file_urls, [f"attachment://{files[0].filename}"])
 
     def test_warning_and_marked_info_records_are_forwarded(self) -> None:
         warning_record = logging.LogRecord("bulmaai.test", logging.WARNING, __file__, 1, "warn", (), None)
@@ -59,7 +66,7 @@ class DiscordLogForwardingTests(unittest.TestCase):
         record.user_id = 333
         record.message_id = 444
 
-        payload = build_log_embed_payload(record)
+        payload = build_log_payload(record)
 
         self.assertIn("ERROR | bulmaai.cogs.ai_tickets", payload.title)
         self.assertNotIn("sk-test", payload.description)

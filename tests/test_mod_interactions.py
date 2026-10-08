@@ -17,8 +17,16 @@ from bulmaai.cogs.mod_interactions import ModInteractionsCog, TextModal, _alert_
 from bulmaai.services.automod_hits import AutomodHit
 from bulmaai.services.mod_actions import ActionResult
 from bulmaai.services.mod_cases import ModCase
-from bulmaai.ui.mod_cards import ALERT_ACTIONS_ID, ALERT_HANDLED_ID, ALERT_SUMMARY_ID, alert_card, alert_container
-from bulmaai.ui.mod_views import allowlist_view, appeal_review_view, quick_actions_view
+from bulmaai.ui.mod_cards import (
+    ALERT_ACTIONS_ID,
+    ALERT_HANDLED_ID,
+    ALERT_SUMMARY_ID,
+    alert_card,
+    alert_container,
+    collapsed_alert,
+    handled_lines,
+)
+from bulmaai.ui.mod_views import allowlist_button, appeal_review_buttons, quick_action_buttons
 
 GUILD_ID = 1
 HELPER_ROLE, MOD_ROLE, ADMIN_ROLE = 10, 20, 30
@@ -65,26 +73,59 @@ def automod_hit(hit_id, *, domains=(), image_hashes=(), warn_case_id=None, timed
     )
 
 
-def staff_message(view):
+def _walk(item):
+    yield item
+    for child in getattr(item, "items", None) or getattr(item, "children", None) or []:
+        yield from _walk(child)
+    if accessory := getattr(item, "accessory", None):
+        yield accessory
+
+
+def all_text(view) -> str:
+    return "\n".join(item.content for item in _walk(view) if isinstance(item, discord.ui.TextDisplay))
+
+
+def all_ids(view) -> list:
+    return [item.custom_id for item in _walk(view) if isinstance(item, discord.ui.Button)]
+
+
+def staff_message(buttons, *, handled_line: str | None = None):
+    """A sent alert card with these buttons, the way Discord hands it back; handled_line: already handled once."""
+    if handled_line:
+        view = collapsed_alert("✅ **Handled** · blocked link", [handled_line], buttons)
+    else:
+        view = alert_card("### 🚨 Moderation Alert · blocked link", None, buttons, color=discord.Color.red())
     return SimpleNamespace(
         id=500,
-        embeds=[discord.Embed(title="Moderation Alert", description="blocked   link\nin #general")],
+        flags=SimpleNamespace(is_components_v2=True),
         components=[_component_factory(payload) for payload in view.to_components()],
         edit=AsyncMock(),
     )
 
 
 def disabled_ids(message):
-    return {child.custom_id for child in message.edit.await_args.kwargs["view"].children if child.disabled}
+    return {b.custom_id for b in _walk(message.edit.await_args.kwargs["view"]) if isinstance(b, discord.ui.Button) and b.disabled}
 
 
 def handled(message):
-    fields = message.edit.await_args.kwargs["embeds"][0].fields
-    return next(field.value for field in fields if field.name == "Handled")
+    return "\n".join(handled_lines(alert_container(message.edit.await_args.kwargs["view"])))
 
 
 class Base(unittest.IsolatedAsyncioTestCase):  # py-cord Views/Modals need a running loop
     def setUp(self):
+        # Handled alerts save their details before collapsing; keep that in memory.
+        self.store = {}
+
+        async def save(message_id, details):
+            self.store[message_id] = details
+
+        async def load(message_id):
+            return self.store.get(message_id)
+
+        for name, fake in (("save", save), ("load", load)):
+            patcher = patch(f"bulmaai.services.mod_alert_cards.{name}", fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.settings = SimpleNamespace(
             panel_guild_id=GUILD_ID,
             dev_guild_id=None,
@@ -150,7 +191,7 @@ class QuickActionTests(Base):
 
     async def test_moderator_timeout_acts_and_disables_that_button(self):
         moderator = self.member(2, MOD_ROLE)
-        alert = staff_message(quick_actions_view(5))
+        alert = staff_message(quick_action_buttons(5))
         inter = self.interaction("modqa:timeout:5", moderator, guild=self.guild, message=alert)
         result = ActionResult(action="timeout", case_id=7)
         with (
@@ -164,14 +205,13 @@ class QuickActionTests(Base):
         self.assertEqual(kwargs["duration_seconds"], 86400)
         self.assertEqual(kwargs["source"], "alert")
         self.assertIs(kwargs["moderator"], moderator)
-        self.assertEqual(kwargs["reason"], "Moderation Alert: blocked link in #general")
+        self.assertEqual(kwargs["reason"], "🚨 Moderation Alert · blocked link")
         self.assertEqual(disabled_ids(alert), {"modqa:timeout:5"})
         self.assertEqual(handled(alert), "Timeout 24h by <@2> | case #7")
         self.assertIn("case #7", inter.followup.send.await_args.args[0])
 
     async def test_dismiss_disables_everything_and_appends_to_handled(self):
-        alert = staff_message(quick_actions_view(5))
-        alert.embeds[0].add_field(name="Handled", value="Timeout 24h by <@3>")
+        alert = staff_message(quick_action_buttons(5), handled_line="Timeout 24h by <@3>")
         inter = self.interaction("modqa:dismiss:5", self.member(2, HELPER_ROLE), guild=self.guild, message=alert)
         with patch(PERFORM, AsyncMock()) as perform:
             await self.cog.on_interaction(inter)
@@ -181,7 +221,7 @@ class QuickActionTests(Base):
 
     async def test_ban_opens_a_modal_and_acts_on_submit(self):
         admin = self.member(2, ADMIN_ROLE)
-        alert = staff_message(quick_actions_view(5))
+        alert = staff_message(quick_action_buttons(5))
         inter = self.interaction("modqa:ban:5", admin, guild=self.guild, message=alert)
         with (
             patch(PERFORM, AsyncMock(return_value=ActionResult(action="ban", case_id=8))) as perform,
@@ -191,7 +231,7 @@ class QuickActionTests(Base):
             perform.assert_not_awaited()
             modal = inter.response.send_modal.await_args.args[0]
             self.assertIsInstance(modal, TextModal)
-            self.assertEqual(modal.text.value, "Moderation Alert: blocked link in #general")
+            self.assertEqual(modal.text.value, "🚨 Moderation Alert · blocked link")
 
             modal.text.value = "  raiding  "
             await modal.callback(self.modal_interaction(admin, guild=self.guild))
@@ -199,7 +239,7 @@ class QuickActionTests(Base):
         self.assertEqual(disabled_ids(alert), {"modqa:ban:5"})
 
     async def test_delete_of_an_already_gone_message_counts_as_handled(self):
-        alert = staff_message(quick_actions_view(5, actions=("delete", "ban"), message=(600, 700)))
+        alert = staff_message(quick_action_buttons(5, actions=("delete", "ban"), message=(600, 700)))
         inter = self.interaction("modqa:delete:5:600:700", self.member(2, HELPER_ROLE), guild=self.guild, message=alert)
         partial = SimpleNamespace(delete=AsyncMock(side_effect=NOT_FOUND))
         channel = SimpleNamespace(get_partial_message=lambda message_id: partial if message_id == 700 else None)
@@ -212,7 +252,7 @@ class QuickActionTests(Base):
     async def test_mod_action_error_is_shown(self):
         from bulmaai.services.mod_actions import ModActionError
 
-        alert = staff_message(quick_actions_view(5))
+        alert = staff_message(quick_action_buttons(5))
         inter = self.interaction("modqa:timeout:5", self.member(2, MOD_ROLE), guild=self.guild, message=alert)
         with patch(PERFORM, AsyncMock(side_effect=ModActionError("That user isn't in the server.", 404))):
             await self.cog.on_interaction(inter)
@@ -221,7 +261,7 @@ class QuickActionTests(Base):
 
     async def test_dismissing_a_joiner_alert_resolves_it_so_the_sweep_leaves_it_alone(self):
         moderator = self.member(2, MOD_ROLE)
-        alert = staff_message(quick_actions_view(5))
+        alert = staff_message(quick_action_buttons(5))
         inter = self.interaction("modqa:dismiss:5", moderator, guild=self.guild, message=alert)
         record = SimpleNamespace(id=42)
         with (
@@ -287,19 +327,17 @@ class AppealTests(Base):
             reason="I'm sorry, it won't happen again.", source="appeal",
         )
         sent = self.channel.send.await_args.kwargs
-        self.assertEqual(
-            [child.custom_id for child in sent["view"].children],
-            ["modappeal-review:accept:5", "modappeal-review:deny:5"],
-        )
-        fields = {field.name: field.value for field in sent["embed"].fields}
-        self.assertEqual(fields["Ban reason"], "spam (via command by mod)")
-        self.assertIn("#8 ban", fields["Recent cases"])
-        self.assertEqual(sent["embed"].title, "Ban appeal | Case #12")
+        self.assertEqual(all_ids(sent["view"]), ["modappeal-review:accept:5", "modappeal-review:deny:5"])
+        text = all_text(sent["view"])
+        self.assertIn("**Case** #12", text)
+        self.assertIn("**Ban reason** spam (via command by mod)", text)
+        self.assertIn("#8 ban", text)
+        self.assertIn("> I'm sorry, it won't happen again.", text)
         self.assertIn("sent", submit.followup.send.await_args.args[0])
 
     async def test_accept_unbans_and_closes_the_review(self):
         admin = self.member(2, ADMIN_ROLE)
-        review = staff_message(appeal_review_view(5))
+        review = staff_message(appeal_review_buttons(5))
         inter = self.interaction("modappeal-review:accept:5", admin, guild=self.guild, message=review)
         self.banned.send.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason=""), "")
         with patch(PERFORM, AsyncMock(return_value=ActionResult(action="unban", case_id=13))) as perform:
@@ -320,7 +358,7 @@ class AppealTests(Base):
         inter.response.send_modal.assert_not_awaited()
 
         admin = self.member(2, MOD_ROLE)
-        review = staff_message(appeal_review_view(5))
+        review = staff_message(appeal_review_buttons(5))
         inter = self.interaction("modappeal-review:deny:5", admin, guild=self.guild, message=review)
         with patch(PERFORM, AsyncMock(return_value=ActionResult(action="note", case_id=14))) as perform:
             await self.cog.on_interaction(inter)
@@ -372,10 +410,10 @@ class ReportTests(Base):
 
         sent = self.channel.send.await_args.kwargs
         self.assertEqual(
-            [child.custom_id for child in sent["view"].children],
+            all_ids(sent["view"]),
             ["modqa:delete:5:600:700", "modqa:warn:5", "modqa:timeout:5", "modqa:ban:5", "modqa:dismiss:5"],
         )
-        self.assertEqual(sent["embed"].description, "scam link")
+        self.assertIn("**Reason** scam link", all_text(sent["view"]))
         record.assert_awaited_once_with(
             guild_id=GUILD_ID, user_id=5, action="report", source="report", moderator_id=None,
             reason="Reported by <@3>: scam link",
@@ -405,7 +443,7 @@ class ReportTests(Base):
 
 class FalsePositiveTests(Base):
     def alert(self, actions=("timeout", "ban", "falsepos")):
-        return staff_message(quick_actions_view(5, actions=actions))
+        return staff_message(quick_action_buttons(5, actions=actions))
 
     async def test_non_staff_refused(self):
         helper = self.member(2, 99)
@@ -449,7 +487,7 @@ class FalsePositiveTests(Base):
             await self.cog.on_interaction(inter)
         allow_calls = [call.kwargs for call in inter.followup.send.await_args_list if "view" in call.kwargs]
         self.assertEqual(len(allow_calls), 1)
-        self.assertEqual([child.custom_id for child in allow_calls[0]["view"].children], ["modtune:allow:9"])
+        self.assertEqual(all_ids(allow_calls[0]["view"]), ["modtune:allow:9"])
 
     async def test_no_domains_sends_no_extra_followup(self):
         admin = self.member(2, ADMIN_ROLE)
@@ -480,7 +518,7 @@ class FalsePositiveTests(Base):
 class LearnActionTests(Base):
     async def test_learn_deletes_and_learns_images(self):
         moderator = self.member(2, MOD_ROLE)
-        alert = staff_message(quick_actions_view(5, actions=("learn", "dismiss"), message=(600, 700)))
+        alert = staff_message(quick_action_buttons(5, actions=("learn", "dismiss"), message=(600, 700)))
         inter = self.interaction("modqa:learn:5:600:700", moderator, guild=self.guild, message=alert)
         partial = SimpleNamespace(delete=AsyncMock())
         channel = SimpleNamespace(get_partial_message=lambda message_id: partial if message_id == 700 else None)
@@ -499,7 +537,7 @@ class LearnActionTests(Base):
 
     async def test_learn_with_no_hit_says_nothing_learned(self):
         moderator = self.member(2, MOD_ROLE)
-        alert = staff_message(quick_actions_view(5, actions=("learn",), message=(600, 700)))
+        alert = staff_message(quick_action_buttons(5, actions=("learn",), message=(600, 700)))
         inter = self.interaction("modqa:learn:5:600:700", moderator, guild=self.guild, message=alert)
         partial = SimpleNamespace(delete=AsyncMock(side_effect=NOT_FOUND))
         channel = SimpleNamespace(get_partial_message=lambda message_id: partial if message_id == 700 else None)
@@ -515,7 +553,7 @@ class LearnActionTests(Base):
 
     async def test_ban_click_confirms_hit_without_learning(self):
         admin = self.member(2, ADMIN_ROLE)
-        alert = staff_message(quick_actions_view(5, actions=("ban",)))
+        alert = staff_message(quick_action_buttons(5, actions=("ban",)))
         inter = self.interaction("modqa:ban:5", admin, guild=self.guild, message=alert)
         hit = automod_hit(13, image_hashes=(1,))
         with (
@@ -550,8 +588,9 @@ class TuneTests(Base):
             await self.cog.on_interaction(inter)
         set_override.assert_called_once_with("moderation_allowed_domains", "existing.com,new.example")
         self.bot.reload_settings.assert_called_once()
-        self.assertIsNone(inter.response.edit_message.await_args.kwargs["view"])
-        self.assertIn("Allowlisted", inter.response.edit_message.await_args.kwargs["content"])
+        edited = inter.response.edit_message.await_args.kwargs["view"]
+        self.assertEqual(all_ids(edited), [])
+        self.assertIn("Allowlisted", all_text(edited))
 
     async def test_unknown_hit_or_no_domains(self):
         admin = self.member(2, ADMIN_ROLE)
@@ -567,7 +606,7 @@ def alert_card_message(message_id=500):
     view = alert_card(
         "### 🚨 Moderation Alert · blocked_domain\nblocked link",
         None,
-        list(quick_actions_view(5, actions=("timeout", "ban", "falsepos")).children),
+        quick_action_buttons(5, actions=("timeout", "ban", "falsepos")),
         color=discord.Color.red(),
         snapshot="👤 **spammer** (`5`)\n-# 1 prior case",
         quote="> buy nitro",
@@ -575,7 +614,6 @@ def alert_card_message(message_id=500):
     return SimpleNamespace(
         id=message_id,
         flags=SimpleNamespace(is_components_v2=True),
-        embeds=[],
         components=[_component_factory(payload) for payload in view.to_components()],
         edit=AsyncMock(),
     )
@@ -595,21 +633,6 @@ def card_buttons(view):
 
 
 class AlertCardTests(Base):
-    def setUp(self):
-        super().setUp()
-        self.store = {}
-
-        async def save(message_id, details):
-            self.store[message_id] = details
-
-        async def load(message_id):
-            return self.store.get(message_id)
-
-        for name, fake in (("save", save), ("load", load)):
-            patcher = patch(f"bulmaai.services.mod_alert_cards.{name}", fake)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
     async def click(self, custom_id, alert, role=MOD_ROLE):
         inter = self.interaction(custom_id, self.member(2, role), guild=self.guild, message=alert)
         with (
@@ -698,21 +721,18 @@ class AlertCardTests(Base):
         self.assertNotIn(ALERT_SUMMARY_ID, card_texts(view))
         self.assertNotIn("modcard:hide", card_buttons(view))
 
-    async def test_report_embed_has_no_jump_link(self):
-        from bulmaai.cogs.mod_interactions import _report_embed
+    async def test_report_card_has_no_jump_link_and_collapses_to_its_title(self):
+        from bulmaai.cogs.mod_interactions import _report_card
+        from bulmaai.ui.mod_cards import detail_dicts, summary_text
 
         message = SimpleNamespace(
             id=700, author=self.member(5), content="buy nitro", attachments=[],
             channel=SimpleNamespace(id=600), jump_url="https://discord.com/channels/1/600/700",
         )
-        embed = _report_embed(self.member(3), message, "scam")
-        self.assertNotIn("Jump", " ".join(f.value for f in embed.fields))
-
-    async def test_legacy_embed_alert_still_gets_a_handled_field(self):
-        alert = staff_message(quick_actions_view(5))
-        await self.click("modqa:timeout:5", alert)
-        self.assertEqual(handled(alert), "Timeout 24h by <@2> | case #7")
-        self.assertEqual(disabled_ids(alert), {"modqa:timeout:5"})
+        view = _report_card(self.member(3), message, "scam")
+        self.assertNotIn("Jump", all_text(view))
+        self.assertIn("> buy nitro", all_text(view))
+        self.assertTrue(summary_text(detail_dicts(alert_container(view))).startswith("✅ **Handled** · 🚩 Reported message"))
 
 
 if __name__ == "__main__":

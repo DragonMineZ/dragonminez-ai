@@ -1,5 +1,12 @@
 import asyncio
 import unittest
+
+
+
+def sent_text(call) -> str:
+    """What a destination.send call showed: its content, or the card's text."""
+    args, kwargs = call
+    return args[0] if args else text(kwargs["view"])
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
@@ -16,6 +23,7 @@ from bulmaai.services.patreon_access import (
     patreon_link_confirm_token,
 )
 from bulmaai.services.patreon_grants import PatreonGrant, PatreonGrantKind, PatreonLink
+from v2_helpers import buttons, text
 
 
 class FakeChannel:
@@ -686,9 +694,9 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(cog.gh.put_calls), 1)
         self.assertEqual(upsert_grant_mock.await_count, 1)
-        all_messages = [call[0][0] for call in first_destination.sent + second_destination.sent]
+        all_messages = [sent_text(call) for call in first_destination.sent + second_destination.sent]
         self.assertTrue(any("approved automatically" in message for message in all_messages))
-        self.assertTrue(any("already are whitelisted" in message for message in all_messages))
+        self.assertTrue(any("already whitelisted" in message for message in all_messages))
         self.assertTrue(any("view" in call[1] for call in first_destination.sent + second_destination.sent))
 
     async def test_auto_approval_does_not_record_grant_when_username_already_whitelisted(self) -> None:
@@ -880,11 +888,11 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
                 ephemeral=True,
             )
 
-        args, kwargs = destination.sent[-1]
-        self.assertIn("already are whitelisted", args[0])
-        self.assertIn("`OldTester`", args[0])
-        self.assertIn("`NewTester`", args[0])
-        self.assertIn("view", kwargs)
+        message = sent_text(destination.sent[-1])
+        self.assertIn("already whitelisted", message)
+        self.assertIn("`OldTester`", message)
+        self.assertIn("`NewTester`", message)
+        self.assertIn("view", destination.sent[-1][1])
         self.assertEqual(cog.gh.put_calls, [])
         self.assertEqual(upsert_grant.await_count, 0)
 
@@ -943,7 +951,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             )
             update_view = destination.sent[-1][1]["view"]
             interaction = FakeButtonInteraction(user=author)
-            await update_view.children[0].callback(interaction)
+            await buttons(update_view)[0].callback(interaction)
 
         self.assertEqual(cog.gh.put_calls[0]["new_text"], "ExistingUser\nNewTester\n")
         self.assertEqual(cog.gh.put_calls[0]["message"], "Update beta tester: OldTester -> NewTester")

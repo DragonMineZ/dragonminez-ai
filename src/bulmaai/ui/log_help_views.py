@@ -1,5 +1,8 @@
-import discord
 from typing import TypedDict
+
+import discord
+
+from bulmaai.ui.v2 import card
 
 
 class LogHelpLanguageData(TypedDict):
@@ -111,18 +114,15 @@ LOG_HELP_CONTENT: dict[str, LogHelpLanguageData] = {
 }
 
 
-def build_log_help_embeds(language: str = "en") -> list[discord.Embed]:
+def build_log_help_card(language: str = "en") -> discord.ui.DesignerView:
     data = LOG_HELP_CONTENT.get(language, LOG_HELP_CONTENT["en"])
-
-    embed = discord.Embed(color=discord.Color.from_rgb(88, 101, 242))
-    embed.title = f"{data['flag']} {data['title']}"
-    embed.description = data["description"]
-
-    embed.add_field(name=data["windows_title"], value=data["windows_value"], inline=False)
-    embed.add_field(name=data["mac_title"], value=data["mac_value"], inline=False)
-    embed.add_field(name=data["linux_title"], value=data["linux_value"], inline=False)
-    embed.add_field(name=data["server_title"], value=data["server_value"], inline=False)
-
-    embed.set_footer(text=data["footer"])
-
-    return [embed]
+    places = "\n".join(
+        f"**{data[key + '_title']}**\n{data[key + '_value']}" for key in ("windows", "mac", "linux", "server")
+    )
+    return card(
+        f"## {data['flag']} {data['title']}\n{data['description']}",
+        discord.ui.Separator(),
+        places,
+        f"-# {data['footer']}",
+        color=discord.Color.from_rgb(88, 101, 242),
+    )

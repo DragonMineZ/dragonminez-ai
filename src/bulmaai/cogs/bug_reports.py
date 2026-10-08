@@ -22,7 +22,7 @@ from bulmaai.services.bug_reports import (
     set_tracked,
     upsert_triage,
 )
-from bulmaai.ui.bug_report_views import BugTriageView, apply_status, build_triage_embed
+from bulmaai.ui.bug_report_views import DUPLICATE_TITLE, FIXED_TITLE, message_text, restatus, triage_view
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_staff
 
@@ -157,16 +157,10 @@ class BugReportsCog(ReloadableCog):
 
         duplicate = await self._assess_duplicate(triage)
 
-        embed = build_triage_embed(
-            triage,
-            status="triaged",
-            reporter_id=reporter_id,
-            duplicate=duplicate,
-        )
         try:
             message = await thread.send(
-                embed=embed,
-                view=BugTriageView(thread.id, show_create_issue=True),
+                view=triage_view(triage, thread_id=thread.id, reporter_id=reporter_id, duplicate=duplicate),
+                allowed_mentions=discord.AllowedMentions.none(),
             )
         except Exception:
             log.exception("Failed to post bug triage in thread %s", thread.id)
@@ -266,7 +260,7 @@ class BugReportsCog(ReloadableCog):
         repo = self.settings.bug_report_repo
         service = _get_github_service(self.settings, repo)
 
-        triage = self._triage_from_embed(interaction, report)
+        triage = self._triage_from_card(interaction, report)
         body = _build_issue_body(
             triage,
             guild_id=report.guild_id or (interaction.guild_id if interaction.guild_id else None),
@@ -284,11 +278,8 @@ class BugReportsCog(ReloadableCog):
             )
 
         await set_tracked(thread_id, repo=repo, issue_number=issue["number"])
-        if interaction.message is not None and interaction.message.embeds:
-            await interaction.message.edit(
-                embed=apply_status(interaction.message.embeds[0], "tracked"),
-                view=None,
-            )
+        if interaction.message is not None:
+            await interaction.message.edit(**restatus(interaction.message, "tracked"))
         await interaction.followup.send(f"🐛 Issue created and now tracked: {issue['html_url']}")
 
     async def _handle_not_a_bug(self, interaction: discord.Interaction, thread_id: int) -> None:
@@ -305,11 +296,8 @@ class BugReportsCog(ReloadableCog):
 
         await interaction.response.defer(ephemeral=True)
         await set_status(thread_id, "dismissed")
-        if interaction.message is not None and interaction.message.embeds:
-            await interaction.message.edit(
-                embed=apply_status(interaction.message.embeds[0], "dismissed"),
-                view=None,
-            )
+        if interaction.message is not None:
+            await interaction.message.edit(**restatus(interaction.message, "dismissed"))
 
         thread = interaction.channel
         if isinstance(thread, discord.Thread):
@@ -328,7 +316,7 @@ class BugReportsCog(ReloadableCog):
             await interaction.followup.send("Marked as not a bug.", ephemeral=True)
 
     async def _handle_close_duplicate(self, interaction: discord.Interaction, thread_id: int) -> None:
-        issue_number = self._suggested_issue_number(interaction, "🔁 Possible duplicate")
+        issue_number = self._suggested_issue_number(interaction, DUPLICATE_TITLE)
         ref = f" in issue #{issue_number}" if issue_number else ""
 
         def build(report) -> str:
@@ -349,7 +337,7 @@ class BugReportsCog(ReloadableCog):
         )
 
     async def _handle_close_fixed(self, interaction: discord.Interaction, thread_id: int) -> None:
-        issue_number = self._suggested_issue_number(interaction, "✅ Possibly already fixed")
+        issue_number = self._suggested_issue_number(interaction, FIXED_TITLE)
         ref = f" (see #{issue_number})" if issue_number else ""
 
         def build(report) -> str:
@@ -378,7 +366,7 @@ class BugReportsCog(ReloadableCog):
         message_builder,
         ack: str,
     ) -> None:
-        """Shared staff-close flow: set status, update the embed, message and archive the thread."""
+        """Shared staff-close flow: set status, update the card, message and archive the thread."""
         if not is_staff(interaction.user, settings=self.settings):
             return await interaction.response.send_message(
                 "Only staff can close reports.", ephemeral=True
@@ -392,11 +380,8 @@ class BugReportsCog(ReloadableCog):
 
         await interaction.response.defer(ephemeral=True)
         await set_status(thread_id, stored_status)
-        if interaction.message is not None and interaction.message.embeds:
-            await interaction.message.edit(
-                embed=apply_status(interaction.message.embeds[0], display_status),
-                view=None,
-            )
+        if interaction.message is not None:
+            await interaction.message.edit(**restatus(interaction.message, display_status))
 
         thread = interaction.channel
         if isinstance(thread, discord.Thread):
@@ -415,36 +400,26 @@ class BugReportsCog(ReloadableCog):
 
     @staticmethod
     def _suggested_issue_number(interaction: discord.Interaction, field_name: str) -> int | None:
-        """Recover the AI-suggested issue number from the triage embed, if present."""
-        if interaction.message is None or not interaction.message.embeds:
+        """Recover the AI-suggested issue number from the triage card, if present."""
+        if interaction.message is None:
             return None
-        for field in interaction.message.embeds[0].fields:
-            if field.name == field_name and field.value:
-                match = re.search(r"#(\d+)", field.value)
-                if match:
-                    return int(match.group(1))
-        return None
+        match = re.search(rf"\*\*{re.escape(field_name)}\*\* #(\d+)", message_text(interaction.message))
+        return int(match.group(1)) if match else None
 
-    def _triage_from_embed(self, interaction: discord.Interaction, report) -> BugTriage:
-        """Reconstruct enough triage detail from the posted embed to fill the issue."""
+    def _triage_from_card(self, interaction: discord.Interaction, report) -> BugTriage:
+        """Reconstruct enough triage detail from the posted triage card to fill the issue."""
         title = report.ai_title or "Bug report"
         summary = report.ai_summary or ""
         severity = "medium"
         affected_area = "Unknown"
         steps: list[str] = []
-        if interaction.message is not None and interaction.message.embeds:
-            embed = interaction.message.embeds[0]
-            for field in embed.fields:
-                if field.name == "Severity":
-                    severity = (field.value or "medium").strip().lower()
-                elif field.name == "Affected Area":
-                    affected_area = (field.value or "Unknown").strip()
-                elif field.name == "Steps to Reproduce" and field.value:
-                    steps = [
-                        line.split(".", 1)[-1].strip()
-                        for line in field.value.splitlines()
-                        if line.strip()
-                    ]
+        text = message_text(interaction.message) if interaction.message is not None else ""
+        if match := re.search(r"\*\*Severity\*\* (\w+)", text):
+            severity = match.group(1).lower()
+        if match := re.search(r"\*\*Area\*\* ([^　\n]+)", text):
+            affected_area = match.group(1).strip()
+        if match := re.search(r"\*\*Steps to reproduce\*\*\n((?:\d+\..*(?:\n|$))+)", text):
+            steps = [line.split(".", 1)[-1].strip() for line in match.group(1).splitlines() if line.strip()]
         return BugTriage(
             is_bug=True,
             title=title,
@@ -529,13 +504,9 @@ class BugReportsCog(ReloadableCog):
             if report.triage_message_id:
                 try:
                     triage_message = await thread.fetch_message(report.triage_message_id)
-                    if triage_message.embeds:
-                        await triage_message.edit(
-                            embed=apply_status(triage_message.embeds[0], "resolved"),
-                            view=None,
-                        )
+                    await triage_message.edit(**restatus(triage_message, "resolved"))
                 except Exception:
-                    log.warning("Could not update triage embed for thread %s", report.thread_id)
+                    log.warning("Could not update triage card for thread %s", report.thread_id)
             await thread.edit(archived=True, locked=True)
         except Exception:
             log.exception("Failed to post resolution for thread %s", report.thread_id)

@@ -18,39 +18,30 @@ from bulmaai.services.patch_notes import (
     upsert_patch_notes_state,
 )
 from bulmaai.utils.lifecycle import ReloadableCog
+from bulmaai.ui.v2 import card, trim
 
 log = logging.getLogger(__name__)
 
 PATCH_NOTES_POLL_MINUTES = 15
-PATCH_NOTES_EMBED_COLOR = discord.Colour.from_rgb(46, 204, 113)
+PATCH_NOTES_COLOR = discord.Colour.from_rgb(46, 204, 113)
 
 
-def build_patch_notes_update_embed(
+def build_patch_notes_update_card(
     *,
     summary: str,
     updated_at: datetime,
     patch_notes_url: str,
-) -> discord.Embed:
+) -> discord.ui.DesignerView:
     day = f"{updated_at:%B %d, %Y}"
-    embed = discord.Embed(
-        title="DragonMineZ Patch Notes Updated",
-        url=patch_notes_url,
-        description=(
-            f"The daily 9 AM patch notes routine has finished and the patch notes "
-            f"for {day} are live. Read the full document here:\n{patch_notes_url}"
-        ),
-        colour=PATCH_NOTES_EMBED_COLOR,
-        timestamp=updated_at,
+    return card(
+        f"## 📝 [Patch Notes Updated]({patch_notes_url})\n"
+        f"The daily 9 AM patch notes routine has finished and the patch notes for **{day}** are live.",
+        discord.ui.Separator(),
+        f"### ✨ What's new\n{trim(summary, 3000)}",
+        f"-# DragonMineZ Patch Notes · {discord.utils.format_dt(updated_at, 'f')}",
+        color=PATCH_NOTES_COLOR,
+        buttons=[discord.ui.Button(label="Read the Patch Notes", url=patch_notes_url)],
     )
-    embed.add_field(name="What's new", value=summary[:1024], inline=False)
-    embed.set_footer(text="DragonMineZ Patch Notes")
-    return embed
-
-
-class PatchNotesUpdateView(discord.ui.View):
-    def __init__(self, patch_notes_url: str):
-        super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(label="Read the Patch Notes", url=patch_notes_url))
 
 
 class PatchNotesUpdatesCog(ReloadableCog):
@@ -157,7 +148,7 @@ class PatchNotesUpdatesCog(ReloadableCog):
             self.bot.settings.patch_notes_branch,
             file_path,
         )
-        embed = build_patch_notes_update_embed(
+        view = build_patch_notes_update_card(
             summary=summary,
             updated_at=datetime.now(timezone.utc),
             patch_notes_url=patch_notes_url,
@@ -171,8 +162,7 @@ class PatchNotesUpdatesCog(ReloadableCog):
                     log.error("Configured patch notes channel %s is not messageable", channel_id)
                     continue
                 await channel.send(
-                    embed=embed,
-                    view=PatchNotesUpdateView(patch_notes_url),
+                    view=view,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except Exception:

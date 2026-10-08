@@ -16,7 +16,8 @@ import discord
 from discord.ext import commands, tasks
 
 from bulmaai.services import joiner_alerts, mod_actions, mod_cases
-from bulmaai.ui.mod_views import RAID, parse_custom_id, quick_actions_view, raid_view
+from bulmaai.ui.mod_cards import alert_card, user_line
+from bulmaai.ui.mod_views import RAID, parse_custom_id, quick_action_buttons, raid_buttons
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, tier_for
 
@@ -62,6 +63,7 @@ class RaidGuardCog(ReloadableCog):
         self._join_times: deque[float] = deque()
         self._raid_until: float | None = None
         self._raid_message: discord.Message | None = None
+        self._raid_locked = False  # the raid card shows Unlock instead of Lock down
         self._raid_joiners: list[tuple[int, str, str]] = []  # (user_id, display_name, action_taken)
         # ponytail: flagged joiners wait here for their first message, in-memory (a restart drops them), DB-backed if that ever matters
         self._pending_joiners: dict[int, tuple[bool, dict[str, int], str]] = {}
@@ -91,6 +93,7 @@ class RaidGuardCog(ReloadableCog):
         self._join_times.clear()
         self._raid_joiners = []
         self._raid_message = None
+        self._raid_locked = False
 
     # --- join handling -------------------------------------------------------------------------
 
@@ -206,21 +209,20 @@ class RaidGuardCog(ReloadableCog):
         channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self._settings()))
         if channel is None:
             return
-        embed = discord.Embed(title="Flagged Joiner", color=discord.Color.orange(), timestamp=discord.utils.utcnow())
-        embed.add_field(name="User", value=f"{member} (`{member.id}`)", inline=False)
-        embed.add_field(name="Account created", value=discord.utils.format_dt(member.created_at, "R"), inline=True)
+        head = ["### 🧭 Flagged joiner"]
         if is_new:
-            embed.add_field(name="Flag", value="New account", inline=True)
-            embed.add_field(name="Action taken", value=action_taken, inline=True)
+            head.append(f"**Flag** New account　**Action taken** {action_taken}")
         if breakdown:
-            lines = ", ".join(f"{count}x {action}" for action, count in breakdown.items())
-            embed.add_field(name="Case history", value=lines, inline=False)
+            head.append("**Case history** " + ", ".join(f"{count}x {action}" for action, count in breakdown.items()))
+        card = alert_card(
+            "\n".join(head),
+            getattr(getattr(member, "display_avatar", None), "url", None),
+            quick_action_buttons(member.id, actions=("kick", "ban", "dismiss")),
+            color=discord.Color.orange(),
+            snapshot=user_line(member, f"Account created {discord.utils.format_dt(member.created_at, 'R')}"),
+        )
         try:
-            alert = await channel.send(
-                embed=embed,
-                view=quick_actions_view(member.id, actions=("kick", "ban", "dismiss")),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            alert = await channel.send(view=card, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             log.exception("Failed to post flagged-joiner alert", extra={"event": "raid_guard_joiner_alert_send_failed"})
             return
@@ -256,6 +258,7 @@ class RaidGuardCog(ReloadableCog):
             "join_times": list(self._join_times),
             "raid_until": self._raid_until,
             "raid_message": self._raid_message,
+            "raid_locked": self._raid_locked,
             "raid_joiners": list(self._raid_joiners),
             "raid_revision": self._raid_revision,
             "pending_joiners": dict(self._pending_joiners),
@@ -265,6 +268,7 @@ class RaidGuardCog(ReloadableCog):
         self._join_times = deque(state.get("join_times", ()))
         self._raid_until = state.get("raid_until")
         self._raid_message = state.get("raid_message")
+        self._raid_locked = state.get("raid_locked", False)
         self._raid_joiners = list(state.get("raid_joiners", ()))
         self._raid_revision = state.get("raid_revision", 0)
         self._pending_joiners = dict(state.get("pending_joiners", {}))
@@ -323,21 +327,24 @@ class RaidGuardCog(ReloadableCog):
 
     # --- the raid alert embed (one message per raid, debounced edits) ---------------------------
 
-    def _build_raid_embed(self) -> discord.Embed:
-        embed = discord.Embed(
-            title="Raid Mode Active",
-            description=f"{len(self._raid_joiners)} member(s) joined during this raid.",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow(),
-        )
+    def _raid_card(self, *, ended_by: discord.abc.User | None = None) -> discord.ui.DesignerView:
+        """The raid alert; ended_by drops the buttons and greys it out."""
         shown = self._raid_joiners[-RAID_JOINER_LOG_CAP:]
-        lines = [f"<@{user_id}> ({name}) — {action}" for user_id, name, action in shown]
-        embed.add_field(
-            name=f"Recent joiners (showing {len(shown)} of {len(self._raid_joiners)})",
-            value="\n".join(lines) or "none",
-            inline=False,
+        lines = [f"<@{user_id}> ({discord.utils.escape_markdown(name)}) · {action}" for user_id, name, action in shown]
+        title = "🛡️ Raid mode ended" if ended_by else "🚨 Raid mode active"
+        text = (
+            f"### {title}\n**Joined during the raid** {len(self._raid_joiners)}"
+            + ("　**Channels** 🔒 locked" if self._raid_locked and not ended_by else "")
+            + f"\n**Recent joiners** (last {len(shown)})\n"
+            + ("\n".join(lines) or "none")
         )
-        return embed
+        items: list[discord.ui.Item] = [discord.ui.TextDisplay(text[:3800])]
+        if ended_by:
+            items.append(discord.ui.TextDisplay(f"-# Ended by {ended_by.mention}"))
+        else:
+            items.append(discord.ui.ActionRow(*raid_buttons(locked=self._raid_locked)))
+        color = discord.Color.dark_grey() if ended_by else discord.Color.red()
+        return discord.ui.DesignerView(discord.ui.Container(*items, color=color), timeout=None)
 
     async def _post_raid_alert(self) -> None:
         channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self._settings()))
@@ -346,8 +353,7 @@ class RaidGuardCog(ReloadableCog):
             return
         try:
             self._raid_message = await channel.send(
-                embed=self._build_raid_embed(),
-                view=raid_view(locked=False),
+                view=self._raid_card(),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
@@ -367,7 +373,7 @@ class RaidGuardCog(ReloadableCog):
                 return
             synced = self._raid_revision
             try:
-                await self._raid_message.edit(embed=self._build_raid_embed())
+                await self._raid_message.edit(view=self._raid_card())
             except discord.HTTPException:
                 log.debug("Failed to update raid alert", exc_info=True)
                 return
@@ -394,16 +400,18 @@ class RaidGuardCog(ReloadableCog):
             locked, failed = await mod_actions.lockdown(
                 interaction.guild, settings, moderator_id=interaction.user.id, reason="Raid lockdown"
             )
-            await interaction.message.edit(view=raid_view(locked=True))
+            self._raid_locked = True
+            await interaction.message.edit(view=self._raid_card())
             await interaction.followup.send(f"🔒 Raid lockdown: locked {locked} channel(s), {failed} failed.")
         elif action == "unlock":
             await interaction.response.defer()
             unlocked, failed = await mod_actions.end_lockdown(interaction.guild, reason="Raid lockdown lifted")
-            await interaction.message.edit(view=raid_view(locked=False))
+            self._raid_locked = False
+            await interaction.message.edit(view=self._raid_card())
             await interaction.followup.send(f"🔓 Raid lockdown lifted: unlocked {unlocked} channel(s), {failed} failed.")
         elif action == "end":
+            await interaction.response.edit_message(view=self._raid_card(ended_by=interaction.user))
             self._end_raid_mode()
-            await interaction.response.edit_message(view=None)
             await interaction.followup.send(f"🛡️ Raid mode ended by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
 
     # --- /raidmode -------------------------------------------------------------------------------

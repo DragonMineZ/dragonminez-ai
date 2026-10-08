@@ -21,7 +21,7 @@ SUPERSEDED = "superseded"
 
 NULL_SHA = "0" * 40
 MAX_COMMITS_INPUT = 40
-MAX_CHANGELOG_CHARS = 4000
+MAX_CHANGELOG_CHARS = 2500  # What's New shares the dev jar post's 4000-char V2 text limit
 MAX_INPUT_CHARS = 60000  # workflow_dispatch inputs are capped at 65535 chars
 
 

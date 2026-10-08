@@ -729,7 +729,7 @@ async def _run_once(
         request_kwargs["tool_choice"] = "auto"
     # reasoning/verbosity are gpt-5 only; other models 400 on them.
     if model.startswith("gpt-5"):
-        request_kwargs["text"] = {"verbosity": "medium"}
+        request_kwargs["text"] = {"verbosity": "low"}
         request_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
 
     started_at = time.perf_counter()

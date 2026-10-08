@@ -85,9 +85,11 @@ class CloseReasonModal(discord.ui.Modal):
         await interaction.response.defer()
 
 
-class _AuthorOnlyView(discord.ui.View):
-    def __init__(self, *, author_id: int, timeout: float):
-        super().__init__(timeout=timeout)
+class _AuthorOnlyPrompt(discord.ui.DesignerView):
+    """A private step card (text + controls) only the command's author can use; wait() until they choose."""
+
+    def __init__(self, text: str, *rows: discord.ui.ActionRow, author_id: int, timeout: float):
+        super().__init__(discord.ui.Container(discord.ui.TextDisplay(text), *rows, color=discord.Color.blurple()), timeout=timeout)
         self.author_id = author_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -96,50 +98,62 @@ class _AuthorOnlyView(discord.ui.View):
         await interaction.response.send_message("Only whoever ran this command can use these controls.", ephemeral=True)
         return False
 
+    @staticmethod
+    def _decision_row(confirm_label: str, confirm, cancel, *, emoji: str | None = None) -> discord.ui.ActionRow:
+        confirm_button = discord.ui.Button(label=confirm_label, style=discord.ButtonStyle.success, emoji=emoji)
+        cancel_button = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        confirm_button.callback, cancel_button.callback = confirm, cancel
+        return discord.ui.ActionRow(confirm_button, cancel_button)
 
-class LabelSelectView(_AuthorOnlyView):
-    def __init__(self, labels: list[dict], *, author_id: int, timeout: float = 300):
-        super().__init__(author_id=author_id, timeout=timeout)
+
+class LabelSelectView(_AuthorOnlyPrompt):
+    def __init__(self, labels: list[dict], *, text: str, author_id: int, timeout: float = 300):
         self.selected_labels: list[str] = []
         self.confirmed = False
-
-        options = []
-        for label in labels[:25]:
-            description = label.get("description", "")[:100] if label.get("description") else None
-            options.append(
-                discord.SelectOption(
-                    label=label["name"][:100],
-                    value=label["name"],
-                    description=description,
-                )
+        rows = []
+        options = [
+            discord.SelectOption(
+                label=label["name"][:100],
+                value=label["name"],
+                description=label["description"][:100] if label.get("description") else None,
             )
-
+            for label in labels[:25]
+        ]
         if options:
             select = discord.ui.Select(
-                placeholder="Select labels (optional)",
-                options=options,
-                min_values=0,
-                max_values=min(len(options), 25),
-                custom_id="label_select_temp",
+                placeholder="Select labels (optional)", options=options, min_values=0, max_values=len(options)
             )
             select.callback = self.select_callback
-            self.add_item(select)
+            rows.append(discord.ui.ActionRow(select))
+        rows.append(self._decision_row("Continue", self._continue, self._cancel))
+        super().__init__(text, *rows, author_id=author_id, timeout=timeout)
 
     async def select_callback(self, interaction: discord.Interaction):
         self.selected_labels = interaction.data.get("values", [])
         await interaction.response.defer()
 
-    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary, row=1)
-    async def continue_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def _continue(self, interaction: discord.Interaction):
         self.confirmed = True
         self.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
-    async def cancel_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def _cancel(self, interaction: discord.Interaction):
         self.confirmed = False
         self.stop()
         await interaction.response.defer()
+
+
+class ModalPrompt(_AuthorOnlyPrompt):
+    """One button that opens modal; wait on the modal, not on this view."""
+
+    def __init__(self, text: str, label: str, modal: discord.ui.Modal, *, author_id: int, timeout: float = 300):
+        button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+        button.callback = self._open
+        self.modal = modal
+        super().__init__(text, discord.ui.ActionRow(button), author_id=author_id, timeout=timeout)
+
+    async def _open(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(self.modal)
 
 
 def _issue_select_options(issues: list[dict]) -> list[discord.SelectOption]:
@@ -158,72 +172,36 @@ def _issue_select_options(issues: list[dict]) -> list[discord.SelectOption]:
     return options
 
 
-class IssueBoardView(discord.ui.View):
-    def __init__(
-        self,
-        *,
-        issues: list[dict],
-        owner: str,
-        repo: str,
-        issue_number: int | None = None,
-        issue_state: str = "open",
-    ):
-        super().__init__(timeout=None)
-        self.owner = owner
-        self.repo = repo
+def _button(label: str, emoji: str, style: discord.ButtonStyle, custom_id: str) -> discord.ui.Button:
+    return discord.ui.Button(label=label, emoji=emoji, style=style, custom_id=custom_id)
 
-        options = _issue_select_options(issues)
-        if options:
-            self.add_item(
-                discord.ui.Select(
-                    placeholder="Switch to another issue",
-                    options=options,
-                    custom_id=f"gh_issue_select:{owner}:{repo}",
-                )
-            )
 
-        if issue_number is None:
-            return
-
-        if issue_state == "open":
-            self.add_item(
-                discord.ui.Button(
-                    label="Close Issue",
-                    style=discord.ButtonStyle.danger,
-                    custom_id=f"gh_close:{owner}:{repo}:{issue_number}",
-                    emoji="🔒",
-                    row=1,
-                )
-            )
-        else:
-            self.add_item(
-                discord.ui.Button(
-                    label="Reopen Issue",
-                    style=discord.ButtonStyle.success,
-                    custom_id=f"gh_reopen:{owner}:{repo}:{issue_number}",
-                    emoji="🔓",
-                    row=1,
-                )
-            )
-
-        self.add_item(
-            discord.ui.Button(
-                label="Add Comment",
-                style=discord.ButtonStyle.primary,
-                custom_id=f"gh_comment:{owner}:{repo}:{issue_number}",
-                emoji="💬",
-                row=1,
-            )
+def issue_board_items(
+    *,
+    issues: list[dict],
+    owner: str,
+    repo: str,
+    issue_number: int | None = None,
+    issue_state: str = "open",
+) -> list[discord.ui.Item]:
+    """The board's switcher and the open issue's buttons; GitHubCog.on_interaction routes them by custom id."""
+    items: list[discord.ui.Item] = []
+    if options := _issue_select_options(issues):
+        items.append(
+            discord.ui.Select(placeholder="Switch to another issue", options=options, custom_id=f"gh_issue_select:{owner}:{repo}")
         )
-        self.add_item(
-            discord.ui.Button(
-                label="View on GitHub",
-                style=discord.ButtonStyle.link,
-                url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
-                emoji="🔗",
-                row=1,
-            )
-        )
+    if issue_number is None:
+        return items
+    target = f"{owner}:{repo}:{issue_number}"
+    if issue_state == "open":
+        items.append(_button("Close Issue", "🔒", discord.ButtonStyle.danger, f"gh_close:{target}"))
+    else:
+        items.append(_button("Reopen Issue", "🔓", discord.ButtonStyle.success, f"gh_reopen:{target}"))
+    items.append(_button("Add Comment", "💬", discord.ButtonStyle.primary, f"gh_comment:{target}"))
+    items.append(
+        discord.ui.Button(label="View on GitHub", emoji="🔗", url=f"https://github.com/{owner}/{repo}/issues/{issue_number}")
+    )
+    return items
 
 
 class PRCommentModal(discord.ui.Modal):
@@ -246,12 +224,10 @@ class PRCommentModal(discord.ui.Modal):
         await interaction.response.defer()
 
 
-class MergeConfirmView(_AuthorOnlyView):
-    def __init__(self, *, author_id: int, timeout: float = 120):
-        super().__init__(author_id=author_id, timeout=timeout)
+class MergeConfirmView(_AuthorOnlyPrompt):
+    def __init__(self, *, text: str = "Select a merge method and confirm:", author_id: int, timeout: float = 120):
         self.merge_method: str | None = None
         self.confirmed = False
-
         select = discord.ui.Select(
             placeholder="Select merge method",
             options=[
@@ -259,25 +235,28 @@ class MergeConfirmView(_AuthorOnlyView):
                 discord.SelectOption(label="Merge Commit", value="merge", description="Create a merge commit", emoji="🔸"),
                 discord.SelectOption(label="Rebase and Merge", value="rebase", description="Rebase commits onto base", emoji="🔻"),
             ],
-            custom_id="merge_method_select_temp",
         )
         select.callback = self.select_callback
-        self.add_item(select)
+        super().__init__(
+            text,
+            discord.ui.ActionRow(select),
+            self._decision_row("Confirm Merge", self._confirm, self._cancel, emoji="✅"),
+            author_id=author_id,
+            timeout=timeout,
+        )
 
     async def select_callback(self, interaction: discord.Interaction):
         self.merge_method = interaction.data.get("values", [None])[0]
         await interaction.response.defer()
 
-    @discord.ui.button(label="Confirm Merge", style=discord.ButtonStyle.success, row=1, emoji="✅")
-    async def confirm_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def _confirm(self, interaction: discord.Interaction):
         if not self.merge_method:
-            return await interaction.response.send_message("Please select a merge method first.")
+            return await interaction.response.send_message("Please select a merge method first.", ephemeral=True)
         self.confirmed = True
         self.stop()
         await interaction.response.defer()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
-    async def cancel_btn(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def _cancel(self, interaction: discord.Interaction):
         self.confirmed = False
         self.stop()
         await interaction.response.defer()
@@ -300,79 +279,29 @@ def _pr_select_options(prs: list[dict]) -> list[discord.SelectOption]:
     return options
 
 
-class PRBoardView(discord.ui.View):
-    def __init__(
-        self,
-        *,
-        prs: list[dict],
-        owner: str,
-        repo: str,
-        pr_number: int | None = None,
-        pr_state: str = "open",
-        merged: bool = False,
-    ):
-        super().__init__(timeout=None)
-        self.owner = owner
-        self.repo = repo
-
-        options = _pr_select_options(prs)
-        if options:
-            self.add_item(
-                discord.ui.Select(
-                    placeholder="Switch to another pull request",
-                    options=options,
-                    custom_id=f"gh_pr_select:{owner}:{repo}",
-                )
-            )
-
-        if pr_number is None:
-            return
-
-        if pr_state == "open":
-            self.add_item(
-                discord.ui.Button(
-                    label="Merge PR",
-                    style=discord.ButtonStyle.success,
-                    custom_id=f"gh_pr_merge:{owner}:{repo}:{pr_number}",
-                    emoji="✅",
-                    row=1,
-                )
-            )
-            self.add_item(
-                discord.ui.Button(
-                    label="Close PR",
-                    style=discord.ButtonStyle.danger,
-                    custom_id=f"gh_pr_close:{owner}:{repo}:{pr_number}",
-                    emoji="🔒",
-                    row=1,
-                )
-            )
-        elif not merged:
-            self.add_item(
-                discord.ui.Button(
-                    label="Reopen PR",
-                    style=discord.ButtonStyle.success,
-                    custom_id=f"gh_pr_reopen:{owner}:{repo}:{pr_number}",
-                    emoji="🔓",
-                    row=1,
-                )
-            )
-
-        self.add_item(
-            discord.ui.Button(
-                label="Comment",
-                style=discord.ButtonStyle.primary,
-                custom_id=f"gh_pr_comment:{owner}:{repo}:{pr_number}",
-                emoji="💬",
-                row=1,
-            )
+def pr_board_items(
+    *,
+    prs: list[dict],
+    owner: str,
+    repo: str,
+    pr_number: int | None = None,
+    pr_state: str = "open",
+    merged: bool = False,
+) -> list[discord.ui.Item]:
+    """The board's switcher and the open PR's buttons; GitHubCog.on_interaction routes them by custom id."""
+    items: list[discord.ui.Item] = []
+    if options := _pr_select_options(prs):
+        items.append(
+            discord.ui.Select(placeholder="Switch to another pull request", options=options, custom_id=f"gh_pr_select:{owner}:{repo}")
         )
-        self.add_item(
-            discord.ui.Button(
-                label="View on GitHub",
-                style=discord.ButtonStyle.link,
-                url=f"https://github.com/{owner}/{repo}/pull/{pr_number}",
-                emoji="🔗",
-                row=1,
-            )
-        )
+    if pr_number is None:
+        return items
+    target = f"{owner}:{repo}:{pr_number}"
+    if pr_state == "open":
+        items.append(_button("Merge PR", "✅", discord.ButtonStyle.success, f"gh_pr_merge:{target}"))
+        items.append(_button("Close PR", "🔒", discord.ButtonStyle.danger, f"gh_pr_close:{target}"))
+    elif not merged:
+        items.append(_button("Reopen PR", "🔓", discord.ButtonStyle.success, f"gh_pr_reopen:{target}"))
+    items.append(_button("Comment", "💬", discord.ButtonStyle.primary, f"gh_pr_comment:{target}"))
+    items.append(discord.ui.Button(label="View on GitHub", emoji="🔗", url=f"https://github.com/{owner}/{repo}/pull/{pr_number}"))
+    return items

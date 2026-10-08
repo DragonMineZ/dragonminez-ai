@@ -139,7 +139,7 @@ class ModerationTimeoutEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 purge_calls.append(
                     {"channel_id": self.id, "limit": limit, "after": after, "reason": reason}
                 )
-                fake_message = SimpleNamespace(author=SimpleNamespace(id=3))
+                fake_message = SimpleNamespace(id=self.id * 10, author=SimpleNamespace(id=3))
                 self_match = check(fake_message)
                 other_match = check(SimpleNamespace(author=SimpleNamespace(id=99)))
                 return [fake_message] if self_match and not other_match else []

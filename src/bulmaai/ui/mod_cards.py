@@ -152,6 +152,12 @@ def alert_card(
     return discord.ui.DesignerView(discord.ui.Container(*items, color=color), timeout=None)
 
 
+def user_line(user, *facts: str) -> str:
+    """'👤 **name** (`id`)' plus a small facts line; summary_text finds the name by this shape."""
+    name = defang(discord.utils.escape_markdown(str(user)))
+    return f"👤 **{name}** (`{user.id}`)" + (f"\n-# {' · '.join(facts)}" if facts else "")
+
+
 def alert_container(source) -> discord.ui.Container | None:
     """The first Container of a DesignerView."""
     return next((item for item in source.children if isinstance(item, discord.ui.Container)), None)
@@ -211,7 +217,7 @@ def summary_text(details: list[dict]) -> str:
             if part.get("type") == 10:
                 texts.append(part.get("content", ""))
     head = texts[0].splitlines()[0] if texts else ""
-    reason = head.removeprefix("### ").split(" · ", 1)[-1].strip() if " · " in head else "Moderation Alert"
+    reason = head.removeprefix("### ").split(" · ", 1)[-1].strip() or "Moderation Alert"
     name = next((m[1] for t in texts if t.startswith("👤 ") and (m := re.match(r"👤 \*\*(.+?)\*\*", t))), None)
     return " · ".join(["✅ **Handled**", reason, *([f"**{name}**"] if name else [])])
 

@@ -13,7 +13,7 @@ from bulmaai.services.release_approval import (
 )
 from bulmaai.ui.release_views import (
     ReleaseCandidateView,
-    build_release_candidate_embed,
+    release_card,
 )
 
 
@@ -62,7 +62,6 @@ class ReleaseApprovalCog(commands.Cog):
             raise RuntimeError(f"Configured releases channel {channel_id} is not messageable")
 
         await channel.send(
-            embed=build_release_candidate_embed(candidate),
             view=ReleaseCandidateView(
                 candidate,
                 on_approve=self._approve_candidate,
@@ -92,12 +91,7 @@ class ReleaseApprovalCog(commands.Cog):
             return False
         if interaction.message is not None:
             await interaction.message.edit(
-                embed=build_release_candidate_embed(
-                    candidate,
-                    status="Approved",
-                    actor=f"Approved by {interaction.user}",
-                ),
-                view=None,
+                view=release_card(candidate, status="Approved", actor=f"Approved by {interaction.user}")
             )
         await interaction.followup.send(
             f"🚀 DragonMineZ {candidate.version} approved by {interaction.user.mention}, dispatched to GitHub.",
@@ -113,12 +107,7 @@ class ReleaseApprovalCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if interaction.message is not None:
             await interaction.message.edit(
-                embed=build_release_candidate_embed(
-                    candidate,
-                    status="Rejected",
-                    actor=f"Rejected by {interaction.user}",
-                ),
-                view=None,
+                view=release_card(candidate, status="Rejected", actor=f"Rejected by {interaction.user}")
             )
         await interaction.followup.send(
             f"⛔ DragonMineZ {candidate.version} release candidate rejected by {interaction.user.mention}.",

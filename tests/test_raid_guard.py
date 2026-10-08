@@ -26,6 +26,22 @@ JOINER_ALERTS_DUE = "bulmaai.services.joiner_alerts.due"
 JOINER_ALERTS_SET_OUTCOME = "bulmaai.services.joiner_alerts.set_outcome"
 
 
+def _walk(item):
+    yield item
+    for child in getattr(item, "items", None) or getattr(item, "children", None) or []:
+        yield from _walk(child)
+    if accessory := getattr(item, "accessory", None):
+        yield accessory
+
+
+def all_text(view) -> str:
+    return "\n".join(item.content for item in _walk(view) if isinstance(item, discord.ui.TextDisplay))
+
+
+def all_ids(view) -> list:
+    return [item.custom_id for item in _walk(view) if isinstance(item, discord.ui.Button)]
+
+
 def make_settings(**overrides):
     base = dict(
         panel_guild_id=1,
@@ -244,11 +260,10 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
             await self.cog.on_message(say(member))
         self.channel.send.assert_awaited_once()
         _, kwargs = self.channel.send.await_args
-        self.assertEqual([b.label for b in kwargs["view"].children], ["Kick", "Ban", "Dismiss"])
-        embed = kwargs["embed"]
-        history_field = next(f for f in embed.fields if f.name == "Case history")
-        self.assertIn("timeout", history_field.value)
-        self.assertIn("warn", history_field.value)
+        self.assertEqual(all_ids(kwargs["view"]), ["modqa:kick:3", "modqa:ban:3", "modqa:dismiss:3"])
+        history = next(line for line in all_text(kwargs["view"]).splitlines() if line.startswith("**Case history**"))
+        self.assertIn("timeout", history)
+        self.assertIn("warn", history)
 
     async def test_alert_is_recorded_to_joiner_alerts_for_the_durable_sweep(self):
         cases = [SimpleNamespace(active=True, action="warn")]
@@ -388,8 +403,8 @@ class RaidButtonTests(unittest.IsolatedAsyncioTestCase):
         interaction.response.defer.assert_awaited_once()
         interaction.message.edit.assert_awaited_once()
         edited_view = interaction.message.edit.await_args.kwargs["view"]
-        ids = [child.custom_id for child in edited_view.children]
-        self.assertIn("modraid:unlock", ids)
+        self.assertIn("modraid:unlock", all_ids(edited_view))
+        self.assertIn("🔒 locked", all_text(edited_view))
         interaction.followup.send.assert_awaited_once()
         self.assertIn("4", interaction.followup.send.await_args.args[0])
 
@@ -401,7 +416,9 @@ class RaidButtonTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.on_interaction(interaction)
         self.assertIsNone(self.cog._raid_until)
         self.assertEqual(len(self.cog._join_times), 0)
-        interaction.response.edit_message.assert_awaited_once_with(view=None)
+        ended = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertEqual(all_ids(ended), [])
+        self.assertIn("Raid mode ended", all_text(ended))
         interaction.followup.send.assert_awaited_once()
 
     async def test_non_raid_custom_ids_are_ignored(self):

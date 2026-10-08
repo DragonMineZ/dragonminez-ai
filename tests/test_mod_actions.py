@@ -13,7 +13,7 @@ import discord
 from bulmaai.services import mod_actions
 from bulmaai.services.mod_cases import ModCase
 from bulmaai.services.mod_actions import LadderStep, format_duration, parse_ladder, pick_step
-from bulmaai.ui.mod_views import parse_custom_id, quick_actions_view
+from bulmaai.ui.mod_views import parse_custom_id, quick_action_buttons
 
 DAY = 86400
 
@@ -52,16 +52,15 @@ class LadderTests(unittest.TestCase):
 
 class ViewTests(unittest.IsolatedAsyncioTestCase):  # py-cord Views need a running loop
     async def test_quick_action_ids_round_trip(self):
-        view = quick_actions_view(42, actions=("delete", "ban"), message=(7, 8))
-        ids = [child.custom_id for child in view.children]
+        ids = [button.custom_id for button in quick_action_buttons(42, actions=("delete", "ban"), message=(7, 8))]
         self.assertEqual(ids, ["modqa:delete:42:7:8", "modqa:ban:42"])
         self.assertEqual(parse_custom_id(ids[0]), ("modqa", ["delete", "42", "7", "8"]))
         self.assertIsNone(parse_custom_id("rules:en"))
         self.assertIsNone(parse_custom_id(None))
 
     async def test_delete_needs_a_message(self):
-        view = quick_actions_view(42, actions=("delete", "dismiss"))
-        self.assertEqual([child.custom_id for child in view.children], ["modqa:dismiss:42"])
+        buttons = quick_action_buttons(42, actions=("delete", "dismiss"))
+        self.assertEqual([button.custom_id for button in buttons], ["modqa:dismiss:42"])
 
 
 class FakeOverwrite(SimpleNamespace):

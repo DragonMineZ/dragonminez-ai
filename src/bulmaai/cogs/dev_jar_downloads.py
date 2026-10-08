@@ -49,9 +49,10 @@ from bulmaai.services.release_webhook import (
     unregister_extra_get_route,
 )
 from bulmaai.ui.dev_jar_views import (
+    COMMITS_FILENAME,
     artifact_day,
-    build_dev_jar_download_embeds,
-    build_dev_jar_review_embeds,
+    build_dev_jar_download_view,
+    build_dev_jar_review_view,
 )
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin
@@ -65,9 +66,6 @@ DOWNLOAD_FILE_SUFFIX = "/file"
 # Stable custom_ids for the staff review prompt so its buttons survive restarts.
 DEV_JAR_REVIEW_PUBLISH_ID = "dev_jar_review:publish"
 DEV_JAR_REVIEW_DISCARD_ID = "dev_jar_review:discard"
-# Sent alongside every review/announcement message carrying commits, not just
-# when the inline changelog overflows.
-COMMITS_FILENAME = "dev-jar-commits.md"
 # Bound to 0.0.0.0 (see config.py RELEASE_WEBHOOK_HOST) and gated behind the same
 # X-DMZ-Release-Bot-Secret header as the dev jar upload webhook. The VPS-side
 # cleanup script polls it to learn which dev jar files must survive pruning: the
@@ -93,56 +91,21 @@ def can_download_dev_jar(
     )
 
 
-class DevJarDownloadView(discord.ui.View):
-    def __init__(
-        self,
-        artifact: DevJarArtifact,
-        *,
-        patch_notes_url: str,
-        is_manual: bool = False,
-    ):
-        super().__init__(timeout=None)
-        prefix = MANUAL_DOWNLOAD_BUTTON_PREFIX if is_manual else DOWNLOAD_BUTTON_PREFIX
-        self.add_item(
-            discord.ui.Button(
-                label="Get download link",
-                style=discord.ButtonStyle.primary,
-                custom_id=f"{prefix}{artifact.file_name}",
-            )
-        )
-        self.add_item(
-            discord.ui.Button(
-                label=f"Patch Notes – {artifact_day(artifact)}",
-                url=patch_notes_url,
-            )
-        )
+def download_actions(artifact: DevJarArtifact, *, patch_notes_url: str, is_manual: bool = False) -> discord.ui.ActionRow:
+    prefix = MANUAL_DOWNLOAD_BUTTON_PREFIX if is_manual else DOWNLOAD_BUTTON_PREFIX
+    return discord.ui.ActionRow(
+        discord.ui.Button(label="Get download link", style=discord.ButtonStyle.primary, custom_id=f"{prefix}{artifact.file_name}"),
+        discord.ui.Button(label=f"Patch Notes – {artifact_day(artifact)}", url=patch_notes_url),
+    )
 
 
-class DevJarReviewView(discord.ui.View):
-    """Persistent Publish/Discard prompt.
-
-    The buttons carry stable custom_ids and hold no per-message state, so they
-    keep working after a bot restart: clicks are routed through the cog's
-    on_interaction listener, which reloads the pending review from the database
-    (there is only ever one, a singleton row) before acting.
-    """
-
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(
-            discord.ui.Button(
-                label="Publish",
-                style=discord.ButtonStyle.success,
-                custom_id=DEV_JAR_REVIEW_PUBLISH_ID,
-            )
-        )
-        self.add_item(
-            discord.ui.Button(
-                label="Discard",
-                style=discord.ButtonStyle.danger,
-                custom_id=DEV_JAR_REVIEW_DISCARD_ID,
-            )
-        )
+def review_actions() -> discord.ui.ActionRow:
+    """Publish/Discard. Stable custom ids and no per-message state: clicks are routed through the cog's
+    on_interaction listener, which reloads the pending review (a singleton row) before acting."""
+    return discord.ui.ActionRow(
+        discord.ui.Button(label="Publish", style=discord.ButtonStyle.success, custom_id=DEV_JAR_REVIEW_PUBLISH_ID),
+        discord.ui.Button(label="Discard", style=discord.ButtonStyle.danger, custom_id=DEV_JAR_REVIEW_DISCARD_ID),
+    )
 
 
 class DevJarDownloadsCog(ReloadableCog):
@@ -391,22 +354,19 @@ class DevJarDownloadsCog(ReloadableCog):
         is_manual: bool = False,
         changelog: str | None = None,
     ) -> None:
-        embeds, commit_list_text = build_dev_jar_download_embeds(
+        view, commit_list_text = build_dev_jar_download_view(
             artifact,
             commits=commits,
+            actions=download_actions(artifact, patch_notes_url=self._patch_notes_url(), is_manual=is_manual),
             changelog=changelog,
             sha256=sha256,
             workflow_run_url=workflow_run_url,
             previous_size_bytes=previous_size_bytes,
         )
-        patch_notes_url = self._patch_notes_url()
         target_channels = [channel] if channel is not None else await self._resolve_announcement_channels()
         for target_channel in target_channels:
             sent = await target_channel.send(
-                embeds=embeds,
-                view=DevJarDownloadView(
-                    artifact, patch_notes_url=patch_notes_url, is_manual=is_manual
-                ),
+                view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
                 files=self._commit_list_files(commit_list_text),
             )
@@ -490,17 +450,16 @@ class DevJarDownloadsCog(ReloadableCog):
             if existing is not None and existing.message_id is not None:
                 await self._delete_review_message(channel, existing.message_id)
 
-            embeds, overflow_text = build_dev_jar_review_embeds(
+            view, overflow_text = build_dev_jar_review_view(
                 artifact,
                 commits=merged_commits,
                 sha256=sha256,
                 workflow_run_url=workflow_run_url,
+                actions=review_actions(),
             )
-            view = DevJarReviewView()
             files = self._commit_list_files(overflow_text)
 
             sent = await channel.send(
-                embeds=embeds,
                 view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
                 files=files,
@@ -593,7 +552,7 @@ class DevJarDownloadsCog(ReloadableCog):
             await clear_pending_dev_jar_review()
 
         if interaction.message is not None:
-            embeds, _ = build_dev_jar_review_embeds(
+            view, _ = build_dev_jar_review_view(
                 artifact,
                 commits=review.commits,
                 sha256=review.sha256,
@@ -601,7 +560,7 @@ class DevJarDownloadsCog(ReloadableCog):
                 status="Published",
                 actor=f"Published by {interaction.user}",
             )
-            await interaction.message.edit(embeds=embeds, view=None, attachments=[])
+            await interaction.message.edit(view=view, attachments=[])
         await interaction.followup.send(
             f"📦 DragonMineZ dev jar `{artifact.file_name}` published by {interaction.user.mention}.",
             allowed_mentions=discord.AllowedMentions.none(),
@@ -628,7 +587,7 @@ class DevJarDownloadsCog(ReloadableCog):
                 return
             deleted = self._delete_artifact_file(review.artifact)
             if interaction.message is not None:
-                embeds, _ = build_dev_jar_review_embeds(
+                view, _ = build_dev_jar_review_view(
                     review.artifact,
                     commits=review.commits,
                     sha256=review.sha256,
@@ -636,7 +595,7 @@ class DevJarDownloadsCog(ReloadableCog):
                     status="Discarded",
                     actor=f"Discarded by {interaction.user}",
                 )
-                await interaction.message.edit(embeds=embeds, view=None, attachments=[])
+                await interaction.message.edit(view=view, attachments=[])
             await clear_pending_dev_jar_review_message()
         if deleted:
             outcome = "and deleted from disk"

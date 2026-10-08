@@ -7,9 +7,10 @@ os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
-from bulmaai.cogs.github_cmds import GitHubCog, _build_issue_embed
+from bulmaai.cogs.github_cmds import GitHubCog, _issue_card
 from bulmaai.config import load_settings
 from bulmaai.ui.github_views import MergeConfirmView
+from v2_helpers import buttons, texts
 
 SETTINGS = load_settings(include_overrides=False)
 HELPER_ROLE = 1341595261960589343  # staff, panel helper tier
@@ -44,9 +45,14 @@ class GitHubCommandTests(unittest.IsolatedAsyncioTestCase):  # py-cord Views nee
         self.assertFalse(await view.interaction_check(interaction))
         self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
 
-    def test_issue_body_masked_links_do_not_render(self):
+    async def test_issue_body_masked_links_do_not_render(self):
         issue = {"number": 1, "title": "t", "html_url": "u", "state": "open", "body": "[free nitro](https://evil.example)"}
-        self.assertEqual(_build_issue_embed(issue, "o", "r").description, r"\[free nitro](https://evil.example)")
+        self.assertIn(r"\[free nitro](https://evil.example)", texts(_issue_card(issue, "o", "r")))
+
+    async def test_merge_prompt_is_a_card_with_its_controls(self):
+        view = MergeConfirmView(text="Merge PR #3?", author_id=1)
+        self.assertIn("Merge PR #3?", texts(view))
+        self.assertEqual([b.label for b in buttons(view)], ["Confirm Merge", "Cancel"])
 
 
 if __name__ == "__main__":

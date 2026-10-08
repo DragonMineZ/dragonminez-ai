@@ -1,6 +1,9 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from discord.components import _component_factory
 
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
@@ -9,7 +12,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.config import load_settings
 from bulmaai.services.bug_report_ai import DuplicateAssessment, _coerce_triage
-from bulmaai.ui.bug_report_views import apply_status, build_triage_embed
+from bulmaai.ui import bug_report_views as views
 
 
 class BugReportConfigTests(unittest.TestCase):
@@ -90,7 +93,7 @@ class BugTriageCoercionTests(unittest.TestCase):
         self.assertEqual(triage.severity, "medium")
 
 
-class BugTriageEmbedTests(unittest.TestCase):
+class BugTriageCardTests(unittest.IsolatedAsyncioTestCase):
     def _sample_triage(self):
         return _coerce_triage(
             {
@@ -104,65 +107,45 @@ class BugTriageEmbedTests(unittest.TestCase):
             fallback_title="fallback",
         )
 
-    def test_embed_has_no_github_reference(self) -> None:
-        embed = build_triage_embed(self._sample_triage(), status="triaged", reporter_id=42)
-        blob = (embed.title or "") + (embed.description or "")
-        for field in embed.fields:
-            blob += f"{field.name}{field.value}"
-        self.assertNotIn("github", blob.lower())
-        self.assertIn("<@42>", blob)
-
-    def test_apply_status_updates_status_field(self) -> None:
-        embed = build_triage_embed(self._sample_triage(), status="triaged", reporter_id=42)
-        updated = apply_status(embed, "resolved")
-        status_values = [field.value for field in updated.fields if field.name == "Status"]
-        self.assertEqual(len(status_values), 1)
-        self.assertIn("Resolved", status_values[0])
-
-    def test_apply_status_supports_duplicate_and_fixed_display_labels(self) -> None:
-        embed = build_triage_embed(self._sample_triage(), status="triaged", reporter_id=42)
-
-        dup = apply_status(embed, "duplicate")
-        dup_status = next(f.value for f in dup.fields if f.name == "Status")
-        self.assertIn("duplicate", dup_status.lower())
-
-        fixed = apply_status(embed, "fixed")
-        fixed_status = next(f.value for f in fixed.fields if f.name == "Status")
-        self.assertIn("fixed", fixed_status.lower())
-
-    def test_embed_renders_duplicate_suggestion(self) -> None:
-        duplicate = DuplicateAssessment(
-            match_type="duplicate",
-            issue_number=123,
-            issue_title="Crash when transforming",
-            confidence="high",
-            reason="Same crash on the transform menu.",
+    @staticmethod
+    def _posted(view):
+        """The card as Discord would hand it back on a message."""
+        return SimpleNamespace(
+            flags=SimpleNamespace(is_components_v2=True),
+            components=[_component_factory(c) for c in view.to_components()],
         )
-        embed = build_triage_embed(self._sample_triage(), reporter_id=42, duplicate=duplicate)
-        dup_fields = [f for f in embed.fields if "duplicate" in f.name.lower()]
-        self.assertEqual(len(dup_fields), 1)
-        self.assertIn("#123", dup_fields[0].value)
 
-    def test_embed_renders_already_fixed_suggestion(self) -> None:
-        duplicate = DuplicateAssessment(
-            match_type="already_fixed",
-            issue_number=88,
-            issue_title="Transform crash",
-            confidence="medium",
-            reason="Fixed in a merged PR.",
-        )
-        embed = build_triage_embed(self._sample_triage(), reporter_id=42, duplicate=duplicate)
-        fixed_fields = [f for f in embed.fields if "already fixed" in f.name.lower()]
-        self.assertEqual(len(fixed_fields), 1)
-        self.assertIn("#88", fixed_fields[0].value)
+    def _card(self, **kwargs):
+        return self._posted(views.triage_view(self._sample_triage(), thread_id=9, reporter_id=42, **kwargs))
 
-    def test_embed_omits_suggestion_when_no_match(self) -> None:
+    async def test_card_has_no_github_reference_and_names_the_reporter(self) -> None:
+        text = views.message_text(self._card())
+        self.assertNotIn("github", text.lower())
+        self.assertIn("<@42>", text)
+
+    async def test_card_text_round_trips_the_triage_details(self) -> None:
+        text = views.message_text(self._card())
+        self.assertIn("**Severity** High", text)
+        self.assertIn("**Area** Transformations", text)
+        self.assertIn("**Steps to reproduce**\n1. Open the form menu\n2. Select Super Saiyan", text)
+
+    async def test_restatus_swaps_the_status_line_keeps_the_reporter_and_drops_buttons(self) -> None:
+        for status, label in (("resolved", "Resolved"), ("duplicate", "duplicate"), ("fixed", "fixed")):
+            view = views.restatus(self._card(), status)["view"]
+            text = views.message_text(self._posted(view))
+            self.assertIn(label, text.split("**Status**")[1])
+            self.assertIn("<@42>", text)
+            self.assertIsNone(view.get_item(views.ACTIONS_ID))
+
+    async def test_card_renders_duplicate_and_fixed_suggestions(self) -> None:
+        duplicate = DuplicateAssessment("duplicate", 123, "Crash when transforming", "high", "Same crash.")
+        self.assertIn(f"**{views.DUPLICATE_TITLE}** #123", views.message_text(self._card(duplicate=duplicate)))
+        fixed = DuplicateAssessment("already_fixed", 88, "Transform crash", "medium", "Fixed.")
+        self.assertIn(f"**{views.FIXED_TITLE}** Closed issue #88", views.message_text(self._card(duplicate=fixed)))
         no_match = DuplicateAssessment("none", None, "", "low", "")
-        self.assertFalse(no_match.has_match)
-        embed = build_triage_embed(self._sample_triage(), reporter_id=42, duplicate=no_match)
-        names = " ".join(f.name.lower() for f in embed.fields)
-        self.assertNotIn("duplicate", names)
-        self.assertNotIn("already fixed", names)
+        text = views.message_text(self._card(duplicate=no_match))
+        self.assertNotIn(views.DUPLICATE_TITLE, text)
+        self.assertNotIn(views.FIXED_TITLE, text)
 
 
 if __name__ == "__main__":

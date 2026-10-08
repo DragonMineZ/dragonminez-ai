@@ -10,14 +10,16 @@ from bulmaai.ui.github_views import (
     AddCommentModal,
     CloseReasonModal,
     CreateIssueModal,
-    IssueBoardView,
     LabelSelectView,
     MergeConfirmView,
-    PRBoardView,
+    ModalPrompt,
+    issue_board_items,
+    pr_board_items,
     PRCommentModal,
 )
 from bulmaai.utils.permissions import is_staff
 from bulmaai.web.core import Tier, tier_for
+from bulmaai.ui.v2 import card, facts
 
 log = logging.getLogger(__name__)
 settings = load_settings()
@@ -51,94 +53,103 @@ def _get_github_service(repo: str | None = None) -> GitHubService:
     )
 
 
-def _build_issue_embed(issue: dict, owner: str, repo: str) -> discord.Embed:
-    state_emoji = "🟢" if issue["state"] == "open" else "🔴"
-    embed = discord.Embed(
-        title=f"{state_emoji} #{issue['number']}: {issue['title']}",
-        url=issue["html_url"],
-        color=discord.Color.green() if issue["state"] == "open" else discord.Color.red(),
+def _labels(item: dict) -> str:
+    return " ".join(f"`{label['name']}`" for label in item.get("labels", [])[:10])
+
+
+def _body(item: dict) -> str:
+    body = item.get("body") or "No description"
+    return discord.utils.escape_markdown(body[:1500] + "..." if len(body) > 1500 else body)
+
+
+def _gh_card(top: str, details: str, body: str, color, *, buttons=None, note: str | None = None):
+    """Issue/PR card: an optional result line on top, the linked title + facts, then the description."""
+    return card(
+        f"-# {note}" if note else None,
+        top + (f"\n{details}" if details else ""),
+        discord.ui.Separator(),
+        body,
+        color=color,
+        buttons=buttons,
     )
-    body = issue.get("body") or "No description"
-    embed.description = discord.utils.escape_markdown(body[:1500] + "..." if len(body) > 1500 else body)
-
-    labels = issue.get("labels", [])
-    if labels:
-        embed.add_field(name="Labels", value=" ".join(f"`{label['name']}`" for label in labels[:10]), inline=False)
-
-    assignees = issue.get("assignees", [])
-    if assignees:
-        embed.add_field(name="Assignees", value=", ".join(assignee["login"] for assignee in assignees[:5]), inline=True)
-
-    embed.add_field(name="State", value=issue["state"].title(), inline=True)
-    embed.set_footer(text=f"{owner}/{repo}")
-    return embed
 
 
-def _build_issue_list_embed(issues: list[dict], owner: str, repo: str, state: str) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"📋 {state.title()} Issues - {owner}/{repo}",
+def _issue_card(issue: dict, owner: str, repo: str, *, buttons=None, note: str | None = None):
+    is_open = issue["state"] == "open"
+    title = discord.utils.escape_markdown(issue["title"])
+    top = f"-# {owner}/{repo} · Issue\n## [{'🟢' if is_open else '🔴'} #{issue['number']} {title}]({issue['html_url']})"
+    details = facts(
+        ("State", issue["state"].title()),
+        ("Assignees", ", ".join(assignee["login"] for assignee in issue.get("assignees", [])[:5])),
+        ("Labels", _labels(issue)),
+    )
+    color = discord.Color.green() if is_open else discord.Color.red()
+    return _gh_card(top, details, _body(issue), color, buttons=buttons, note=note)
+
+
+def _list_card(heading: str, lines: list[str], total: int, empty: str, *, buttons=None, hint: str):
+    shown = f"Showing 15 of {total} · " if total > 15 else ""
+    return card(
+        f"## {heading}",
+        "\n".join(lines) or empty,
+        f"-# {shown}{hint}",
         color=discord.Color.blurple(),
+        buttons=buttons,
     )
+
+
+def _issue_list_card(issues: list[dict], owner: str, repo: str, state: str, *, buttons=None):
     lines = []
     for issue in issues[:15]:
         state_emoji = "🟢" if issue["state"] == "open" else "🔴"
         labels = " ".join(f"`{label['name']}`" for label in issue.get("labels", [])[:3])
         title = discord.utils.escape_markdown(issue["title"][:50])
         lines.append(f"{state_emoji} **#{issue['number']}** [{title}]({issue['html_url']}) {labels}")
-    embed.description = "\n".join(lines) or "No issues found."
-    if len(issues) > 15:
-        embed.set_footer(text=f"Showing 15 of {len(issues)} issues")
-    return embed
-
-
-def _build_pr_embed(pr: dict, owner: str, repo: str) -> discord.Embed:
-    merged = pr.get("merged", False)
-    draft = pr.get("draft", False)
-
-    if merged:
-        state_emoji, color, state_text = "🟣", discord.Color.purple(), "Merged"
-    elif pr["state"] == "open":
-        state_emoji = "📝" if draft else "🟢"
-        color = discord.Color.dark_grey() if draft else discord.Color.green()
-        state_text = "Draft" if draft else "Open"
-    else:
-        state_emoji, color, state_text = "🔴", discord.Color.red(), "Closed"
-
-    embed = discord.Embed(
-        title=f"{state_emoji} PR #{pr['number']}: {pr['title']}",
-        url=pr["html_url"],
-        color=color,
+    return _list_card(
+        f"📋 {state.title()} issues · {owner}/{repo}", lines, len(issues), "No issues found.",
+        buttons=buttons, hint="Pick an issue in the dropdown to open it here.",
     )
-    body = pr.get("body") or "No description"
-    embed.description = discord.utils.escape_markdown(body[:1500] + "..." if len(body) > 1500 else body)
-    embed.add_field(name="State", value=state_text, inline=True)
-    embed.add_field(name="Branch", value=f"`{pr['head']['ref']}` -> `{pr['base']['ref']}`", inline=True)
-    if pr.get("user"):
-        embed.add_field(name="Author", value=pr["user"]["login"], inline=True)
-    labels = pr.get("labels", [])
-    if labels:
-        embed.add_field(name="Labels", value=" ".join(f"`{label['name']}`" for label in labels[:10]), inline=False)
-    reviewers = pr.get("requested_reviewers", [])
-    if reviewers:
-        embed.add_field(name="Reviewers", value=", ".join(reviewer["login"] for reviewer in reviewers[:5]), inline=True)
-    stats = []
+
+
+def _pr_state(pr: dict) -> tuple[str, discord.Color, str]:
+    if pr.get("merged", False):
+        return "🟣", discord.Color.purple(), "Merged"
+    if pr["state"] == "open":
+        draft = pr.get("draft", False)
+        return ("📝", discord.Color.dark_grey(), "Draft") if draft else ("🟢", discord.Color.green(), "Open")
+    return "🔴", discord.Color.red(), "Closed"
+
+
+def _pr_card(pr: dict, owner: str, repo: str, *, buttons=None, note: str | None = None):
+    emoji, color, state_text = _pr_state(pr)
+    title = discord.utils.escape_markdown(pr["title"])
+    top = f"-# {owner}/{repo} · Pull request\n## [{emoji} #{pr['number']} {title}]({pr['html_url']})"
+    changes = None
     if pr.get("additions") is not None:
-        stats.append(f"**+{pr['additions']}** / **-{pr['deletions']}**")
-    if pr.get("changed_files") is not None:
-        stats.append(f"{pr['changed_files']} file(s)")
-    if stats:
-        embed.add_field(name="Changes", value=" · ".join(stats), inline=True)
-    if pr.get("mergeable_state"):
-        embed.add_field(name="Mergeable", value=pr["mergeable_state"].replace("_", " ").title(), inline=True)
-    embed.set_footer(text=f"{owner}/{repo}")
-    return embed
-
-
-def _build_pr_list_embed(prs: list[dict], owner: str, repo: str, state: str) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"📋 {state.title()} Pull Requests - {owner}/{repo}",
-        color=discord.Color.blurple(),
+        changes = f"+{pr['additions']} / -{pr['deletions']}"
+        if pr.get("changed_files") is not None:
+            changes += f" in {pr['changed_files']} file(s)"
+    details = "\n".join(
+        line
+        for line in (
+            facts(
+                ("State", state_text),
+                ("Branch", f"`{pr['head']['ref']}` → `{pr['base']['ref']}`"),
+                ("Author", pr["user"]["login"] if pr.get("user") else None),
+            ),
+            facts(
+                ("Changes", changes),
+                ("Mergeable", pr["mergeable_state"].replace("_", " ").title() if pr.get("mergeable_state") else None),
+                ("Reviewers", ", ".join(reviewer["login"] for reviewer in pr.get("requested_reviewers", [])[:5])),
+            ),
+            facts(("Labels", _labels(pr))),
+        )
+        if line
     )
+    return _gh_card(top, details, _body(pr), color, buttons=buttons, note=note)
+
+
+def _pr_list_card(prs: list[dict], owner: str, repo: str, state: str, *, buttons=None):
     lines = []
     for pr in prs[:15]:
         merged = pr.get("merged_at") is not None
@@ -151,10 +162,10 @@ def _build_pr_list_embed(prs: list[dict], owner: str, repo: str, state: str) -> 
             emoji = "🔴"
         title = discord.utils.escape_markdown(pr["title"][:50])
         lines.append(f"{emoji} **#{pr['number']}** [{title}]({pr['html_url']}) by `{pr['user']['login']}`")
-    embed.description = "\n".join(lines) or "No pull requests found."
-    if len(prs) > 15:
-        embed.set_footer(text=f"Showing 15 of {len(prs)} pull requests")
-    return embed
+    return _list_card(
+        f"📋 {state.title()} pull requests · {owner}/{repo}", lines, len(prs), "No pull requests found.",
+        buttons=buttons, hint="Pick a PR in the dropdown to open it here.",
+    )
 
 
 class GitHubCog(commands.Cog):
@@ -183,11 +194,11 @@ class GitHubCog(commands.Cog):
         repo: str,
         issue_number: int,
         issue_state: str,
-    ) -> IssueBoardView:
+    ) -> list[discord.ui.Item]:
         service = _get_github_service(repo)
         issues = await service.list_issues(state="all")
         issues = [issue for issue in issues if "pull_request" not in issue]
-        return IssueBoardView(
+        return issue_board_items(
             issues=issues or [{"number": issue_number, "title": f"Issue #{issue_number}", "labels": []}],
             owner=self.owner,
             repo=repo,
@@ -202,10 +213,10 @@ class GitHubCog(commands.Cog):
         pr_number: int,
         pr_state: str,
         merged: bool,
-    ) -> PRBoardView:
+    ) -> list[discord.ui.Item]:
         service = _get_github_service(repo)
         prs = await service.list_prs(state="all")
-        return PRBoardView(
+        return pr_board_items(
             prs=prs or [{"number": pr_number, "title": f"PR #{pr_number}", "user": {"login": "unknown"}}],
             owner=self.owner,
             repo=repo,
@@ -215,23 +226,12 @@ class GitHubCog(commands.Cog):
         )
 
     async def _prompt_issue_modal(self, ctx: discord.ApplicationContext, modal: CreateIssueModal) -> dict | None:
-        prompt_view = discord.ui.View(timeout=300)
-        open_modal_button = discord.ui.Button(label="Enter Issue Details", style=discord.ButtonStyle.primary)
-
-        async def open_modal(interaction: discord.Interaction):
-            if interaction.user.id != ctx.author.id:
-                return await interaction.response.send_message("Only the command author can submit this modal.")
-            await interaction.response.send_modal(modal)
-
-        open_modal_button.callback = open_modal
-        prompt_view.add_item(open_modal_button)
-
-        prompt_message = await ctx.followup.send(
-            "**Step 2/2:** Click to enter the issue details.",
-            view=prompt_view,
+        prompt = ModalPrompt(
+            "**Step 2/2:** Click to enter the issue details.", "Enter Issue Details", modal, author_id=ctx.author.id
         )
+        prompt_message = await ctx.followup.send(view=prompt)
         await modal.wait()
-        await prompt_message.edit(content="Issue details submitted.", view=None)
+        await prompt_message.edit(view=card("Issue details submitted."))
         return modal.result
 
     @github.command(name="create", description="Create a new GitHub issue with labels")
@@ -251,14 +251,13 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to fetch labels")
             return await ctx.followup.send(f"Failed to fetch labels: {error}")
 
-        label_view = LabelSelectView(labels, author_id=ctx.author.id)
-        selection_message = await ctx.followup.send(
-            "**Step 1/2:** Select labels for the new issue or skip them.",
-            view=label_view,
+        label_view = LabelSelectView(
+            labels, text="**Step 1/2:** Select labels for the new issue or skip them.", author_id=ctx.author.id
         )
+        selection_message = await ctx.followup.send(view=label_view)
         await label_view.wait()
         if not label_view.confirmed:
-            await selection_message.edit(content="Issue creation cancelled.", view=None)
+            await selection_message.edit(view=card("Issue creation cancelled."))
             return
 
         modal = CreateIssueModal(selected_labels=label_view.selected_labels)
@@ -276,14 +275,13 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to create issue")
             return await ctx.followup.send(f"Failed to create issue: {error}")
 
-        await selection_message.edit(content="Issue created.", view=None)
-        embed = _build_issue_embed(issue, self.owner, target_repo)
+        await selection_message.edit(view=card("Issue created."))
         view = await self._load_issue_board_view(
             repo=target_repo,
             issue_number=issue["number"],
             issue_state="open",
         )
-        await ctx.followup.send("Issue created successfully.", embed=embed, view=view)
+        await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note="Issue created successfully."))
 
     @github.command(name="close", description="Close a GitHub issue")
     @discord.option("issue_number", description="Issue number to close", required=True)
@@ -309,13 +307,12 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to close issue")
             return await ctx.followup.send(f"Failed to close issue: {error}")
 
-        embed = _build_issue_embed(issue, self.owner, target_repo)
         view = await self._load_issue_board_view(
             repo=target_repo,
             issue_number=issue_number,
             issue_state="closed",
         )
-        await ctx.followup.send(f"Issue #{issue_number} closed by {ctx.author.mention}.", embed=embed, view=view)
+        await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Issue #{issue_number} closed by {ctx.author.mention}."))
 
     @github.command(name="reopen", description="Reopen a closed GitHub issue")
     @discord.option("issue_number", description="Issue number to reopen", required=True)
@@ -335,13 +332,12 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to reopen issue")
             return await ctx.followup.send(f"Failed to reopen issue: {error}")
 
-        embed = _build_issue_embed(issue, self.owner, target_repo)
         view = await self._load_issue_board_view(
             repo=target_repo,
             issue_number=issue_number,
             issue_state="open",
         )
-        await ctx.followup.send(f"Issue #{issue_number} reopened by {ctx.author.mention}.", embed=embed, view=view)
+        await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Issue #{issue_number} reopened by {ctx.author.mention}."))
 
     @github.command(name="view", description="View a GitHub issue")
     @discord.option("issue_number", description="Issue number to view", required=True)
@@ -358,13 +354,12 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to fetch issue")
             return await ctx.followup.send(f"Failed to fetch issue: {error}")
 
-        embed = _build_issue_embed(issue, self.owner, target_repo)
         view = await self._load_issue_board_view(
             repo=target_repo,
             issue_number=issue_number,
             issue_state=issue["state"],
         )
-        await ctx.followup.send(embed=embed, view=view)
+        await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view))
 
     @github.command(name="list", description="List GitHub issues")
     @discord.option("state", description="Issue state", choices=["open", "closed", "all"], required=False)
@@ -386,13 +381,8 @@ class GitHubCog(commands.Cog):
         if not issues:
             return await ctx.followup.send(f"No {state} issues found.")
 
-        embed = _build_issue_list_embed(issues, self.owner, target_repo, state)
-        view = IssueBoardView(issues=issues, owner=self.owner, repo=target_repo)
-        await ctx.followup.send(
-            "Issue board. Use the dropdown to open an issue and keep working on the same message.",
-            embed=embed,
-            view=view,
-        )
+        view = issue_board_items(issues=issues, owner=self.owner, repo=target_repo)
+        await ctx.followup.send(view=_issue_list_card(issues, self.owner, target_repo, state, buttons=view))
 
     @github.command(name="comment", description="Add a comment to a GitHub issue")
     @discord.option("issue_number", description="Issue number", required=True)
@@ -417,13 +407,12 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to add comment")
             return await ctx.followup.send(f"Failed to add comment: {error}")
 
-        embed = _build_issue_embed(issue, self.owner, target_repo)
         view = await self._load_issue_board_view(
             repo=target_repo,
             issue_number=issue_number,
             issue_state=issue["state"],
         )
-        await ctx.followup.send(f"Comment added to issue #{issue_number} by {ctx.author.mention}.", embed=embed, view=view)
+        await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Comment added to issue #{issue_number} by {ctx.author.mention}."))
 
     @github.command(name="labels", description="View available labels for a repository")
     @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
@@ -442,16 +431,13 @@ class GitHubCog(commands.Cog):
         if not labels:
             return await ctx.followup.send("No labels found.")
 
-        embed = discord.Embed(
-            title=f"🏷️ Labels - {self.owner}/{target_repo}",
-            color=discord.Color.blurple(),
-        )
-        embed.description = "\n".join(
-            f"• **{label['name']}** #{label['color']}" +
-            (f" - {label['description'][:50]}" if label.get("description") else "")
+        lines = "\n".join(
+            f"• **{label['name']}** `#{label['color']}`" +
+            (f" · {label['description'][:50]}" if label.get("description") else "")
             for label in labels[:25]
         )
-        await ctx.followup.send(embed=embed)
+        title = f"## 🏷️ Labels · {self.owner}/{target_repo}"
+        await ctx.followup.send(view=card(title, lines, color=discord.Color.blurple()))
 
     @github.command(name="addlabel", description="Add a label to an issue")
     @discord.option("issue_number", description="Issue number", required=True)
@@ -470,14 +456,11 @@ class GitHubCog(commands.Cog):
         except Exception as error:
             return await ctx.followup.send(f"Failed to fetch labels: {error}")
 
-        label_view = LabelSelectView(labels, author_id=ctx.author.id)
-        prompt_message = await ctx.followup.send(
-            f"Select labels to add to issue #{issue_number}:",
-            view=label_view,
-        )
+        label_view = LabelSelectView(labels, text=f"Select labels to add to issue #{issue_number}:", author_id=ctx.author.id)
+        prompt_message = await ctx.followup.send(view=label_view)
         await label_view.wait()
         if not label_view.confirmed or not label_view.selected_labels:
-            await prompt_message.edit(content="No labels selected.", view=None)
+            await prompt_message.edit(view=card("No labels selected."))
             return
 
         try:
@@ -486,14 +469,13 @@ class GitHubCog(commands.Cog):
         except Exception as error:
             return await ctx.followup.send(f"Failed to add labels: {error}")
 
-        await prompt_message.edit(content="Labels updated.", view=None)
-        embed = _build_issue_embed(issue, self.owner, target_repo)
+        await prompt_message.edit(view=card("Labels updated."))
         view = await self._load_issue_board_view(
             repo=target_repo,
             issue_number=issue_number,
             issue_state=issue["state"],
         )
-        await ctx.followup.send(f"Labels added to issue #{issue_number}.", embed=embed, view=view)
+        await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Labels added to issue #{issue_number}."))
 
     pr = github.create_subgroup("pr", "GitHub pull request management")
 
@@ -515,13 +497,8 @@ class GitHubCog(commands.Cog):
         if not prs:
             return await ctx.followup.send(f"No {state} pull requests found.")
 
-        embed = _build_pr_list_embed(prs, self.owner, target_repo, state)
-        view = PRBoardView(prs=prs, owner=self.owner, repo=target_repo)
-        await ctx.followup.send(
-            "Pull request board. Use the dropdown to switch PRs on this message.",
-            embed=embed,
-            view=view,
-        )
+        view = pr_board_items(prs=prs, owner=self.owner, repo=target_repo)
+        await ctx.followup.send(view=_pr_list_card(prs, self.owner, target_repo, state, buttons=view))
 
     @pr.command(name="view", description="View a pull request")
     @discord.option("pr_number", description="PR number to view", required=True)
@@ -538,14 +515,13 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to fetch PR")
             return await ctx.followup.send(f"Failed to fetch pull request: {error}")
 
-        embed = _build_pr_embed(pr, self.owner, target_repo)
         view = await self._load_pr_board_view(
             repo=target_repo,
             pr_number=pr_number,
             pr_state=pr["state"],
             merged=pr.get("merged", False),
         )
-        await ctx.followup.send(embed=embed, view=view)
+        await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view))
 
     @pr.command(name="merge", description="Merge a pull request")
     @discord.option("pr_number", description="PR number to merge", required=True)
@@ -559,14 +535,13 @@ class GitHubCog(commands.Cog):
             return
         await ctx.defer()
 
-        confirm_view = MergeConfirmView(author_id=ctx.author.id)
-        prompt_message = await ctx.followup.send(
-            f"Merge PR #{pr_number}. Select a merge method and confirm:",
-            view=confirm_view,
+        confirm_view = MergeConfirmView(
+            text=f"Merge PR #{pr_number}. Select a merge method and confirm:", author_id=ctx.author.id
         )
+        prompt_message = await ctx.followup.send(view=confirm_view)
         await confirm_view.wait()
         if not confirm_view.confirmed or not confirm_view.merge_method:
-            await prompt_message.edit(content="Merge cancelled.", view=None)
+            await prompt_message.edit(view=card("Merge cancelled."))
             return
 
         try:
@@ -576,19 +551,14 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to merge PR")
             return await ctx.followup.send(f"Failed to merge pull request: {error}")
 
-        await prompt_message.edit(content="Merge completed.", view=None)
-        embed = _build_pr_embed(pr, self.owner, target_repo)
+        await prompt_message.edit(view=card("Merge completed."))
         view = await self._load_pr_board_view(
             repo=target_repo,
             pr_number=pr_number,
             pr_state=pr["state"],
             merged=True,
         )
-        await ctx.followup.send(
-            f"PR #{pr_number} merged via **{confirm_view.merge_method}** by {ctx.author.mention}.",
-            embed=embed,
-            view=view,
-        )
+        await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view, note=f"PR #{pr_number} merged via **{confirm_view.merge_method}** by {ctx.author.mention}."))
 
     @pr.command(name="close", description="Close a pull request")
     @discord.option("pr_number", description="PR number to close", required=True)
@@ -608,14 +578,13 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to close PR")
             return await ctx.followup.send(f"Failed to close pull request: {error}")
 
-        embed = _build_pr_embed(pr, self.owner, target_repo)
         view = await self._load_pr_board_view(
             repo=target_repo,
             pr_number=pr_number,
             pr_state="closed",
             merged=False,
         )
-        await ctx.followup.send(f"PR #{pr_number} closed by {ctx.author.mention}.", embed=embed, view=view)
+        await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view, note=f"PR #{pr_number} closed by {ctx.author.mention}."))
 
     @pr.command(name="reopen", description="Reopen a closed pull request")
     @discord.option("pr_number", description="PR number to reopen", required=True)
@@ -635,14 +604,13 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to reopen PR")
             return await ctx.followup.send(f"Failed to reopen pull request: {error}")
 
-        embed = _build_pr_embed(pr, self.owner, target_repo)
         view = await self._load_pr_board_view(
             repo=target_repo,
             pr_number=pr_number,
             pr_state="open",
             merged=False,
         )
-        await ctx.followup.send(f"PR #{pr_number} reopened by {ctx.author.mention}.", embed=embed, view=view)
+        await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view, note=f"PR #{pr_number} reopened by {ctx.author.mention}."))
 
     @pr.command(name="comment", description="Add a comment to a pull request")
     @discord.option("pr_number", description="PR number", required=True)
@@ -667,14 +635,13 @@ class GitHubCog(commands.Cog):
             log.exception("Failed to add PR comment")
             return await ctx.followup.send(f"Failed to add comment: {error}")
 
-        embed = _build_pr_embed(pr, self.owner, target_repo)
         view = await self._load_pr_board_view(
             repo=target_repo,
             pr_number=pr_number,
             pr_state=pr["state"],
             merged=pr.get("merged", False),
         )
-        await ctx.followup.send(f"Comment added to PR #{pr_number} by {ctx.author.mention}.", embed=embed, view=view)
+        await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view, note=f"Comment added to PR #{pr_number} by {ctx.author.mention}."))
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -712,19 +679,14 @@ class GitHubCog(commands.Cog):
 
         issue = await service.get_issue(issue_number)
         issues = [item for item in await service.list_issues(state="all") if "pull_request" not in item]
-        embed = _build_issue_embed(issue, owner, repo)
-        view = IssueBoardView(
+        view = issue_board_items(
             issues=issues,
             owner=owner,
             repo=repo,
             issue_number=issue_number,
             issue_state=issue["state"],
         )
-        await interaction.response.edit_message(
-            content=f"Issue board for {owner}/{repo}",
-            embed=embed,
-            view=view,
-        )
+        await interaction.response.edit_message(view=_issue_card(issue, owner, repo, buttons=view))
 
     async def _handle_pr_select(self, interaction: discord.Interaction, custom_id: str):
         parts = custom_id.split(":")
@@ -734,8 +696,7 @@ class GitHubCog(commands.Cog):
 
         pr = await service.get_pr(pr_number)
         prs = await service.list_prs(state="all")
-        embed = _build_pr_embed(pr, owner, repo)
-        view = PRBoardView(
+        view = pr_board_items(
             prs=prs,
             owner=owner,
             repo=repo,
@@ -743,11 +704,7 @@ class GitHubCog(commands.Cog):
             pr_state=pr["state"],
             merged=pr.get("merged", False),
         )
-        await interaction.response.edit_message(
-            content=f"Pull request board for {owner}/{repo}",
-            embed=embed,
-            view=view,
-        )
+        await interaction.response.edit_message(view=_pr_card(pr, owner, repo, buttons=view))
 
     async def _handle_close(self, interaction: discord.Interaction, custom_id: str):
         if not is_staff(interaction.user):
@@ -775,7 +732,7 @@ class GitHubCog(commands.Cog):
             issue_number=issue_number,
             issue_state="closed",
         )
-        await interaction.message.edit(embed=_build_issue_embed(issue, owner, repo), view=view)
+        await interaction.message.edit(view=_issue_card(issue, owner, repo, buttons=view))
         await interaction.followup.send(f"Issue #{issue_number} closed by {interaction.user.mention}.")
 
     async def _handle_reopen(self, interaction: discord.Interaction, custom_id: str):
@@ -797,7 +754,7 @@ class GitHubCog(commands.Cog):
             issue_number=issue_number,
             issue_state="open",
         )
-        await interaction.message.edit(embed=_build_issue_embed(issue, owner, repo), view=view)
+        await interaction.message.edit(view=_issue_card(issue, owner, repo, buttons=view))
         await interaction.followup.send(f"Issue #{issue_number} reopened by {interaction.user.mention}.")
 
     async def _handle_comment(self, interaction: discord.Interaction, custom_id: str):
@@ -825,7 +782,7 @@ class GitHubCog(commands.Cog):
             issue_number=issue_number,
             issue_state=issue["state"],
         )
-        await interaction.message.edit(embed=_build_issue_embed(issue, owner, repo), view=view)
+        await interaction.message.edit(view=_issue_card(issue, owner, repo, buttons=view))
         await interaction.followup.send(f"Comment added to issue #{issue_number} by {interaction.user.mention}.")
 
     async def _handle_pr_merge(self, interaction: discord.Interaction, custom_id: str):
@@ -836,11 +793,10 @@ class GitHubCog(commands.Cog):
         pr_number = int(pr_number_raw)
         service = _get_github_service(repo)
 
-        confirm_view = MergeConfirmView(author_id=interaction.user.id)
-        await interaction.response.send_message(
-            f"Merge PR #{pr_number}. Select a merge method and confirm:",
-            view=confirm_view,
+        confirm_view = MergeConfirmView(
+            text=f"Merge PR #{pr_number}. Select a merge method and confirm:", author_id=interaction.user.id
         )
+        await interaction.response.send_message(view=confirm_view)
         await confirm_view.wait()
         if not confirm_view.confirmed or not confirm_view.merge_method:
             return await interaction.followup.send("Merge cancelled.")
@@ -857,7 +813,7 @@ class GitHubCog(commands.Cog):
             pr_state=pr["state"],
             merged=True,
         )
-        await interaction.message.edit(embed=_build_pr_embed(pr, owner, repo), view=view)
+        await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
         await interaction.followup.send(
             f"PR #{pr_number} merged via **{confirm_view.merge_method}** by {interaction.user.mention}."
         )
@@ -882,7 +838,7 @@ class GitHubCog(commands.Cog):
             pr_state="closed",
             merged=False,
         )
-        await interaction.message.edit(embed=_build_pr_embed(pr, owner, repo), view=view)
+        await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
         await interaction.followup.send(f"PR #{pr_number} closed by {interaction.user.mention}.")
 
     async def _handle_pr_reopen(self, interaction: discord.Interaction, custom_id: str):
@@ -905,7 +861,7 @@ class GitHubCog(commands.Cog):
             pr_state="open",
             merged=False,
         )
-        await interaction.message.edit(embed=_build_pr_embed(pr, owner, repo), view=view)
+        await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
         await interaction.followup.send(f"PR #{pr_number} reopened by {interaction.user.mention}.")
 
     async def _handle_pr_comment(self, interaction: discord.Interaction, custom_id: str):
@@ -934,7 +890,7 @@ class GitHubCog(commands.Cog):
             pr_state=pr["state"],
             merged=pr.get("merged", False),
         )
-        await interaction.message.edit(embed=_build_pr_embed(pr, owner, repo), view=view)
+        await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
         await interaction.followup.send(f"Comment added to PR #{pr_number} by {interaction.user.mention}.")
 
 

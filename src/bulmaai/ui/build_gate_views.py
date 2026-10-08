@@ -1,4 +1,4 @@
-"""Embeds + buttons for the build gate. Buttons carry the request id in their custom_id and hold no state, so
+"""Components V2 cards + buttons for the build gate. Buttons carry the request id in their custom_id and hold no state, so
 they keep working after a restart (clicks are routed by the cog's on_interaction listener)."""
 
 from datetime import datetime
@@ -6,7 +6,7 @@ from datetime import datetime
 import discord
 
 from bulmaai.services import build_gate
-from bulmaai.ui.dev_jar_views import build_whats_new_embed
+from bulmaai.ui.dev_jar_views import whats_new_container
 
 APPROVE_PREFIX = "build_gate:approve:"
 REJECT_PREFIX = "build_gate:reject:"
@@ -28,18 +28,16 @@ def changelog_button(request: build_gate.BuildRequest) -> discord.ui.Button:
     )
 
 
-def gate_view(request: build_gate.BuildRequest) -> discord.ui.View:
-    view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="Build jar", style=discord.ButtonStyle.success, custom_id=f"{APPROVE_PREFIX}{request.id}"))
-    view.add_item(changelog_button(request))
-    view.add_item(discord.ui.Button(label="Skip", style=discord.ButtonStyle.secondary, custom_id=f"{REJECT_PREFIX}{request.id}"))
-    return view
+def gate_buttons(request: build_gate.BuildRequest) -> discord.ui.ActionRow:
+    return discord.ui.ActionRow(
+        discord.ui.Button(label="Build jar", style=discord.ButtonStyle.success, custom_id=f"{APPROVE_PREFIX}{request.id}"),
+        changelog_button(request),
+        discord.ui.Button(label="Skip", style=discord.ButtonStyle.secondary, custom_id=f"{REJECT_PREFIX}{request.id}"),
+    )
 
 
-def preview_view(request: build_gate.BuildRequest) -> discord.ui.View:
-    view = discord.ui.View(timeout=None)
-    view.add_item(changelog_button(request))
-    return view
+def _card(text: str, color: int, *rows: discord.ui.ActionRow) -> discord.ui.DesignerView:
+    return discord.ui.DesignerView(discord.ui.Container(discord.ui.TextDisplay(text[:3900]), *rows, color=color), timeout=None)
 
 
 class ChangelogModal(discord.ui.Modal):
@@ -61,15 +59,19 @@ class ChangelogModal(discord.ui.Modal):
         await self._on_submit(interaction, self._request_id, self.changelog_input.value)
 
 
-def preview_embeds(request: build_gate.BuildRequest, *, locked: bool = False) -> list[discord.Embed]:
+def preview_card(request: build_gate.BuildRequest, *, locked: bool = False) -> discord.ui.DesignerView:
+    """What's New exactly as the public dev jar post will show it, plus a note (and the edit button until locked)."""
     if request.changelog:
-        embeds = [build_whats_new_embed(request.changelog)]
+        view = discord.ui.DesignerView(whats_new_container(request.changelog), timeout=None)
         note = "Final: this is what the public post will show." if locked else "This is how What's New will look in the public post. Press Edit changelog to change it until the build finishes."
     else:
-        embeds = [discord.Embed(title="No changelog", description="The public post will have no What's New section.", color=GREY)]
+        view = _card("### No changelog\nThe public post will have no What's New section.", GREY)
         note = "Final: no changelog." if locked else "Press Edit changelog to add one until the build finishes."
-    embeds[-1].set_footer(text=f"Build #{request.id} · {note}")
-    return embeds
+    container = view.children[0]
+    container.add_item(discord.ui.TextDisplay(f"-# Build #{request.id} · {note}"))
+    if not locked:
+        container.add_item(discord.ui.ActionRow(changelog_button(request)))
+    return view
 
 
 def _ts(moment: datetime, style: str = "R") -> str:
@@ -89,53 +91,55 @@ def _header(request: build_gate.BuildRequest) -> str:
     return f"**{request.branch}** · `{request.head_sha[:7]}` · pushed by {request.pusher}"
 
 
-def gate_embed(request: build_gate.BuildRequest, *, recent: list[build_gate.BuildRequest], window_minutes: int) -> discord.Embed:
-    embed = discord.Embed(
-        title="🔨 Build a dev jar for this push?",
-        description=f"{_header(request)}\nAuto-closes {_ts(request.expires_at)} if nobody answers.",
-        color=BLURPLE,
-    )
-    embed.add_field(name="Commits (latest first)", value=commit_lines(request.commits), inline=False)
+def gate_card(request: build_gate.BuildRequest, *, recent: list[build_gate.BuildRequest], window_minutes: int) -> discord.ui.DesignerView:
+    parts = [
+        "### 🔨 Build a dev jar for this push?",
+        f"{_header(request)}\nAuto-closes {_ts(request.expires_at)} if nobody answers.",
+        f"**Commits (latest first)**\n{commit_lines(request.commits)}",
+    ]
     if request.changelog:
         text = request.changelog
-        embed.add_field(name="Changelog", value=text if len(text) <= 1024 else text[:1023].rstrip() + "…", inline=False)
+        parts.append(f"**Changelog**\n{text if len(text) <= 1000 else text[:999].rstrip() + '…'}")
     if recent:
         lines = [
             f"#{r.id} · **{r.branch}** · {r.commits[-1]['title'][:50] if r.commits else r.head_sha[:7]} — {r.pusher} · *{r.status}*"
             for r in recent[:5]
         ]
-        embed.add_field(
-            name=f"⚠️ {len(recent)} other push(es) in the last {window_minutes} min",
-            value="\n".join(lines) + "\nOne run builds this push's commits; pending pushes on the same branch are folded in.",
-            inline=False,
+        parts.append(
+            f"**⚠️ {len(recent)} other push(es) in the last {window_minutes} min**\n"
+            + "\n".join(lines)
+            + "\nOne run builds this push's commits; pending pushes on the same branch are folded in."
         )
-    return embed
+    return _card("\n".join(parts), BLURPLE, gate_buttons(request))
 
 
-def progress_embed(
+def progress_card(
     request: build_gate.BuildRequest, *, job: dict | None, run: dict | None, approver_id: int | None, note: str | None = None
-) -> discord.Embed:
+) -> discord.ui.DesignerView:
     steps = build_gate.visible_steps(job)
     done = sum(1 for s in steps if s["status"] == "completed")
-    embed = discord.Embed(title="⚙️ Building dev jar…", description=_header(request), color=AMBER)
+    parts = ["### ⚙️ Building dev jar…", _header(request)]
     if approver_id:
-        embed.description += f"\nApproved by <@{approver_id}>"
+        parts.append(f"Approved by <@{approver_id}>")
     if steps:
-        embed.add_field(name="Progress", value=build_gate.progress_bar(done, len(steps)), inline=False)
-        embed.add_field(name="Steps", value="\n".join(f"{build_gate.step_icon(s)} {s['name']}" for s in steps)[:1024], inline=False)
+        parts.append(f"**Progress** {build_gate.progress_bar(done, len(steps))}")
+        parts.append("\n".join(f"{build_gate.step_icon(s)} {s['name']}" for s in steps)[:1500])
     else:
-        embed.add_field(name="Progress", value="⏳ Queued, waiting for a runner…", inline=False)
+        parts.append("**Progress** ⏳ Queued, waiting for a runner…")
+    links = []
     if run and run.get("created_at"):
         started = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
-        embed.add_field(name="Started", value=_ts(started), inline=True)
+        links.append(f"**Started** {_ts(started)}")
     if request.run_url:
-        embed.add_field(name="Run", value=f"[View on GitHub]({request.run_url})", inline=True)
+        links.append(f"[View on GitHub](<{request.run_url}>)")
+    if links:
+        parts.append(" · ".join(links))
     if note:
-        embed.set_footer(text=note)
-    return embed
+        parts.append(f"-# {note}")
+    return _card("\n".join(parts), AMBER)
 
 
-def final_embed(request: build_gate.BuildRequest, *, status: str, note: str | None = None, job: dict | None = None) -> discord.Embed:
+def final_card(request: build_gate.BuildRequest, *, status: str, note: str | None = None, job: dict | None = None) -> discord.ui.DesignerView:
     title, color = {
         build_gate.SUCCEEDED: ("✅ Dev jar built", GREEN),
         build_gate.FAILED: ("❌ Dev jar build failed", RED),
@@ -143,20 +147,20 @@ def final_embed(request: build_gate.BuildRequest, *, status: str, note: str | No
         build_gate.EXPIRED: ("⌛ Build prompt closed (no answer)", GREY),
         build_gate.SUPERSEDED: ("🔁 Replaced by a newer push", GREY),
     }[status]
-    embed = discord.Embed(title=title, description=_header(request), color=color)
+    parts = [f"### {title}", _header(request)]
     if status == build_gate.SUCCEEDED:
         steps = build_gate.visible_steps(job)
         if steps:
-            embed.add_field(name="Progress", value=build_gate.progress_bar(len(steps), len(steps)), inline=False)
-        embed.add_field(name="Next", value="The usual staff review message with Publish / Discard follows.", inline=False)
+            parts.append(f"**Progress** {build_gate.progress_bar(len(steps), len(steps))}")
+        parts.append("**Next** The usual staff review message with Publish / Discard follows.")
     elif status == build_gate.FAILED:
         failed = [s["name"] for s in build_gate.visible_steps(job) if s["status"] == "completed" and s.get("conclusion") not in ("success", "skipped")]
         if failed:
-            embed.add_field(name="Failed step", value=failed[0], inline=False)
+            parts.append(f"**Failed step** {failed[0]}")
     if request.run_url:
-        embed.add_field(name="Run", value=f"[View on GitHub]({request.run_url})", inline=False)
+        parts.append(f"[View on GitHub](<{request.run_url}>)")
     if request.commits and status in (build_gate.SUCCEEDED, build_gate.FAILED):
-        embed.add_field(name="Commits (latest first)", value=commit_lines(request.commits, limit=4), inline=False)
+        parts.append(f"**Commits (latest first)**\n{commit_lines(request.commits, limit=4)}")
     if note:
-        embed.set_footer(text=note)
-    return embed
+        parts.append(f"-# {note}")
+    return _card("\n".join(parts), color)

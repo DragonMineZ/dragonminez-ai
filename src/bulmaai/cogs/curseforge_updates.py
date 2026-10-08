@@ -11,6 +11,7 @@ from bulmaai.services.curseforge_state import (
     upsert_curseforge_project_state,
 )
 from bulmaai.utils.lifecycle import ReloadableCog
+from bulmaai.ui.v2 import card, facts, head
 
 logger = logging.getLogger(__name__)
 
@@ -43,57 +44,47 @@ def _humanize_release_type(value: str) -> str:
     return value.replace("_", " ").title()
 
 
-def _build_release_embed(release: CurseForgeRelease) -> discord.Embed:
-    description_lines: list[str] = []
-    if release.project_summary:
-        description_lines.append(release.project_summary.strip())
-
-    if release.changelog_text:
-        description_lines.append(f"**Changelog**\n{_truncate(release.changelog_text.strip())}")
-
-    embed = discord.Embed(
-        title=release.file_display_name,
-        url=release.file_page_url,
-        description="\n\n".join(description_lines) or "A new DragonMineZ file is available on CurseForge.",
+def _build_release_card(release: CurseForgeRelease) -> discord.ui.DesignerView:
+    uploaded = int(release.uploaded_at.timestamp())
+    top = (
+        f"-# [{release.project_title}](<{release.project_url}>) on CurseForge\n"
+        f"## [{discord.utils.escape_markdown(release.file_display_name)}]({release.file_page_url})\n"
+        + (release.project_summary.strip() if release.project_summary else "A new DragonMineZ file is available on CurseForge.")
+    )
+    details = "\n".join(
+        line
+        for line in (
+            facts(
+                ("Type", _humanize_release_type(release.release_type)),
+                ("Size", _format_bytes(release.file_size_bytes)),
+                ("Downloads", f"{release.download_count:,}" if release.download_count is not None else None),
+            ),
+            facts(
+                ("Minecraft", ", ".join(release.minecraft_versions[:6])),
+                ("Loaders", ", ".join(release.loader_tags[:6])),
+                ("Tags", ", ".join(release.environment_tags[:6])),
+            ),
+            f"**Uploaded** <t:{uploaded}:F> (<t:{uploaded}:R>)　**File** `{release.file_name}`",
+        )
+        if line
+    )
+    changelog = f"### 📜 Changelog\n{_truncate(release.changelog_text.strip())}" if release.changelog_text else None
+    return card(
+        head(top, release.project_thumbnail_url),
+        details,
+        discord.ui.Separator() if changelog else None,
+        changelog,
+        f"-# Project #{release.project_id} · Source: {release.source_name}",
         color=CURSEFORGE_COLOR,
-        timestamp=release.uploaded_at,
-    )
-    embed.set_author(
-        name=f"{release.project_title} on CurseForge",
-        url=release.project_url,
+        buttons=_build_release_buttons(release),
     )
 
-    if release.project_thumbnail_url:
-        embed.set_thumbnail(url=release.project_thumbnail_url)
 
-    embed.add_field(name="Release Type", value=_humanize_release_type(release.release_type), inline=True)
-    embed.add_field(
-        name="Uploaded",
-        value=f"<t:{int(release.uploaded_at.timestamp())}:F>\n<t:{int(release.uploaded_at.timestamp())}:R>",
-        inline=True,
-    )
-    embed.add_field(name="File Size", value=_format_bytes(release.file_size_bytes), inline=True)
-
-    if release.minecraft_versions:
-        embed.add_field(name="Minecraft", value=", ".join(release.minecraft_versions[:6]), inline=True)
-    if release.loader_tags:
-        embed.add_field(name="Loaders", value=", ".join(release.loader_tags[:6]), inline=True)
-    if release.environment_tags:
-        embed.add_field(name="Tags", value=", ".join(release.environment_tags[:6]), inline=True)
-    if release.download_count is not None:
-        embed.add_field(name="Downloads", value=f"{release.download_count:,}", inline=True)
-
-    embed.add_field(name="File", value=f"`{release.file_name}`", inline=False)
-    embed.set_footer(text=f"Project #{release.project_id} | Source: {release.source_name}")
-    return embed
-
-
-def _build_release_view(release: CurseForgeRelease) -> discord.ui.View:
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Open on CurseForge", url=release.file_page_url))
+def _build_release_buttons(release: CurseForgeRelease) -> list[discord.ui.Button]:
+    buttons = [discord.ui.Button(label="Open on CurseForge", url=release.file_page_url)]
     if release.file_download_url and release.file_download_url != release.file_page_url:
-        view.add_item(discord.ui.Button(label="Direct Download", url=release.file_download_url))
-    return view
+        buttons.append(discord.ui.Button(label="Direct Download", url=release.file_download_url))
+    return buttons
 
 
 class CurseForgeUpdatesCog(ReloadableCog):
@@ -180,8 +171,7 @@ class CurseForgeUpdatesCog(ReloadableCog):
             return
 
         await channel.send(
-            embed=_build_release_embed(release),
-            view=_build_release_view(release),
+            view=_build_release_card(release),
             allowed_mentions=discord.AllowedMentions.none(),
         )
         await upsert_curseforge_project_state(release)

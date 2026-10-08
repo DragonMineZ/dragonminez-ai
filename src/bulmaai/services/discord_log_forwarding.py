@@ -9,6 +9,7 @@ from typing import Any
 import discord
 
 from bulmaai.services import panel_logs
+from bulmaai.ui.v2 import card
 
 log =logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ FORWARDED_CONTEXT_FIELDS = (
     "exception_type",
 )
 MAX_DESCRIPTION_CHARS = 1800
-MAX_EMBED_FIELDS = 25
+MAX_FIELDS = 25
 MAX_FIELD_VALUE_CHARS = 200
 MAX_TRACEBACK_CHARS = 900
 _CONTROL_EXTRA_FIELDS = {"discord_forward", "suppress_discord_forward"}
@@ -62,7 +63,7 @@ _STANDARD_LOG_RECORD_ATTRS = set(
 
 
 @dataclass(frozen=True)
-class LogEmbedPayload:
+class LogPayload:
     title: str
     description: str
     color: int
@@ -137,7 +138,7 @@ def _safe_extra_fields(record: logging.LogRecord) -> list[tuple[str, str]]:
     return sorted(fields, key=lambda item: item[0])
 
 
-def build_log_embed_payload(record: logging.LogRecord) -> LogEmbedPayload:
+def build_log_payload(record: logging.LogRecord) -> LogPayload:
     fields: dict[str, str] = {}
     for field_name in FORWARDED_CONTEXT_FIELDS:
         value = getattr(record, field_name, None)
@@ -146,7 +147,7 @@ def build_log_embed_payload(record: logging.LogRecord) -> LogEmbedPayload:
         fields[field_name] = _truncate(sanitize_log_text(str(value)), MAX_FIELD_VALUE_CHARS)
 
     for field_name, value in _safe_extra_fields(record):
-        if len(fields) >= MAX_EMBED_FIELDS:
+        if len(fields) >= MAX_FIELDS:
             break
         fields.setdefault(field_name, value)
 
@@ -157,7 +158,7 @@ def build_log_embed_payload(record: logging.LogRecord) -> LogEmbedPayload:
 
     message = sanitize_log_text(record.getMessage())
     raw_user = getattr(record, "user_id", None)
-    return LogEmbedPayload(
+    return LogPayload(
         level=record.levelno,
         user_id=int(raw_user) if str(raw_user).isdigit() else None,
         source=record.name.split(".")[-1][:32] or "bot",
@@ -169,26 +170,28 @@ def build_log_embed_payload(record: logging.LogRecord) -> LogEmbedPayload:
     )
 
 
-def payload_to_embed(payload: LogEmbedPayload) -> discord.Embed:
-    embed = discord.Embed(
-        title=_truncate(payload.title, 250),
-        description=payload.description,
-        color=discord.Color(payload.color),
-        timestamp=discord.utils.utcnow(),
-    )
-    for name, value in payload.fields.items():
-        embed.add_field(name=name, value=value or "-", inline=True)
+def payload_to_card(payload: LogPayload, files: list[discord.File]) -> discord.ui.DesignerView:
+    """The log record as a card; files (payload_to_files) are shown as File components, which a V2 message needs."""
+    details = "　".join(f"**{name}** {value or '-'}" for name, value in payload.fields.items())
+    traceback = None
     if payload.traceback_text:
         # Keep the tail: the exception type/message (e.g. the 404 URL) is at the end.
         text = payload.traceback_text
         if len(text) > MAX_TRACEBACK_CHARS:
             text = "..." + text[-(MAX_TRACEBACK_CHARS - 3):]
-        embed.add_field(name="Traceback", value=f"```py\n{text}\n```", inline=False)
-    return embed
+        traceback = f"```py\n{text}\n```"
+    return card(
+        f"### {_truncate(payload.title, 250)}\n{payload.description}",
+        details,
+        traceback,
+        *(discord.ui.File(f"attachment://{file.filename}") for file in files),
+        f"-# {discord.utils.format_dt(discord.utils.utcnow(), 'f')}",
+        color=payload.color,
+    )
 
 
-def payload_to_files(payload: LogEmbedPayload) -> list[discord.File]:
-    """Attach the full traceback when the embed field had to cut it."""
+def payload_to_files(payload: LogPayload) -> list[discord.File]:
+    """Attach the full traceback when the card had to cut it."""
     if not payload.traceback_text or len(payload.traceback_text) <= MAX_TRACEBACK_CHARS:
         return []
     return [discord.File(io.BytesIO(payload.traceback_text.encode("utf-8")), filename="traceback.txt")]
@@ -199,7 +202,7 @@ class DiscordLogHandler(logging.Handler):
         self,
         *,
         loop: asyncio.AbstractEventLoop,
-        queue: asyncio.Queue[LogEmbedPayload],
+        queue: asyncio.Queue[LogPayload],
         min_level: int,
     ) -> None:
         super().__init__(level=logging.NOTSET)
@@ -211,12 +214,12 @@ class DiscordLogHandler(logging.Handler):
         if not should_forward_record(record, min_level=self._min_level):
             return
         try:
-            payload = build_log_embed_payload(record)
+            payload = build_log_payload(record)
             self._loop.call_soon_threadsafe(self._enqueue_payload, payload)
         except Exception:
             self.handleError(record)
 
-    def _enqueue_payload(self, payload: LogEmbedPayload) -> None:
+    def _enqueue_payload(self, payload: LogPayload) -> None:
         try:
             self._queue.put_nowait(payload)
         except asyncio.QueueFull:
@@ -234,7 +237,7 @@ class DiscordLogForwardingQueue:
         if max_queue_size < 1:
             raise ValueError("max_queue_size must be at least 1")
         self._sender = sender
-        self._queue: asyncio.Queue[LogEmbedPayload] = asyncio.Queue(maxsize=max_queue_size)
+        self._queue: asyncio.Queue[LogPayload] = asyncio.Queue(maxsize=max_queue_size)
         self._min_level = min_level
         self._task: asyncio.Task[None] | None = None
         self.dropped_count = 0
@@ -268,7 +271,7 @@ class DiscordLogForwardingQueue:
         if not should_forward_record(record, min_level=self._min_level):
             return False
         try:
-            self._queue.put_nowait(build_log_embed_payload(record))
+            self._queue.put_nowait(build_log_payload(record))
         except asyncio.QueueFull:
             self.dropped_count += 1
             return False
@@ -298,7 +301,7 @@ class DiscordLogForwarder:
     ) -> None:
         self._bot = bot
         self._channel_id = channel_id
-        self._queue: asyncio.Queue[LogEmbedPayload] = asyncio.Queue(maxsize=queue_size)
+        self._queue: asyncio.Queue[LogPayload] = asyncio.Queue(maxsize=queue_size)
         self._handler = DiscordLogHandler(
             loop=asyncio.get_running_loop(),
             queue=self._queue,
@@ -352,9 +355,10 @@ class DiscordLogForwarder:
                 if channel is None:
                     log.warning("Log channel %s is not a sendable channel", self._channel_id)
                 else:
+                    files = payload_to_files(payload)
                     await channel.send(
-                        embed=payload_to_embed(payload),
-                        files=payload_to_files(payload),
+                        view=payload_to_card(payload, files),
+                        files=files,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
             except asyncio.CancelledError:

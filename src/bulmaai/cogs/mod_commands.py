@@ -161,13 +161,14 @@ class ModCommandsCog(ReloadableCog):
         else:
             await ctx.respond(text, ephemeral=True)
 
-    async def _post_mod_log(self, kind: str, embed: discord.Embed, *, user_id: int, data: dict | None = None) -> None:
-        """Best effort: the panel log plus the moderation log channel."""
+    async def _post_mod_log(self, kind: str, title: str, text: str, *, user_id: int, data: dict | None = None) -> None:
+        """Best effort: the panel log plus a grey card in the moderation log channel."""
         try:
-            await panel_logs.record(kind, embed.title, panel_logs.embed_text(embed), user_id=user_id, data=data)
+            await panel_logs.record(kind, title, text, user_id=user_id, data=data)
             channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self.bot.settings))
             if channel is not None:
-                await channel.send(embed=embed, allowed_mentions=NO_PINGS)
+                card = reply_card(f"### {title}\n{text}"[:3800], discord.Color.dark_grey())
+                await channel.send(view=card, allowed_mentions=NO_PINGS)
         except Exception:
             log.warning("Failed to post %s to the moderation log", kind, exc_info=True)
 
@@ -346,9 +347,9 @@ class ModCommandsCog(ReloadableCog):
         await self._log_removal(f"{label.title()} removed", text, ctx.user.id, case.user_id)
 
     async def _log_removal(self, title: str, text: str, moderator_id: int, user_id: int) -> None:
-        embed = discord.Embed(title=title, description=f"{text}\nBy <@{moderator_id}>", color=discord.Color.dark_grey())
-        embed.timestamp = discord.utils.utcnow()
-        await self._post_mod_log("case_removed", embed, user_id=moderator_id, data={"target_id": user_id})
+        await self._post_mod_log(
+            "case_removed", title, f"{text}\nBy <@{moderator_id}>", user_id=moderator_id, data={"target_id": user_id}
+        )
 
     @discord.slash_command(name="delwarn", description="Remove a warning (it stops counting toward the ladder)")
     @discord.default_permissions(moderate_members=True)
@@ -397,8 +398,8 @@ class ModCommandsCog(ReloadableCog):
             return
         cases = await mod_cases.list_cases(ctx.guild.id, user_id=user.id, action="note", limit=100)
         notes = [case for case in cases if case.active]
-        embed = discord.Embed(title=f"Notes for {user}", description=_case_lines(notes[:25]) or "No notes.")
-        await ctx.respond(embed=embed)
+        text = f"### 📝 Notes for {discord.utils.escape_markdown(str(user))}\n{_case_lines(notes[:25]) or 'No notes.'}"
+        await ctx.respond(view=reply_card(text[:3800], discord.Color.blurple()), allowed_mentions=NO_PINGS)
 
     # --- actions -----------------------------------------------------------------------------
 
@@ -513,13 +514,10 @@ class ModCommandsCog(ReloadableCog):
             await interaction.followup.send(f"🧹 Deleted {len(deleted)} message(s) from the last 14 days.")
             if not deleted:
                 return
-            embed = discord.Embed(title="Purge", color=discord.Color.dark_grey(), timestamp=discord.utils.utcnow())
-            embed.add_field(name="Channel", value=ctx.channel.mention, inline=True)
-            embed.add_field(name="Moderator", value=ctx.user.mention, inline=True)
-            embed.add_field(name="Deleted", value=str(len(deleted)), inline=True)
+            text = f"**Channel** {ctx.channel.mention}　**Moderator** {ctx.user.mention}　**Deleted** {len(deleted)}"
             if filter_text:
-                embed.add_field(name="Filters", value=filter_text[:1024], inline=False)
-            await self._post_mod_log("purge", embed, user_id=ctx.user.id, data={"channel_id": ctx.channel.id})
+                text += f"\n**Filters** {filter_text[:1000]}"
+            await self._post_mod_log("purge", "🧹 Purge", text, user_id=ctx.user.id, data={"channel_id": ctx.channel.id})
 
         prompt = f"Scan the last **{amount}** message(s) here and delete " + (
             f"the ones {filter_text}?" if filter_text else "all of them?"
@@ -571,9 +569,9 @@ class ModCommandsCog(ReloadableCog):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
         cases = await mod_cases.list_cases(ctx.guild.id, user_id=user.id, limit=25)
-        embed = discord.Embed(title=f"Mod logs for {user}", description=_case_lines(cases) or "No cases.")
-        embed.set_footer(text="Struck-through cases are inactive (removed, cleared or expired).")
-        await ctx.respond(embed=embed)
+        text = f"### 📜 Mod logs for {discord.utils.escape_markdown(str(user))}\n{_case_lines(cases) or 'No cases.'}"
+        footer = "Struck-through cases are inactive (removed, cleared or expired)."
+        await ctx.respond(view=reply_card(text[:3800], discord.Color.blurple(), footer), allowed_mentions=NO_PINGS)
 
     @discord.slash_command(name="modstats", description="Moderation actions per moderator")
     @discord.default_permissions(moderate_members=True)
@@ -590,11 +588,8 @@ class ModCommandsCog(ReloadableCog):
             f"<@{moderator_id}> **{counts.total()}** · " + ", ".join(f"{action} {n}" for action, n in counts.most_common())
             for moderator_id, counts in ranked
         ]
-        embed = discord.Embed(
-            title=f"Moderator stats, last {days} days",
-            description="\n".join(lines)[:4096] or "No moderation in that period.",
-        )
-        await ctx.respond(embed=embed, allowed_mentions=NO_PINGS)
+        text = f"### 📊 Moderator stats, last {days} days\n" + ("\n".join(lines) or "No moderation in that period.")
+        await ctx.respond(view=reply_card(text[:3800], discord.Color.blurple()), allowed_mentions=NO_PINGS)
 
     # --- channels ----------------------------------------------------------------------------
 
@@ -685,25 +680,28 @@ class ModCommandsCog(ReloadableCog):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
         member = await resolve_member(ctx.guild, user.id)
-        embed = discord.Embed(title=str(user), description=None if member else "Not in the server.")
-        embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="ID", value=f"`{user.id}`", inline=True)
-        embed.add_field(name="Created", value=discord.utils.format_dt(user.created_at, "R"), inline=True)
-        if member is not None:
+        facts = [f"**ID** `{user.id}`", f"**Created** {discord.utils.format_dt(user.created_at, 'R')}"]
+        lines = [f"### {discord.utils.escape_markdown(str(user))}"]
+        if member is None:
+            lines.append("Not in the server.")
+        else:
             if member.joined_at:
-                embed.add_field(name="Joined", value=discord.utils.format_dt(member.joined_at, "R"), inline=True)
+                facts.append(f"**Joined** {discord.utils.format_dt(member.joined_at, 'R')}")
             if member.timed_out:
-                until = discord.utils.format_dt(member.communication_disabled_until, "R")
-                embed.add_field(name="Timed out", value=f"until {until}", inline=True)
+                facts.append(f"**Timed out** until {discord.utils.format_dt(member.communication_disabled_until, 'R')}")
+        lines.append("　".join(facts))
+        if member is not None:
             roles = " ".join(role.mention for role in reversed(member.roles) if not role.is_default()) or "None"
-            if len(roles) > 1024:
-                roles = roles[:1000].rsplit(" ", 1)[0] + " …"
-            embed.add_field(name="Roles", value=roles, inline=False)
+            if len(roles) > 1500:
+                roles = roles[:1500].rsplit(" ", 1)[0] + " …"
+            lines.append(f"**Roles** {roles}")
         counts = Counter(case.action for case in await mod_cases.list_cases(ctx.guild.id, user_id=user.id, limit=1000))
-        embed.add_field(
-            name="Cases", value=", ".join(f"{action} {n}" for action, n in counts.most_common()) or "None", inline=False
+        lines.append("**Cases** " + (", ".join(f"{action} {n}" for action, n in counts.most_common()) or "None"))
+        section = discord.ui.Section(
+            discord.ui.TextDisplay("\n".join(lines)), accessory=discord.ui.Thumbnail(user.display_avatar.url)
         )
-        await ctx.respond(embed=embed)
+        view = discord.ui.DesignerView(discord.ui.Container(section, color=discord.Color.blurple()))
+        await ctx.respond(view=view, allowed_mentions=NO_PINGS)
 
     # --- context menus -----------------------------------------------------------------------
 

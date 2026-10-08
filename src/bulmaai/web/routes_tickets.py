@@ -12,7 +12,6 @@ from bulmaai.database.db import get_pool
 from bulmaai.services import ticket_pages
 from bulmaai.services.ticket_ai_state import get_ai_disabled_ticket_channels, set_ticket_ai_disabled
 from bulmaai.services.tickets import ticket_info_for_channels
-from bulmaai.utils.permissions import is_staff
 from bulmaai.web.core import BOT, Actor, api_error, audit, read_json, require_guild, requires, user_json
 
 
@@ -44,16 +43,8 @@ def _ticket_channels(guild: discord.Guild, settings: Any) -> list[Any]:
     return list(getattr(category, "text_channels", []) or [])
 
 
-def _requester(channel: Any, settings: Any) -> discord.Member | None:
-    # Ticket Tool gives the ticket owner a member overwrite; staff/bots get theirs via roles or are skipped.
-    for target in getattr(channel, "overwrites", {}) or {}:
-        if isinstance(target, discord.Member) and not target.bot and not is_staff(target, settings=settings):
-            return target
-    return None
-
-
 async def _ticket_info(channels: list[Any]) -> dict[int, dict[str, Any]]:
-    """Rows from the in-house ticket system; legacy (Ticket Tool) channels just have none."""
+    """Rows from the ticket system, by channel id."""
     try:
         return await ticket_info_for_channels([channel.id for channel in channels])
     except Exception:
@@ -90,7 +81,7 @@ async def list_tickets(request: web.Request, actor: Actor) -> web.Response:
                 "category": record["category"] if record else None,
                 "status": record["status"] if record else None,
                 "claimed_by": _person(guild, record["claimed_by"]) if record else None,
-                "requester": _person(guild, record["owner_id"]) if record else user_json(_requester(channel, settings)),
+                "requester": _person(guild, record["owner_id"]) if record else None,
                 "ai_enabled": cog.is_ticket_ai_enabled(channel.id) if cog else channel.id not in disabled,
                 "url": f"https://discord.com/channels/{guild.id}/{channel.id}",
             }

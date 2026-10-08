@@ -4,14 +4,15 @@ from types import SimpleNamespace
 import discord
 
 from bulmaai.cogs.patreon_announcements import (
-    _build_dm_welcome_embed,
+    _build_dm_welcome_card,
     _downloads_channel_url,
 )
 from bulmaai.cogs.patreon_whitelist_flow import PatreonWhitelistFlowCog
 from bulmaai.ui.patreon_views import (
     PATREON_WELCOME_VERIFY_CUSTOM_ID,
-    PatreonWelcomeView,
+    welcome_buttons,
 )
+from v2_helpers import buttons, text
 
 
 def _fake_member() -> SimpleNamespace:
@@ -28,35 +29,34 @@ def _fake_role() -> SimpleNamespace:
     return SimpleNamespace(id=7, mention="<@&7>", name="Contributor")
 
 
-class PatreonWelcomeViewTests(unittest.IsolatedAsyncioTestCase):
+class PatreonWelcomeButtonsTests(unittest.IsolatedAsyncioTestCase):
     async def test_view_has_verify_button_and_downloads_link(self) -> None:
-        view = PatreonWelcomeView(downloads_channel_url="https://discord.com/channels/999/123")
+        buttons = welcome_buttons(downloads_channel_url="https://discord.com/channels/999/123")
 
-        custom_ids = [getattr(child, "custom_id", None) for child in view.children]
-        urls = [getattr(child, "url", None) for child in view.children]
+        custom_ids = [getattr(button, "custom_id", None) for button in buttons]
+        urls = [getattr(button, "url", None) for button in buttons]
         self.assertIn(PATREON_WELCOME_VERIFY_CUSTOM_ID, custom_ids)
         self.assertIn("https://discord.com/channels/999/123", urls)
-        self.assertIsNone(view.timeout)
 
     async def test_view_without_downloads_url_only_has_verify_button(self) -> None:
-        view = PatreonWelcomeView(downloads_channel_url=None)
-
-        self.assertEqual(len(view.children), 1)
+        self.assertEqual(len(welcome_buttons(downloads_channel_url=None)), 1)
 
 
-class PatreonWelcomeDmTests(unittest.TestCase):
-    def test_dm_embed_contains_quick_start_steps(self) -> None:
-        embed = _build_dm_welcome_embed(member=_fake_member(), role=_fake_role())
+class PatreonWelcomeDmTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a running loop
+    async def test_dm_card_contains_quick_start_steps_and_buttons(self) -> None:
+        view = _build_dm_welcome_card(
+            member=_fake_member(), role=_fake_role(), buttons=welcome_buttons(downloads_channel_url=None)
+        )
 
-        field_names = " ".join(field.name for field in embed.fields)
-        field_values = " ".join(field.value for field in embed.fields)
-        self.assertIn("1. Verify your access", field_names)
-        self.assertIn("2. Get whitelisted", field_names)
-        self.assertIn("3. Download and play", field_names)
-        self.assertIn("Verify & Get Beta Access", field_values)
-        self.assertIn("/patreon beta-access", field_values)
-        self.assertIn("one-time per user per build", field_values)
-        self.assertIn("Supporter perk does NOT include", field_values)
+        card_text = text(view)
+        self.assertIn("**1. Verify your access**", card_text)
+        self.assertIn("**2. Get whitelisted**", card_text)
+        self.assertIn("**3. Download and play**", card_text)
+        self.assertIn("Verify & Get Beta Access", card_text)
+        self.assertIn("/patreon beta-access", card_text)
+        self.assertIn("one-time per user per build", card_text)
+        self.assertIn("Supporter perk does NOT include", card_text)
+        self.assertEqual([b.label for b in buttons(view)], ["Verify & Get Beta Access"])
 
     def test_downloads_channel_url_built_from_member_guild(self) -> None:
         self.assertEqual(

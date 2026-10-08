@@ -38,7 +38,7 @@ from bulmaai.services.moderation import (
 )
 from bulmaai.services.ai_guard import defang
 from bulmaai.ui.mod_cards import ALERT_HANDLED_ID, ALERT_SUMMARY_ID, alert_card, quote_block
-from bulmaai.ui.mod_views import quick_actions_view
+from bulmaai.ui.mod_views import quick_action_buttons
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_staff
 
@@ -107,7 +107,8 @@ class _Incident:
     delete_hits: int = 0
     revision: int = 0
     deleted: int = 0
-    purged: int = 0
+    removed: set[int] = field(default_factory=set)  # ids of every message taken down: deletes and purge alike
+    images: int = 0  # image attachments across the flagged messages
     last_hit: float = 0.0
     channel_ids: set[int] = field(default_factory=set)
     timeout_attempted: bool = False
@@ -262,12 +263,14 @@ class ModerationCog(ReloadableCog):
             lines.append(decision.details[:300])
         facts = [f"**Action** {decision.action.value}"]
         if incident.timeout_status:
-            facts += [f"**Timeout** {incident.timeout_status}", f"**Purged** {incident.purged}"]
-        facts.append(f"**Deleted** {incident.deleted}/{incident.hits}")
+            facts.append(f"**Timeout** {incident.timeout_status}")
+        if incident.removed:
+            count = len(incident.removed)
+            facts.append(f"**Removed** {count} message{'s' if count != 1 else ''}")
         if decision.source:
             facts.append(f"**Source** {decision.source}")
-        if decision.image_count:
-            facts.append(f"**Images** {decision.image_count}")
+        if incident.images:
+            facts.append(f"**Images** {incident.images}")
         lines.append("　".join(facts))
         channels = " ".join(f"<#{channel_id}>" for channel_id in list(incident.channel_ids)[:10])
         lines.append(f"**Channels** {channels}")
@@ -275,8 +278,10 @@ class ModerationCog(ReloadableCog):
             lines.append("**Domains** " + ", ".join(f"`{domain}`" for domain in decision.defanged_domains[:10]))
         if decision.invites:
             lines.append("**Invites** " + ", ".join(f"`{invite.domain}/{invite.code}`" for invite in decision.invites[:5]))
-        if message.attachments:
-            lines.append("**Attachments** " + ", ".join(f"`{a.filename.replace('`', '')}`" for a in message.attachments[:6]))
+        # Images already show in the gallery; only list the other files.
+        files = [a for a in message.attachments if not (a.content_type or "").startswith("image/")]
+        if files:
+            lines.append("**Attachments** " + ", ".join(f"`{a.filename.replace('`', '')}`" for a in files[:6]))
         return "\n".join(lines)[:1800]
 
     def _build_alert_view(self, incident: "_Incident", gallery: tuple[str, ...] = ()) -> discord.ui.DesignerView:
@@ -293,7 +298,7 @@ class ModerationCog(ReloadableCog):
         return alert_card(
             self._alert_head(message, incident),
             avatar,
-            list(self._quick_actions_view_for(incident).children),
+            self._quick_action_buttons_for(incident),
             color=color,
             snapshot=incident.snapshot,
             quote=incident.quote,
@@ -393,9 +398,13 @@ class ModerationCog(ReloadableCog):
         return files, tuple(f"attachment://{name}" for name in names)
 
     @staticmethod
-    def _quick_actions_view_for(incident: "_Incident") -> discord.ui.View:
+    def _quick_action_buttons_for(incident: "_Incident") -> list[discord.ui.Button]:
         message = incident.first_message
-        if ModerationCog._first_image_attachment(message) is not None and not incident.auto_learned:
+        if (
+            ModerationCog._first_image_attachment(message) is not None
+            and not incident.auto_learned
+            and message.id not in incident.removed
+        ):
             # Image alerts get "Delete & learn" instead of a plain delete; message=(...) lets it
             # remove the flagged message the way the plain "delete" action does.
             actions = (
@@ -403,9 +412,9 @@ class ModerationCog(ReloadableCog):
                 if incident.timed_out
                 else ("timeout", "ban", "learn", "falsepos")
             )
-            return quick_actions_view(message.author.id, actions=actions, message=(message.channel.id, message.id))
+            return quick_action_buttons(message.author.id, actions=actions, message=(message.channel.id, message.id))
         actions = ("untimeout", "ban", "falsepos") if incident.timed_out else ("timeout", "ban", "falsepos")
-        return quick_actions_view(message.author.id, actions=actions)
+        return quick_action_buttons(message.author.id, actions=actions)
 
     async def _send_log(self, incident: "_Incident") -> None:
         channel = await self._resolve_log_channel()
@@ -555,9 +564,11 @@ class ModerationCog(ReloadableCog):
         if is_new:
             await self._record_hit(message, incident)
 
+        incident.images += sum(1 for a in getattr(message, "attachments", ()) if (a.content_type or "").startswith("image/"))
         if incident.decision.action in (ModerationAction.DELETE, ModerationAction.TIMEOUT):
             if await self._delete_message(message, incident.decision):
                 incident.deleted += 1
+                incident.removed.add(message.id)
             if (
                 incident.decision.action is ModerationAction.DELETE
                 and incident.decision.reason in _NOTICE_TEXT
@@ -571,7 +582,7 @@ class ModerationCog(ReloadableCog):
             timed_out, incident.timeout_status = await self._timeout_member(message, incident.decision)
             incident.timed_out = incident.timed_out or timed_out
             if incident.decision.purge:
-                incident.purged += await self._purge_recent_messages(message, incident.decision)
+                incident.removed |= await self._purge_recent_messages(message, incident.decision)
             if timed_out and incident.hit_id is not None:
                 await self._update_hit_best_effort(incident.hit_id, timed_out=True, action="timeout")
 
@@ -773,10 +784,11 @@ class ModerationCog(ReloadableCog):
         cutoff = time.monotonic() - window_seconds
         return [channel_id for channel_id, seen_at in channels.items() if seen_at >= cutoff]
 
-    async def _purge_recent_messages(self, message: discord.Message, decision: ModerationDecision) -> int:
+    async def _purge_recent_messages(self, message: discord.Message, decision: ModerationDecision) -> set[int]:
+        """Ids of the messages the purge removed."""
         guild = message.guild
         if guild is None:
-            return 0
+            return set()
         settings = self._settings()
         author_id = message.author.id
         purge_after = discord.utils.utcnow() - timedelta(
@@ -791,7 +803,7 @@ class ModerationCog(ReloadableCog):
         )
         channel_ids.add(message.channel.id)
 
-        purged = 0
+        purged: set[int] = set()
         for channel_id in channel_ids:
             channel = guild.get_channel(channel_id)
             if channel is None or not hasattr(channel, "purge"):
@@ -803,7 +815,7 @@ class ModerationCog(ReloadableCog):
                     check=lambda candidate: candidate.author.id == author_id,
                     reason=f"BulmaAI moderation: {decision.reason}",
                 )
-                purged += len(removed)
+                purged.update(removed_message.id for removed_message in removed)
             except discord.Forbidden:
                 log.warning(
                     "Missing permission to purge burst messages",
@@ -892,6 +904,12 @@ class ModerationCog(ReloadableCog):
                 await self._add_image_hashes(incident, image_hashes)
                 if incident.timed_out and incident.hit_id is not None and incident.image_hashes:
                     await self._auto_learn(incident)
+                    return
+        # Nothing learned (hashing failed, no hit row, or no timeout): say so, the card keeps its buttons.
+        log.warning(
+            "Image burst images were not auto-learned",
+            extra={"event": "automod_auto_learn_skipped", "user_id": key[1], "hashed": len(image_hashes)},
+        )
 
     async def _auto_learn(self, incident: "_Incident") -> None:
         """A confirmed burst that earned a timeout is scam spam: learn its images now and drop the

@@ -388,10 +388,10 @@ class QuickActionsViewTests(unittest.IsolatedAsyncioTestCase):
             first_message=message,
         )
 
-        view = ModerationCog._quick_actions_view_for(incident)
+        buttons = ModerationCog._quick_action_buttons_for(incident)
 
         self.assertEqual(
-            [child.custom_id for child in view.children],
+            [button.custom_id for button in buttons],
             [f"{QUICK}:timeout:{author.id}", f"{QUICK}:ban:{author.id}", f"{QUICK}:falsepos:{author.id}"],
         )
 
@@ -404,10 +404,10 @@ class QuickActionsViewTests(unittest.IsolatedAsyncioTestCase):
             timed_out=True,
         )
 
-        view = ModerationCog._quick_actions_view_for(incident)
+        buttons = ModerationCog._quick_action_buttons_for(incident)
 
         self.assertEqual(
-            [child.custom_id for child in view.children],
+            [button.custom_id for button in buttons],
             [f"{QUICK}:untimeout:{author.id}", f"{QUICK}:ban:{author.id}", f"{QUICK}:falsepos:{author.id}"],
         )
 
@@ -419,10 +419,10 @@ class QuickActionsViewTests(unittest.IsolatedAsyncioTestCase):
             first_message=message,
         )
 
-        view = ModerationCog._quick_actions_view_for(incident)
+        buttons = ModerationCog._quick_action_buttons_for(incident)
 
         self.assertEqual(
-            [child.custom_id for child in view.children],
+            [button.custom_id for button in buttons],
             [
                 f"{QUICK}:timeout:{author.id}",
                 f"{QUICK}:ban:{author.id}",
@@ -469,7 +469,7 @@ class ImageAlertPreviewTests(unittest.IsolatedAsyncioTestCase):
         )
         container = sent_kwargs["view"].children[0]
         custom_ids = [child.custom_id for child in container.get_item(902).children]
-        self.assertIn(f"{QUICK}:learn:{author.id}:10:1", custom_ids)
+        self.assertNotIn(f"{QUICK}:learn:{author.id}:10:1", custom_ids)  # the message is already deleted
         self.assertIn(f"{QUICK}:falsepos:{author.id}", custom_ids)
 
     @staticmethod

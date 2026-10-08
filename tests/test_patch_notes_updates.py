@@ -7,7 +7,7 @@ from requests import HTTPError
 
 from bulmaai.cogs.patch_notes_updates import (
     PatchNotesUpdatesCog,
-    build_patch_notes_update_embed,
+    build_patch_notes_update_card,
 )
 from bulmaai.services.patch_notes import (
     PatchNotesState,
@@ -15,6 +15,7 @@ from bulmaai.services.patch_notes import (
     pick_latest_patch_notes,
     summarize_patch_notes_update,
 )
+from v2_helpers import buttons, text
 
 TEST_REPO = "dragonminez"
 TEST_BRANCH = "v2.1.x"
@@ -66,19 +67,20 @@ class PickLatestPatchNotesTests(unittest.TestCase):
         self.assertIsNone(pick_latest_patch_notes([]))
 
 
-class PatchNotesEmbedTests(unittest.TestCase):
-    def test_embed_links_patch_notes_and_mentions_day(self) -> None:
+class PatchNotesCardTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a running loop
+    async def test_card_links_patch_notes_and_mentions_day(self) -> None:
         updated_at = datetime(2026, 6, 10, 9, 5, tzinfo=timezone.utc)
 
-        embed = build_patch_notes_update_embed(
+        view = build_patch_notes_update_card(
             summary="- Added fusion dance", updated_at=updated_at, patch_notes_url=TEST_URL
         )
 
-        self.assertEqual(embed.url, TEST_URL)
-        self.assertIn("June 10, 2026", embed.description)
-        self.assertIn("9 AM", embed.description)
-        field_values = {field.name: field.value for field in embed.fields}
-        self.assertEqual(field_values["What's new"], "- Added fusion dance")
+        card_text = text(view)
+        self.assertIn(f"[Patch Notes Updated]({TEST_URL})", card_text)
+        self.assertIn("**June 10, 2026**", card_text)
+        self.assertIn("9 AM", card_text)
+        self.assertIn("### ✨ What's new\n- Added fusion dance", card_text)
+        self.assertEqual([b.url for b in buttons(view)], [TEST_URL])
 
 
 class PatchNotesPollTests(unittest.IsolatedAsyncioTestCase):

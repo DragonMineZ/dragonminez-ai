@@ -60,16 +60,18 @@ vision_client = AsyncOpenAI(api_key=load_settings().openai_key)
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 DISCORD_MESSAGE_LIMIT = 1900
+# V2 cards allow 4000 characters of text per message; leave room for the footer.
+CARD_TEXT_LIMIT = 3500
+AI_CARD_COLOR = discord.Color.from_rgb(88, 101, 242)
+AI_FOOTER = "-# 🤖 AI answer, it can make mistakes. · La IA puede equivocarse."
 MAX_IMAGE_ANALYSIS_CHARS = 1000
 # ponytail: hard cap on transcript size; page through history if tickets ever exceed it.
 TRANSCRIPT_MESSAGE_LIMIT = 1000
 RESOLVE_BUTTON_PREFIX = "ticket_resolved:"
-# ponytail: legacy Ticket Tool tickets still work; new ones come from cogs/tickets.py. Drop this once Ticket Tool is gone.
-TICKET_TOOL_BOT_ID = 557628352828014614
 USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
 ACK_MESSAGE_RE = re.compile(
-    r"(?i)^\W*(thanks?|thank you|thx|ty|ok|okay|k|kk|cool|nice|great|perfect|got it|"
-    r"gracias|vale|listo|perfecto|dale|obrigad[oa]|valeu|beleza)\W*$"
+    r"(?i)^\W*((thanks?|thank (you|u)|thx|ty)( (so|very) much| a lot| bro| man)?|tysm|tyvm|ok|okay|k|kk|cool|nice|"
+    r"great|perfect|got it|(muchas )?gracias|vale|listo|perfecto|dale|obrigad[oa]|valeu|beleza)\W*$"
 )
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
@@ -302,31 +304,47 @@ def _resolve_prompt_probability(
     return min(1.0, confidence ** max(exponent, 0.0))
 
 
+def _card(text: str, color: discord.Color = AI_CARD_COLOR, *rows: discord.ui.ActionRow) -> discord.ui.DesignerView:
+    return discord.ui.DesignerView(discord.ui.Container(discord.ui.TextDisplay(text), *rows, color=color), timeout=None)
+
+
+def _member_roles(member: discord.Member | None, settings: Any) -> str:
+    """What the model may assume about someone: support flags plus their actual Discord role names."""
+    if member is None:
+        return "unknown"
+    flags = []
+    if is_staff(member, settings=settings):
+        flags.append("staff")
+    if has_patreon_access_role(member, settings=settings):
+        flags.append("patron")
+    if has_any_allowed_role(member, settings.dev_jar_tester_role_ids):
+        flags.append("tester")
+    names = [safe_name(role.name) for role in reversed(getattr(member, "roles", [])[1:])][:15]
+    return f"{', '.join(flags) or 'member'}; Discord roles: {', '.join(names) or 'none'}"
+
+
 def _resolve_text(language: str) -> dict[str, str]:
     return RESOLVE_PROMPT_TEXT.get(language, RESOLVE_PROMPT_TEXT["en"])
 
 
-def _build_resolve_view(requester_id: int, language: str) -> discord.ui.View:
+def _build_resolve_view(requester_id: int, language: str) -> discord.ui.DesignerView:
     """Buttons are handled by the cog's on_interaction via custom_id, so they survive restarts."""
     text = _resolve_text(language)
-    view = discord.ui.View(timeout=None)
-    view.add_item(
+    row = discord.ui.ActionRow(
         discord.ui.Button(
             label=text["yes"],
             style=discord.ButtonStyle.success,
             emoji="✅",
             custom_id=f"{RESOLVE_BUTTON_PREFIX}yes:{requester_id}:{language}",
-        )
-    )
-    view.add_item(
+        ),
         discord.ui.Button(
             label=text["no"],
             style=discord.ButtonStyle.secondary,
             emoji="🙋",
             custom_id=f"{RESOLVE_BUTTON_PREFIX}no:{requester_id}:{language}",
-        )
+        ),
     )
-    return view
+    return _card(f"**{text['question']}**", AI_CARD_COLOR, row)
 
 
 def _parse_resolve_custom_id(custom_id: str) -> tuple[bool, int, str] | None:
@@ -347,20 +365,7 @@ def _ticket_vector_store_id(settings: Any) -> str | None:
     return next(iter(getattr(settings, "openai_support_vector_store_ids", ()) or ()), None)
 
 
-def _ticket_tool_closer_id(message: discord.Message) -> int | None | bool:
-    """Ticket Tool announces closes with a "Ticket Closed by @user" embed.
-    Returns the closer's id, None when closed but no mention, False when not a close."""
-    if getattr(message.author, "id", None) != TICKET_TOOL_BOT_ID:
-        return False
-    for embed in message.embeds:
-        text = f"{embed.title or ''}\n{embed.description or ''}"
-        if "closed by" in text.lower():
-            mention = USER_MENTION_RE.search(text)
-            return int(mention.group(1)) if mention else None
-    return False
-
-
-def _build_close_embed(
+def _build_close_card(
     *,
     channel_name: str,
     requester_id: int | None,
@@ -372,33 +377,30 @@ def _build_close_embed(
     open_for: timedelta,
     added_to_knowledge: bool,
     closed_at: datetime,
+    note: str,
     page_link: str | None = None,
     page_expires_at: datetime | None = None,
-) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"🎫 {summary.title if summary else channel_name}"[:256],
-        color=discord.Color.green() if resolved else discord.Color.orange(),
-        timestamp=closed_at,
-    )
-    embed.add_field(name="Requester", value=f"<@{requester_id}>" if requester_id else "Unknown")
-    embed.add_field(name="Closed by", value=f"<@{closed_by_id}>" if closed_by_id else "Unknown")
-    embed.add_field(name="Outcome", value="✅ Solved" if resolved else "🟠 Unresolved")
-    embed.add_field(name="Messages", value=str(message_count))
-    embed.add_field(name="AI confidence", value=f"{confidence:.0%}" if confidence is not None else "n/a")
-    embed.add_field(name="Open for", value=str(open_for).split(".")[0])
+) -> discord.ui.DesignerView:
+    who = lambda user_id: f"<@{user_id}>" if user_id else "Unknown"
+    lines = [
+        f"### 🎫 {summary.title if summary else channel_name}"[:260],
+        note,
+        f"**Requester** {who(requester_id)}　**Closed by** {who(closed_by_id)}　"
+        f"**Outcome** {'✅ Solved' if resolved else '🟠 Unresolved'}",
+        f"**Messages** {message_count}　**AI confidence** {f'{confidence:.0%}' if confidence is not None else 'n/a'}　"
+        f"**Open for** {str(open_for).split('.')[0]}",
+    ]
     if page_link:
         keep = f"expires <t:{int(page_expires_at.timestamp())}:R>" if page_expires_at else "kept permanently"
-        embed.add_field(name="Web transcript", value=f"[Open the HTML transcript]({page_link}) · {keep}", inline=False)
+        lines.append(f"**Web transcript** [Open the HTML transcript]({page_link}) · {keep}")
     if summary is not None:
-        embed.add_field(name="Problem", value=(summary.problem or "-")[:1024], inline=False)
-        embed.add_field(name="Resolution", value=(summary.resolution or "-")[:1024], inline=False)
+        lines.append(f"**Problem** {(summary.problem or '-')[:900]}")
+        lines.append(f"**Resolution** {(summary.resolution or '-')[:900]}")
         if summary.tags:
-            embed.add_field(name="Tags", value=" ".join(f"`{tag}`" for tag in summary.tags), inline=False)
-    embed.set_footer(
-        text=f"#{channel_name} · "
-        + ("📚 Added to AI knowledge" if added_to_knowledge else "Not added to AI knowledge")
-    )
-    return embed
+            lines.append("**Tags** " + " ".join(f"`{tag}`" for tag in summary.tags))
+    knowledge = "📚 Added to AI knowledge" if added_to_knowledge else "Not added to AI knowledge"
+    lines.append(f"-# #{channel_name} · {knowledge} · <t:{int(closed_at.timestamp())}:f>")
+    return _card("\n".join(lines), discord.Color.green() if resolved else discord.Color.orange())
 
 
 class AITicketsCog(ReloadableCog):
@@ -542,33 +544,48 @@ class AITicketsCog(ReloadableCog):
         member = await self._resolve_member_for_user(message.author)
         return member is not None and can_use_ai_support(member, settings=settings)
 
+    async def ticket_closed(self, channel_id: int) -> None:
+        """TicketsCog closed it: an answer still being written, and any "solved?" prompt, would land after the close."""
+        self._cancel_pending_task((channel_id, 0))
+        prompt = self._resolve_prompts.pop(channel_id, None)
+        if prompt is not None:
+            try:
+                await prompt.delete()
+            except discord.HTTPException:
+                pass
+
     async def _send_messages_with_typing(
         self,
         channel: discord.TextChannel,
         messages: list[str],
+        *,
+        ai_answer: bool = False,
     ) -> bool:
+        """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one."""
         chunks = [
             chunk
             for message in messages
             if message
-            for chunk in _chunk_discord_message(message)
+            for chunk in _chunk_discord_message(message, CARD_TEXT_LIMIT)
             if chunk.strip()
         ]
         if not chunks:
             return True
 
+        if ai_answer:
+            chunks[-1] = f"{chunks[-1]}\n{AI_FOOTER}"
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
         allowed_mentions = discord.AllowedMentions.none()
         try:
             if typing_lead_seconds <= 0:
                 for chunk in chunks:
-                    await channel.send(chunk, allowed_mentions=allowed_mentions)
+                    await channel.send(view=_card(chunk), allowed_mentions=allowed_mentions)
                 return True
 
             async with channel.typing():
                 await asyncio.sleep(typing_lead_seconds)
                 for chunk in chunks:
-                    await channel.send(chunk, allowed_mentions=allowed_mentions)
+                    await channel.send(view=_card(chunk), allowed_mentions=allowed_mentions)
             return True
         except discord.HTTPException:
             log.exception(
@@ -779,16 +796,8 @@ class AITicketsCog(ReloadableCog):
             where = "direct message"
         else:
             where = f"public channel #{getattr(channel, 'name', '?')} (you were pinged; answer only the requester)"
-        roles: list[str] = []
-        if member is not None:
-            if is_staff(member, settings=settings):
-                roles.append("staff")
-            if has_patreon_access_role(member, settings=settings):
-                roles.append("patron")
-            if has_any_allowed_role(member, settings.dev_jar_tester_role_ids):
-                roles.append("tester")
         name = safe_name(getattr(message.author, "display_name", message.author.name))
-        lines = [f"channel: {where}", f"requester: {name} (roles: {', '.join(roles) or 'member'})"]
+        lines = [f"channel: {where}", f"requester: {name} (roles: {_member_roles(member, settings)})"]
         opened = _relative_age(getattr(channel, "created_at", None)) if in_ticket else None
         if opened:
             lines.append(f"ticket opened: {opened}")
@@ -946,6 +955,8 @@ class AITicketsCog(ReloadableCog):
             should_mark_escalated = False
             kind = result.get("kind")
 
+            if in_ticket and not _is_ticket_channel(channel, settings=settings):
+                return  # closed while the model was thinking
             reply_text = result["reply"].strip()
             public = not (in_ticket or in_dm)
             if public and reply_text and reply_text != "(no reply)" and not can_post_publicly(result):
@@ -964,7 +975,7 @@ class AITicketsCog(ReloadableCog):
                         "I couldn't find a confident knowledge-backed answer for that. Please open a ticket if it needs follow-up."
                     )
 
-            sent = await self._send_messages_with_typing(channel, outgoing_messages)
+            sent = await self._send_messages_with_typing(channel, outgoing_messages, ai_answer=True)
             if sent and should_mark_escalated:
                 await self._mark_ticket_escalated(channel.id)
                 if kind == "handoff":
@@ -1014,7 +1025,7 @@ class AITicketsCog(ReloadableCog):
                     settings=settings,
                     context_lines=[
                         "channel: support ticket",
-                        f"requester: {name} (roles: member)",
+                        f"requester: {name} (roles: {_member_roles(member, settings)})",
                         f"ticket category: {category_label}",
                         "ticket opened: just now (the requester's intake form is the message below)",
                     ],
@@ -1028,20 +1039,18 @@ class AITicketsCog(ReloadableCog):
         reply = result["reply"].strip()
         if result.get("paused") or _has_user_visible_tool_result(result["tool_results"]) or reply in ("", "(no reply)"):
             return
-        if await self._send_messages_with_typing(channel, [reply]) and result.get("kind") == "handoff":
+        if not _is_ticket_channel(channel, settings=settings):
+            return  # closed before the first answer was ready
+        if await self._send_messages_with_typing(channel, [reply], ai_answer=True) and result.get("kind") == "handoff":
             await self._mark_ticket_escalated(channel.id)
             await self._ping_escalation_roles(channel, member.id)
 
-    def _ticket_creator_ids(self) -> set[int]:
-        """Bots whose first message mentions the ticket owner: Ticket Tool, and our own tickets cog."""
-        return {TICKET_TOOL_BOT_ID, getattr(self.bot.user, "id", TICKET_TOOL_BOT_ID)}
-
     async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
-        """Ticket Tool's welcome message mentions the owner; only they may get the "solved?" buttons."""
+        """The tickets cog's welcome message mentions the owner; only they may get the "solved?" buttons."""
         if channel.id not in self._ticket_owners:
             owner_id = None
             async for entry in channel.history(limit=5, oldest_first=True):
-                if entry.author.id in self._ticket_creator_ids():
+                if entry.author.id == getattr(self.bot.user, "id", None):
                     owner_id = next((mentioned.id for mentioned in entry.mentions if not mentioned.bot), None)
                     if owner_id is not None:
                         break
@@ -1059,6 +1068,8 @@ class AITicketsCog(ReloadableCog):
         language: str,
     ) -> None:
         settings = self.bot.settings
+        if not _is_ticket_channel(channel, settings=settings):
+            return  # the ticket was closed (moved out of the open category) in the meantime
         if confidence is not None:
             self._last_confidence[channel.id] = confidence
         probability = 1.0 if force else _resolve_prompt_probability(
@@ -1085,15 +1096,8 @@ class AITicketsCog(ReloadableCog):
             except discord.HTTPException:
                 pass
 
-        embed = discord.Embed(
-            description=f"**{_resolve_text(language)['question']}**",
-            color=discord.Color.blurple(),
-        )
         try:
-            self._resolve_prompts[channel.id] = await channel.send(
-                embed=embed,
-                view=_build_resolve_view(requester_id, language),
-            )
+            self._resolve_prompts[channel.id] = await channel.send(view=_build_resolve_view(requester_id, language))
         except discord.HTTPException:
             log.exception("Failed to send ticket resolve prompt", extra={"channel_id": channel.id})
 
@@ -1121,11 +1125,11 @@ class AITicketsCog(ReloadableCog):
 
         text = _resolve_text(language)
         self._resolve_prompts.pop(channel.id, None)
-        embed = discord.Embed(
-            description=text["thanks"] if solved else text["escalated"],
-            color=discord.Color.green() if solved else discord.Color.orange(),
+        view = _card(
+            text["thanks"] if solved else text["escalated"],
+            discord.Color.green() if solved else discord.Color.orange(),
         )
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.response.edit_message(view=view)
         if solved:
             await self._close_ticket(
                 channel,
@@ -1149,12 +1153,12 @@ class AITicketsCog(ReloadableCog):
             async for entry in channel.history(limit=TRANSCRIPT_MESSAGE_LIMIT, oldest_first=True)
         ]
         if requester_id is None:
-            # Ticket Tool's welcome message mentions the owner; fall back to the first non-staff human.
+            # Our welcome message mentions the owner; fall back to the first non-staff human.
             requester_id = next(
                 (
                     mentioned.id
                     for entry in messages
-                    if entry.author.id in self._ticket_creator_ids()
+                    if entry.author.id == getattr(self.bot.user, "id", None)
                     for mentioned in entry.mentions
                     if not mentioned.bot
                 ),
@@ -1211,8 +1215,7 @@ class AITicketsCog(ReloadableCog):
         announce: bool = True,
     ) -> bool:
         """Transcript → hosted HTML page → summarize → learn (vector store) → embed → record → optionally delete.
-        Transcript is read first because Ticket Tool may delete the channel seconds later.
-        resolved=None lets the summary decide (Ticket Tool closes don't say).
+        resolved=None lets the summary decide.
         Returns whether the transcript was saved for the panel."""
         archived = False
         if channel.id in self._closing_channels or channel.id in self._archived_channels:
@@ -1268,7 +1271,7 @@ class AITicketsCog(ReloadableCog):
                     log.exception("Failed to upload ticket knowledge", extra={"channel_id": channel.id})
 
             confidence = self._last_confidence.pop(channel.id, None)
-            embed = _build_close_embed(
+            card_args = dict(
                 channel_name=channel.name,
                 requester_id=requester_id,
                 closed_by_id=closed_by_id,
@@ -1306,18 +1309,20 @@ class AITicketsCog(ReloadableCog):
             self._archived_channels.add(channel.id)
             self._resolve_prompts.pop(channel.id, None)
             delay = max(int(settings.ai_ticket_close_delay_seconds or 0), 0)
-            embed.description = (
+            note = (
                 f"🔒 This ticket is closed and will be deleted in {delay}s."
                 if delete_channel
                 else "📋 Ticket summary and transcript saved."
             )
             try:
                 if announce:
-                    await channel.send(embed=embed)
+                    await channel.send(view=_build_close_card(**card_args, note=note))
                 elif page is not None:
-                    await channel.send(f"🧾 A transcript of this ticket was created: {page_url(settings, page.token)}")
+                    await channel.send(
+                        view=_card(f"🧾 A transcript of this ticket was created: {page_url(settings, page.token)}")
+                    )
             except discord.HTTPException:
-                # Expected when Ticket Tool already deleted the channel.
+                # Expected when the channel was already deleted.
                 log.info("Could not post close embed in ticket", extra={"channel_id": channel.id})
             if delete_channel:
                 await asyncio.sleep(delay)
@@ -1380,17 +1385,6 @@ class AITicketsCog(ReloadableCog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         settings = self.bot.settings
-        closer_id = _ticket_tool_closer_id(message)
-        if closer_id is not False and _is_ticket_channel(message.channel, settings=settings):
-            await self._close_ticket(
-                message.channel,
-                closed_by_id=closer_id,
-                requester_id=None,
-                resolved=None,
-                delete_channel=False,
-            )
-            return
-
         if not settings.ai_support_enabled:
             return
 

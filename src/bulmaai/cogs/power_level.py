@@ -13,7 +13,7 @@ from bulmaai.services.member_activity import (
     parse_role_reward_map,
     set_level,
 )
-from bulmaai.ui.power_level_views import build_leaderboard_embed, build_power_level_embed
+from bulmaai.ui.power_level_views import build_leaderboard_card, build_power_level_card
 
 
 log = logging.getLogger(__name__)
@@ -131,13 +131,13 @@ class PowerLevelCog(commands.Cog):
 
         target = member or ctx.author
         activity = await get_member_activity(ctx.guild.id, target.id)
-        embed = build_power_level_embed(
+        view = build_power_level_card(
             display_name=target.display_name,
             avatar_url=target.display_avatar.url if target.display_avatar else None,
             xp=activity.xp,
             level=activity.level,
         )
-        await ctx.respond(embed=embed)
+        await ctx.respond(view=view)
 
     @discord.slash_command(name="leaderboard", description="Show the top power levels in this server.")
     @discord.option(
@@ -165,8 +165,8 @@ class PowerLevelCog(commands.Cog):
             display_name = resolved_member.display_name if resolved_member else f"User {row.user_id}"
             entries.append((display_name, row.xp, row.level))
 
-        embed = build_leaderboard_embed(guild_name=ctx.guild.name, entries=entries)
-        await ctx.respond(embed=embed)
+        view = build_leaderboard_card(guild_name=ctx.guild.name, entries=entries)
+        await ctx.respond(view=view)
 
 
 def setup(bot: discord.Bot):

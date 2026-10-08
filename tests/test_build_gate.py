@@ -7,6 +7,7 @@ os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
+import discord
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -15,10 +16,9 @@ from bulmaai.services import build_gate
 from bulmaai.ui.build_gate_views import (
     CHANGELOG_PREFIX,
     changelog_button,
-    gate_embed,
-    gate_view,
-    preview_embeds,
-    preview_view,
+    gate_buttons,
+    gate_card,
+    preview_card,
 )
 
 REPO = "DragonMineZ/dragonminez"
@@ -120,30 +120,39 @@ class ChangelogTextTests(unittest.TestCase):
         self.assertEqual(len(build_gate.clean_changelog("x" * 9000)), build_gate.MAX_CHANGELOG_CHARS)
 
 
+def _walk(item):
+    yield item
+    for child in getattr(item, "items", None) or getattr(item, "children", None) or []:
+        yield from _walk(child)
+
+
+def card_text(view) -> str:
+    return "\n".join(item.content for item in _walk(view) if isinstance(item, discord.ui.TextDisplay))
+
+
+def card_buttons(view) -> list:
+    return [item for item in _walk(view) if isinstance(item, discord.ui.Button)]
+
+
 class ChangelogViewTests(unittest.IsolatedAsyncioTestCase):
     async def test_prompt_has_changelog_button_that_switches_label_once_set(self):
-        labels = [child.label for child in gate_view(build_request()).children]
+        labels = [child.label for child in gate_buttons(build_request()).children]
         self.assertEqual(labels, ["Build jar", "Add changelog", "Skip"])
         self.assertEqual(changelog_button(build_request(changelog="x")).label, "Edit changelog")
         self.assertEqual(changelog_button(build_request()).custom_id, f"{CHANGELOG_PREFIX}7")
-        self.assertEqual(len(preview_view(build_request()).children), 1)
+        self.assertEqual(len(card_buttons(preview_card(build_request()))), 1)
+        self.assertEqual(card_buttons(preview_card(build_request(), locked=True)), [])
 
-    async def test_gate_embed_shows_changelog_only_when_set(self):
-        names = lambda request: [f.name for f in gate_embed(request, recent=[], window_minutes=10).fields]
-        self.assertNotIn("Changelog", names(build_request()))
-        self.assertIn("Changelog", names(build_request(changelog="x" * 4000)))
-        long_field = next(
-            f for f in gate_embed(build_request(changelog="x" * 4000), recent=[], window_minutes=10).fields
-            if f.name == "Changelog"
-        )
-        self.assertLessEqual(len(long_field.value), 1024)
+    async def test_gate_card_shows_changelog_only_when_set(self):
+        self.assertNotIn("**Changelog**", card_text(gate_card(build_request(), recent=[], window_minutes=10)))
+        text = card_text(gate_card(build_request(changelog="x" * 4000), recent=[], window_minutes=10))
+        self.assertIn("**Changelog**", text)
+        self.assertLessEqual(len(text.split("**Changelog**\n", 1)[1]), 1000)
 
-    async def test_preview_matches_public_whats_new_embed(self):
-        [embed] = preview_embeds(build_request(changelog="Shiny form"))
-        self.assertEqual((embed.title, embed.description), ("What's New", "Shiny form"))
-        [empty] = preview_embeds(build_request())
-        self.assertEqual(empty.title, "No changelog")
-        self.assertIn("Final", preview_embeds(build_request(), locked=True)[0].footer.text)
+    async def test_preview_matches_public_whats_new(self):
+        self.assertIn("### ✨ What's New\nShiny form", card_text(preview_card(build_request(changelog="Shiny form"))))
+        self.assertIn("No changelog", card_text(preview_card(build_request())))
+        self.assertIn("Final", card_text(preview_card(build_request(), locked=True)))
 
 
 class SaveChangelogTests(unittest.IsolatedAsyncioTestCase):

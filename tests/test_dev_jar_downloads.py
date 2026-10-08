@@ -10,24 +10,38 @@ import discord
 from bulmaai.config import Settings
 from bulmaai.cogs.dev_jar_downloads import (
     DevJarDownloadsCog,
-    DevJarDownloadView,
+    download_actions,
 )
 from bulmaai.services.patch_notes import build_patch_notes_url
 from bulmaai.services.dev_jar_downloads import (
     DevJarCommit,
     DevJarUploadPayload,
     OneTimeDownloadTokenStore,
-    build_dev_jar_commit_layout,
     find_latest_dev_jar,
     format_dev_jar_commit_line,
     merge_dev_jar_commits,
     parse_dev_jar_upload_payload,
     parse_dev_jar_filename,
 )
-from bulmaai.ui.dev_jar_views import (
-    build_dev_jar_download_embed,
-    build_dev_jar_download_embeds,
-)
+from bulmaai.ui.dev_jar_views import build_dev_jar_download_view
+
+
+def _walk(item):
+    yield item
+    for child in getattr(item, "items", None) or getattr(item, "children", None) or []:
+        yield from _walk(child)
+
+
+def card_text(view) -> str:
+    return "\n".join(item.content for item in _walk(view) if isinstance(item, discord.ui.TextDisplay))
+
+
+def card_labels(view) -> list[str]:
+    return [item.label for item in _walk(view) if isinstance(item, discord.ui.Button)]
+
+
+def card_status(view) -> str:
+    return card_text(view).split("**Status** ", 1)[1].split("　", 1)[0]
 
 MAIN_GUILD = SimpleNamespace(id=Settings.panel_guild_id)
 STAFF_USER = type("StaffUser", (str,), {"mention": "<@1>"})("StaffUser#0001")  # str() like a real user, plus .mention
@@ -179,48 +193,14 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(long_title, line)
 
-    def test_build_dev_jar_commit_layout_spills_into_continuation_descriptions(self) -> None:
-        commits = tuple(
-            DevJarCommit(
-                sha=f"{i:012x}",
-                title=f"fix: commit number {i} with a reasonably descriptive title",
-                description=None,
-                author="Shokkoh",
-                url=f"https://github.com/DragonMineZ/dragonminez/commit/{i:012x}",
-            )
-            for i in range(40)
-        )
+    def _download_view(self, artifact, **kwargs):
+        actions = download_actions(artifact, patch_notes_url="https://example.com/notes")
+        return build_dev_jar_download_view(artifact, actions=actions, **kwargs)
 
-        layout = build_dev_jar_commit_layout(commits, base_char_count=0, char_budget=10000)
-
-        self.assertFalse(layout.overflowed)
-        self.assertGreater(len(layout.descriptions), 1)
-        combined = "\n".join(layout.descriptions)
-        for commit in commits:
-            self.assertIn(commit.title, combined)
-
-    def test_build_dev_jar_commit_layout_falls_back_to_file_when_over_budget(self) -> None:
-        commits = tuple(
-            DevJarCommit(
-                sha=f"{i:012x}",
-                title=f"fix: commit number {i} " + ("padding " * 20),
-                description=None,
-                author="Shokkoh",
-                url=f"https://github.com/DragonMineZ/dragonminez/commit/{i:012x}",
-            )
-            for i in range(60)
-        )
-
-        layout = build_dev_jar_commit_layout(commits, base_char_count=0, char_budget=2000)
-
-        self.assertTrue(layout.overflowed)
-        for commit in commits:
-            self.assertIn(commit.title, layout.full_changelog_text)
-
-    def test_download_embed_mentions_commit_and_workflow(self) -> None:
+    async def test_download_card_mentions_commit_and_workflow(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
 
-        embed = build_dev_jar_download_embed(
+        view, _ = self._download_view(
             artifact,
             sha256="a" * 64,
             workflow_run_url="https://github.com/DragonMineZ/dragonminez/actions/runs/123",
@@ -235,15 +215,17 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.assertEqual(embed.title, "DragonMineZ Dev Update")
-        self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
-        field_values = [field.value for field in embed.fields]
-        self.assertIn("`222222222222`", field_values)
+        text = card_text(view)
+        self.assertIn("DragonMineZ Dev Update", text)
+        self.assertIn("https://github.com/DragonMineZ/dragonminez/actions/runs/123", text)
+        self.assertIn("**Commit** `222222222222`", text)
+        # the always-attached commit list is shown on the card
+        self.assertTrue(any(isinstance(item, discord.ui.File) for item in _walk(view)))
 
-    def test_download_embed_shows_staff_changelog_not_raw_commits(self) -> None:
+    async def test_download_card_shows_staff_changelog_not_raw_commits(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__086afb963f2c.jar")
 
-        embeds, commit_list_text = build_dev_jar_download_embeds(
+        view, commit_list_text = self._download_view(
             artifact,
             changelog="Big balance changes and a shiny new form!",
             commits=(
@@ -264,13 +246,11 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        # The public embed shows the short blurb, not a raw commit dump.
-        whats_new = [embed for embed in embeds if embed.title == "What's New"]
-        self.assertEqual(len(whats_new), 1)
-        self.assertEqual(whats_new[0].description, "Big balance changes and a shiny new form!")
-        self.assertNotIn("Commits Changelog", [embed.title for embed in embeds])
-        self.assertIn("What's New", embeds[0].description)
-        self.assertEqual(embeds[-1].footer.text, "Downloads require Discord access authorization. Download links are one-time per user per jar.")
+        # The public card shows the short blurb in its own What's New card, not a raw commit dump.
+        main, whats_new = view.children
+        self.assertEqual(card_text(whats_new), "### ✨ What's New\nBig balance changes and a shiny new form!")
+        self.assertNotIn("feat: changed form drains", card_text(main))
+        self.assertIn("one per user per jar", card_text(main).lower().replace("works once", "one"))
 
         # The full commit list is still available in full, unconditionally, as
         # the text handed back for the always-attached commits file.
@@ -281,28 +261,22 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("feat: changed form drains", commit_list_text)
         self.assertIn("- Shokkoh", commit_list_text)
-        self.assertIn(
-            "[086afb9](https://github.com/DragonMineZ/dragonminez/commit/086afb963f2c)",
-            commit_list_text,
-        )
         self.assertIn("fix: race selection screen fix", commit_list_text)
         self.assertNotIn("Adds support for new drain behavior.", commit_list_text)
 
-    def test_download_embed_without_changelog_has_no_whats_new(self) -> None:
+    async def test_download_card_without_changelog_has_no_whats_new(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
 
         for changelog in (None, "", "   \n"):
-            embeds, _ = build_dev_jar_download_embeds(artifact, commits=(), changelog=changelog)
+            view, _ = self._download_view(artifact, commits=(), changelog=changelog)
 
-            self.assertEqual(len(embeds), 1)
-            self.assertNotIn("What's New", embeds[0].description)
-            self.assertNotIn("What's New", [field.name for field in embeds[0].fields])
-            self.assertIsNotNone(embeds[0].footer.text)
+            self.assertEqual(len(view.children), 1)
+            self.assertNotIn("What's New", card_text(view))
 
-    def test_download_embed_with_max_length_changelog_fits_discord_limits(self) -> None:
+    async def test_download_card_with_max_length_changelog_fits_discord_limits(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
 
-        embeds, _ = build_dev_jar_download_embeds(
+        view, _ = self._download_view(
             artifact,
             commits=(),
             changelog="x" * 4000,
@@ -311,30 +285,21 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
             previous_size_bytes=123456789,
         )
 
-        self.assertLessEqual(sum(len(embed) for embed in embeds), 6000)
-        self.assertLessEqual(len(embeds), 10)
+        self.assertLessEqual(len(card_text(view)), 4000)
 
-    async def test_download_view_includes_dated_patch_notes_link_button(self) -> None:
+    async def test_download_card_has_download_and_dated_patch_notes_buttons(self) -> None:
         artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
         patch_notes_url = build_patch_notes_url(
             "dragonminez", "v2.1.x", "PATCH_NOTES-v2.1.1.md"
         )
 
-        view = DevJarDownloadView(artifact, patch_notes_url=patch_notes_url)
+        row = download_actions(artifact, patch_notes_url=patch_notes_url)
 
-        labels = [getattr(child, "label", "") for child in view.children]
-        urls = [getattr(child, "url", None) for child in view.children]
+        labels = [child.label for child in row.children]
+        urls = [child.url for child in row.children]
         self.assertIn("Get download link", labels)
         self.assertTrue(any(label.startswith("Patch Notes – ") for label in labels))
         self.assertIn(patch_notes_url, urls)
-
-    def test_download_embed_notes_patch_notes_day(self) -> None:
-        artifact = parse_dev_jar_filename("dragonminez-2.1.2__222222222222.jar")
-
-        embeds, _ = build_dev_jar_download_embeds(artifact, commits=())
-
-        field_values = {field.name: field.value for embed in embeds for field in embed.fields}
-        self.assertIn("patch notes", field_values["Patch Notes"].lower())
 
     def test_cog_direct_token_download_consumes_token_after_successful_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -645,13 +610,11 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(review_channel.sent), 1)
         self.assertEqual(len(patreon_channel.sent), 0)
         self.assertEqual(len(testing_channel.sent), 0)
-        embeds = review_channel.sent[0]["embeds"]
-        self.assertEqual(embeds[0].title, "DragonMineZ Dev Jar Review")
-        field_values = {field.name: field.value for field in embeds[0].fields}
-        self.assertEqual(field_values["Status"], "Pending review")
-        self.assertEqual(field_values["Commits since last decision"], "1")
         view = review_channel.sent[0]["view"]
-        labels = [child.label for child in view.children]
+        self.assertIn("DragonMineZ Dev Jar Review", card_text(view))
+        self.assertEqual(card_status(view), "Pending review")
+        self.assertIn("**Commits since last decision** 1", card_text(view))
+        labels = card_labels(view)
         self.assertIn("Publish", labels)
         self.assertIn("Discard", labels)
         set_message_mock.assert_awaited_once_with(1370061119586173070, 999)
@@ -777,13 +740,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         # one at the bottom, rather than editing the (possibly scrolled-away) one.
         self.assertEqual(len(review_channel.sent), 2)
         self.assertTrue(review_channel._messages[1].deleted)
-        embeds = review_channel.sent[1]["embeds"]
-        field_values = {field.name: field.value for field in embeds[0].fields}
-        self.assertEqual(field_values["Commits since last decision"], "2")
-        all_field_text = "\n".join(
-            [field.value for embed in embeds for field in embed.fields]
-            + [embed.description or "" for embed in embeds]
-        )
+        all_field_text = card_text(review_channel.sent[1]["view"])
+        self.assertIn("**Commits since last decision** 2", all_field_text)
         self.assertIn("feat: first commit", all_field_text)
         self.assertIn("fix: second commit", all_field_text)
 
@@ -961,19 +919,12 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(review_channel.sent), 2)
         self.assertFalse(first_message.deleted)
         self.assertEqual(len(first_message.edits), 1)
-        discard_status = {
-            field.name: field.value for field in first_message.edits[0]["embeds"][0].fields
-        }["Status"]
-        self.assertEqual(discard_status, "Discarded")
+        self.assertEqual(card_status(first_message.edits[0]["view"]), "Discarded")
 
-        requeue_embeds = review_channel.sent[1]["embeds"]
-        requeue_fields = {field.name: field.value for field in requeue_embeds[0].fields}
-        self.assertEqual(requeue_fields["Status"], "Pending review")
-        self.assertEqual(requeue_fields["Commits since last decision"], "2")
-        all_field_text = "\n".join(
-            [field.value for embed in requeue_embeds for field in embed.fields]
-            + [embed.description or "" for embed in requeue_embeds]
-        )
+        requeue_view = review_channel.sent[1]["view"]
+        self.assertEqual(card_status(requeue_view), "Pending review")
+        all_field_text = card_text(requeue_view)
+        self.assertIn("**Commits since last decision** 2", all_field_text)
         self.assertIn("feat: first commit", all_field_text)
         self.assertIn("fix: second commit", all_field_text)
 
@@ -1113,12 +1064,12 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(testing_channel.sent), 1)
         changelog_mock.assert_awaited_once_with()
         for channel in (patreon_channel, testing_channel):
-            whats_new = [embed for embed in channel.sent[0]["embeds"] if embed.title == "What's New"]
-            self.assertEqual([embed.description for embed in whats_new], ["New form drains"])
+            self.assertIn("### ✨ What's New\nNew form drains", card_text(channel.sent[0]["view"]))
         clear_mock.assert_awaited_once()
         set_published_mock.assert_awaited_once_with(artifact.file_name)
         self.assertEqual(len(message.edits), 1)
-        self.assertIsNone(message.edits[0]["view"])
+        self.assertNotIn("Publish", card_labels(message.edits[0]["view"]))
+        self.assertIn("Published by", card_text(message.edits[0]["view"]))
         self.assertTrue(
             any("published" in content.lower() for content, _ in interaction.followup.messages)
         )
@@ -1391,11 +1342,8 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
         clear_mock.assert_not_awaited()
         clear_message_mock.assert_awaited_once()
         self.assertEqual(len(message.edits), 1)
-        self.assertIsNone(message.edits[0]["view"])
-        field_values = {
-            field.name: field.value for field in message.edits[0]["embeds"][0].fields
-        }
-        self.assertEqual(field_values["Status"], "Discarded")
+        self.assertNotIn("Publish", card_labels(message.edits[0]["view"]))
+        self.assertEqual(card_status(message.edits[0]["view"]), "Discarded")
         self.assertTrue(
             any("discarded" in content.lower() for content, _ in interaction.followup.messages)
         )

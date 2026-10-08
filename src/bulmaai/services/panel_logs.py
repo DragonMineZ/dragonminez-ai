@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-import discord
 
 from bulmaai.database.db import get_pool
 
@@ -35,12 +34,6 @@ class PanelLog:
     user_id: int | None
     data: dict[str, Any]
     created_at: datetime
-
-
-def embed_text(embed: discord.Embed) -> str:
-    parts = [embed.description or ""]
-    parts += [f"{field.name}: {field.value}" for field in embed.fields]
-    return "\n".join(part for part in parts if part)
 
 
 async def record(

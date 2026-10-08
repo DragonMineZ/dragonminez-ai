@@ -67,8 +67,8 @@ def empty_data(**overrides) -> DigestData:
     return DigestData(**base)
 
 
-def fields_by_name(embed: discord.Embed) -> dict[str, str]:
-    return {field.name: field.value for field in embed.fields}
+def fields_by_name(card: mod_digest.DigestCard) -> dict[str, str]:
+    return dict(card.fields)
 
 
 class BuildEmbedsTests(unittest.TestCase):
@@ -80,20 +80,20 @@ class BuildEmbedsTests(unittest.TestCase):
                 ActionCount("ban", 2, 6),
             )
         )
-        (embed,) = mod_digest.build_embeds(data, fake_settings())
-        value = fields_by_name(embed)["Case actions"]
+        (card,) = mod_digest.build_cards(data, fake_settings())
+        value = fields_by_name(card)["Case actions"]
         self.assertIn("**warn**: 12 (▲3)", value)
         self.assertIn("**kick**: 5", value)
         self.assertNotIn("**kick**: 5 (", value)  # unchanged: no delta parenthetical
         self.assertIn("**ban**: 2 (▼4)", value)
 
     def test_empty_sections_are_omitted_entirely(self):
-        embeds = mod_digest.build_embeds(empty_data(), fake_settings())
-        self.assertEqual(len(embeds), 1)
-        self.assertEqual(embeds[0].fields, [])
-        self.assertIn("No moderation activity", embeds[0].description)
+        cards = mod_digest.build_cards(empty_data(), fake_settings())
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].fields, [])
+        self.assertIn("No moderation activity", cards[0].note)
 
-    def test_populated_sections_appear_in_order_and_add_a_second_embed(self):
+    def test_populated_sections_appear_in_order_and_add_a_second_card(self):
         data = empty_data(
             action_counts=(ActionCount("warn", 3, 1),),
             actor_counts=(ActorCount(True, 3, 1), ActorCount(False, 1, 2)),
@@ -105,9 +105,9 @@ class BuildEmbedsTests(unittest.TestCase):
             filter_stats=(FilterStats("excessive_caps", hits=10, confirmed=1, false_positives=4),),
             unreviewed_automod_hits=3,
         )
-        overview, automod = mod_digest.build_embeds(data, fake_settings())
+        overview, automod = mod_digest.build_cards(data, fake_settings())
         self.assertEqual(
-            [f.name for f in overview.fields],
+            [name for name, _ in overview.fields],
             [
                 "Case actions",
                 "Who acted",
@@ -139,7 +139,7 @@ class BuildEmbedsTests(unittest.TestCase):
                 FilterStats("banned_word", hits=5, confirmed=0, false_positives=3),
             )
         )
-        _, automod = mod_digest.build_embeds(data, fake_settings(moderation_caps_percent=70))
+        _, automod = mod_digest.build_cards(data, fake_settings(moderation_caps_percent=70))
         value = fields_by_name(automod)["Tuning suggestions"]
         self.assertIn("moderation_caps_percent 70 → 80", value)
         self.assertIn("moderation_banned_words", value)
@@ -150,7 +150,7 @@ class BuildEmbedsTests(unittest.TestCase):
             scam_images=ScamImageStats(matches=10, confirmed=6, false_positives=2, list_size=42),
         )
 
-        _, shadow = mod_digest.build_embeds(data, fake_settings(moderation_scam_images_enforce=False))
+        _, shadow = mod_digest.build_cards(data, fake_settings(moderation_scam_images_enforce=False))
         shadow_value = fields_by_name(shadow)["Scam images"]
         self.assertIn("Mode: shadow — review only", shadow_value)
         self.assertIn("Matches this week: 10", shadow_value)
@@ -159,14 +159,14 @@ class BuildEmbedsTests(unittest.TestCase):
         # scam_image gets its own section, not a duplicate row in the generic filter list
         self.assertNotIn("Automod hits by filter", fields_by_name(shadow))
 
-        _, enforcing = mod_digest.build_embeds(data, fake_settings(moderation_scam_images_enforce=True))
+        _, enforcing = mod_digest.build_cards(data, fake_settings(moderation_scam_images_enforce=True))
         self.assertIn("Mode: enforcing", fields_by_name(enforcing)["Scam images"])
 
     def test_limits_are_respected_with_many_rows(self):
         offenders = tuple(RepeatOffender(user_id=1000 + i, count=50 - i) for i in range(200))
         filters = tuple(FilterStats(f"reason_{i}", hits=100, confirmed=10, false_positives=5) for i in range(40))
         data = empty_data(repeat_offenders=offenders, filter_stats=filters)
-        overview, automod = mod_digest.build_embeds(data, fake_settings())
+        overview, automod = mod_digest.build_cards(data, fake_settings())
 
         repeat_value = fields_by_name(overview)["Repeat offenders (3+ cases)"]
         self.assertLessEqual(len(repeat_value), 1024)
@@ -176,9 +176,8 @@ class BuildEmbedsTests(unittest.TestCase):
         self.assertLessEqual(len(filter_value), 1024)
         self.assertIn("more", filter_value)
 
-        for field in list(overview.fields) + list(automod.fields):
-            self.assertLessEqual(len(field.value), 1024)
-            self.assertLessEqual(len(field.name), 256)
+        for _, value in list(overview.fields) + list(automod.fields):
+            self.assertLessEqual(len(value), 1024)
 
 
 class ChannelResolutionTests(unittest.IsolatedAsyncioTestCase):
@@ -236,14 +235,14 @@ class LoopBodyTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("bulmaai.cogs.mod_digest.resolve_digest_channel", AsyncMock(return_value=fake_channel)),
             patch("bulmaai.services.mod_digest.collect", AsyncMock(return_value="DATA")) as collect,
-            patch("bulmaai.services.mod_digest.build_embeds", return_value=["EMBED"]) as build,
+            patch("bulmaai.services.mod_digest.build_view", return_value="VIEW") as build,
         ):
             await self.cog._tick(NOW)
         collect.assert_awaited_once_with(1, now=NOW, settings=self.bot.settings)
         build.assert_called_once_with("DATA", self.bot.settings)
         fake_channel.send.assert_awaited_once()
         kwargs = fake_channel.send.await_args.kwargs
-        self.assertEqual(kwargs["embeds"], ["EMBED"])
+        self.assertEqual(kwargs["view"], "VIEW")
         self.assertIsInstance(kwargs["allowed_mentions"], discord.AllowedMentions)
 
     async def test_missing_channel_logs_a_warning_and_skips(self):
@@ -254,6 +253,21 @@ class LoopBodyTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.cog._tick(NOW)
         collect.assert_not_awaited()
+
+
+
+class DigestViewTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a running loop
+    async def test_view_renders_each_card_within_the_text_limit(self):
+        cards = [
+            mod_digest.DigestCard("Weekly Moderation Digest", discord.Color.blurple(), [("Reports", "3")], note="Oct 1 – Oct 8"),
+            mod_digest.DigestCard("Automod & Filters", discord.Color.dark_gold(), [("Tuning suggestions", "x" * 5000)]),
+        ]
+        with patch("bulmaai.services.mod_digest.build_cards", return_value=cards):
+            view = mod_digest.build_view("DATA", None)
+        first, second = view.children
+        self.assertEqual(first.items[0].content, "## Weekly Moderation Digest\n-# Oct 1 – Oct 8")
+        self.assertEqual(first.items[2].content, "**Reports**\n3")
+        self.assertLessEqual(sum(len(item.content) for c in view.children for item in c.items if hasattr(item, "content")), 4000)
 
 
 if __name__ == "__main__":

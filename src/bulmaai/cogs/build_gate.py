@@ -31,12 +31,10 @@ from bulmaai.ui.build_gate_views import (
     CHANGELOG_PREFIX,
     REJECT_PREFIX,
     ChangelogModal,
-    final_embed,
-    gate_embed,
-    gate_view,
-    preview_embeds,
-    preview_view,
-    progress_embed,
+    final_card,
+    gate_card,
+    preview_card,
+    progress_card,
 )
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin
@@ -177,7 +175,7 @@ class BuildGateCog(ReloadableCog):
                 if await build_gate.transition(earlier.id, build_gate.SUPERSEDED, from_status=build_gate.PENDING):
                     replaced.add(earlier.id)
                     await self._edit_message(
-                        earlier, final_embed(earlier, status=build_gate.SUPERSEDED, note=f"Folded into prompt #{request.id}")
+                        earlier, final_card(earlier, status=build_gate.SUPERSEDED, note=f"Folded into prompt #{request.id}")
                     )
             others = [replace(r, status=build_gate.SUPERSEDED) if r.id in replaced else r for r in recent]
 
@@ -186,8 +184,7 @@ class BuildGateCog(ReloadableCog):
                 log.error("build gate channel is not configured; push %s on %s has no prompt.", push.head_sha[:7], push.branch)
                 return
             message = await channel.send(
-                embed=gate_embed(request, recent=others, window_minutes=window),
-                view=gate_view(request),
+                view=gate_card(request, recent=others, window_minutes=window),
                 allowed_mentions=NO_PINGS,
             )
             await build_gate.set_message(request.id, channel.id, message.id)
@@ -203,7 +200,7 @@ class BuildGateCog(ReloadableCog):
             return
         for request in due:
             if await build_gate.transition(request.id, build_gate.EXPIRED, from_status=build_gate.PENDING):
-                await self._edit_message(request, final_embed(request, status=build_gate.EXPIRED))
+                await self._edit_message(request, final_card(request, status=build_gate.EXPIRED))
 
     @expire_prompts.before_loop
     async def _before_expire_prompts(self) -> None:
@@ -242,8 +239,7 @@ class BuildGateCog(ReloadableCog):
                 )
                 if rejected:
                     await interaction.edit_original_response(
-                        embed=final_embed(rejected, status=build_gate.REJECTED, note=f"Skipped by {interaction.user.display_name}"),
-                        view=None,
+                        view=final_card(rejected, status=build_gate.REJECTED, note=f"Skipped by {interaction.user.display_name}")
                     )
                 return
             busy = await self._active_build()
@@ -289,9 +285,7 @@ class BuildGateCog(ReloadableCog):
         window = self.settings.build_gate_window_minutes
         since = discord.utils.utcnow() - timedelta(minutes=window)
         recent = await build_gate.recent(self.repo_full_name, since, exclude_id=request.id)
-        await self._edit_message(
-            request, gate_embed(request, recent=recent, window_minutes=window), view=gate_view(request)
-        )
+        await self._edit_message(request, gate_card(request, recent=recent, window_minutes=window))
 
     async def _post_preview(self, request: build_gate.BuildRequest) -> None:
         if request.channel_id is None:
@@ -299,7 +293,7 @@ class BuildGateCog(ReloadableCog):
         try:
             channel = await self._channel(request.channel_id)
             message = await channel.send(
-                embeds=preview_embeds(request), view=preview_view(request), allowed_mentions=NO_PINGS
+                view=preview_card(request), allowed_mentions=NO_PINGS
             )
             await build_gate.set_preview_message(request.id, message.id)
         except discord.HTTPException:
@@ -311,7 +305,7 @@ class BuildGateCog(ReloadableCog):
         try:
             channel = await self._channel(request.channel_id)
             await channel.get_partial_message(request.preview_message_id).edit(
-                embeds=preview_embeds(request, locked=locked), view=None if locked else preview_view(request)
+                view=preview_card(request, locked=locked)
             )
         except discord.HTTPException:
             log.exception("Couldn't edit changelog preview %s", request.preview_message_id)
@@ -350,9 +344,9 @@ class BuildGateCog(ReloadableCog):
         except Exception as error:
             log.exception("Dev jar workflow dispatch failed", extra={"event": "build_gate_dispatch_failed"})
             await build_gate.transition(claimed.id, build_gate.FAILED, from_status=build_gate.BUILDING)
-            await self._edit_message(claimed, final_embed(claimed, status=build_gate.FAILED, note=f"Couldn't start the workflow: {error}"[:200]))
+            await self._edit_message(claimed, final_card(claimed, status=build_gate.FAILED, note=f"Couldn't start the workflow: {error}"[:200]))
             return f"Couldn't start the workflow: {error}"
-        await self._edit_message(claimed, progress_embed(claimed, job=None, run=None, approver_id=approver_id))
+        await self._edit_message(claimed, progress_card(claimed, job=None, run=None, approver_id=approver_id))
         async with self._changelog_lock:
             claimed = await build_gate.get(claimed.id) or claimed
             await self._post_preview(claimed)
@@ -377,7 +371,7 @@ class BuildGateCog(ReloadableCog):
 
     async def _fail(self, request: build_gate.BuildRequest, note: str) -> None:
         if await build_gate.transition(request.id, build_gate.FAILED, from_status=build_gate.BUILDING):
-            await self._edit_message(request, final_embed(request, status=build_gate.FAILED, note=note))
+            await self._edit_message(request, final_card(request, status=build_gate.FAILED, note=note))
             await self._lock_preview(request.id)
 
     async def _find_run(self, request: build_gate.BuildRequest) -> dict | None:
@@ -429,7 +423,7 @@ class BuildGateCog(ReloadableCog):
                 status = build_gate.SUCCEEDED if ok else build_gate.FAILED
                 if await build_gate.transition(request.id, status, from_status=build_gate.BUILDING):
                     note = None if ok else f"Run conclusion: {run.get('conclusion')}"
-                    await self._edit_message(request, final_embed(request, status=status, job=job, note=note))
+                    await self._edit_message(request, final_card(request, status=status, job=job, note=note))
                     await self._lock_preview(request.id)
                 return
 
@@ -438,21 +432,19 @@ class BuildGateCog(ReloadableCog):
             if snapshot != last_snapshot:
                 last_snapshot = snapshot
                 await self._edit_message(
-                    request, progress_embed(request, job=job, run=run, approver_id=request.decided_by)
+                    request, progress_card(request, job=job, run=run, approver_id=request.decided_by)
                 )
             if time.monotonic() > deadline:
                 await self._fail(request, "Stopped tracking after 45 minutes; check the run on GitHub.")
                 return
             await asyncio.sleep(POLL_SECONDS)
 
-    async def _edit_message(
-        self, request: build_gate.BuildRequest, embed: discord.Embed, *, view: discord.ui.View | None = None
-    ) -> None:
+    async def _edit_message(self, request: build_gate.BuildRequest, view: discord.ui.DesignerView) -> None:
         if request.channel_id is None or request.message_id is None:
             return
         try:
             channel = await self._channel(request.channel_id)
-            await channel.get_partial_message(request.message_id).edit(embed=embed, view=view)
+            await channel.get_partial_message(request.message_id).edit(view=view, allowed_mentions=NO_PINGS)
         except discord.HTTPException:
             log.exception("Couldn't edit build gate message %s", request.message_id)
 

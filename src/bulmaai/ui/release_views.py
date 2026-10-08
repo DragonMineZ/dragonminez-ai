@@ -20,41 +20,41 @@ def _truncate(value: str, limit: int) -> str:
     return value[: limit - 3] + "..."
 
 
-def build_release_candidate_embed(
+STATUS_COLORS = {"Approved": discord.Color.green(), "Rejected": discord.Color.red()}
+
+
+def release_card_items(
     candidate: ReleaseCandidate,
     *,
     status: str = "Pending approval",
     actor: str | None = None,
-) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"DragonMineZ {candidate.version} release candidate",
-        url=candidate.workflow_run_url,
-        color=discord.Color.gold(),
+) -> list[discord.ui.Item]:
+    """The release candidate card's text: what's being shipped, then the notes that will go out."""
+    head = f"## DragonMineZ {candidate.version} release candidate"
+    if candidate.workflow_run_url:
+        head += f"\n[Workflow run](<{candidate.workflow_run_url}>)"
+    facts = (
+        f"**Status** {status}　**Release type** {candidate.release_type}　"
+        f"**Minecraft** {candidate.minecraft_version}　**Forge** {candidate.forge_version}\n"
+        f"**Commit** `{candidate.commit_sha}`\n**Artifact** `{candidate.artifact_name}`\n"
+        f"**Targets** {', '.join(candidate.targets)}"
     )
-    embed.add_field(name="Status", value=status, inline=True)
-    embed.add_field(name="Release Type", value=candidate.release_type, inline=True)
-    embed.add_field(name="Minecraft", value=candidate.minecraft_version, inline=True)
-    embed.add_field(name="Forge", value=candidate.forge_version, inline=True)
-    embed.add_field(name="Commit", value=f"`{candidate.commit_sha}`", inline=False)
-    embed.add_field(name="Artifact", value=f"`{candidate.artifact_name}`", inline=False)
-    embed.add_field(name="Targets", value=", ".join(candidate.targets), inline=True)
-
+    items: list[discord.ui.Item] = [discord.ui.TextDisplay(head), discord.ui.TextDisplay(facts)]
     if candidate.changelog:
-        embed.add_field(
-            name="Changelog",
-            value=_truncate(candidate.changelog, 1024),
-            inline=False,
-        )
+        items.append(discord.ui.TextDisplay(f"**Changelog**\n{_truncate(candidate.changelog, 1800)}"))
     if candidate.update_description:
-        embed.add_field(
-            name="Update Description",
-            value=_truncate(candidate.update_description, 1024),
-            inline=False,
-        )
+        items.append(discord.ui.TextDisplay(f"**Update description**\n{_truncate(candidate.update_description, 800)}"))
     if actor:
-        embed.set_footer(text=actor)
+        items.append(discord.ui.TextDisplay(f"-# {actor}"))
+    return items
 
-    return embed
+
+def release_card(candidate: ReleaseCandidate, *, status: str, actor: str | None = None) -> discord.ui.DesignerView:
+    """A decided candidate: the card without buttons."""
+    container = discord.ui.Container(
+        *release_card_items(candidate, status=status, actor=actor), color=STATUS_COLORS.get(status, discord.Color.gold())
+    )
+    return discord.ui.DesignerView(container, timeout=None)
 
 
 class ReleaseMetadataModal(discord.ui.Modal):
@@ -91,7 +91,9 @@ class ReleaseMetadataModal(discord.ui.Modal):
         await interaction.response.defer()
 
 
-class ReleaseCandidateView(discord.ui.View):
+class ReleaseCandidateView(discord.ui.DesignerView):
+    """The pending card itself, with Approve / Reject / Modify. In-memory: a restart drops the buttons' callbacks."""
+
     def __init__(
         self,
         candidate: ReleaseCandidate,
@@ -105,6 +107,23 @@ class ReleaseCandidateView(discord.ui.View):
         self._on_approve = on_approve
         self._on_reject = on_reject
         self._handled = False
+        self.approve_button = discord.ui.Button(label="Approve", style=discord.ButtonStyle.success)
+        self.reject_button = discord.ui.Button(label="Reject", style=discord.ButtonStyle.danger)
+        self.modify_button = discord.ui.Button(label="Modify", style=discord.ButtonStyle.primary)
+        self.approve_button.callback = lambda interaction: self._decide(interaction, self._on_approve)
+        self.reject_button.callback = lambda interaction: self._decide(interaction, self._on_reject)
+        self.modify_button.callback = self._modify
+        self._render()
+
+    def _render(self, actor: str | None = None) -> None:
+        self.clear_items()
+        self.add_item(
+            discord.ui.Container(
+                *release_card_items(self.candidate, actor=actor),
+                discord.ui.ActionRow(self.approve_button, self.reject_button, self.modify_button),
+                color=discord.Color.gold(),
+            )
+        )
 
     async def _require_admin(self, interaction: discord.Interaction) -> bool:
         if can_manage_release_approval(interaction.user):
@@ -130,16 +149,7 @@ class ReleaseCandidateView(discord.ui.View):
         finally:
             self._handled = decided
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
-    async def approve_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await self._decide(interaction, self._on_approve)
-
-    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger)
-    async def reject_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await self._decide(interaction, self._on_reject)
-
-    @discord.ui.button(label="Modify", style=discord.ButtonStyle.primary)
-    async def modify_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    async def _modify(self, interaction: discord.Interaction) -> None:
         if not await self._require_admin(interaction):
             return
 
@@ -151,12 +161,6 @@ class ReleaseCandidateView(discord.ui.View):
 
         self.candidate = modal.result
         if interaction.message is not None:
-            await interaction.message.edit(
-                embed=build_release_candidate_embed(
-                    self.candidate,
-                    status="Pending approval",
-                    actor=f"Modified by {interaction.user}",
-                ),
-                view=self,
-            )
+            self._render(actor=f"Modified by {interaction.user}")
+            await interaction.message.edit(view=self)
         await interaction.followup.send(f"✏️ Release publishing args updated by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())

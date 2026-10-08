@@ -17,14 +17,17 @@ from bulmaai.ui.mod_cards import (
     ALERT,
     ALERT_HANDLED_ID,
     ALERT_SUMMARY_ID,
+    alert_card,
     alert_container,
     clone_buttons,
     collapsed_alert,
     detail_dicts,
     expanded_alert,
     handled_lines,
+    quote_block,
     summary_text,
     trim_lines,
+    user_line,
 )
 from bulmaai.ui.mod_views import (
     APPEAL,
@@ -32,12 +35,13 @@ from bulmaai.ui.mod_views import (
     QUICK,
     QUICK_ACTIONS,
     TUNE,
-    allowlist_view,
-    appeal_review_view,
+    allowlist_button,
+    appeal_review_buttons,
     parse_custom_id,
-    quick_actions_view,
+    quick_action_buttons,
 )
 from bulmaai.web.core import PERMISSIONS, tier_for
+from bulmaai.ui.v2 import card
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +61,6 @@ CONFIRM_HIT_ACTIONS = {"warn", "timeout", "kick", "ban"}  # punitive clicks conf
 QUICK_TIMEOUT_SECONDS = 86400
 REPORT_ACTIONS = ("delete", "warn", "timeout", "ban", "dismiss")
 REPORT_COOLDOWN_SECONDS = 60
-HANDLED_FIELD = "Handled"
 NO_MENTIONS = discord.AllowedMentions.none()
 
 OnSubmit = Callable[[discord.Interaction, str], Awaitable[None]]
@@ -129,53 +132,19 @@ def _first_text(components) -> str | None:
 
 
 def _alert_summary(message: discord.Message | None) -> str | None:
-    """'Title: description' of the alert (embed or Components V2 card), flattened and trimmed, to prefill reasons."""
+    """The alert card's first text, flattened and trimmed, to prefill reasons."""
     if message is None:
         return None
-    embed = message.embeds[0] if message.embeds else None
-    if embed is not None:
-        text = ": ".join(part for part in (embed.title, embed.description) if part)
-    else:
-        text = (_first_text(getattr(message, "components", None) or []) or "").lstrip("# ")
+    text = (_first_text(getattr(message, "components", None) or []) or "").lstrip("# ")
     return " ".join(text.split())[:200] or None
 
 
-def _is_card(message: discord.Message) -> bool:
-    return bool(getattr(getattr(message, "flags", None), "is_components_v2", False))
-
-
 async def _mark_handled(message: discord.Message | None, line: str, custom_id: str | None = None) -> None:
-    """Records line on the alert and disables the clicked button (every quick button when custom_id is None).
-    Card alerts collapse to a one-liner (modcard:show brings the details back);
-    embed alerts get a Handled field. The buttons are rebuilt from the message's own components so the rest stay."""
-    if message is None:
-        return
-    if _is_card(message):
+    """Records line on the alert card and disables the clicked button (every quick button when custom_id is None).
+    The card collapses to a one-liner (modcard:show brings the details back); its buttons are rebuilt from the
+    message's own components so the rest stay."""
+    if message is not None:
         await _mark_card_handled(message, line, custom_id)
-        return
-    embeds = [embed.copy() for embed in message.embeds] or [discord.Embed()]
-    embed = embeds[0]
-    index = next((i for i, field in enumerate(embed.fields) if field.name == HANDLED_FIELD), None)
-    lines = (embed.fields[index].value.split("\n") if index is not None else []) + [line]
-    while len(lines) > 1 and len("\n".join(lines)) > 1024:
-        lines.pop(0)  # field limit: the oldest lines go first
-    value = "\n".join(lines)[:1024]
-    if index is not None:
-        embed.set_field_at(index, name=HANDLED_FIELD, value=value, inline=False)
-    elif len(embed.fields) < 25:
-        embed.add_field(name=HANDLED_FIELD, value=value, inline=False)
-    view = discord.ui.View.from_message(message, timeout=None)
-    for item in view.children:
-        if custom_id is None or getattr(item, "custom_id", None) == custom_id:
-            item.disabled = True
-    try:
-        await message.edit(embeds=embeds, view=view)
-    except discord.HTTPException:
-        log.warning(
-            "Couldn't update a handled moderation message",
-            exc_info=True,
-            extra={"event": "mod_handled_edit_failed", "message_id": message.id},
-        )
 
 
 async def _mark_card_handled(message: discord.Message, line: str, custom_id: str | None) -> None:
@@ -218,37 +187,42 @@ def _case_summary(cases: list[mod_cases.ModCase]) -> str:
     return "\n".join(lines)[:1024] or "None"
 
 
-def _appeal_embed(user: discord.abc.User, ban: discord.guild.BanEntry, text: str, cases, case_id: int | None):
-    embed = discord.Embed(
-        title=f"Ban appeal | Case #{case_id}" if case_id else "Ban appeal",
-        # Member-written text in a staff channel: readable, but no clickable or masked (phishing) links.
-        description=defang(text),
+def _avatar(user) -> str | None:
+    return getattr(getattr(user, "display_avatar", None), "url", None)
+
+
+def _appeal_card(user: discord.abc.User, ban: discord.guild.BanEntry, text: str, cases, case_id: int | None):
+    head = [
+        "### 📨 Ban appeal",
+        (f"**Case** #{case_id}　" if case_id else "") + f"**Ban reason** {defang(ban.reason or 'No reason given')[:500]}",
+        f"**Recent cases**\n{_case_summary(cases)}",
+    ]
+    # Member-written text in a staff channel: quoted, defanged (no clickable or masked phishing links).
+    return alert_card(
+        "\n".join(head),
+        _avatar(user),
+        appeal_review_buttons(user.id),
         color=discord.Color.blurple(),
-        timestamp=discord.utils.utcnow(),
+        snapshot=user_line(user, f"Account created {discord.utils.format_dt(user.created_at, 'R')}"),
+        quote=quote_block(text, 1000),
     )
-    created = discord.utils.format_dt(user.created_at, "R")
-    embed.add_field(name="User", value=f"{user.mention} (`{user.id}`)\nAccount created {created}", inline=False)
-    embed.add_field(name="Ban reason", value=(ban.reason or "No reason given")[:1024], inline=False)
-    embed.add_field(name="Recent cases", value=_case_summary(cases), inline=False)
-    return embed
 
 
-def _report_embed(reporter: discord.abc.User, message: discord.Message, reason: str) -> discord.Embed:
-    author = message.author
-    embed = discord.Embed(
-        title="Reported message",
-        description=defang(reason) if reason else None,
-        color=discord.Color.orange(),
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.add_field(name="Author", value=f"{author.mention} (`{author.id}`)", inline=True)
-    embed.add_field(name="Reporter", value=f"{reporter.mention} (`{reporter.id}`)", inline=True)
-    embed.add_field(name="Channel", value=f"<#{message.channel.id}>", inline=True)
-    embed.add_field(name="Message", value=defang(message.content or "*no text*")[:1000], inline=False)
+def _report_card(reporter: discord.abc.User, message: discord.Message, reason: str) -> discord.ui.DesignerView:
+    head = ["### 🚩 Reported message"]
+    if reason:
+        head.append(f"**Reason** {discord.utils.escape_markdown(defang(reason))}")
+    head.append(f"**Reporter** {reporter.mention}　**Channel** <#{message.channel.id}>")
     if message.attachments:
-        names = ", ".join(f"`{attachment.filename}`" for attachment in message.attachments[:10])
-        embed.add_field(name="Attachments", value=names[:1024], inline=False)
-    return embed
+        head.append("**Attachments** " + ", ".join(f"`{a.filename.replace('`', '')}`" for a in message.attachments[:10]))
+    return alert_card(
+        "\n".join(head)[:1800],
+        _avatar(message.author),
+        quick_action_buttons(message.author.id, actions=REPORT_ACTIONS, message=(message.channel.id, message.id)),
+        color=discord.Color.orange(),
+        snapshot=user_line(message.author),
+        quote=quote_block(message.content) or "> *no text*",
+    )
 
 
 # --- the cog -----------------------------------------------------------------------------------
@@ -491,9 +465,8 @@ class ModInteractionsCog(commands.Cog):
         )
         if hit.domains:
             if tier_for(moderator, self.settings) >= PERMISSIONS["settings.edit"]:
-                await interaction.followup.send(
-                    "Also stop flagging these domains?", view=allowlist_view(hit.id, hit.domains), ephemeral=True
-                )
+                prompt = card("Also stop flagging these domains?", buttons=[allowlist_button(hit.id, hit.domains)])
+                await interaction.followup.send(view=prompt, ephemeral=True)
             else:
                 await interaction.followup.send("An admin can allowlist these domains in Settings.", ephemeral=True)
 
@@ -535,7 +508,7 @@ class ModInteractionsCog(commands.Cog):
             "Allowlisted domains from a false-positive automod hit",
             extra={"event": "mod_tune_allowlisted", "hit_id": hit_id, "domains": merged, "user_id": interaction.user.id},
         )
-        await interaction.response.edit_message(content=f"Allowlisted: {', '.join(hit.domains)}.", view=None)
+        await interaction.response.edit_message(view=card(f"✅ Allowlisted: {', '.join(hit.domains)}.", color=discord.Color.green()))
 
     # --- appeals (modappeal:<guild_id> in the ban DM, modappeal-review:<accept|deny>:<user_id>) ---
 
@@ -607,8 +580,7 @@ class ModInteractionsCog(commands.Cog):
             if channel is None:
                 raise LookupError("no appeals or moderation log channel configured")
             await channel.send(
-                embed=_appeal_embed(user, ban, text, cases, case_id),
-                view=appeal_review_view(user.id),
+                view=_appeal_card(user, ban, text, cases, case_id),
                 allowed_mentions=NO_MENTIONS,
             )
         except (discord.HTTPException, LookupError):
@@ -717,11 +689,10 @@ class ModInteractionsCog(commands.Cog):
         self._last_report[reporter.id] = now
         await interaction.response.defer(ephemeral=True, invisible=False)
         channel = await mod_actions.staff_channel(self.bot, self.settings.moderation_reports_channel_id)
-        view = quick_actions_view(message.author.id, actions=REPORT_ACTIONS, message=(message.channel.id, message.id))
         try:
             if channel is None:
                 raise LookupError("no reports or moderation log channel configured")
-            await channel.send(embed=_report_embed(reporter, message, reason), view=view, allowed_mentions=NO_MENTIONS)
+            await channel.send(view=_report_card(reporter, message, reason), allowed_mentions=NO_MENTIONS)
         except (discord.HTTPException, LookupError):
             extra = {"event": "mod_report_post_failed", "message_id": message.id}
             log.exception("Couldn't post a message report", extra=extra)

@@ -3,7 +3,7 @@
 A dev runs ``/dmzdebug`` in-game, grabs ``<player>.log`` (or the JSON sidecar) and
 uploads it here. This cog detects such a file *by content* (not extension), parses
 it (:mod:`bulmaai.utils.dmzdebug_parser`) and replies with a compact diagnostic
-embed: core stats, form, active modifiers, quest progress, and — most usefully — a
+card: core stats, form, active modifiers, quest progress, and — most usefully — a
 party client-vs-server desync detector (see ``AI/dmzdebug-discord-parsing.md`` §7).
 """
 
@@ -13,7 +13,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from bulmaai.services.ai_guard import defang_embed
+from bulmaai.services.ai_guard import defang
 from bulmaai.utils import dmzdebug_diagnostics as diag
 from bulmaai.utils.dmzdebug_parser import (
     DebugReport,
@@ -23,6 +23,7 @@ from bulmaai.utils.dmzdebug_parser import (
     looks_like_dmzdebug,
     parse_debug,
 )
+from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, head
 
 log = logging.getLogger(__name__)
 
@@ -110,9 +111,13 @@ def _member_names(members: list) -> str:
     return ", ".join(out)
 
 
-# ── Embed builder ────────────────────────────────────────────────────────────
+# ── Card builder ─────────────────────────────────────────────────────────────
 
-def build_embed(report: DebugReport, filename: str, file_size: int | None = None) -> discord.Embed:
+def _section(name: str, value: str) -> str:
+    return f"**{name}**\n{value}"
+
+
+def build_card(report: DebugReport, filename: str, file_size: int | None = None) -> discord.ui.DesignerView:
     desync = diag.detect_party_desync(report)
     warnings = diag.collect_warnings(report, filename=filename, file_size=file_size)
 
@@ -122,27 +127,25 @@ def build_embed(report: DebugReport, filename: str, file_size: int | None = None
     elif warnings:
         colour = discord.Colour.orange()
 
-    title = f"🐉 DMZ Debug — {report.player_name or 'Unknown player'}"
-    embed = discord.Embed(title=_truncate(title, 256), colour=colour,
-                          timestamp=discord.utils.utcnow())
-    embed.set_footer(text=f"📄 {filename}")
-
-    _add_identity(embed, report)
-    _add_core_stats(embed, report)
-    _add_resources(embed, report)
-    _add_state(embed, report)
-    _add_form(embed, report)
-    _add_skills(embed, report)
-    _add_modifiers(embed, report)
-    _add_techniques(embed, report)
-    _add_quests(embed, report)
-    _add_party(embed, report, desync)
-    _add_warnings(embed, warnings)
-
-    return embed
+    # Member-uploaded file: no clickable links, pings or markdown tricks in anything we echo back.
+    name = discord.utils.escape_markdown(defang(_truncate(report.player_name or "Unknown player", 80)))
+    title = f"## 🐉 {name}\n{_identity(report)}"
+    footer = f"-# 📄 {discord.utils.escape_markdown(_truncate(filename, 100))} · DMZ debug dump"
+    groups = [
+        [_warnings(warnings)],
+        [_core_stats(report), _resources(report), _state(report), _form(report)],
+        [_skills(report), _modifiers(report), _techniques(report)],
+        [_quests(report), _party(report, desync)],
+    ]
+    blocks = ["\n".join(defang(part) for part in group if part) for group in groups]
+    items: list = [head(defang(title))]
+    for block in fit(blocks, TEXT_LIMIT - len(title) - len(footer)):
+        items += [discord.ui.Separator(), block]
+    items.append(footer)
+    return card(*items, color=colour)
 
 
-def _add_identity(embed: discord.Embed, report: DebugReport) -> None:
+def _identity(report: DebugReport) -> str:
     lines: list[str] = []
 
     # Race / Gender / Class read like a character card and belong up top.
@@ -178,11 +181,10 @@ def _add_identity(embed: discord.Embed, report: DebugReport) -> None:
     if report.scope:
         lines.append(f"🔎 Scope: `{report.scope}`")
 
-    if lines:
-        embed.add_field(name="Player", value=_truncate("\n".join(lines), 1024), inline=False)
+    return _truncate("\n".join(lines), 1024)  # sits under the card title
 
 
-def _add_core_stats(embed: discord.Embed, report: DebugReport) -> None:
+def _core_stats(report: DebugReport) -> str | None:
     stats = report.sections.get("Stats")
     if not isinstance(stats, dict) or not stats:
         return
@@ -215,10 +217,10 @@ def _add_core_stats(embed: discord.Embed, report: DebugReport) -> None:
     elif report.fmt == "text":
         value += "\n*Derived BP / Level / Max HP need the JSON dump.*"
 
-    embed.add_field(name="📊 Stats", value=_truncate(value, 1024), inline=False)
+    return _section("📊 Stats", _truncate(value, 1024))
 
 
-def _add_resources(embed: discord.Embed, report: DebugReport) -> None:
+def _resources(report: DebugReport) -> str | None:
     res = report.sections.get("Resources")
     if not isinstance(res, dict) or not res:
         return
@@ -227,11 +229,10 @@ def _add_resources(embed: discord.Embed, report: DebugReport) -> None:
         if key in res:
             parts.append(f"**{label}** {_fmt_num(res[key])}")
     if parts:
-        embed.add_field(name="🔋 Resources",
-                        value=_truncate(" · ".join(parts), 1024), inline=False)
+        return _section("🔋 Resources", _truncate(" · ".join(parts), 1024))
 
 
-def _add_state(embed: discord.Embed, report: DebugReport) -> None:
+def _state(report: DebugReport) -> str | None:
     status = report.sections.get("Status")
     if not isinstance(status, dict) or not status:
         return
@@ -248,10 +249,10 @@ def _add_state(embed: discord.Embed, report: DebugReport) -> None:
         lines.append("🎏 " + " · ".join(active))
 
     if lines:
-        embed.add_field(name="🩺 State", value=_truncate("\n".join(lines), 1024), inline=False)
+        return _section("🩺 State", _truncate("\n".join(lines), 1024))
 
 
-def _add_skills(embed: discord.Embed, report: DebugReport) -> None:
+def _skills(report: DebugReport) -> str | None:
     skills = report.sections.get("Skills")
     skill_list = skills.get("SkillsList") if isinstance(skills, dict) else None
     if not isinstance(skill_list, list) or not skill_list:
@@ -269,11 +270,10 @@ def _add_skills(embed: discord.Embed, report: DebugReport) -> None:
         entries.append(f"{star}`{name}` {lvl}{cap_txt}".strip())
 
     if entries:
-        embed.add_field(name=f"📚 Skills ({len(entries)})",
-                        value=_truncate(" · ".join(entries), 1024), inline=False)
+        return _section(f"📚 Skills ({len(entries)})", _truncate(" · ".join(entries), 1024))
 
 
-def _add_techniques(embed: discord.Embed, report: DebugReport) -> None:
+def _techniques(report: DebugReport) -> str | None:
     tech = report.sections.get("Techniques")
     if not isinstance(tech, dict) or not tech:
         return
@@ -300,11 +300,10 @@ def _add_techniques(embed: discord.Embed, report: DebugReport) -> None:
         lines.append(f"⚡ Charging `{charging}`{pct_txt}")
 
     if lines:
-        embed.add_field(name="🌀 Techniques",
-                        value=_truncate("\n".join(lines), 1024), inline=False)
+        return _section("🌀 Techniques", _truncate("\n".join(lines), 1024))
 
 
-def _add_form(embed: discord.Embed, report: DebugReport) -> None:
+def _form(report: DebugReport) -> str | None:
     char = report.sections.get("Character")
     group = form = None
     if isinstance(char, dict):
@@ -321,10 +320,10 @@ def _add_form(embed: discord.Embed, report: DebugReport) -> None:
         prev = _get(char, "PreviousForm")
         if prev:
             lines.append(f"Previous: `{prev}`")
-    embed.add_field(name="🔥 Form", value=_truncate("\n".join(lines), 1024), inline=False)
+    return _section("🔥 Form", _truncate("\n".join(lines), 1024))
 
 
-def _add_modifiers(embed: discord.Embed, report: DebugReport) -> None:
+def _modifiers(report: DebugReport) -> str | None:
     lines: list[str] = []
 
     effects = report.sections.get("Effects")
@@ -350,11 +349,10 @@ def _add_modifiers(embed: discord.Embed, report: DebugReport) -> None:
             lines.append("➕ **BonusStats on:** " + ", ".join(sorted(active)))
 
     if lines:
-        embed.add_field(name="🧪 Active Modifiers",
-                        value=_truncate("\n".join(lines), 1024), inline=False)
+        return _section("🧪 Active Modifiers", _truncate("\n".join(lines), 1024))
 
 
-def _add_quests(embed: discord.Embed, report: DebugReport) -> None:
+def _quests(report: DebugReport) -> str | None:
     q = report.quests
     lines: list[str] = []
 
@@ -381,10 +379,10 @@ def _add_quests(embed: discord.Embed, report: DebugReport) -> None:
             lines.append("🎁 Unclaimed rewards: " + ", ".join(objectives["unclaimed"]))
 
     if lines:
-        embed.add_field(name="🗺️ Quests", value=_truncate("\n".join(lines), 1024), inline=False)
+        return _section("🗺️ Quests", _truncate("\n".join(lines), 1024))
 
 
-def _add_party(embed: discord.Embed, report: DebugReport, desync: list[str]) -> None:
+def _party(report: DebugReport, desync: list[str]) -> str | None:
     party = report.party
     if not party and not desync:
         return
@@ -410,14 +408,14 @@ def _add_party(embed: discord.Embed, report: DebugReport, desync: list[str]) -> 
     elif party:
         lines.append("✅ Client and server party state agree.")
 
-    embed.add_field(name="🤝 Party", value=_truncate("\n".join(lines), 1024), inline=False)
+    return _section("🤝 Party", _truncate("\n".join(lines), 1024))
 
 
-def _add_warnings(embed: discord.Embed, warnings: list[str]) -> None:
+def _warnings(warnings: list[str]) -> str | None:
     if not warnings:
         return
     text = "\n".join(f"• {w}" for w in warnings[:8])
-    embed.add_field(name="🚨 Warnings", value=_truncate(text, 1024), inline=False)
+    return _section("🚨 Warnings", _truncate(text, 1024))
 
 
 # ── Cog ──────────────────────────────────────────────────────────────────────
@@ -457,8 +455,8 @@ class DmzDebugCog(commands.Cog):
             try:
                 async with message.channel.typing():
                     report = await asyncio.to_thread(parse_debug, text)
-                    embed = defang_embed(build_embed(report, attachment.filename, attachment.size))
-                await message.reply(embed=embed, mention_author=False)
+                    view = build_card(report, attachment.filename, attachment.size)
+                await message.reply(view=view, mention_author=False)
             except Exception:
                 log.exception("Failed to render dmzdebug dump %s", attachment.filename)
 

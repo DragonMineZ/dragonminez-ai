@@ -1,13 +1,11 @@
 import discord
 
+from bulmaai.ui.v2 import card, head, trim
 
-def _truncate(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: limit - 3] + "..."
+CONTENT_LIMIT = 3000
 
 
-def build_showcase_highlight_embed(
+def build_showcase_highlight_card(
     *,
     author_name: str,
     author_avatar_url: str | None,
@@ -16,14 +14,14 @@ def build_showcase_highlight_embed(
     reaction_count: int,
     reaction_emoji: str,
     jump_url: str,
-) -> discord.Embed:
-    embed = discord.Embed(
-        description=_truncate(content, 4096) if content else None,
-        colour=discord.Colour.gold(),
+) -> discord.ui.DesignerView:
+    """content must already be defanged (member text reposted under the bot's name)."""
+    top = f"### {reaction_emoji} Showcase highlight\n-# by **{discord.utils.escape_markdown(author_name)}**"
+    return card(
+        head(top, author_avatar_url),
+        trim(content, CONTENT_LIMIT) if content else None,
+        discord.ui.MediaGallery(discord.MediaGalleryItem(image_url)) if image_url else None,
+        f"-# {reaction_emoji} {reaction_count} reactions",
+        color=discord.Colour.gold(),
+        buttons=[discord.ui.Button(label="Original message", url=jump_url)],
     )
-    embed.set_author(name=author_name, icon_url=author_avatar_url)
-    if image_url:
-        embed.set_image(url=image_url)
-    embed.add_field(name="Reactions", value=f"{reaction_emoji} {reaction_count}", inline=True)
-    embed.add_field(name="Original", value=f"[Jump to message]({jump_url})", inline=True)
-    return embed

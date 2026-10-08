@@ -4,7 +4,7 @@ import unittest
 
 from bulmaai.services.discord_log_forwarding import (
     DiscordLogForwardingQueue,
-    build_log_embed_payload,
+    build_log_payload,
 )
 
 
@@ -32,7 +32,7 @@ class DiscordLogExtraMetadataTests(unittest.TestCase):
             user_content="raw player message",
         )
 
-        payload = build_log_embed_payload(record)
+        payload = build_log_payload(record)
 
         self.assertEqual(payload.fields["request_id"], "req-123")
         self.assertEqual(payload.fields["shard"], "west")

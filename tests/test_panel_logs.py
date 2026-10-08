@@ -26,7 +26,7 @@ class PanelLogForwardingTests(unittest.IsolatedAsyncioTestCase):
         bot.wait_until_ready = AsyncMock()
         bot.get_channel.return_value = channel
         forwarder = forwarding.DiscordLogForwarder(bot=bot, channel_id=1)
-        forwarder._queue.put_nowait(forwarding.build_log_embed_payload(record))
+        forwarder._queue.put_nowait(forwarding.build_log_payload(record))
         with patch.object(panel_logs, "record", AsyncMock()) as recorded:
             task = asyncio.create_task(forwarder._send_loop())
             await forwarder._queue.join()

@@ -7,7 +7,7 @@ from discord.ext import commands
 from bulmaai.config import Settings
 from bulmaai.services import showcase
 from bulmaai.services.ai_guard import defang
-from bulmaai.ui.showcase_views import build_showcase_highlight_embed
+from bulmaai.ui.showcase_views import build_showcase_highlight_card
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class ShowcaseCog(commands.Cog):
         if target_channel is None:
             return
 
-        embed = build_showcase_highlight_embed(
+        view = build_showcase_highlight_card(
             author_name=str(message.author),
             author_avatar_url=message.author.display_avatar.url,
             content=defang(message.content),
@@ -107,7 +107,7 @@ class ShowcaseCog(commands.Cog):
             jump_url=message.jump_url,
         )
 
-        posted = await target_channel.send(embed=embed)
+        posted = await target_channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
         await showcase.set_highlight_message_id(message.id, posted.id)
 
 

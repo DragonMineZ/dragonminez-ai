@@ -67,8 +67,8 @@ class ModDigestCog(ReloadableCog):
 
     async def _send_to(self, channel: discord.abc.Messageable, guild_id: int, now: datetime) -> None:
         data = await mod_digest.collect(guild_id, now=now, settings=self.bot.settings)
-        embeds = mod_digest.build_embeds(data, self.bot.settings)
-        await channel.send(embeds=embeds, allowed_mentions=discord.AllowedMentions.none())
+        view = mod_digest.build_view(data, self.bot.settings)
+        await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
 def setup(bot: discord.Bot) -> None:

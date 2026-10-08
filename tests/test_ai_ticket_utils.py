@@ -14,9 +14,7 @@ import discord
 
 from bulmaai.cogs.ai_tickets import (
     AITicketsCog,
-    TICKET_TOOL_BOT_ID,
     _build_resolve_view,
-    _ticket_tool_closer_id,
     _message_content,
     _parse_resolve_custom_id,
     _resolve_prompt_probability,
@@ -263,7 +261,7 @@ class ResolvePromptTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resolve_buttons_round_trip_through_custom_id(self) -> None:
         view = _build_resolve_view(requester_id=42, language="es")
-        parsed = [_parse_resolve_custom_id(item.custom_id) for item in view.children]
+        parsed = [_parse_resolve_custom_id(item.custom_id) for item in view.walk_children() if getattr(item, "custom_id", None)]
         self.assertEqual(parsed, [(True, 42, "es"), (False, 42, "es")])
         self.assertIsNone(_parse_resolve_custom_id("bug_issue:1"))
         self.assertIsNone(_parse_resolve_custom_id("ticket_resolved:yes:notanid:en"))
@@ -290,24 +288,6 @@ class ResolvePromptTests(unittest.IsolatedAsyncioTestCase):
             content,
             "it crashes\n[Image: Crash screen: NullPointerException]\n[Attachment] unseen.png\n[Attachment] notes.pdf",
         )
-
-
-class TicketToolCloseDetectionTests(unittest.TestCase):
-    def _message(self, author_id: int, *embeds: dict) -> types.SimpleNamespace:
-        return types.SimpleNamespace(
-            author=types.SimpleNamespace(id=author_id),
-            embeds=[types.SimpleNamespace(title=e.get("title"), description=e.get("description")) for e in embeds],
-        )
-
-    def test_detects_ticket_tool_close_embed_and_closer(self) -> None:
-        message = self._message(TICKET_TOOL_BOT_ID, {"description": "Ticket Closed by <@!123>"})
-        self.assertEqual(_ticket_tool_closer_id(message), 123)
-        self.assertIsNone(_ticket_tool_closer_id(self._message(TICKET_TOOL_BOT_ID, {"title": "Ticket closed by staff"})))
-
-    def test_ignores_other_ticket_tool_messages_and_other_bots(self) -> None:
-        welcome = self._message(TICKET_TOOL_BOT_ID, {"description": "Support will be with you shortly. To close this ticket react with 🔒"})
-        self.assertIs(_ticket_tool_closer_id(welcome), False)
-        self.assertIs(_ticket_tool_closer_id(self._message(1, {"description": "Ticket Closed by <@5>"})), False)
 
 
 class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
@@ -368,7 +348,7 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(upload.await_args.kwargs["attributes"]["resolved"])
         self.assertEqual(record.await_args.kwargs["openai_file_id"], "file_1")
         self.assertEqual(record.await_args.kwargs["ai_confidence"], 0.9)
-        self.assertIn("Crash on launch", channel.send.await_args.kwargs["embed"].title)
+        self.assertIn("Crash on launch", channel.send.await_args.kwargs["view"].children[0].items[0].content)
         channel.delete.assert_awaited_once()
         self.assertNotIn(10, cog._closing_channels)
 
@@ -389,17 +369,17 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.await_args.kwargs["html_token"], "p" * 32)
         self.assertEqual(record.await_args.kwargs["html_expires_at"], expires)
         # announce=False keeps staff-only details out of the ticket: only the transcript link is posted
-        channel.send.assert_awaited_once_with(f"🧾 A transcript of this ticket was created: https://tickets.example/t/{'p' * 32}")
+        self.assertIn(f"https://tickets.example/t/{'p' * 32}", channel.send.await_args.kwargs["view"].children[0].items[0].content)
         channel.send.reset_mock()
 
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
         cog._archived_channels.clear()
         with collect, summarize, upload_p, record_p, delete_p:
             await cog._close_ticket(channel, closed_by_id=5, requester_id=42, resolved=False, delete_channel=False)
-        embed = channel.send.await_args.kwargs["embed"]
-        field = next(field for field in embed.fields if field.name == "Web transcript")
-        self.assertIn(f"https://tickets.example/t/{'p' * 32}", field.value)
-        self.assertIn("<t:", field.value)
+        text = channel.send.await_args.kwargs["view"].children[0].items[0].content
+        line = next(line for line in text.splitlines() if line.startswith("**Web transcript**"))
+        self.assertIn(f"https://tickets.example/t/{'p' * 32}", line)
+        self.assertIn("<t:", line)
 
     async def test_a_failed_page_build_still_archives_the_text(self) -> None:
         cog = self._cog()
@@ -418,11 +398,10 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(16, cog._archived_channels)
 
     async def test_only_the_ticket_owner_gets_the_solved_buttons(self) -> None:
-        from bulmaai.cogs.ai_tickets import TICKET_TOOL_BOT_ID
-
         cog = self._cog()
+        cog.bot.user = types.SimpleNamespace(id=1)  # our tickets cog posts the welcome that mentions the owner
         welcome = types.SimpleNamespace(
-            author=types.SimpleNamespace(id=TICKET_TOOL_BOT_ID),
+            author=types.SimpleNamespace(id=1),
             mentions=[types.SimpleNamespace(id=42, bot=False)],
         )
 
@@ -444,7 +423,7 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
 
         upload.assert_not_awaited()
 
-    async def test_ticket_tool_close_archives_once_without_deleting(self) -> None:
+    async def test_close_archives_once_without_deleting(self) -> None:
         cog = self._cog()
         channel = self._channel(12)
         channel.send = AsyncMock(side_effect=discord.NotFound(types.SimpleNamespace(status=404, reason="gone"), "gone"))

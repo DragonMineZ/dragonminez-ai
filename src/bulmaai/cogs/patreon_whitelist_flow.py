@@ -967,18 +967,13 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 new_nickname,
             )
 
-        await _send_message(
-            destination,
-            "Hey, you already are whitelisted, but we can update your username. "
-            f"Your old username `{old_nickname}` will be changed to `{new_nickname}`. Continue?",
-            ephemeral=ephemeral,
-            view=UsernameUpdateConfirmView(
-                requester_id=member.id,
-                old_nickname=old_nickname,
-                new_nickname=new_nickname,
-                on_confirm=confirm,
-            ),
+        view = UsernameUpdateConfirmView(
+            requester_id=member.id,
+            old_nickname=old_nickname,
+            new_nickname=new_nickname,
+            on_confirm=confirm,
         )
+        await destination.send(view=view, **({"ephemeral": True} if ephemeral else {}))
 
     async def _confirm_username_update(
         self,

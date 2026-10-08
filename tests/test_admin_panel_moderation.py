@@ -16,6 +16,7 @@ from bulmaai.services.member_activity import MemberActivity
 from bulmaai.services.mod_cases import ModCase
 from bulmaai.web.core import SESSION_COOKIE, sign_session
 from bulmaai.web.server import create_app
+from v2_helpers import buttons
 
 SECRET = "test-secret"
 HELPER_ROLE = 1341595261960589343
@@ -190,7 +191,7 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.record.await_args.kwargs["duration_seconds"], 7 * 86400)
         self.assertIsNotNone(self.record.await_args.kwargs["expires_at"])
         dm_view = self.members[RANDOM_ID].send.await_args.kwargs["view"]
-        self.assertTrue(dm_view.children[0].custom_id.startswith("modappeal:"))
+        self.assertTrue(buttons(dm_view)[0].custom_id.startswith("modappeal:"))
 
         self.guild.unban.reset_mock()
         response = await self.post(f"/api/users/{RANDOM_ID}/softban", {"reason": "spam"})

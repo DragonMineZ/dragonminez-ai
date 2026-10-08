@@ -25,7 +25,7 @@ from bulmaai.services.release_approval import (
 )
 from bulmaai.ui.release_views import (
     ReleaseCandidateView,
-    build_release_candidate_embed,
+    release_card_items,
     can_manage_release_approval,
 )
 
@@ -164,17 +164,6 @@ class ReleaseApprovalTests(unittest.TestCase):
         self.assertTrue(can_manage_release_approval(admin))
         self.assertFalse(can_manage_release_approval(staff_non_admin))
 
-    def test_release_candidate_embed_exposes_safety_fields(self) -> None:
-        candidate = parse_release_candidate_payload(VALID_PAYLOAD)
-
-        embed = build_release_candidate_embed(candidate)
-        field_values = {field.name: field.value for field in embed.fields}
-
-        self.assertIn("DragonMineZ 2.1.2", embed.title)
-        self.assertEqual(field_values["Commit"], "`approved-main-commit`")
-        self.assertIn("modrinth", field_values["Targets"])
-        self.assertEqual(embed.url, "https://github.com/DragonMineZ/dragonminez/actions/runs/123")
-
     def test_release_webhook_does_not_start_without_secret(self) -> None:
         settings = type(
             "Settings",
@@ -199,6 +188,14 @@ class ReleaseApprovalTests(unittest.TestCase):
 
 
 class ReleaseViewTests(unittest.IsolatedAsyncioTestCase):  # py-cord Views need a running loop
+    async def test_release_candidate_card_exposes_safety_fields(self) -> None:
+        candidate = parse_release_candidate_payload(VALID_PAYLOAD)
+        text = "\n".join(item.content for item in release_card_items(candidate))
+        self.assertIn("DragonMineZ 2.1.2", text)
+        self.assertIn("**Commit** `approved-main-commit`", text)
+        self.assertIn("modrinth", text)
+        self.assertIn("https://github.com/DragonMineZ/dragonminez/actions/runs/123", text)
+
     async def test_concurrent_approve_clicks_dispatch_once(self) -> None:
         dispatched = []
         github = asyncio.Event()

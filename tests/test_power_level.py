@@ -16,7 +16,8 @@ from bulmaai.services.member_activity import (
     parse_role_reward_map,
     xp_threshold,
 )
-from bulmaai.ui.power_level_views import build_leaderboard_embed, build_power_level_embed
+from bulmaai.ui.power_level_views import build_leaderboard_card, build_power_level_card
+from v2_helpers import text
 
 
 class LevelCurveTests(unittest.TestCase):
@@ -63,35 +64,29 @@ class RoleRewardMapTests(unittest.TestCase):
         )
 
 
-class PowerLevelEmbedTests(unittest.TestCase):
-    def test_build_power_level_embed_reports_progress_to_next_level(self) -> None:
-        embed = build_power_level_embed(
+class PowerLevelCardTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a running loop
+    async def test_power_level_card_reports_progress_to_next_level(self) -> None:
+        view = build_power_level_card(
             display_name="Goku",
             avatar_url="https://example.test/avatar.png",
             xp=125,
             level=1,
         )
-        field_values = {field.name: field.value for field in embed.fields}
+        card_text = text(view)
 
-        self.assertIn("Goku", embed.title)
-        self.assertEqual(field_values["Power Level"], "1")
-        self.assertEqual(field_values["Total XP"], "125")
-        self.assertEqual(field_values["Progress to Next Level"], "75 / 150 XP (50%)")
+        self.assertIn("## ⚡ Goku's Power Level", card_text)
+        self.assertIn("**Level** 1　**Total XP** 125", card_text)
+        self.assertIn("`▰▰▰▰▰▱▱▱▱▱` 75 / 150 XP (50%)", card_text)
+        self.assertIn("-# to level 2", card_text)
 
-    def test_build_leaderboard_embed_orders_and_ranks_entries(self) -> None:
-        embed = build_leaderboard_embed(
-            guild_name="DragonMineZ",
-            entries=[("Goku", 500, 3), ("Vegeta", 300, 2)],
-        )
+    async def test_leaderboard_card_orders_and_ranks_entries(self) -> None:
+        card_text = text(build_leaderboard_card(guild_name="DragonMineZ", entries=[("Goku", 500, 3), ("Vegeta", 300, 2)]))
 
-        self.assertIn("#1", embed.description)
-        self.assertIn("Goku", embed.description)
-        self.assertLess(embed.description.index("Goku"), embed.description.index("Vegeta"))
+        self.assertIn("🥇 Goku · Level 3 (500 XP)", card_text)
+        self.assertLess(card_text.index("Goku"), card_text.index("Vegeta"))
 
-    def test_build_leaderboard_embed_handles_no_entries(self) -> None:
-        embed = build_leaderboard_embed(guild_name="DragonMineZ", entries=[])
-
-        self.assertEqual(embed.description, "No one has powered up yet.")
+    async def test_leaderboard_card_handles_no_entries(self) -> None:
+        self.assertIn("No one has powered up yet.", text(build_leaderboard_card(guild_name="DragonMineZ", entries=[])))
 
 
 def _fake_member(*, user_id: int, guild, bot: bool = False) -> MagicMock:

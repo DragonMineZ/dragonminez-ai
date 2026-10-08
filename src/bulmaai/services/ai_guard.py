@@ -80,15 +80,6 @@ def defang(text: str) -> str:
     return defuse_mentions(text).replace("](", "]​(").replace("://", ":​//")
 
 
-def defang_embed(embed):
-    """defang() every member-controlled text slot of a bot-built embed, in place."""
-    if embed.description:
-        embed.description = defang(embed.description)
-    for index, item in enumerate(embed.fields):
-        embed.set_field_at(index, name=defang(item.name), value=defang(item.value), inline=item.inline)
-    return embed
-
-
 def _link_is_ours(url: str, wiki_host: str | None) -> bool:
     parts = urlsplit(url if "://" in url else f"//{url}")
     host = (parts.hostname or "").removeprefix("www.")

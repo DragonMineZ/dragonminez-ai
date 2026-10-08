@@ -14,14 +14,16 @@ from bulmaai.services.patreon_state import (
     get_patreon_campaign_state,
     upsert_patreon_campaign_state,
 )
-from bulmaai.ui.patreon_views import PatreonWelcomeView
+from bulmaai.ui.patreon_views import welcome_buttons
 from bulmaai.utils.lifecycle import ReloadableCog
+from bulmaai.ui.v2 import card, head, trim
 
 logger = logging.getLogger(__name__)
 
 PATREON_API = "https://www.patreon.com/api/oauth2/v2"
 PATREON_SITE = "https://www.patreon.com"
 PATREON_COLOUR = discord.Colour.from_rgb(255, 85, 0)
+PATREON_ICON = "https://c5.patreon.com/external/favicon/favicon-32x32.png"
 PATREON_POST_PAGE_SIZE = 50
 PATREON_POST_MAX_PAGES = 20
 PATREON_POST_ID_RE = re.compile(r"(?<!\d)(\d{6,})(?!\d)")
@@ -142,78 +144,61 @@ def _extract_embed_image_url(embed_data: dict) -> str | None:
     return None
 
 
-def _build_post_embed(post_data: dict, *, is_public: bool) -> discord.Embed:
+def _build_post_card(post_data: dict, *, is_public: bool) -> discord.ui.DesignerView:
     attrs = post_data.get("attributes", {})
-    title = attrs.get("title") or "New Patreon Post"
+    title = discord.utils.escape_markdown(attrs.get("title") or "New Patreon Post")
     url = _normalize_post_url(post_data)
-    content = attrs.get("content") or ""
-    content_text = _strip_html(content)
+    content_text = _strip_html(attrs.get("content") or "")
     embed_data = _get_embed_data(attrs)
     embed_subject = (embed_data.get("subject") or "").strip()
     embed_description = (embed_data.get("description") or "").strip()
     embed_provider = (embed_data.get("provider") or "").strip()
 
     if is_public:
-        description_source = content_text or embed_description or "A new public Patreon post is live."
+        description = content_text or embed_description or "A new public Patreon post is live."
         if content_text and embed_description and embed_description not in content_text:
-            description_source = f"{content_text}\n\n{embed_description}"
-        description = description_source
+            description = f"{content_text}\n\n{embed_description}"
         description = _truncate(description, PUBLIC_POST_DESCRIPTION_LIMIT)
-        visibility = "Public - Everyone!"
+        visibility = "🌍 Public, everyone can read it"
     else:
-        description = (
-            "A new Patreon post is live! Click the link to view information about it or join the Patreon to see the whole post!"
-        )
-        visibility = "Patrons Only"
+        description = "A new Patreon post is live! Open it to see what it's about, or join the Patreon to read the whole post."
+        visibility = "🔒 Patrons only"
 
-    embed = discord.Embed(
-        title=title,
-        url=url,
-        description=description,
-        colour=PATREON_COLOUR,
-    )
-    embed.set_author(
-        name="New Patreon Post",
-        icon_url="https://c5.patreon.com/external/favicon/favicon-32x32.png",
-    )
-    embed.add_field(name="Visibility", value=visibility, inline=True)
-
+    top = f"-# New Patreon post · {visibility}\n## " + (f"[{title}]({url})" if url else title)
+    media = None
     if is_public and (embed_subject or embed_provider):
-        media_summary = embed_subject or "Embedded media available"
-        if embed_provider:
-            media_summary = f"{media_summary}\nProvider: {embed_provider}"
-        embed.add_field(name="Embedded Media", value=_truncate(media_summary, 1024), inline=False)
-
-    if is_public:
-        image_url = _extract_embed_image_url(embed_data)
-        if image_url:
-            embed.set_image(url=image_url)
-
-    published_at = _parse_published_at(attrs.get("published_at"))
-    if published_at is not None:
-        embed.timestamp = published_at
-
-    embed.set_footer(text="Patreon | DragonMineZ")
-    return embed
+        media = "🎬 " + " · ".join(part for part in (embed_subject or "Embedded media", embed_provider) if part)
+    image_url = _extract_embed_image_url(embed_data) if is_public else None
+    footer = "Patreon · DragonMineZ"
+    if published_at := _parse_published_at(attrs.get("published_at")):
+        footer += f" · {discord.utils.format_dt(published_at, 'f')}"
+    return card(
+        head(top, PATREON_ICON),
+        description,
+        trim(media, 300) if media else None,
+        discord.ui.MediaGallery(discord.MediaGalleryItem(image_url)) if image_url else None,
+        f"-# {footer}",
+        color=PATREON_COLOUR,
+        buttons=_build_post_buttons(post_data),
+    )
 
 
-def _build_post_view(post_data: dict) -> discord.ui.View | None:
+def _build_post_buttons(post_data: dict) -> list[discord.ui.Button]:
     attrs = post_data.get("attributes", {})
     url = _normalize_post_url(post_data)
     if not url:
-        return None
+        return []
 
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Open on Patreon", url=url))
+    buttons = [discord.ui.Button(label="Open on Patreon", url=url)]
 
     if attrs.get("is_public"):
         embed_url = (attrs.get("embed_url") or "").strip()
         if embed_url and embed_url.startswith(("http://", "https://")) and embed_url != url:
             provider = (_get_embed_data(attrs).get("provider") or "").strip()
             label = f"Open {provider}" if provider else "Open Embedded Media"
-            view.add_item(discord.ui.Button(label=_truncate(label, 80), url=embed_url))
+            buttons.append(discord.ui.Button(label=_truncate(label, 80), url=embed_url))
 
-    return view
+    return buttons
 
 
 def _render_welcome_text(template: str, *, member: discord.Member, role: discord.Role) -> str:
@@ -230,51 +215,34 @@ def _render_welcome_text(template: str, *, member: discord.Member, role: discord
     return rendered
 
 
-def _build_channel_welcome_embed(*, member: discord.Member, role: discord.Role) -> discord.Embed:
-    embed = discord.Embed(
-        title=_render_welcome_text(PATREON_WELCOME_CHANNEL_TITLE, member=member, role=role) or None,
-        description=_render_welcome_text(
-            PATREON_WELCOME_CHANNEL_DESCRIPTION,
-            member=member,
-            role=role,
-        ) or None,
-        colour=PATREON_COLOUR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.set_thumbnail(url=member.display_avatar.url)
+def _build_channel_welcome_card(*, member: discord.Member, role: discord.Role) -> discord.ui.DesignerView:
+    title = _render_welcome_text(PATREON_WELCOME_CHANNEL_TITLE, member=member, role=role)
+    description = _render_welcome_text(PATREON_WELCOME_CHANNEL_DESCRIPTION, member=member, role=role)
     footer = _render_welcome_text(PATREON_WELCOME_CHANNEL_FOOTER, member=member, role=role)
-    if footer:
-        embed.set_footer(text=footer)
-    return embed
+    return card(
+        head(f"## 🎉 {title}\n{description}", member.display_avatar.url),
+        f"-# {footer}" if footer else None,
+        color=PATREON_COLOUR,
+    )
 
 
-def _build_dm_welcome_embed(*, member: discord.Member, role: discord.Role) -> discord.Embed:
-    embed = discord.Embed(
-        title=_render_welcome_text(PATREON_WELCOME_DM_TITLE, member=member, role=role) or None,
-        description=_render_welcome_text(
-            PATREON_WELCOME_DM_DESCRIPTION,
-            member=member,
-            role=role,
-        ) or None,
-        colour=PATREON_COLOUR,
-        timestamp=datetime.now(timezone.utc),
+def _build_dm_welcome_card(
+    *, member: discord.Member, role: discord.Role, buttons: list[discord.ui.Button] | None = None
+) -> discord.ui.DesignerView:
+    def render(template: str) -> str:
+        return _render_welcome_text(template, member=member, role=role)
+
+    steps = "\n".join(f"**{name}**\n{render(value)}" for name, value in PATREON_WELCOME_DM_STEPS)
+    footer = render(PATREON_WELCOME_DM_FOOTER)
+    return card(
+        head(f"## {render(PATREON_WELCOME_DM_TITLE)}\n{render(PATREON_WELCOME_DM_DESCRIPTION)}", member.display_avatar.url),
+        discord.ui.Separator(),
+        steps,
+        render(PATREON_WELCOME_DM_NOTE),
+        f"-# {footer}" if footer else None,
+        color=PATREON_COLOUR,
+        buttons=buttons,
     )
-    for step_name, step_value in PATREON_WELCOME_DM_STEPS:
-        embed.add_field(
-            name=step_name,
-            value=_render_welcome_text(step_value, member=member, role=role),
-            inline=False,
-        )
-    embed.add_field(
-        name="​",
-        value=_render_welcome_text(PATREON_WELCOME_DM_NOTE, member=member, role=role),
-        inline=False,
-    )
-    embed.set_thumbnail(url=member.display_avatar.url)
-    footer = _render_welcome_text(PATREON_WELCOME_DM_FOOTER, member=member, role=role)
-    if footer:
-        embed.set_footer(text=footer)
-    return embed
 
 
 def _downloads_channel_url(member: discord.Member, channel_id: int | None) -> str | None:
@@ -366,17 +334,20 @@ class PatreonAnnouncementsCog(ReloadableCog):
         welcome_channel = await self._resolve_patreon_welcome_channel()
         if welcome_channel is not None:
             await welcome_channel.send(
-                embed=_build_channel_welcome_embed(member=member, role=role),
+                view=_build_channel_welcome_card(member=member, role=role),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
 
         try:
             await member.send(
-                embed=_build_dm_welcome_embed(member=member, role=role),
-                view=PatreonWelcomeView(
-                    downloads_channel_url=_downloads_channel_url(
-                        member,
-                        self.bot.settings.dev_jar_download_channel_id,
+                view=_build_dm_welcome_card(
+                    member=member,
+                    role=role,
+                    buttons=welcome_buttons(
+                        downloads_channel_url=_downloads_channel_url(
+                            member,
+                            self.bot.settings.dev_jar_download_channel_id,
+                        ),
                     ),
                 ),
                 allowed_mentions=discord.AllowedMentions.none(),
@@ -570,11 +541,9 @@ class PatreonAnnouncementsCog(ReloadableCog):
         post_data: dict,
     ) -> None:
         attrs = post_data.get("attributes", {})
-        post_url = _normalize_post_url(post_data)
+        # V2 messages have no content (and no link preview); the card's title and button link the post.
         await channel.send(
-            content=post_url,
-            embed=_build_post_embed(post_data, is_public=bool(attrs.get("is_public"))),
-            view=_build_post_view(post_data),
+            view=_build_post_card(post_data, is_public=bool(attrs.get("is_public"))),
             allowed_mentions=discord.AllowedMentions.none(),
         )
         logger.info("Announced Patreon post %s: %s", post_data["id"], attrs.get("title"))

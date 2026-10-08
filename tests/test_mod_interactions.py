@@ -314,12 +314,12 @@ class AppealTests(Base):
         self.assertEqual(handled(review), "Accepted by <@2> | case #13")
 
     async def test_deny_needs_mod_ban_and_records_a_note(self):
-        moderator = self.member(3, MOD_ROLE)
-        inter = self.interaction("modappeal-review:deny:5", moderator, guild=self.guild)
+        helper = self.member(3, HELPER_ROLE)
+        inter = self.interaction("modappeal-review:deny:5", helper, guild=self.guild)
         await self.cog.on_interaction(inter)
         inter.response.send_modal.assert_not_awaited()
 
-        admin = self.member(2, ADMIN_ROLE)
+        admin = self.member(2, MOD_ROLE)
         review = staff_message(appeal_review_view(5))
         inter = self.interaction("modappeal-review:deny:5", admin, guild=self.guild, message=review)
         with patch(PERFORM, AsyncMock(return_value=ActionResult(action="note", case_id=14))) as perform:

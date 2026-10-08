@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 
 import discord
@@ -18,7 +19,8 @@ from bulmaai.ui.power_level_views import build_leaderboard_card, build_power_lev
 
 log = logging.getLogger(__name__)
 
-XP_PER_MESSAGE = 15
+MIN_XP_PER_MESSAGE = 10
+MAX_XP_PER_MESSAGE = 25
 MESSAGE_COOLDOWN_SECONDS = 60.0
 MAX_LEADERBOARD_SIZE = 25
 
@@ -95,8 +97,9 @@ class PowerLevelCog(commands.Cog):
         if self._on_cooldown(message.guild.id, message.author.id, now=time.monotonic()):
             return
 
-        new_xp = await award_xp(message.guild.id, message.author.id, XP_PER_MESSAGE)
-        previous_level = level_for_xp(new_xp - XP_PER_MESSAGE)
+        gained = random.randint(MIN_XP_PER_MESSAGE, MAX_XP_PER_MESSAGE)
+        new_xp = await award_xp(message.guild.id, message.author.id, gained)
+        previous_level = level_for_xp(new_xp - gained)
         new_level = level_for_xp(new_xp)
         if new_level == previous_level:
             return

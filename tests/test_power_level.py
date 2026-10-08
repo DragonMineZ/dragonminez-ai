@@ -10,7 +10,7 @@ os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
 os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
-from bulmaai.cogs.power_level import XP_PER_MESSAGE, PowerLevelCog
+from bulmaai.cogs.power_level import MAX_XP_PER_MESSAGE, MIN_XP_PER_MESSAGE, PowerLevelCog
 from bulmaai.services.member_activity import (
     level_for_xp,
     parse_role_reward_map,
@@ -216,7 +216,9 @@ class PowerLevelMessageAwardTests(unittest.IsolatedAsyncioTestCase):
             await cog._award_message_xp(message)
             await cog._award_message_xp(message)
 
-        award_mock.assert_called_once_with(1, 9, XP_PER_MESSAGE)
+        award_mock.assert_called_once()
+        gained = award_mock.call_args.args[2]
+        assert MIN_XP_PER_MESSAGE <= gained <= MAX_XP_PER_MESSAGE
 
     async def test_level_up_persists_level_and_grants_reward_role(self) -> None:
         cog = self._cog(power_level_role_rewards='{"1": 777}')

@@ -118,20 +118,21 @@ def hit(**overrides) -> AutomodHit:
 class FeedbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_false_positive_undoes_warn_timeout_and_scam_hash(self):
         moderator = SimpleNamespace(id=2)
+        bot = SimpleNamespace()
         with (
             patch("bulmaai.services.automod_hits.set_outcome", AsyncMock(return_value=True)),
-            patch("bulmaai.services.mod_cases.deactivate_case", AsyncMock(return_value=object())) as deactivate,
+            patch("bulmaai.services.mod_actions.end_case", AsyncMock(return_value=object())) as deactivate,
             patch("bulmaai.services.mod_actions.perform", AsyncMock()) as perform,
             patch("bulmaai.services.scam_images.remove", AsyncMock(return_value=True)) as remove,
             patch("bulmaai.services.scam_images.remove_by_note", AsyncMock(return_value=2)) as unlearn,
         ):
             undone = await automod_hits.mark_false_positive(
-                SimpleNamespace(), SimpleNamespace(id=1), hit(warn_case_id=3, timed_out=True, scam_hash_id=4), moderator
+                bot, SimpleNamespace(id=1), hit(warn_case_id=3, timed_out=True, scam_hash_id=4), moderator
             )
         self.assertEqual(len(undone), 4)
         self.assertIn("2 auto-learned image(s) unlearned", undone)
         unlearn.assert_awaited_once_with("automod hit #7 (auto)")
-        deactivate.assert_awaited_once_with(1, 3)
+        deactivate.assert_awaited_once_with(bot, 1, 3, ended_by=2, note="false positive")
         self.assertEqual(perform.await_args.kwargs["action"], "untimeout")
         remove.assert_awaited_once_with(4)
 

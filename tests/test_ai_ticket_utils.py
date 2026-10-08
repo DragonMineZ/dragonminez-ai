@@ -317,7 +317,6 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
             openai_ticket_vector_store_id="vs_tickets",
             openai_support_vector_store_ids=(),
             ai_support_timeout_seconds=5,
-            ai_ticket_transcript_channel_id=None,
             ai_ticket_close_delay_seconds=0,
             ai_ticket_escalation_role_ids=(111, 222),
             ai_ticket_category_id=77,

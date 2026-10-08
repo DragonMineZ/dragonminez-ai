@@ -12,6 +12,7 @@ os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
+from discord.components import _component_factory
 
 from bulmaai.cogs.moderation import _HUMAN_SHAPED_REASONS, _WARN_REASONS, ModerationCog, _Incident
 from bulmaai.services.mod_actions import ActionResult
@@ -47,13 +48,16 @@ class FakeAttachment:
 class FakeLogMessage:
     def __init__(self, message_id: int = 8888) -> None:
         self.id = message_id
-        self.embeds: list = []
+        self.components: list = []
         self.edit_calls: list = []
+
+    def show(self, view) -> None:
+        self.components = [_component_factory(payload) for payload in view.to_components()]
 
     async def edit(self, **kwargs) -> None:
         self.edit_calls.append(kwargs)
-        if "embed" in kwargs:
-            self.embeds = [kwargs["embed"]]
+        if "view" in kwargs:
+            self.show(kwargs["view"])
 
 
 class FakeLogChannel:
@@ -64,8 +68,7 @@ class FakeLogChannel:
     async def send(self, **kwargs):
         self.sent.append(kwargs)
         message = FakeLogMessage()
-        if "embed" in kwargs:
-            message.embeds = [kwargs["embed"]]
+        message.show(kwargs["view"])
         return message
 
 
@@ -106,7 +109,6 @@ DEFAULT_SETTINGS = dict(
     moderation_image_burst_window_seconds=20,
     moderation_image_burst_count=3,
     moderation_log_channel_id=None,
-    discord_log_channel_id=None,
     moderation_scam_images_enabled=True,
     moderation_disabled_filters=(),
     moderation_scam_images_enforce=False,
@@ -430,11 +432,18 @@ class QuickActionsViewTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+def _texts(components) -> list[str]:
+    return [c.content for c in ModerationCog._walk_components(components) if getattr(c, "content", None)]
+
+
 class ImageAlertPreviewTests(unittest.IsolatedAsyncioTestCase):
-    async def test_send_log_uploads_a_preview_and_points_the_embed_at_it(self) -> None:
+    async def test_send_log_uploads_previews_and_shows_them_in_a_gallery(self) -> None:
         guild, author = _guild_and_author()
-        attachment = FakeAttachment(filename="scam.png")
-        message = _make_message(1, guild, author, channel_id=10, attachments=[attachment])
+        attachments = [
+            FakeAttachment(filename="scam.png", url="https://cdn/1.png"),
+            FakeAttachment(filename="scam.png", url="https://cdn/2.png"),
+        ]
+        message = _make_message(1, guild, author, channel_id=10, attachments=attachments)
         log_channel = FakeLogChannel()
         cog = _make_cog(log_channel=log_channel)
         decision = ModerationDecision(
@@ -447,17 +456,25 @@ class ImageAlertPreviewTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.services.automod_hits.record_hit", AsyncMock(return_value=1)),
             patch("bulmaai.services.automod_hits.update_hit", AsyncMock()),
             patch("bulmaai.services.scam_images.fetch_preview", AsyncMock(return_value=b"bytes")) as fetch_preview,
+            patch.object(ModerationCog, "_user_snapshot", AsyncMock(return_value="snap")),
         ):
             await cog._apply_decision(message, decision)
 
-        fetch_preview.assert_awaited_once_with(attachment)
-        self.assertEqual(len(log_channel.sent), 1)
+        self.assertEqual(fetch_preview.await_count, 2)
         sent_kwargs = log_channel.sent[0]
-        self.assertIsInstance(sent_kwargs["file"], discord.File)
-        self.assertEqual(sent_kwargs["embed"].image.url, "attachment://scam.png")
-        custom_ids = [child.custom_id for child in sent_kwargs["view"].children]
+        self.assertEqual([f.filename for f in sent_kwargs["files"]], ["scam.png", "1_scam.png"])
+        gallery = next(c for c in ModerationCog._walk_components(self._components(sent_kwargs)) if getattr(c, "items", None))
+        self.assertEqual(
+            [item.media.url for item in gallery.items], ["attachment://scam.png", "attachment://1_scam.png"]
+        )
+        container = sent_kwargs["view"].children[0]
+        custom_ids = [child.custom_id for child in container.get_item(902).children]
         self.assertIn(f"{QUICK}:learn:{author.id}:10:1", custom_ids)
         self.assertIn(f"{QUICK}:falsepos:{author.id}", custom_ids)
+
+    @staticmethod
+    def _components(sent_kwargs):
+        return [_component_factory(payload) for payload in sent_kwargs["view"].to_components()]
 
     async def test_failed_preview_fetch_still_sends_the_alert(self) -> None:
         guild, author = _guild_and_author()
@@ -470,13 +487,14 @@ class ImageAlertPreviewTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.services.automod_hits.record_hit", AsyncMock(return_value=1)),
             patch("bulmaai.services.automod_hits.update_hit", AsyncMock()),
             patch("bulmaai.services.scam_images.fetch_preview", AsyncMock(return_value=None)),
+            patch.object(ModerationCog, "_user_snapshot", AsyncMock(return_value="snap")),
         ):
             await cog._apply_decision(message, decision)
 
         self.assertEqual(len(log_channel.sent), 1)
-        self.assertNotIn("file", log_channel.sent[0])
+        self.assertNotIn("files", log_channel.sent[0])
 
-    async def test_debounced_update_carries_the_image_url_forward(self) -> None:
+    async def test_debounced_update_carries_the_gallery_forward(self) -> None:
         from bulmaai.cogs import moderation as moderation_cog
 
         self.addCleanup(
@@ -485,8 +503,7 @@ class ImageAlertPreviewTests(unittest.IsolatedAsyncioTestCase):
         moderation_cog.LOG_UPDATE_DEBOUNCE_SECONDS = 0
 
         guild, author = _guild_and_author()
-        attachment = FakeAttachment(filename="scam.png")
-        message = _make_message(1, guild, author, attachments=[attachment])
+        message = _make_message(1, guild, author, attachments=[FakeAttachment(filename="scam.png")])
         log_channel = FakeLogChannel()
         cog = _make_cog(log_channel=log_channel)
         decision = ModerationDecision(action=ModerationAction.DELETE, reason="scam_image")
@@ -495,21 +512,76 @@ class ImageAlertPreviewTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.services.automod_hits.record_hit", AsyncMock(return_value=1)),
             patch("bulmaai.services.automod_hits.update_hit", AsyncMock()),
             patch("bulmaai.services.scam_images.fetch_preview", AsyncMock(return_value=b"bytes")),
+            patch.object(ModerationCog, "_user_snapshot", AsyncMock(return_value="snap-once")),
         ):
             await cog._apply_decision(message, decision)
 
         incident = cog._incidents[(guild.id, author.id)]
-        original_image_url = incident.log_message.embeds[0].image.url
-        self.assertEqual(original_image_url, "attachment://scam.png")
+        self.assertEqual(ModerationCog._existing_gallery(incident), ("attachment://scam.png",))
 
         incident.revision = 1  # pretend a follow-up hit landed, the way _schedule_log_update would
         await cog._flush_log_update(incident)
 
         self.assertEqual(len(incident.log_message.edit_calls), 1)
         edit_kwargs = incident.log_message.edit_calls[0]
-        self.assertNotIn("file", edit_kwargs)
+        self.assertNotIn("files", edit_kwargs)
         self.assertNotIn("attachments", edit_kwargs)
-        self.assertEqual(edit_kwargs["embed"].image.url, original_image_url)
+        self.assertEqual(ModerationCog._existing_gallery(incident), ("attachment://scam.png",))
+        self.assertIn("snap-once", _texts(incident.log_message.components))  # the snapshot is reused
+
+    async def test_alert_card_quotes_the_message_and_has_no_jump_link(self) -> None:
+        guild, author = _guild_and_author()
+        message = _make_message(1, guild, author, attachments=[FakeAttachment()])
+        message.content = "free nitro\nhttps://evil.example/x @everyone"
+        log_channel = FakeLogChannel()
+        cog = _make_cog(log_channel=log_channel)
+        decision = ModerationDecision(action=ModerationAction.DELETE, reason="blocked_domain")
+
+        with (
+            patch("bulmaai.services.automod_hits.record_hit", AsyncMock(return_value=1)),
+            patch("bulmaai.services.automod_hits.update_hit", AsyncMock()),
+            patch("bulmaai.services.scam_images.fetch_preview", AsyncMock(return_value=None)),
+            patch.object(ModerationCog, "_user_snapshot", AsyncMock(return_value="👤 **bob** (`3`)")),
+        ):
+            await cog._apply_decision(message, decision)
+
+        texts = _texts([_component_factory(p) for p in log_channel.sent[0]["view"].to_components()])
+        joined = "\n".join(texts)
+        self.assertNotIn("Jump to message", joined)
+        self.assertNotIn(message.jump_url, joined)
+        self.assertIn("### 🚨 Moderation Alert · blocked_domain", texts[0])
+        self.assertIn("👤 **bob** (`3`)", texts)
+        quote = next(t for t in texts if t.startswith("> "))
+        self.assertIn("> free nitro", quote)
+        self.assertNotIn("://", quote)  # defanged
+        self.assertTrue(quote.endswith("-# 1 attachment"))
+
+    async def test_user_snapshot_survives_a_database_failure(self) -> None:
+        guild, author = _guild_and_author()
+        message = _make_message(1, guild, author)
+        cog = _make_cog()
+        cog.bot.settings.moderation_warn_ladder = "2/7d=24h"
+
+        with patch("bulmaai.services.mod_cases.list_cases", AsyncMock(side_effect=OSError("down"))):
+            text = await cog._user_snapshot(message)
+
+        self.assertTrue(text.startswith("👤 **"))
+        self.assertNotIn("prior case", text)
+
+    async def test_user_snapshot_shows_cases_and_the_warn_ladder(self) -> None:
+        guild, author = _guild_and_author()
+        message = _make_message(1, guild, author)
+        cog = _make_cog()
+        cog.bot.settings.moderation_warn_ladder = "2/7d=24h, 5/30d=3d"
+
+        with (
+            patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=[object(), object()])),
+            patch("bulmaai.services.mod_cases.count_active_since", AsyncMock(return_value=1)),
+        ):
+            text = await cog._user_snapshot(message)
+
+        self.assertIn("2 prior cases", text)
+        self.assertIn("`▰▱` 1/2 warns in 7d", text)
 
 
 if __name__ == "__main__":

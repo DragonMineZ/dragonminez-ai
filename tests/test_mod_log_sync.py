@@ -10,7 +10,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
 
-from bulmaai.cogs.mod_log_sync import map_audit_entry, parse_dyno_case, parse_duration_seconds
+from bulmaai.cogs.mod_log_sync import ModLogSyncCog, map_audit_entry, parse_dyno_case, parse_duration_seconds
 from bulmaai.services import mod_cases
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -261,9 +261,10 @@ class RecordCaseExternalIdTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(case_id, 7)
         args = fetchval.await_args.args
         self.assertIn("ON CONFLICT (external_id)", args[0])
-        self.assertEqual(args[-3], "audit:123")
-        self.assertEqual(args[-2], NOW)
-        self.assertIsNone(args[-1])  # expires_at
+        self.assertEqual(args[-4], "audit:123")
+        self.assertEqual(args[-3], NOW)
+        self.assertIsNone(args[-2])  # expires_at
+        self.assertIsNone(args[-1])  # triggered_by
 
     async def test_conflicting_external_id_returns_none(self):
         fetchval = AsyncMock(return_value=None)
@@ -278,6 +279,31 @@ class RecordCaseExternalIdTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIsNone(case_id)
+
+
+class LiveSyncEndsCasesTests(unittest.IsolatedAsyncioTestCase):
+    async def sync(self, action):
+        settings = SimpleNamespace(panel_guild_id=1, dyno_user_id=DYNO_ID, dyno_modlog_channel_id=None)
+        bot = SimpleNamespace(settings=settings, user=SimpleNamespace(id=BOT_ID))
+        entry = make_entry(action)
+        entry.guild = SimpleNamespace(id=1)
+        with (
+            patch("bulmaai.services.mod_cases.record_case", AsyncMock(return_value=8)),
+            patch("bulmaai.services.mod_actions.end_user_cases", AsyncMock()) as end,
+            patch("bulmaai.services.mod_actions.post_case_log", AsyncMock()) as post,
+        ):
+            await ModLogSyncCog(bot).on_audit_log_entry(entry)
+        return bot, end, post
+
+    async def test_unban_ends_the_ban_cards_credited_to_the_audit_moderator(self):
+        bot, end, post = await self.sync(discord.AuditLogAction.unban)
+        end.assert_awaited_once_with(bot, 1, TARGET_ID, "ban", ended_by=MOD_ID)
+        post.assert_awaited_once()
+
+    async def test_a_ban_ends_nothing(self):
+        _, end, post = await self.sync(discord.AuditLogAction.ban)
+        end.assert_not_awaited()
+        post.assert_awaited_once()
 
 
 if __name__ == "__main__":

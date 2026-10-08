@@ -243,7 +243,9 @@ async def mark_false_positive(
     if not await set_outcome(hit.id, FALSE_POSITIVE, moderator.id):
         return ["already marked as a false positive"]
     undone = []
-    if hit.warn_case_id and await mod_cases.deactivate_case(guild.id, hit.warn_case_id):
+    if hit.warn_case_id and await mod_actions.end_case(
+        bot, guild.id, hit.warn_case_id, ended_by=moderator.id, note="false positive"
+    ):
         undone.append(f"warn #{hit.warn_case_id} removed")
     if hit.timed_out:
         try:

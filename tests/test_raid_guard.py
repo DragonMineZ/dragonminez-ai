@@ -38,7 +38,6 @@ def make_settings(**overrides):
         moderation_new_account_days=3,
         moderation_new_account_action="alert",
         moderation_log_channel_id=555,
-        discord_log_channel_id=None,
         panel_admin_role_ids=(),
         panel_moderator_role_ids=(200,),
         panel_helper_role_ids=(100,),

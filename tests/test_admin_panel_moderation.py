@@ -107,7 +107,7 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
             ("bulmaai.web.core.get_pool", AsyncMock(return_value=SimpleNamespace(execute=AsyncMock()))),
             ("bulmaai.web.routes_moderation.mod_cases.record_case", self.record),
             ("bulmaai.services.mod_cases.count_active_since", self.warn_count),
-            ("bulmaai.services.mod_cases.deactivate_user_cases", AsyncMock(return_value=0)),
+            ("bulmaai.services.mod_cases.deactivate_user_cases_returning", AsyncMock(return_value=[])),
             ("bulmaai.services.mod_actions.post_case_log", self.post_case_log),
         ):
             patcher = patch(target, value)
@@ -221,7 +221,7 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
             second = await self.client.delete("/api/cases/10", headers={"Origin": self.origin})
         self.assertEqual(first.status, 200, await first.text())
         self.assertEqual(second.status, 400)
-        deactivate.assert_awaited_once_with(1, 9)
+        deactivate.assert_awaited_once_with(1, 9, ended_by=MOD_ID, note=None)
 
         self.login(HELPER_ID)
         with (
@@ -235,12 +235,12 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         self.login(HELPER_ID)
         response = await self.post(f"/api/users/{RANDOM_ID}/timeout", {"reason": "spam", "minutes": 10})
         self.assertEqual(response.status, 200, await response.text())
-        clear = AsyncMock(return_value=3)
-        with patch("bulmaai.services.mod_cases.deactivate_user_cases", clear):
+        clear = AsyncMock(return_value=[ModCase(i, 1, RANDOM_ID, MOD_ID, "warn", "x", None, "panel", NOW) for i in (1, 2, 3)])
+        with patch("bulmaai.services.mod_cases.deactivate_user_cases_returning", clear):
             response = await self.post(f"/api/users/{RANDOM_ID}/clearwarns", {})
             self.assertEqual((await response.json())["count"], 3)
             self.assertEqual((await self.post(f"/api/users/{MOD_ID}/clearwarns", {})).status, 403)
-        clear.assert_awaited_once_with(1, RANDOM_ID, "warn")
+        clear.assert_awaited_once_with(1, RANDOM_ID, "warn", ended_by=HELPER_ID, note=None)
 
     async def test_scam_images_list_and_remove(self):
         self.login(HELPER_ID)

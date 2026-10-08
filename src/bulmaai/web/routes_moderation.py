@@ -495,6 +495,8 @@ async def edit_case_reason(request: web.Request, actor: Actor) -> web.Response:
     await _editable_case(request, actor, case_id)
     if not await mod_cases.update_reason(actor.member.guild.id, case_id, reason):
         raise api_error(404, "Unknown case.")
+    if case := await mod_cases.get_case(actor.member.guild.id, case_id):
+        await mod_actions.refresh_case_card(request.app[BOT], case)  # the mod-log card shows the new reason too
     await audit(actor, "mod.case_reason", str(case_id), reason=reason)
     return web.json_response({"ok": True})
 
@@ -509,7 +511,7 @@ async def clear_warns(request: web.Request, actor: Actor) -> web.Response:
         mod_actions.check_hierarchy(request.app[BOT], guild, actor.member, user_id, target, discord_action=False)
     except ModActionError as error:
         raise api_error(error.status, str(error))
-    count = await mod_cases.deactivate_user_cases(guild.id, user_id, "warn")
+    count = await mod_actions.end_user_cases(request.app[BOT], guild.id, user_id, "warn", ended_by=actor.member.id)
     await audit(actor, "mod.clearwarns", str(user_id), count=count)
     return web.json_response({"ok": True, "count": count})
 
@@ -523,7 +525,7 @@ async def remove_case(request: web.Request, actor: Actor) -> web.Response:
     case = await _editable_case(request, actor, case_id)
     if case.action not in ("warn", "note"):
         raise api_error(400, "Only warnings and notes can be removed.")
-    await mod_cases.deactivate_case(guild_id, case_id)
+    await mod_actions.end_case(request.app[BOT], guild_id, case_id, ended_by=actor.member.id)
     await audit(actor, "mod.case_remove", str(case_id), user_id=str(case.user_id), case_action=case.action)
     return web.json_response({"ok": True})
 

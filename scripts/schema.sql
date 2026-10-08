@@ -359,6 +359,24 @@ ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_mod_cases_expiring
     ON mod_cases (expires_at) WHERE active AND expires_at IS NOT NULL;
 
+-- Components V2 case cards: where the card was posted (so it can edit itself when the case ends),
+-- the escalation link, the context line frozen at posting time, and who/what ended the case.
+-- Timeouts set expires_at too now, so their card flips to "expired" when Discord lifts them.
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS log_channel_id BIGINT;
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS log_message_id BIGINT;
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS triggered_by BIGINT;
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS context TEXT;
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS ended_by BIGINT;
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ;
+ALTER TABLE mod_cases ADD COLUMN IF NOT EXISTS end_note TEXT;
+
+-- Handled automod alerts collapse to a one-liner; the full details live here for "Show details".
+CREATE TABLE IF NOT EXISTS mod_alert_cards (
+    message_id  BIGINT PRIMARY KEY,
+    details     JSONB NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Flagged-joiner alerts (raid_guard): recorded the moment the alert is posted, so it's visible in the
 -- web panel right away and a bot restart doesn't lose track of the 1h auto-dismiss deadline.
 CREATE TABLE IF NOT EXISTS joiner_alerts (

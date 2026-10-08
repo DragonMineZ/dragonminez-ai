@@ -17,9 +17,9 @@ from bulmaai.web import (
     routes_logs,
     routes_moderation,
     routes_patreon,
-    routes_presets,
     routes_settings,
     routes_status,
+    routes_templates,
     routes_tickets,
     routes_transcripts,
 )
@@ -54,7 +54,7 @@ MODULES = (
     routes_tickets,
     routes_transcripts,
     routes_patreon,
-    routes_presets,
+    routes_templates,
     routes_announce,
 )
 

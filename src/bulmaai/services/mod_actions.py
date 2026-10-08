@@ -11,10 +11,13 @@ from datetime import datetime, timedelta
 import discord
 
 from bulmaai.services import mod_cases, panel_logs
+from bulmaai.ui import mod_cards
 from bulmaai.ui.mod_views import appeal_view
 from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
 
 log = logging.getLogger(__name__)
+
+NO_MENTIONS = discord.AllowedMentions.none()
 
 MAX_TIMEOUT_SECONDS = 28 * 86400  # Discord's cap
 WARN_REPEAT_SECONDS = 30
@@ -22,15 +25,6 @@ SOFTBAN_DELETE_SECONDS = 86400
 DISCORD_ACTIONS = {"timeout", "untimeout", "kick", "ban", "softban", "unban"}
 MEMBER_ONLY_ACTIONS = {"warn", "timeout", "untimeout", "kick"}
 DM_ACTIONS = {"warn", "timeout", "kick", "ban", "softban"}
-ACTION_COLORS = {
-    "warn": discord.Color.gold(),
-    "timeout": discord.Color.orange(),
-    "untimeout": discord.Color.green(),
-    "kick": discord.Color.dark_orange(),
-    "softban": discord.Color.dark_orange(),
-    "ban": discord.Color.red(),
-    "unban": discord.Color.green(),
-}
 
 
 class ModActionError(Exception):
@@ -140,7 +134,12 @@ def pick_step(steps: tuple[LadderStep, ...], counts: dict[int | None, int]) -> L
 
 
 async def escalate(
-    bot: discord.Bot, guild: discord.Guild, user_id: int, warner: discord.Member | None = None
+    bot: discord.Bot,
+    guild: discord.Guild,
+    user_id: int,
+    warner: discord.Member | None = None,
+    *,
+    triggered_by: int | None = None,
 ) -> ActionResult | None:
     """warner=None (automod) gets the whole ladder; a staff warn only runs steps the warner could take
     themselves per PERMISSIONS (timeouts and kicks for helpers); moderators get every step."""
@@ -171,6 +170,7 @@ async def escalate(
         reason=reason,
         duration_seconds=step.duration_seconds,
         source="escalation",
+        triggered_by=triggered_by,
     )
 
 
@@ -243,35 +243,6 @@ async def _dm(member: discord.Member, text: str, view: discord.ui.View | None) -
     return True
 
 
-def case_embed(
-    *,
-    case_id: int | None,
-    action: str,
-    user_id: int,
-    moderator_id: int | None,
-    reason: str | None,
-    duration_seconds: int | None = None,
-    expires_at: datetime | None = None,
-    source: str = "",
-) -> discord.Embed:
-    title = f"Case #{case_id} | {action.title()}" if case_id else action.title()
-    embed = discord.Embed(
-        title=title,
-        color=ACTION_COLORS.get(action, discord.Color.blurple()),
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.add_field(name="User", value=f"<@{user_id}> (`{user_id}`)", inline=True)
-    embed.add_field(name="Moderator", value=f"<@{moderator_id}>" if moderator_id else "BulmaAI (automatic)", inline=True)
-    if duration_seconds:
-        embed.add_field(name="Duration", value=format_duration(duration_seconds), inline=True)
-    if expires_at:
-        embed.add_field(name="Expires", value=discord.utils.format_dt(expires_at, "R"), inline=True)
-    embed.add_field(name="Reason", value=(reason or "No reason given")[:1024], inline=False)
-    if source:
-        embed.set_footer(text=f"via {source}")
-    return embed
-
-
 async def resolve_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc.Messageable | None:
     if channel_id is None:
         return None
@@ -294,16 +265,145 @@ async def staff_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc
     return await resolve_channel(bot, channel_id or mod_log_channel_id(bot.settings))
 
 
-async def post_case_log(bot: discord.Bot, **case: object) -> None:
-    """Best effort; takes case_embed()'s keyword arguments."""
+def _ordinal(number: int) -> str:
+    suffix = "th" if 10 <= number % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def _age(when: datetime) -> str:
+    days = max((discord.utils.utcnow() - when).days, 0)
+    if days < 1:
+        return "less than a day"
+    if days < 60:
+        return f"{days} day{'s' if days != 1 else ''}"
+    if days < 730:
+        return f"{days // 30} months"
+    return f"{days // 365} years"
+
+
+async def _case_context(bot: discord.Bot, guild_id: int, user_id: int, case_id: int | None) -> str | None:
+    """The card's context line (case count, warn standing, account and member age), built once at posting."""
+    parts = []
     try:
-        embed = case_embed(**case)
-        await panel_logs.record(
-            "case", embed.title or "Case", panel_logs.embed_text(embed), user_id=case.get("user_id"), data={"case_id": case.get("case_id")}
-        )
+        if case_id:
+            parts.append(f"📊 {_ordinal(await mod_cases.case_number(guild_id, user_id, case_id))} case")
+        if steps := parse_ladder(bot.settings.moderation_warn_ladder):
+            step = steps[0]
+            since = discord.utils.utcnow() - timedelta(seconds=step.window_seconds) if step.window_seconds else None
+            count = await mod_cases.count_active_since(guild_id, user_id, "warn", since)
+            window = f" in {format_duration(step.window_seconds)}" if step.window_seconds else ""
+            filled = min(count, step.warns, 10)
+            bar = "▰" * filled + "▱" * (min(step.warns, 10) - filled)
+            parts.append(f"`{bar}` {count}/{step.warns} warns{window}")
+    except Exception:
+        log.warning("Couldn't build the case context for %s", user_id, exc_info=True)
+    guild = bot.get_guild(guild_id)
+    member = guild.get_member(user_id) if guild is not None else None
+    user = member or bot.get_user(user_id)
+    if user is not None:
+        parts.append(f"account {_age(user.created_at)} old")
+    if member is not None and member.joined_at is not None:
+        parts.append(f"joined {_age(member.joined_at)} ago")
+    return " · ".join(parts) or None
+
+
+async def render_case_card(bot: discord.Bot, case: mod_cases.ModCase, *, buttons: bool = True) -> discord.ui.DesignerView:
+    """The case's mod-log card, with the target's current name and avatar."""
+    user = bot.get_user(case.user_id)
+    if user is None:
+        try:
+            user = await bot.fetch_user(case.user_id)
+        except discord.HTTPException:
+            user = None
+    name = discord.utils.escape_markdown(user.name) if user is not None else f"<@{case.user_id}>"
+    avatar = user.display_avatar.url if user is not None and user.display_avatar else None
+    length = format_duration(case.duration_seconds) if case.duration_seconds else None
+    return mod_cards.case_card(case, name=name, avatar_url=avatar, length=length, buttons=buttons)
+
+
+async def refresh_case_card(bot: discord.Bot, case: mod_cases.ModCase) -> None:
+    """Best effort: re-renders the case's mod-log card, if it has one."""
+    if not case.log_channel_id or not case.log_message_id:
+        return
+    try:
+        channel = await resolve_channel(bot, case.log_channel_id)
+        if channel is None:
+            return
+        view = await render_case_card(bot, case)
+        await channel.get_partial_message(case.log_message_id).edit(view=view, allowed_mentions=NO_MENTIONS)
+    except discord.HTTPException:
+        log.warning("Couldn't refresh the card for case %s", case.id, exc_info=True)
+    except Exception:
+        log.exception("Failed to refresh the card for case %s", case.id)
+
+
+async def end_case(
+    bot: discord.Bot, guild_id: int, case_id: int, *, ended_by: int | None, note: str | None = None
+) -> mod_cases.ModCase | None:
+    """Deactivates an active case and updates its card. None when unknown or already inactive."""
+    case = await mod_cases.deactivate_case(guild_id, case_id, ended_by=ended_by, note=note)
+    if case is not None:
+        await refresh_case_card(bot, case)
+    return case
+
+
+async def end_user_cases(
+    bot: discord.Bot, guild_id: int, user_id: int, action: str, *, ended_by: int | None, note: str | None = None
+) -> int:
+    """end_case for every active case of that action for the user; returns how many."""
+    cases = await mod_cases.deactivate_user_cases_returning(guild_id, user_id, action, ended_by=ended_by, note=note)
+    for case in cases:
+        await refresh_case_card(bot, case)
+    return len(cases)
+
+
+async def post_case_log(
+    bot: discord.Bot,
+    *,
+    case_id: int | None,
+    action: str,
+    user_id: int,
+    moderator_id: int | None,
+    reason: str | None,
+    duration_seconds: int | None = None,
+    expires_at: datetime | None = None,
+    source: str = "",
+    triggered_by: int | None = None,
+    guild_id: int | None = None,
+) -> None:
+    """Posts the case card to the mod-log channel and remembers where it went. Best effort."""
+    try:
+        guild_id = guild_id or bot.settings.panel_guild_id
+        label = mod_cards.CASE_STYLE.get(action, (None, action.title()))[1]
+        title = f"Case #{case_id} | {label}" if case_id else label
+        who = f"<@{moderator_id}>" if moderator_id else "BulmaAI (automatic)"
+        body = f"User: <@{user_id}> (`{user_id}`)\nModerator: {who}"
+        if duration_seconds:
+            body += f"\nDuration: {format_duration(duration_seconds)}"
+        body += f"\nReason: {reason or 'No reason given'}"
+        await panel_logs.record("case", title, body, user_id=user_id, data={"case_id": case_id})
         channel = await resolve_channel(bot, mod_log_channel_id(bot.settings))
-        if channel is not None:
-            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        if channel is None:
+            return
+        context = await _case_context(bot, guild_id, user_id, case_id)
+        case = mod_cases.ModCase(
+            id=case_id or 0,
+            guild_id=guild_id,
+            user_id=user_id,
+            moderator_id=moderator_id,
+            action=action,
+            reason=reason,
+            duration_seconds=duration_seconds,
+            source=source,
+            created_at=discord.utils.utcnow(),
+            expires_at=expires_at,
+            triggered_by=triggered_by,
+            context=context,
+        )
+        view = await render_case_card(bot, case, buttons=bool(case_id))
+        message = await channel.send(view=view, allowed_mentions=NO_MENTIONS)
+        if case_id:
+            await mod_cases.set_card(case_id, channel_id=message.channel.id, message_id=message.id, context=context)
     except Exception:
         log.warning("Failed to post a case to the moderation log", exc_info=True)
 
@@ -325,6 +425,7 @@ async def perform(
     notify: bool = True,
     log_case: bool = True,
     record: bool = True,
+    triggered_by: int | None = None,
 ) -> ActionResult:
     """action: warn | note | timeout | untimeout | kick | ban | softban | unban.
     duration_seconds: required for timeout; makes a ban a tempban. Raises ModActionError.
@@ -343,7 +444,9 @@ async def perform(
         duration_seconds = min(duration_seconds, MAX_TIMEOUT_SECONDS)
     elif action != "ban":
         duration_seconds = None
-    expires_at = discord.utils.utcnow() + timedelta(seconds=duration_seconds) if action == "ban" and duration_seconds else None
+    expires_at = (
+        discord.utils.utcnow() + timedelta(seconds=duration_seconds) if action in ("timeout", "ban") and duration_seconds else None
+    )
     by = moderator.name if moderator is not None else "BulmaAI"
     audit_reason = (f"{reason or 'No reason given'} (via {source} by {by})" if record else reason or "")[:512] or None
 
@@ -380,8 +483,14 @@ async def perform(
 
     moderator_id = moderator.id if moderator is not None else None
     try:
-        if action == "unban":
-            await mod_cases.deactivate_user_cases(guild.id, target_id, "ban")  # stops a pending tempban expiry
+        if action in ("untimeout", "unban"):  # stops a pending expiry and updates the old card
+            ended = "timeout" if action == "untimeout" else "ban"
+            if record:
+                await end_user_cases(
+                    bot, guild.id, target_id, ended, ended_by=moderator_id, note="expired" if source == "tempban" else None
+                )
+            else:  # the private console leaves no trace, not even on old cards
+                await mod_cases.deactivate_user_cases(guild.id, target_id, ended)
         if not record:
             return ActionResult(action=action, case_id=None, dm_sent=dm_sent, duration_seconds=duration_seconds)
         case_id = await mod_cases.record_case(
@@ -393,6 +502,7 @@ async def perform(
             duration_seconds=duration_seconds,
             source=source,
             expires_at=expires_at,
+            triggered_by=triggered_by,
         )
     except Exception:
         log.exception("Failed to record mod case %s for %s", action, target_id)
@@ -411,13 +521,15 @@ async def perform(
             duration_seconds=duration_seconds,
             expires_at=expires_at,
             source=source,
+            triggered_by=triggered_by,
+            guild_id=guild.id,
         )
 
     escalation = None
     ladder_skipped = None
     if action == "warn":
         try:
-            escalation = await escalate(bot, guild, target_id, moderator)
+            escalation = await escalate(bot, guild, target_id, moderator, triggered_by=case_id)
         except LadderStepSkipped as skipped:
             ladder_skipped = str(skipped)
             if case_id is not None:

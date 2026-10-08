@@ -175,7 +175,6 @@ class ModerationTimeoutEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 moderation_image_burst_timeout_seconds=7 * 24 * 3600,
                 moderation_image_burst_purge_seconds=600,
                 moderation_log_channel_id=None,
-                discord_log_channel_id=None,
             )
         )
         cog._recent_message_channels = {(1, 3): {7: time.monotonic()}}
@@ -208,6 +207,7 @@ class ModerationIncidentTests(unittest.IsolatedAsyncioTestCase):
     def _setup(self, *, member_outranks_bot: bool):
         self.enterContext(patch("bulmaai.services.automod_hits.record_hit", AsyncMock(return_value=1)))
         self.enterContext(patch("bulmaai.services.automod_hits.update_hit", AsyncMock()))
+        self.enterContext(patch.object(ModerationCog, "_user_snapshot", AsyncMock(return_value="snap")))
         self.sent: list = []
         self.edits: list = []
         self.timeouts: list = []
@@ -217,16 +217,16 @@ class ModerationIncidentTests(unittest.IsolatedAsyncioTestCase):
 
         class LogMessage:
             id = 9000
-            embeds: list = []
+            components: list = []
 
-            async def edit(self, *, embed, view=None):
-                test.edits.append(embed)
+            async def edit(self, *, view, allowed_mentions=None):
+                test.edits.append(view)
 
         class LogChannel:
             id = 500
 
-            async def send(self, *, embed, view=None, allowed_mentions):
-                test.sent.append(embed)
+            async def send(self, *, view, allowed_mentions, files=None):
+                test.sent.append(view)
                 return LogMessage()
 
         class Role(int):

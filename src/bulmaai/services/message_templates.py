@@ -1,14 +1,29 @@
+"""Message templates: reusable V2 cards (EN required, ES/PT optional) with optional language buttons.
+
+Stored in data/message_templates.json next to the old presets path. "rules" and "support" are built in:
+seeded from the wording below, editable in the panel, and resettable to these defaults.
+"""
+
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from bulmaai.config import load_settings
+from bulmaai.services.cards import AnnouncementError, normalize_card
+from bulmaai.services.patron_page import PATREON_URL
 
 settings = load_settings()
 
+GITHUB_URL = "https://github.com/DragonMineZ"
+LANGUAGES = ("en", "es", "pt")
+BUILTIN_IDS = ("rules", "support")
+BLURPLE = "#5865F2"
+MAX_NAME = 60
+MAX_ID = 40
 
-DEFAULT_MESSAGE_PRESETS: dict[str, Any] = {
+_SOURCE: dict[str, Any] = {
     "rules": {
         "en": {
             "title": "DragonMine Z - English 🇺🇸",
@@ -279,91 +294,179 @@ DEFAULT_MESSAGE_PRESETS: dict[str, Any] = {
 }
 
 
-def _presets_path() -> Path:
-    configured = Path(settings.message_presets_path)
-    if configured.is_absolute():
-        return configured
-    return Path(__file__).resolve().parents[3] / configured
+def _rules_card(data: dict[str, Any]) -> dict[str, Any]:
+    intro, _, updated = data["sections"][0]["content"].rpartition("\n\n")
+    blocks: list[dict[str, Any]] = [
+        {"type": "text", "text": f"## {data['title']}"},
+        {"type": "text", "text": intro},
+        {"type": "text", "text": f"-# {updated}"},
+    ]
+    for section in data["sections"][1:]:
+        blocks.append({"type": "separator", "divider": True, "spacing": "small"})
+        blocks.append({"type": "text", "text": f"### {section['title']}\n{section['content']}"})
+    return {"accent_color": BLURPLE, "blocks": blocks}
 
 
-def _deep_merge(defaults: Any, current: Any) -> Any:
-    if isinstance(defaults, dict) and isinstance(current, dict):
-        merged: dict[str, Any] = {}
-        for key, default_value in defaults.items():
-            if key in current:
-                merged[key] = _deep_merge(default_value, current[key])
-            else:
-                merged[key] = deepcopy(default_value)
-        for key, value in current.items():
-            if key not in merged:
-                merged[key] = deepcopy(value)
-        return merged
-    return deepcopy(current if current is not None else defaults)
+def _support_card(data: dict[str, Any]) -> dict[str, Any]:
+    def part(title: str, value: str) -> dict[str, Any]:
+        return {"type": "text", "text": f"### {data[title]}\n{data[value]}"}
 
-
-def load_message_presets() -> dict[str, Any]:
-    path = _presets_path()
-    if not path.exists():
-        return deepcopy(DEFAULT_MESSAGE_PRESETS)
-
-    try:
-        current = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return deepcopy(DEFAULT_MESSAGE_PRESETS)
-
-    return _deep_merge(DEFAULT_MESSAGE_PRESETS, current)
-
-
-def save_message_presets(presets: dict[str, Any]) -> None:
-    path = _presets_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(presets, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def ensure_message_presets_file() -> dict[str, Any]:
-    presets = load_message_presets()
-    save_message_presets(presets)
-    return presets
-
-
-def get_rules_content() -> dict[str, Any]:
-    return load_message_presets()["rules"]
-
-
-def get_support_content() -> dict[str, Any]:
-    return load_message_presets()["support"]
-
-
-def replace_preset(kind: str, language: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Overwrite one preset (e.g. rules/en) wholesale. Callers validate the shape first."""
-    presets = load_message_presets()
-    presets[kind][language] = deepcopy(data)
-    save_message_presets(presets)
-    return presets[kind][language]
-
-
-def reset_preset(kind: str, language: str) -> dict[str, Any]:
-    return replace_preset(kind, language, DEFAULT_MESSAGE_PRESETS[kind][language])
-
-
-def update_rules_section(language: str, section_index: int, *, title: str | None, content: str) -> dict[str, Any]:
-    presets = load_message_presets()
-    rules = presets["rules"].setdefault(language, deepcopy(DEFAULT_MESSAGE_PRESETS["rules"]["en"]))
-    if section_index < 0 or section_index >= len(rules["sections"]):
-        raise IndexError("Invalid rules section index")
-    rules["sections"][section_index] = {
-        "title": title if title else None,
-        "content": content,
+    return {
+        "accent_color": BLURPLE,
+        "blocks": [
+            {"type": "text", "text": f"## {data['flag']} {data['title']}\n{data['description']}"},
+            part("perks_title", "perks_value"),
+            part("development_title", "development_value"),
+            part("credits_title", "credits_value"),
+            {"type": "separator", "divider": True, "spacing": "small"},
+            part("community_title", "community_value"),
+            {"type": "separator", "divider": True, "spacing": "large"},
+            {"type": "text", "text": f"## {data['boosting_title']}\n{data['boosting_description']}"},
+            part("boost_tier1_title", "boost_tier1_value"),
+            part("boost_tier2_title", "boost_tier2_value"),
+            part("boost_tier3_title", "boost_tier3_value"),
+            {"type": "text", "text": f"-# {data['boosting_footer']}"},
+            {"type": "separator", "divider": True, "spacing": "small"},
+            {
+                "type": "buttons",
+                "buttons": [
+                    {"label": data["patreon_label"], "url": PATREON_URL, "emoji": "🧡"},
+                    {"label": data["github_label"], "url": GITHUB_URL, "emoji": "🔗"},
+                ],
+            },
+        ],
     }
-    save_message_presets(presets)
-    return rules
 
 
-def update_support_field(language: str, field: str, value: str) -> dict[str, Any]:
-    presets = load_message_presets()
-    support = presets["support"].setdefault(language, deepcopy(DEFAULT_MESSAGE_PRESETS["support"]["en"]))
-    if field not in support:
-        raise KeyError(field)
-    support[field] = value
-    save_message_presets(presets)
-    return support
+DEFAULT_TEMPLATES: dict[str, dict[str, Any]] = {
+    "rules": {
+        "name": "Rules",
+        "language_buttons": True,
+        "languages": {lang: _rules_card(_SOURCE["rules"][lang]) for lang in LANGUAGES},
+    },
+    "support": {
+        "name": "Support us",
+        "language_buttons": True,
+        "languages": {lang: _support_card(_SOURCE["support"][lang]) for lang in LANGUAGES},
+    },
+}
+
+
+def _templates_path() -> Path:
+    configured = Path(settings.message_presets_path)
+    base = configured if configured.is_absolute() else Path(__file__).resolve().parents[3] / configured
+    return base.with_name("message_templates.json")
+
+
+def _read() -> dict[str, dict[str, Any]]:
+    try:
+        current = json.loads(_templates_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        current = {}
+    stored = current.get("templates") if isinstance(current, dict) else None
+    stored = stored if isinstance(stored, dict) else {}
+    merged = {key: deepcopy(value) for key, value in DEFAULT_TEMPLATES.items() if key not in stored}
+    merged.update({key: value for key, value in stored.items() if isinstance(value, dict)})
+    return merged
+
+
+def _write(records: dict[str, dict[str, Any]]) -> None:
+    path = _templates_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"templates": records}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def ensure_message_templates_file() -> None:
+    if not _templates_path().exists():
+        _write(_read())
+
+
+def _public(template_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    builtin = template_id in BUILTIN_IDS
+    languages = record.get("languages") or {}
+    return {
+        "id": template_id,
+        "name": record.get("name") or template_id,
+        "builtin": builtin,
+        "customized": builtin and record != DEFAULT_TEMPLATES[template_id],
+        "language_buttons": bool(record.get("language_buttons")),
+        "languages": {lang: deepcopy(languages.get(lang)) for lang in LANGUAGES},
+    }
+
+
+def list_templates() -> list[dict[str, Any]]:
+    records = _read()
+    ordered = [*BUILTIN_IDS, *sorted(key for key in records if key not in BUILTIN_IDS)]
+    return [_public(key, records[key]) for key in ordered]
+
+
+def get_template(template_id: str) -> dict[str, Any] | None:
+    record = _read().get(template_id)
+    return _public(template_id, record) if record else None
+
+
+def clean_template(body: Any) -> dict[str, Any]:
+    """Validates a create/update body into the stored record."""
+    if not isinstance(body, dict):
+        raise AnnouncementError("The template must be an object.")
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise AnnouncementError("Give the template a name.")
+    if len(name.strip()) > MAX_NAME:
+        raise AnnouncementError(f"The name is over {MAX_NAME} characters.")
+    buttons = body.get("language_buttons", False)
+    if not isinstance(buttons, bool):
+        raise AnnouncementError("language_buttons must be true or false.")
+    raw = body.get("languages")
+    if not isinstance(raw, dict) or not isinstance(raw.get("en"), dict):
+        raise AnnouncementError("The English card is required.")
+    languages = {}
+    for lang in LANGUAGES:
+        card = raw.get(lang)
+        try:
+            languages[lang] = normalize_card(card, language_row=buttons) if card else None
+        except AnnouncementError as error:
+            raise AnnouncementError(f"{lang.upper()}: {error}")
+    return {"name": name.strip(), "language_buttons": buttons, "languages": languages}
+
+
+def _slug(name: str, taken: set[str]) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:MAX_ID].strip("-") or "template"
+    slug, number = base, 2
+    while slug in taken:
+        slug = f"{base[: MAX_ID - len(str(number)) - 1]}-{number}"
+        number += 1
+    return slug
+
+
+def create_template(body: Any) -> dict[str, Any]:
+    record = clean_template(body)
+    records = _read()
+    template_id = _slug(record["name"], set(records))
+    records[template_id] = record
+    _write(records)
+    return _public(template_id, record)
+
+
+def update_template(template_id: str, body: Any) -> dict[str, Any] | None:
+    record = clean_template(body)
+    records = _read()
+    if template_id not in records:
+        return None
+    records[template_id] = record
+    _write(records)
+    return _public(template_id, record)
+
+
+def delete_template(template_id: str) -> tuple[bool, dict[str, Any] | None]:
+    """(found, template): built-ins reset to their defaults and come back; custom ones are removed."""
+    records = _read()
+    if template_id not in records:
+        return False, None
+    if template_id in BUILTIN_IDS:
+        records[template_id] = deepcopy(DEFAULT_TEMPLATES[template_id])
+        _write(records)
+        return True, _public(template_id, records[template_id])
+    del records[template_id]
+    _write(records)
+    return True, None

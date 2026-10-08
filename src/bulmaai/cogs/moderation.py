@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
@@ -35,6 +36,8 @@ from bulmaai.services.moderation import (
     parse_filter_rules,
     without_filters,
 )
+from bulmaai.services.ai_guard import defang
+from bulmaai.ui.mod_cards import ALERT_HANDLED_ID, ALERT_SUMMARY_ID, alert_card, quote_block
 from bulmaai.ui.mod_views import quick_actions_view
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_staff
@@ -117,6 +120,8 @@ class _Incident:
     # Images taught to "Delete & learn" so far; merged into on every update_hit(image_hashes=...) call.
     image_hashes: tuple[int, ...] = field(default_factory=tuple)
     auto_learned: int = 0  # image-burst timeouts learn their images automatically
+    snapshot: str | None = None  # user line, computed once when the alert is sent and reused by re-renders
+    quote: str | None = None  # the first flagged message's text, captured before it gets deleted
 
 
 class ModerationCog(ReloadableCog):
@@ -249,82 +254,111 @@ class ModerationCog(ReloadableCog):
 
         return channel if hasattr(channel, "send") else None
 
-    def _build_log_embed(self, message: discord.Message, incident: "_Incident") -> discord.Embed:
+    @staticmethod
+    def _alert_head(message: discord.Message, incident: "_Incident") -> str:
         decision = incident.decision
+        lines = [f"### 🚨 Moderation Alert · {decision.reason}"]
+        if decision.details and decision.details != decision.reason:
+            lines.append(decision.details[:300])
+        facts = [f"**Action** {decision.action.value}"]
+        if incident.timeout_status:
+            facts += [f"**Timeout** {incident.timeout_status}", f"**Purged** {incident.purged}"]
+        facts.append(f"**Deleted** {incident.deleted}/{incident.hits}")
+        if decision.source:
+            facts.append(f"**Source** {decision.source}")
+        if decision.image_count:
+            facts.append(f"**Images** {decision.image_count}")
+        lines.append("　".join(facts))
+        channels = " ".join(f"<#{channel_id}>" for channel_id in list(incident.channel_ids)[:10])
+        lines.append(f"**Channels** {channels}")
+        if decision.defanged_domains:
+            lines.append("**Domains** " + ", ".join(f"`{domain}`" for domain in decision.defanged_domains[:10]))
+        if decision.invites:
+            lines.append("**Invites** " + ", ".join(f"`{invite.domain}/{invite.code}`" for invite in decision.invites[:5]))
+        if message.attachments:
+            lines.append("**Attachments** " + ", ".join(f"`{a.filename.replace('`', '')}`" for a in message.attachments[:6]))
+        return "\n".join(lines)[:1800]
+
+    def _build_alert_view(self, incident: "_Incident", gallery: tuple[str, ...] = ()) -> discord.ui.DesignerView:
+        message, decision = incident.first_message, incident.decision
         color = (
             discord.Color.red()
             if decision.action in (ModerationAction.DELETE, ModerationAction.TIMEOUT)
             else discord.Color.orange()
         )
-        embed = discord.Embed(
-            title="Moderation Alert",
-            description=decision.details or decision.reason,
-            color=color,
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.add_field(name="Action", value=decision.action.value, inline=True)
-        embed.add_field(name="Reason", value=decision.reason, inline=True)
-        embed.add_field(name="Deleted", value=f"{incident.deleted}/{incident.hits}", inline=True)
-        if incident.timeout_status:
-            embed.add_field(name="Timeout", value=incident.timeout_status, inline=True)
-            embed.add_field(name="Messages Purged", value=str(incident.purged), inline=True)
-        if decision.source:
-            embed.add_field(name="Source", value=decision.source, inline=True)
-        embed.add_field(name="User", value=f"{message.author} (`{message.author.id}`)", inline=False)
-        channels = " ".join(f"<#{channel_id}>" for channel_id in list(incident.channel_ids)[:10])
-        embed.add_field(name=f"Channels ({len(incident.channel_ids)})", value=channels, inline=False)
-        embed.add_field(name="First Message", value=f"[Jump to message]({message.jump_url})", inline=False)
-        if decision.defanged_domains:
-            embed.add_field(
-                name="Domains",
-                value=", ".join(f"`{domain}`" for domain in decision.defanged_domains[:10]),
-                inline=False,
-            )
-        if decision.invites:
-            codes = ", ".join(f"`{invite.domain}/{invite.code}`" for invite in decision.invites[:5])
-            embed.add_field(name="Invites", value=codes, inline=False)
-        if decision.image_count:
-            embed.add_field(name="Image Count", value=str(decision.image_count), inline=True)
-        if message.attachments:
-            filenames = ", ".join(f"`{attachment.filename}`" for attachment in message.attachments[:8])
-            embed.add_field(name="Attachments", value=filenames, inline=False)
+        avatar = getattr(getattr(message.author, "display_avatar", None), "url", None)
+        footer = None
         if incident.auto_learned:
-            plural = "s" if incident.auto_learned != 1 else ""
-            embed.add_field(
-                name="Auto-learned", value=f"{incident.auto_learned} image{plural} added to the scam list", inline=False
-            )
-        handled = self._existing_handled_field(incident)
-        if handled is not None:
-            embed.add_field(name=handled.name, value=handled.value, inline=handled.inline)
-        image_url = self._existing_image_url(incident)
-        if image_url is not None:
-            embed.set_image(url=image_url)
-        return embed
+            footer = f"-# 🧠 Auto-learned {incident.auto_learned} image{'s' if incident.auto_learned != 1 else ''}"
+        return alert_card(
+            self._alert_head(message, incident),
+            avatar,
+            list(self._quick_actions_view_for(incident).children),
+            color=color,
+            snapshot=incident.snapshot,
+            quote=incident.quote,
+            gallery=gallery,
+            footer=footer,
+        )
 
     @staticmethod
-    def _existing_handled_field(incident: "_Incident") -> "discord.EmbedField | None":
-        """cogs/mod_interactions.py adds a "Handled" field when a mod clicks Timeout/Ban/Dismiss on
-        the alert. We re-render the whole embed on every debounced update, which would wipe that
-        field, so carry it forward from whatever py-cord has cached on the Message object.
-        Best-effort on purpose: no re-fetch, so a very stale cache can miss it."""
-        message = incident.log_message
-        if message is None or not message.embeds:
-            return None
-        for embed_field in message.embeds[0].fields:
-            if embed_field.name == "Handled":
-                return embed_field
-        return None
+    def _walk_components(components):
+        for component in components:
+            yield component
+            yield from ModerationCog._walk_components(getattr(component, "components", None) or [])
 
     @staticmethod
-    def _existing_image_url(incident: "_Incident") -> str | None:
-        """Same idea as _existing_handled_field: the debounced re-render must not drop the
-        re-uploaded preview image, so carry its resolved URL forward instead of re-uploading
-        the file (or passing files=/attachments=) on every edit."""
+    def _existing_gallery(incident: "_Incident") -> tuple[str, ...]:
+        """The debounced re-render can't re-attach files, so carry the already-sent gallery's resolved URLs."""
         message = incident.log_message
-        if message is None or not message.embeds:
-            return None
-        image = message.embeds[0].image
-        return image.url if image is not None else None
+        for component in ModerationCog._walk_components(getattr(message, "components", None) or []):
+            items = getattr(component, "items", None)
+            if items and hasattr(items[0], "media"):
+                return tuple(item.media.url for item in items)
+        return ()
+
+    @staticmethod
+    def _alert_handled(incident: "_Incident") -> bool:
+        """A mod's click (cogs/mod_interactions.py) collapses the card, so the cached message carries the
+        summary/handled ids. Best-effort on purpose: no re-fetch, so a very stale cache can miss it."""
+        components = getattr(incident.log_message, "components", None) or []
+        ids = {getattr(c, "id", None) for c in ModerationCog._walk_components(components)}
+        return bool(ids & {ALERT_SUMMARY_ID, ALERT_HANDLED_ID})
+
+    async def _user_snapshot(self, message: discord.Message) -> str:
+        """'👤 name (id)' plus account age, join date, prior cases and progress up the first warn-ladder step.
+        Best effort: a database failure just drops the case parts."""
+        author = message.author
+        name = defang(discord.utils.escape_markdown(str(author)))
+        facts = []
+        if created := getattr(author, "created_at", None):
+            facts.append(f"Account created {discord.utils.format_dt(created, 'R')}")
+        if joined := getattr(author, "joined_at", None):
+            facts.append(f"joined {discord.utils.format_dt(joined, 'R')}")
+        try:
+            guild_id = message.guild.id
+            cases = await asyncio.wait_for(mod_cases.list_cases(guild_id, user_id=author.id, limit=50), 5)
+            facts.append(f"{len(cases)} prior case{'s' if len(cases) != 1 else ''}")
+            steps = mod_actions.parse_ladder(self._settings().moderation_warn_ladder)
+            if steps:
+                step = steps[0]
+                since = discord.utils.utcnow() - timedelta(seconds=step.window_seconds) if step.window_seconds else None
+                count = await asyncio.wait_for(mod_cases.count_active_since(guild_id, author.id, "warn", since), 5)
+                bar = "▰" * min(count, step.warns) + "▱" * max(step.warns - count, 0)
+                window = f" in {mod_actions.format_duration(step.window_seconds)}" if step.window_seconds else ""
+                facts.append(f"`{bar}` {count}/{step.warns} warns{window}")
+        except Exception:
+            log.warning("Couldn't build the user snapshot for an alert", exc_info=True)
+        text = f"👤 **{name}** (`{author.id}`)"
+        return text + (f"\n-# {' · '.join(facts)}" if facts else "")
+
+    @staticmethod
+    def _alert_quote(message: discord.Message) -> str | None:
+        """The flagged text, captured while it still exists (flagged messages are usually deleted)."""
+        quote = quote_block(getattr(message, "content", None))
+        count = len(getattr(message, "attachments", None) or [])
+        note = f"-# {count} attachment{'s' if count != 1 else ''}" if count else None
+        return "\n".join(part for part in (quote, note) if part) or None
 
     @staticmethod
     def _first_image_attachment(message: discord.Message) -> "discord.Attachment | None":
@@ -334,24 +368,29 @@ class ModerationCog(ReloadableCog):
         first_url = images[0].url
         return next((attachment for attachment in message.attachments if attachment.url == first_url), None)
 
-    async def _build_alert_file(self, message: discord.Message) -> tuple[discord.File, str] | None:
-        """A reviewable copy of the first flagged image, re-uploaded since the original message
-        (and its attachment URL) is often purged before staff look at the alert."""
-        attachment = self._first_image_attachment(message)
-        if attachment is None:
-            return None
-        try:
-            data = await scam_images.fetch_preview(attachment)
-        except Exception:
-            log.exception(
-                "Failed to fetch an image preview for a moderation alert",
-                extra={"event": "moderation_image_preview_failed", "message_id": message.id},
-            )
-            return None
-        if data is None:
-            return None
-        filename = attachment.filename or "preview.png"
-        return discord.File(io.BytesIO(data), filename=filename), filename
+    async def _build_alert_files(self, message: discord.Message) -> tuple[list[discord.File], tuple[str, ...]]:
+        """Reviewable copies of up to 4 flagged images, re-uploaded since the original message (and its
+        attachment URLs) is often purged before staff look at the alert."""
+        urls = {image.url for image in extract_image_attachments(message.attachments)[:4]}
+        files: list[discord.File] = []
+        names: list[str] = []
+        for attachment in (a for a in message.attachments if a.url in urls):
+            try:
+                data = await scam_images.fetch_preview(attachment)
+            except Exception:
+                log.exception(
+                    "Failed to fetch an image preview for a moderation alert",
+                    extra={"event": "moderation_image_preview_failed", "message_id": message.id},
+                )
+                continue
+            if data is None:
+                continue
+            filename = re.sub(r"[^\w.\-]", "_", attachment.filename or "preview.png")
+            if filename in names:
+                filename = f"{len(names)}_{filename}"
+            names.append(filename)
+            files.append(discord.File(io.BytesIO(data), filename=filename))
+        return files, tuple(f"attachment://{name}" for name in names)
 
     @staticmethod
     def _quick_actions_view_for(incident: "_Incident") -> discord.ui.View:
@@ -373,17 +412,14 @@ class ModerationCog(ReloadableCog):
         if channel is None:
             return
         message = incident.first_message
-        embed = self._build_log_embed(message, incident)
+        incident.snapshot = await self._user_snapshot(message)
+        files, gallery = await self._build_alert_files(message)
         send_kwargs: dict[str, object] = {
-            "embed": embed,
-            "view": self._quick_actions_view_for(incident),
+            "view": self._build_alert_view(incident, gallery),
             "allowed_mentions": discord.AllowedMentions.none(),
         }
-        preview = await self._build_alert_file(message)
-        if preview is not None:
-            file, filename = preview
-            embed.set_image(url=f"attachment://{filename}")
-            send_kwargs["file"] = file
+        if files:
+            send_kwargs["files"] = files
         try:
             incident.log_message = await channel.send(**send_kwargs)
         except Exception:
@@ -454,13 +490,13 @@ class ModerationCog(ReloadableCog):
             if incident.log_message is None:
                 return
             synced = incident.revision
+            if self._alert_handled(incident):
+                return  # a mod collapsed the card; leave it alone
             try:
-                edit_kwargs = {"embed": self._build_log_embed(incident.first_message, incident)}
-                # Once a mod has clicked a button, leave whatever view is on the message alone
-                # (omitting `view` keeps it; passing a fresh one would replace it).
-                if self._existing_handled_field(incident) is None:
-                    edit_kwargs["view"] = self._quick_actions_view_for(incident)
-                await incident.log_message.edit(**edit_kwargs)
+                await incident.log_message.edit(
+                    view=self._build_alert_view(incident, self._existing_gallery(incident)),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             except discord.HTTPException:
                 log.debug("Failed to update moderation incident log", exc_info=True)
                 return
@@ -478,7 +514,7 @@ class ModerationCog(ReloadableCog):
         incident = self._incidents.get(key)
         is_new = incident is None
         if incident is None:
-            incident = _Incident(decision=decision, first_message=message)
+            incident = _Incident(decision=decision, first_message=message, quote=self._alert_quote(message))
             self._incidents[key] = incident
         incident.last_hit = now
         incident.hits += 1

@@ -20,6 +20,13 @@ class ModCase:
     external_id: str | None = None
     active: bool = True
     expires_at: datetime | None = None
+    log_channel_id: int | None = None
+    log_message_id: int | None = None
+    triggered_by: int | None = None  # the warn case whose ladder step produced this one
+    context: str | None = None  # the card's context line, frozen when the card was first posted
+    ended_by: int | None = None  # moderator who lifted/removed it; None = expired or the bot
+    ended_at: datetime | None = None
+    end_note: str | None = None  # "expired", "appeal accepted", ...
 
 
 def _case(row) -> ModCase:
@@ -36,6 +43,13 @@ def _case(row) -> ModCase:
         external_id=row["external_id"],
         active=row["active"],
         expires_at=row["expires_at"],
+        log_channel_id=row.get("log_channel_id"),
+        log_message_id=row.get("log_message_id"),
+        triggered_by=row.get("triggered_by"),
+        context=row.get("context"),
+        ended_by=row.get("ended_by"),
+        ended_at=row.get("ended_at"),
+        end_note=row.get("end_note"),
     )
 
 
@@ -51,6 +65,7 @@ async def record_case(
     external_id: str | None = None,
     created_at: datetime | None = None,
     expires_at: datetime | None = None,
+    triggered_by: int | None = None,
 ) -> int | None:
     """Returns the new case id, or None if external_id was already recorded (idempotent sync)."""
     pool = await get_pool()
@@ -58,9 +73,9 @@ async def record_case(
         """
         INSERT INTO mod_cases (
             guild_id, user_id, moderator_id, action, reason, duration_seconds, source, external_id, created_at,
-            expires_at
+            expires_at, triggered_by
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11)
         ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING
         RETURNING id
         """,
@@ -74,6 +89,7 @@ async def record_case(
         external_id,
         created_at,
         expires_at,
+        triggered_by,
     )
 
 
@@ -120,27 +136,68 @@ async def update_reason(guild_id: int, case_id: int, reason: str) -> bool:
     return result.endswith(" 1")
 
 
-async def deactivate_case(guild_id: int, case_id: int) -> ModCase | None:
+async def deactivate_case(
+    guild_id: int, case_id: int, *, ended_by: int | None = None, note: str | None = None
+) -> ModCase | None:
     """Soft delete (delwarn/delnote, lifted tempban). Returns the case, or None if unknown/already inactive."""
     pool = await get_pool()
     row = await pool.fetchrow(
-        "UPDATE mod_cases SET active = FALSE WHERE guild_id = $1 AND id = $2 AND active RETURNING *",
+        """
+        UPDATE mod_cases SET active = FALSE, ended_by = $3, ended_at = now(), end_note = $4
+        WHERE guild_id = $1 AND id = $2 AND active RETURNING *
+        """,
         guild_id,
         case_id,
+        ended_by,
+        note,
     )
     return _case(row) if row else None
 
 
-async def deactivate_user_cases(guild_id: int, user_id: int, action: str) -> int:
+async def deactivate_user_cases(
+    guild_id: int, user_id: int, action: str, *, ended_by: int | None = None, note: str | None = None
+) -> int:
     """clearwarns / clearnotes, and closing any tempban when someone is unbanned early."""
+    return len(await deactivate_user_cases_returning(guild_id, user_id, action, ended_by=ended_by, note=note))
+
+
+async def deactivate_user_cases_returning(
+    guild_id: int, user_id: int, action: str, *, ended_by: int | None = None, note: str | None = None
+) -> list[ModCase]:
+    """Like deactivate_user_cases, but returns the ended cases (so their cards can be refreshed)."""
     pool = await get_pool()
-    result = await pool.execute(
-        "UPDATE mod_cases SET active = FALSE WHERE guild_id = $1 AND user_id = $2 AND action = $3 AND active",
+    rows = await pool.fetch(
+        """
+        UPDATE mod_cases SET active = FALSE, ended_by = $4, ended_at = now(), end_note = $5
+        WHERE guild_id = $1 AND user_id = $2 AND action = $3 AND active RETURNING *
+        """,
         guild_id,
         user_id,
         action,
+        ended_by,
+        note,
     )
-    return int(result.rsplit(" ", 1)[-1])
+    return [_case(row) for row in rows]
+
+
+async def set_card(case_id: int, *, channel_id: int, message_id: int, context: str | None) -> None:
+    """Remembers where the case's mod-log card lives, plus its frozen context line."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE mod_cases SET log_channel_id = $2, log_message_id = $3, context = $4 WHERE id = $1",
+        case_id,
+        channel_id,
+        message_id,
+        context,
+    )
+
+
+async def case_number(guild_id: int, user_id: int, case_id: int) -> int:
+    """1-based position of this case among the user's cases."""
+    pool = await get_pool()
+    return await pool.fetchval(
+        "SELECT count(*) FROM mod_cases WHERE guild_id = $1 AND user_id = $2 AND id <= $3", guild_id, user_id, case_id
+    )
 
 
 async def count_active_since(guild_id: int, user_id: int, action: str, since: datetime | None) -> int:

@@ -1,4 +1,4 @@
-"""Announce composer: multi-embed sends/edits, scheduled sends, drafts and history.
+"""Announce composer: Components V2 card sends/edits, scheduled sends, drafts and history.
 
 Endpoints under /api/announce*. Message building/validation and the scheduled-send claim live
 in services/panel_announcements.py, shared with the scheduled_announcements cog.
@@ -14,6 +14,16 @@ import discord
 from aiohttp import web
 
 from bulmaai.database.db import get_pool
+from bulmaai.services.cards import (
+    build_card_view,
+    card_from_message,
+    count_chars,
+    count_components,
+    language_row,
+    language_template_id,
+    normalize_card,
+)
+from bulmaai.services.message_templates import list_templates
 from bulmaai.services.panel_announcements import (
     AnnouncementError,
     build_message,
@@ -24,7 +34,6 @@ from bulmaai.services.panel_announcements import (
     send_translations,
 )
 from bulmaai.web.core import BOT, Actor, api_error, audit, read_json, require_guild, requires
-from bulmaai.web.routes_presets import all_presets
 
 
 log = logging.getLogger(__name__)
@@ -32,7 +41,7 @@ log = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 MESSAGE_LINK = re.compile(r"discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)")
-MESSAGE_KEYS = ("content", "embeds", "buttons", "mention_roles", "mention_everyone", "translate")
+MESSAGE_KEYS = ("card", "mention_roles", "mention_everyone", "translate")
 HISTORY_LIMIT = 50
 
 
@@ -98,36 +107,6 @@ def _row_json(row: Any) -> dict[str, Any]:
     }
 
 
-def _embed_to_form(embed: discord.Embed) -> dict[str, Any]:
-    raw = embed.to_dict()
-    author = raw.get("author", {})
-    return {
-        "author_name": author.get("name", ""),
-        "author_url": author.get("url", ""),
-        "author_icon_url": author.get("icon_url", ""),
-        "title": raw.get("title", ""),
-        "url": raw.get("url", ""),
-        "description": raw.get("description", ""),
-        "color": f"#{raw['color']:06X}" if raw.get("color") is not None else "",
-        "fields": [
-            {"name": f["name"], "value": f["value"], "inline": bool(f.get("inline"))} for f in raw.get("fields", [])
-        ],
-        "image_url": raw.get("image", {}).get("url", ""),
-        "thumbnail_url": raw.get("thumbnail", {}).get("url", ""),
-        "footer": raw.get("footer", {}).get("text", ""),
-        "timestamp": bool(raw.get("timestamp")),
-    }
-
-
-def _buttons_from_message(message: discord.Message) -> list[dict[str, Any]]:
-    buttons = []
-    for row in message.components:
-        for child in getattr(row, "children", []):
-            if getattr(child, "style", None) == discord.ButtonStyle.link and getattr(child, "url", None):
-                buttons.append({"label": child.label or "", "url": child.url})
-    return buttons
-
-
 async def _own_message(request: web.Request, channel: Any, message_id: int):
     try:
         message = await channel.fetch_message(message_id)
@@ -137,19 +116,23 @@ async def _own_message(request: web.Request, channel: Any, message_id: int):
         raise api_error(502, f"Discord refused to fetch the message: {error.text or error}")
     if message.author.id != request.app[BOT].user.id:
         raise api_error(403, "Only messages the bot sent can be edited.")
-    rich = [embed for embed in message.embeds if embed.type == "rich"]
-    if len(rich) > 10:
-        raise api_error(409, "This message has more embeds than the editor supports.")
-    return message, [_embed_to_form(embed) for embed in rich], _buttons_from_message(message)
+    return message
 
 
 # ---------- compose / send / edit ----------
 
 
-@routes.get("/api/announce/presets")
+@routes.get("/api/announce/templates")
 @requires("announce.send")
-async def announce_presets(request: web.Request, actor: Actor) -> web.Response:
-    return web.json_response({"presets": all_presets()})
+async def announce_templates(request: web.Request, actor: Actor) -> web.Response:
+    return web.json_response({"templates": list_templates()})
+
+
+@routes.post("/api/cards/preview")
+@requires("announce.send")
+async def preview_card(request: web.Request, actor: Actor) -> web.Response:
+    card = _guard(normalize_card, (await read_json(request)).get("card"))
+    return web.json_response({"card": card, "chars": count_chars(card), "components": count_components(card)})
 
 
 @routes.post("/api/announce")
@@ -163,6 +146,7 @@ async def create_announcement(request: web.Request, actor: Actor) -> web.Respons
     channel = _guard(resolve_channel, guild, payload.get("channel_id"))
     message = _extract_message(payload)
     built = _guard(build_message, guild, message)
+    message["card"] = normalize_card(message["card"])
 
     pool = await get_pool()
     if send_at is not None:
@@ -177,7 +161,7 @@ async def create_announcement(request: web.Request, actor: Actor) -> web.Respons
         await audit(actor, "announce.schedule", str(channel.id), send_at=send_at.isoformat())
         return web.json_response(_row_json(row))
 
-    _guard(check_bot_can, guild, channel, embed=bool(built.embeds), edit=False, status=403)
+    _guard(check_bot_can, guild, channel, edit=False, status=403)
     row = await pool.fetchrow(
         "INSERT INTO panel_announcements (author_id, status, channel_id, payload) "
         "VALUES ($1, 'sending', $2, $3::jsonb) RETURNING id",
@@ -236,17 +220,11 @@ async def load_announcement(request: web.Request, actor: Actor) -> web.Response:
             raise api_error(400, "That link points to another server.")
         channel_id, ref = link[2], link[3]
     channel = _guard(resolve_channel, guild, channel_id)
-    _guard(check_bot_can, guild, channel, embed=False, edit=True, status=403)
-    message, embeds, buttons = await _own_message(request, channel, _message_id(ref))
+    _guard(check_bot_can, guild, channel, edit=True, status=403)
+    message = await _own_message(request, channel, _message_id(ref))
+    card = _guard(card_from_message, message, status=409)
     return web.json_response(
-        {
-            "channel_id": str(channel.id),
-            "message_id": str(message.id),
-            "jump_url": message.jump_url,
-            "content": message.content or "",
-            "embeds": embeds,
-            "buttons": buttons,
-        }
+        {"channel_id": str(channel.id), "message_id": str(message.id), "jump_url": message.jump_url, "card": card}
     )
 
 
@@ -257,12 +235,13 @@ async def edit_announcement(request: web.Request, actor: Actor) -> web.Response:
     channel = _guard(resolve_channel, guild, request.match_info["channel_id"])
     message_id = _message_id(request.match_info["message_id"])
     payload = await read_json(request)
-    message = _extract_message(payload)
-    built = _guard(build_message, guild, message)
-    _guard(check_bot_can, guild, channel, embed=bool(built.embeds), edit=True, status=403)
-    message_obj, _, _ = await _own_message(request, channel, message_id)
+    message_obj = await _own_message(request, channel, message_id)
+    _guard(check_bot_can, guild, channel, edit=True, status=403)
+    template_id = language_template_id([component.to_dict() for component in message_obj.components])
+    card = _guard(normalize_card, payload.get("card"), language_row=template_id is not None)
+    rows = [language_row(template_id)] if template_id else []
     try:
-        await message_obj.edit(content=built.content, embeds=built.embeds, view=built.view, allowed_mentions=built.mentions)
+        await message_obj.edit(view=build_card_view(card, extra_rows=rows), allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException as error:
         raise api_error(502, f"Discord rejected the edit: {error.text or error}")
     await audit(actor, "announce.edit", str(channel.id), message_id=str(message_obj.id))
@@ -274,7 +253,7 @@ async def edit_announcement(request: web.Request, actor: Actor) -> web.Response:
             await pool.execute(
                 "UPDATE panel_announcements SET payload = $2::jsonb, updated_at = now() WHERE id = $1",
                 int(panel_id),
-                json.dumps(message),
+                json.dumps({**_extract_message(payload), "card": card}),
             )
         except Exception:
             log.exception("Failed to refresh panel_announcements history row %s after an edit", panel_id)
@@ -306,6 +285,7 @@ async def update_scheduled(request: web.Request, actor: Actor) -> web.Response:
     channel = _guard(resolve_channel, guild, payload.get("channel_id"))
     message = _extract_message(payload)
     _guard(build_message, guild, message)
+    message["card"] = normalize_card(message["card"])
 
     pool = await get_pool()
     row = await pool.fetchrow(

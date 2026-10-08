@@ -95,7 +95,7 @@ class OwnerOnlySettingsTests(unittest.TestCase):
     def test_infrastructure_settings_are_owner_only(self):
         infrastructure = (
             "PGHOST", "PGPORT", "PGUSER", "PGDB", "initial_extensions", "message_presets_path",
-            "GITHUB_WHITELIST_FILE_PATH", "log_level", "discord_log_channel_id", "dev_jar_download_public_base_url",
+            "GITHUB_WHITELIST_FILE_PATH", "log_level", "dev_jar_download_public_base_url",
             "phishdestroy_api_base_url", "release_webhook_port", "discord_staff_role_ids", "panel_guild_id",
             "dev_guild_id",
         )

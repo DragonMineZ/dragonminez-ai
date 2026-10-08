@@ -202,6 +202,14 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         # ponytail: default every test to a resolved Mojang account so the
         # warn-but-allow flagging path only fires in tests that opt into it.
+        self.staff_notes: list[str] = []
+
+        async def _record(source, title, body="", **kwargs):
+            self.staff_notes.append(body)
+
+        notes_patcher = patch("bulmaai.cogs.patreon_whitelist_flow.panel_logs.record", _record)
+        notes_patcher.start()
+        self.addCleanup(notes_patcher.stop)
         mojang_patcher = patch(
             "bulmaai.cogs.patreon_whitelist_flow.minecraft_username_exists",
             AsyncMock(return_value=True),
@@ -222,8 +230,6 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             patreon_oauth_redirect_uri="https://downloads.dragonminez.com/patreon/oauth/callback",
             PATREON_CAMPAIGN_ID="12861895",
             PATREON_CREATOR_TOKEN="creator-token",
-            patreon_staff_channel_id=1493390527004147876,
-            patreon_ai_log_channel_id=1493390527004147999,
             patreon_admin_ping_role_id=1309022450671161476,
             patreon_contributor_role_id=1287877272224665640,
             patreon_benefactor_role_id=1287877305259130900,
@@ -492,7 +498,6 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(settings=SimpleNamespace(
                 patreon_access_role_ids=(123,),
                 dev_jar_tester_role_ids=(),
-                patreon_staff_channel_id=1493390527004147876,
                 patreon_admin_ping_role_id=1309022450671161476,
                 patreon_contributor_role_id=1287877272224665640,
                 patreon_benefactor_role_id=1287877305259130900,
@@ -620,7 +625,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         all_messages = [call[0][0] for call in first_destination.sent + second_destination.sent]
         self.assertIn("`NewTester` was approved automatically for Patreon beta access.", all_messages)
         self.assertIn("`NewTester` is already whitelisted. Nothing to do.", all_messages)
-        self.assertEqual(len(staff_channel.sent), 1)
+        self.assertEqual(len(self.staff_notes), 1)
 
     async def test_concurrent_beta_access_for_different_names_prompts_for_username_update(self) -> None:
         staff_channel = FakeChannel()
@@ -944,7 +949,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cog.gh.put_calls[0]["message"], "Update beta tester: OldTester -> NewTester")
         self.assertEqual(upsert_grant.await_args.args[0].minecraft_username, "NewTester")
         self.assertIn("updated from `OldTester` to `NewTester`", interaction.followup.sent[-1][0][0])
-        self.assertIn("updated Patreon beta access", staff_channel.sent[-1][0][0])
+        self.assertIn("updated Patreon beta access", self.staff_notes[-1])
 
     async def test_patreon_callback_shows_receiving_discord_account_before_linking(self) -> None:
         cog = CapturingOAuthPatreonWhitelistFlowCog()
@@ -1100,7 +1105,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upsert_grant.await_args.args[0].kind, PatreonGrantKind.GIFT)
         self.assertEqual(upsert_grant.await_args.args[0].beneficiary_discord_user_id, 789)
         self.assertIn("Gift approved automatically", ctx.followup.sent[-1][0][0])
-        self.assertIn("auto-approved", staff_channel.sent[-1][0][0])
+        self.assertIn("auto-approved", self.staff_notes[-1])
 
     async def test_concurrent_gifts_cannot_both_pass_the_gift_limit(self) -> None:
         author = SimpleNamespace(id=456, name="Requester", mention="<@456>", roles=[SimpleNamespace(id=1287877272224665640)])
@@ -1138,7 +1143,6 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_gift_beta_flags_ai_log_when_mojang_lookup_fails(self) -> None:
         staff_channel = FakeChannel()
-        ai_log_channel = FakeChannel()
         author = SimpleNamespace(
             id=456,
             name="Requester",
@@ -1154,10 +1158,7 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         settings = self._settings()
 
-        def get_channel(channel_id):
-            return ai_log_channel if channel_id == settings.patreon_ai_log_channel_id else staff_channel
-
-        bot = SimpleNamespace(settings=settings, get_channel=get_channel)
+        bot = SimpleNamespace(settings=settings, get_channel=lambda channel_id: staff_channel)
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
         cog.bot = bot
         cog.gh = FakeGitHub()
@@ -1184,8 +1185,8 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
             await cog._handle_gift_beta_command(ctx, recipient, "GiftedMC")
 
         self.assertIn("Gift approved automatically", ctx.followup.sent[-1][0][0])
-        self.assertEqual(len(ai_log_channel.sent), 1)
-        self.assertIn("did not resolve", ai_log_channel.sent[0][0][0])
+        self.assertEqual(len(self.staff_notes), 2)
+        self.assertTrue(any("did not resolve" in note for note in self.staff_notes))
 
     def _edit_gift_cog(self, *, gh=None):
         staff_channel = FakeChannel()
@@ -1515,7 +1516,6 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(settings=SimpleNamespace(
                 patreon_access_role_ids=(123,),
                 dev_jar_tester_role_ids=(),
-                patreon_staff_channel_id=1493390527004147876,
                 patreon_admin_ping_role_id=1309022450671161476,
                 patreon_contributor_role_id=1287877272224665640,
                 patreon_benefactor_role_id=1287877305259130900,
@@ -1545,7 +1545,6 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(settings=SimpleNamespace(
                 patreon_access_role_ids=(123,),
                 dev_jar_tester_role_ids=(),
-                patreon_staff_channel_id=1493390527004147876,
                 patreon_admin_ping_role_id=1309022450671161476,
                 patreon_contributor_role_id=1287877272224665640,
                 patreon_benefactor_role_id=1287877305259130900,

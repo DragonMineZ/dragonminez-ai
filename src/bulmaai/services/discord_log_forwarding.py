@@ -74,6 +74,12 @@ class LogEmbedPayload:
 
 
 DISCORD_ALERT_LEVEL = logging.ERROR  # below this, logs go to the panel only
+MODERATION_SOURCES = ("mod", "raid_guard", "automod", "scam_images", "routes_moderation")
+
+
+def is_moderation_source(source: str) -> bool:
+    """Only errors from moderation code are worth a post in the mod-log channel; the rest stay in the panel."""
+    return source.startswith(MODERATION_SOURCES)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -340,7 +346,7 @@ class DiscordLogForwarder:
                     user_id=payload.user_id,
                     data={"fields": payload.fields, "traceback": payload.traceback_text},
                 )
-                if payload.level < DISCORD_ALERT_LEVEL:
+                if payload.level < DISCORD_ALERT_LEVEL or not is_moderation_source(payload.source):
                     continue
                 channel = await self._resolve_channel()
                 if channel is None:

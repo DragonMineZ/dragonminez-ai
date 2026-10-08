@@ -16,7 +16,7 @@ from .services.discord_log_forwarding import (
     DiscordLogForwarder,
     install_discord_log_forwarder,
 )
-from .services import ai_budget, db_schema, message_presets, support_traces
+from .services import ai_budget, db_schema, message_templates, support_traces
 from .services.release_webhook import ReleaseWebhookServer
 from .utils import permissions
 from .utils.lifecycle import lifecycle_cogs
@@ -162,10 +162,10 @@ class BulmaAI(discord.Bot):
     async def setup_hook(self) -> None:
         """Called when the bot is starting up, before connecting to Discord."""
         # Forwarder first so a failing DB/schema step below still reaches the log channel.
-        if self.settings.discord_log_forwarding_enabled and self.settings.discord_log_channel_id:
+        if self.settings.discord_log_forwarding_enabled and self.settings.moderation_log_channel_id:
             self._discord_log_forwarder = install_discord_log_forwarder(
                 bot=self,
-                channel_id=self.settings.discord_log_channel_id,
+                channel_id=self.settings.moderation_log_channel_id,
                 min_level_name=self.settings.discord_log_min_level,
             )
         try:
@@ -179,7 +179,7 @@ class BulmaAI(discord.Bot):
             ai_budget.seed(await support_traces.sum_tokens_by_model_since(midnight))
         except Exception:
             log.exception("Failed to seed today's OpenAI token budget from traces")
-        message_presets.ensure_message_presets_file()
+        message_templates.ensure_message_templates_file()
 
     def reload_settings(self) -> Settings:
         self.settings = load_settings()

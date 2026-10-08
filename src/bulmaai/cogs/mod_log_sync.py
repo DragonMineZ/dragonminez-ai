@@ -31,6 +31,8 @@ _AUDIT_ACTION_MAP: dict[discord.AuditLogAction, str] = {
     discord.AuditLogAction.kick: "kick",
 }
 
+_ENDS = {"untimeout": "timeout", "unban": "ban"}  # synced action -> the case action it ends
+
 _MISSING = object()
 
 
@@ -250,7 +252,17 @@ class ModLogSyncCog(ReloadableCog):
         if mapped is None:
             return
         case_id = await self._record_mapped_case(mapped, guild_id=settings.panel_guild_id)
-        if case_id is not None and mapped.source == "discord":  # Dyno posts its own; ours come from perform()
+        if case_id is None:
+            return
+        ended = _ENDS.get(mapped.action)
+        if ended:  # the matching mute/ban card flips to ended, credited to the moderator from the audit log
+            try:
+                await mod_actions.end_user_cases(
+                    self.bot, settings.panel_guild_id, mapped.user_id, ended, ended_by=mapped.moderator_id
+                )
+            except Exception:
+                log.exception("Couldn't end the %s cases of %s", ended, mapped.user_id)
+        if mapped.source == "discord":  # Dyno posts its own; ours come from perform()
             await mod_actions.post_case_log(
                 self.bot,
                 case_id=case_id,
@@ -260,6 +272,7 @@ class ModLogSyncCog(ReloadableCog):
                 reason=mapped.reason,
                 duration_seconds=mapped.duration_seconds,
                 source="discord",
+                guild_id=settings.panel_guild_id,
             )
 
     @commands.Cog.listener()

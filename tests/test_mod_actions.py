@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -10,6 +11,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 import discord
 
 from bulmaai.services import mod_actions
+from bulmaai.services.mod_cases import ModCase
 from bulmaai.services.mod_actions import LadderStep, format_duration, parse_ladder, pick_step
 from bulmaai.ui.mod_views import parse_custom_id, quick_actions_view
 
@@ -99,12 +101,15 @@ class LockTests(unittest.IsolatedAsyncioTestCase):
 
 class PerformTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # No database here: the panel log would otherwise spend seconds retrying a connection per case.
+        patcher = patch("bulmaai.services.panel_logs.record", AsyncMock())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         settings = SimpleNamespace(
             moderation_dm_on_action=True,
             moderation_appeals_enabled=True,
             moderation_warn_ladder="",
             moderation_log_channel_id=None,
-            discord_log_channel_id=None,
             panel_guild_id=1,
             dev_guild_id=None,
             panel_owner_role_ids=(),
@@ -201,6 +206,122 @@ class PerformTests(unittest.IsolatedAsyncioTestCase):
         ):
             await mod_actions.perform(self.bot, self.guild, action="note", target_id=77, moderator=None, reason="x")
         self.assertEqual(raised.exception.status, 503)
+
+
+    async def test_escalation_case_records_the_warn_that_triggered_it(self):
+        self.bot.settings.moderation_warn_ladder = "1=24h"
+        record = AsyncMock(return_value=3)
+        with (
+            patch("bulmaai.services.mod_cases.record_case", record),
+            patch("bulmaai.services.mod_cases.count_active_since", AsyncMock(return_value=1)),
+            patch("bulmaai.services.mod_actions.post_case_log", AsyncMock()),
+            patch.object(self.member, "timeout_for", AsyncMock(), create=True),
+        ):
+            await self.warn(self.staff(20))
+        self.assertIsNone(record.await_args_list[0].kwargs["triggered_by"])
+        escalation = record.await_args_list[1].kwargs
+        self.assertEqual((escalation["action"], escalation["source"], escalation["triggered_by"]), ("timeout", "escalation", 3))
+        self.assertIsNotNone(escalation["expires_at"])
+
+    async def test_untimeout_and_unban_end_the_open_cases(self):
+        self.member.remove_timeout = AsyncMock()
+        with (
+            patch("bulmaai.services.mod_cases.record_case", AsyncMock(return_value=4)),
+            patch("bulmaai.services.mod_actions.post_case_log", AsyncMock()),
+            patch("bulmaai.services.mod_actions.end_user_cases", AsyncMock(return_value=1)) as end,
+        ):
+            await mod_actions.perform(self.bot, self.guild, action="untimeout", target_id=5, moderator=None, reason="x")
+            await mod_actions.perform(
+                self.bot, self.guild, action="unban", target_id=5, moderator=None, reason="x", source="tempban"
+            )
+        self.assertEqual(end.await_args_list[0].args[3:], ("timeout",))
+        self.assertIsNone(end.await_args_list[0].kwargs["note"])
+        self.assertEqual(end.await_args_list[1].args[3:], ("ban",))
+        self.assertEqual(end.await_args_list[1].kwargs["note"], "expired")
+
+
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def stored_case(**overrides):
+    values = dict(
+        id=12, guild_id=1, user_id=5, moderator_id=20, action="warn", reason="spam", duration_seconds=None,
+        source="command", created_at=NOW,
+    )
+    values.update(overrides)
+    return ModCase(**values)
+
+
+class CardTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        patcher = patch("bulmaai.services.panel_logs.record", AsyncMock())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.message = SimpleNamespace(id=777, channel=SimpleNamespace(id=66))
+        self.partial = SimpleNamespace(edit=AsyncMock())
+        self.channel = SimpleNamespace(
+            id=66, send=AsyncMock(return_value=self.message), get_partial_message=lambda _id: self.partial
+        )
+        user = SimpleNamespace(
+            name="spam_user", created_at=discord.utils.utcnow() - timedelta(days=12),
+            display_avatar=SimpleNamespace(url="https://x/a.png"),
+        )
+        member = SimpleNamespace(created_at=user.created_at, joined_at=discord.utils.utcnow() - timedelta(days=3))
+        settings = SimpleNamespace(
+            moderation_log_channel_id=66, moderation_warn_ladder="2/7d=24h", panel_guild_id=1
+        )
+        self.bot = SimpleNamespace(
+            settings=settings,
+            get_channel=lambda _id: self.channel,
+            get_user=lambda _id: user,
+            get_guild=lambda _id: SimpleNamespace(get_member=lambda _uid: member),
+        )
+
+    async def test_post_case_log_sends_the_card_and_stores_where_it_went_and_the_context(self):
+        with (
+            patch("bulmaai.services.panel_logs.record", AsyncMock()),
+            patch("bulmaai.services.mod_cases.case_number", AsyncMock(return_value=3)),
+            patch("bulmaai.services.mod_cases.count_active_since", AsyncMock(return_value=1)),
+            patch("bulmaai.services.mod_cases.set_card", AsyncMock()) as set_card,
+        ):
+            await mod_actions.post_case_log(
+                self.bot, case_id=12, action="warn", user_id=5, moderator_id=20, reason="spam", triggered_by=9
+            )
+        self.channel.send.assert_awaited_once()
+        self.assertIsInstance(self.channel.send.await_args.kwargs["view"], discord.ui.DesignerView)
+        self.assertEqual(self.channel.send.await_args.kwargs["allowed_mentions"].users, False)
+        kwargs = set_card.await_args.kwargs
+        self.assertEqual((kwargs["channel_id"], kwargs["message_id"]), (66, 777))
+        self.assertEqual(
+            kwargs["context"], "📊 3rd case · `▰▱` 1/2 warns in 7d · account 12 days old · joined 3 days ago"
+        )
+
+    async def test_post_case_log_never_raises(self):
+        self.channel.send.side_effect = discord.HTTPException(SimpleNamespace(status=500, reason=""), "boom")
+        with patch("bulmaai.services.panel_logs.record", AsyncMock()), patch("bulmaai.services.mod_cases.set_card", AsyncMock()), patch(
+            "bulmaai.services.mod_actions._case_context", AsyncMock(return_value=None)
+        ):
+            await mod_actions.post_case_log(self.bot, case_id=None, action="ban", user_id=5, moderator_id=None, reason=None)
+
+    async def test_end_case_flips_the_case_and_refreshes_its_card(self):
+        ended = stored_case(active=False, ended_by=20, log_channel_id=66, log_message_id=777)
+        with patch("bulmaai.services.mod_cases.deactivate_case", AsyncMock(return_value=ended)) as deactivate:
+            result = await mod_actions.end_case(self.bot, 1, 12, ended_by=20, note="oops")
+        self.assertIs(result, ended)
+        deactivate.assert_awaited_once_with(1, 12, ended_by=20, note="oops")
+        self.partial.edit.assert_awaited_once()
+        self.assertIsInstance(self.partial.edit.await_args.kwargs["view"], discord.ui.DesignerView)
+
+    async def test_end_case_on_an_inactive_case_touches_no_card(self):
+        with patch("bulmaai.services.mod_cases.deactivate_case", AsyncMock(return_value=None)):
+            self.assertIsNone(await mod_actions.end_case(self.bot, 1, 12, ended_by=20))
+        self.partial.edit.assert_not_awaited()
+
+    async def test_refresh_survives_discord_errors_and_cards_without_a_message(self):
+        self.partial.edit.side_effect = discord.HTTPException(SimpleNamespace(status=404, reason=""), "gone")
+        await mod_actions.refresh_case_card(self.bot, stored_case(log_channel_id=66, log_message_id=777))
+        await mod_actions.refresh_case_card(self.bot, stored_case())
+        self.assertEqual(self.partial.edit.await_count, 1)
 
 
 if __name__ == "__main__":

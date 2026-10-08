@@ -287,7 +287,6 @@ class ConfigSettingsTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "PATREON_STAFF_CHANNEL_ID": "666666666666666666",
                 "PATREON_ADMIN_PING_ROLE_ID": "777777777777777777",
                 "PATREON_CONTRIBUTOR_ROLE_ID": "888888888888888888",
                 "PATREON_BENEFACTOR_ROLE_ID": "999999999999999999",
@@ -296,7 +295,6 @@ class ConfigSettingsTests(unittest.TestCase):
         ):
             settings = load_settings(include_overrides=False)
 
-        self.assertEqual(settings.patreon_staff_channel_id, 666666666666666666)
         self.assertEqual(settings.patreon_admin_ping_role_id, 777777777777777777)
         self.assertEqual(settings.patreon_contributor_role_id, 888888888888888888)
         self.assertEqual(settings.patreon_benefactor_role_id, 999999999999999999)
@@ -313,7 +311,6 @@ class ConfigSettingsTests(unittest.TestCase):
         ):
             settings = load_settings(include_overrides=False)
 
-        self.assertEqual(settings.patreon_staff_channel_id, 1493390527004147876)
         self.assertEqual(settings.patreon_admin_ping_role_id, 1309022450671161476)
         self.assertEqual(settings.patreon_contributor_role_id, 1287877272224665640)
         self.assertEqual(settings.patreon_benefactor_role_id, 1287877305259130900)
@@ -338,7 +335,6 @@ class ConfigSettingsTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "AI_TICKET_TRANSCRIPT_CHANNEL_ID": "123",
                 "AI_TICKET_RESOLVE_MIN_CONFIDENCE": "0.7",
                 "AI_TICKET_RESOLVE_PROMPT_EXPONENT": "2.5",
                 "AI_TICKET_CLOSE_DELAY_SECONDS": "0",
@@ -349,7 +345,6 @@ class ConfigSettingsTests(unittest.TestCase):
         ):
             settings = load_settings(include_overrides=False)
 
-        self.assertEqual(settings.ai_ticket_transcript_channel_id, 123)
         self.assertEqual(settings.ai_ticket_resolve_min_confidence, 0.7)
         self.assertEqual(settings.ai_ticket_resolve_prompt_exponent, 2.5)
         self.assertEqual(settings.ai_ticket_close_delay_seconds, 0)

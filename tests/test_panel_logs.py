@@ -40,10 +40,17 @@ class PanelLogForwardingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded.await_args.args[0], "moderation")
         send.assert_not_awaited()
 
-    async def test_error_goes_to_panel_and_discord(self):
+    async def test_moderation_error_goes_to_panel_and_discord(self):
         recorded, send = await self._forward(_record(logging.ERROR))
         recorded.assert_awaited_once()
         send.assert_awaited_once()
+
+    async def test_other_errors_stay_in_the_panel(self):
+        record = _record(logging.ERROR)
+        record.name = "bulmaai.cogs.patreon_whitelist_flow"
+        recorded, send = await self._forward(record)
+        recorded.assert_awaited_once()
+        send.assert_not_awaited()
 
 
 class PanelLogQueryTests(unittest.IsolatedAsyncioTestCase):

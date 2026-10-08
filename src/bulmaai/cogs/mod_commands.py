@@ -22,6 +22,7 @@ from bulmaai.services.mod_actions import (
     parse_ladder,
     pick_step,
 )
+from bulmaai.ui.mod_cards import reply_card
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, resolve_member, tier_for
 
@@ -105,28 +106,32 @@ class ReasonModal(discord.ui.Modal):
         await self._submit(interaction, self.reason_input.value.strip())
 
 
-class ConfirmView(discord.ui.View):
-    """Private "are you sure?" prompt. On confirm the prompt turns into "Working…" and on_confirm runs;
+class ConfirmView(discord.ui.DesignerView):
+    """Private "are you sure?" card. On confirm it turns into "Working…" and on_confirm runs;
     on_confirm posts its own (public) result with interaction.followup.send."""
 
-    def __init__(self, label: str, on_confirm: Callable[[discord.Interaction], Awaitable[object]]):
-        super().__init__(timeout=120, disable_on_timeout=True)
-        self._on_confirm = on_confirm
+    def __init__(self, prompt: str, label: str, on_confirm: Callable[[discord.Interaction], Awaitable[object]]):
         confirm = discord.ui.Button(label=label, style=discord.ButtonStyle.danger)
         cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
         confirm.callback, cancel.callback = self._confirm, self._cancel
-        self.add_item(confirm)
-        self.add_item(cancel)
+        super().__init__(
+            discord.ui.Container(
+                discord.ui.TextDisplay(prompt), discord.ui.ActionRow(confirm, cancel), color=discord.Color.gold()
+            ),
+            timeout=120,
+            disable_on_timeout=True,
+        )
+        self._on_confirm = on_confirm
 
     async def _confirm(self, interaction: discord.Interaction):
         self.stop()
-        await interaction.response.edit_message(content="Working…", view=None)
+        await interaction.response.edit_message(view=reply_card("⏳ Working…", discord.Color.dark_grey()))
         await self._on_confirm(interaction)
         await interaction.delete_original_response()
 
     async def _cancel(self, interaction: discord.Interaction):
         self.stop()
-        await interaction.response.edit_message(content="Cancelled.", view=None)
+        await interaction.response.edit_message(view=reply_card("Cancelled.", discord.Color.dark_grey()))
 
 
 class ModCommandsCog(ReloadableCog):
@@ -204,11 +209,8 @@ class ModCommandsCog(ReloadableCog):
             text += f" (case #{escalation.case_id})" if escalation.case_id else ""
         if result.ladder_skipped:
             text += f"\n⚠️ Warn ladder: {result.ladder_skipped}"
-        footer = [f"Case #{result.case_id}" if result.case_id else "The case couldn't be recorded"]
-        if result.dm_sent is not None:
-            footer.append("DM delivered" if result.dm_sent else "Couldn't DM them")
-        embed = discord.Embed(description=text, color=color).set_footer(text=" · ".join(footer))
-        await ctx.respond(embed=embed, allowed_mentions=NO_PINGS)
+        footer = f"Case #{result.case_id}" if result.case_id else "The case couldn't be recorded"
+        await ctx.respond(view=reply_card(text, color, footer), allowed_mentions=NO_PINGS)
         return result
 
     # --- warnings and notes ------------------------------------------------------------------
@@ -307,7 +309,7 @@ class ModCommandsCog(ReloadableCog):
         async def callback(interaction: discord.Interaction):
             if not (await self._allowed(interaction, "mod.cases.remove") and await self._outranks(interaction, user.id)):
                 return
-            removed = await mod_cases.deactivate_case(guild_id, case_id)
+            removed = await mod_actions.end_case(self.bot, guild_id, case_id, ended_by=interaction.user.id)
             view = await self._warnings_view(guild_id, user, page)
             await interaction.response.edit_message(view=view, allowed_mentions=NO_PINGS)
             if removed is None:
@@ -337,7 +339,7 @@ class ModCommandsCog(ReloadableCog):
             return await ctx.respond(f"Case #{case_id} isn't a {label}.", ephemeral=True)
         if not await self._outranks(ctx, case.user_id):
             return
-        if await mod_cases.deactivate_case(ctx.guild.id, case_id) is None:
+        if await mod_actions.end_case(self.bot, ctx.guild.id, case_id, ended_by=ctx.user.id) is None:
             return await ctx.respond(f"Case #{case_id} was already removed.", ephemeral=True)
         text = f"Removed {label} #{case_id} for <@{case.user_id}>."
         await ctx.respond(text, allowed_mentions=NO_PINGS)
@@ -368,13 +370,15 @@ class ModCommandsCog(ReloadableCog):
             return
 
         async def clear(interaction: discord.Interaction):
-            count = await mod_cases.deactivate_user_cases(ctx.guild.id, user.id, "warn")
+            count = await mod_actions.end_user_cases(self.bot, ctx.guild.id, user.id, "warn", ended_by=ctx.user.id)
             text = f"Cleared {count} warning(s) for <@{user.id}>."
             await interaction.followup.send(text, allowed_mentions=NO_PINGS)
             await self._log_removal("Warnings cleared", text, ctx.user.id, user.id)
 
         await ctx.respond(
-            f"Clear **all** active warnings for <@{user.id}>?", view=ConfirmView("Clear warnings", clear), ephemeral=True
+            view=ConfirmView(f"**Clear all active warnings for <@{user.id}>?**", "Clear warnings", clear),
+            ephemeral=True,
+            allowed_mentions=NO_PINGS,
         )
 
     @discord.slash_command(name="note", description="Add a staff-only note to a user")
@@ -520,7 +524,7 @@ class ModCommandsCog(ReloadableCog):
         prompt = f"Scan the last **{amount}** message(s) here and delete " + (
             f"the ones {filter_text}?" if filter_text else "all of them?"
         )
-        await ctx.respond(prompt, view=ConfirmView("Purge", run), ephemeral=True, allowed_mentions=NO_PINGS)
+        await ctx.respond(view=ConfirmView(prompt, "Purge", run), ephemeral=True, allowed_mentions=NO_PINGS)
 
     # --- cases -------------------------------------------------------------------------------
 
@@ -533,20 +537,7 @@ class ModCommandsCog(ReloadableCog):
         case = await mod_cases.get_case(ctx.guild.id, case_id)
         if case is None:
             return await ctx.respond("Unknown case.", ephemeral=True)
-        embed = mod_actions.case_embed(
-            case_id=case.id,
-            action=case.action,
-            user_id=case.user_id,
-            moderator_id=case.moderator_id,
-            reason=case.reason,
-            duration_seconds=case.duration_seconds,
-            expires_at=case.expires_at,
-            source=case.source,
-        )
-        embed.timestamp = case.created_at
-        if not case.active:
-            embed.title += " (inactive)"
-        await ctx.respond(embed=embed, allowed_mentions=NO_PINGS)
+        await ctx.respond(view=await mod_actions.render_case_card(self.bot, case), allowed_mentions=NO_PINGS)
 
     @discord.slash_command(
         name="reason", description="Fix the reason on an existing case (find case numbers with /modlogs or /warnings)"
@@ -565,6 +556,8 @@ class ModCommandsCog(ReloadableCog):
         if not await self._outranks(ctx, case.user_id):
             return
         await mod_cases.update_reason(ctx.guild.id, case_id, reason.strip())
+        if updated := await mod_cases.get_case(ctx.guild.id, case_id):
+            await mod_actions.refresh_case_card(self.bot, updated)  # the mod-log card shows the new reason too
         await ctx.respond(
             f"Case #{case_id} ({case.action} on <@{case.user_id}>) reason changed:\n"
             f"~~{case.reason or 'No reason'}~~ → {reason.strip()}",
@@ -653,8 +646,7 @@ class ModCommandsCog(ReloadableCog):
             )
 
         await ctx.respond(
-            "Lock **every public channel** (or the configured lockdown list)?",
-            view=ConfirmView("Start lockdown", run),
+            view=ConfirmView("**Lock every public channel** (or the configured lockdown list)?", "Start lockdown", run),
             ephemeral=True,
         )
 
@@ -803,9 +795,14 @@ class ModCommandsCog(ReloadableCog):
             return
         for case in due:
             guild = self.bot.get_guild(case.guild_id)
-            if guild is None or case.action != "ban":
+            if guild is None:
                 continue
             try:
+                if case.action == "timeout":  # Discord already lifted it; the card flips to "expired"
+                    await mod_actions.end_case(self.bot, case.guild_id, case.id, ended_by=None, note="expired")
+                    continue
+                if case.action != "ban":
+                    continue
                 try:
                     await mod_actions.perform(
                         self.bot,
@@ -820,9 +817,9 @@ class ModCommandsCog(ReloadableCog):
                 except ModActionError as error:
                     if error.status != 404:
                         raise
-                    await mod_cases.deactivate_case(case.guild_id, case.id)  # already unbanned by hand
+                    await mod_actions.end_case(self.bot, case.guild_id, case.id, ended_by=None)  # unbanned by hand
             except Exception:
-                log.warning("Couldn't lift tempban case #%s", case.id, exc_info=True)
+                log.warning("Couldn't expire case #%s", case.id, exc_info=True)
 
     @expire_tempbans.before_loop
     async def _before_expire_tempbans(self):

@@ -12,11 +12,13 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 import discord
 from aiohttp.test_utils import TestClient, TestServer
 
+from discord.components import _component_factory
+
+from bulmaai.services.cards import build_card_view, language_row
 from bulmaai.services.panel_announcements import (
     AnnouncementError,
     build_allowed_mentions,
     build_message,
-    build_view,
     claim_scheduled,
     mark_failed,
     mark_overdue,
@@ -29,6 +31,11 @@ from test_admin_panel import HELPER_ID, OWNER_ID, SECRET, make_bot
 
 CHANNEL_ID = 10
 ROLE_ID = 55
+CARD = {"accent_color": "#F39C12", "blocks": [{"type": "text", "text": "Hello"}]}
+
+
+def card_payload(text="Hello", **extra):
+    return {"card": {"accent_color": "#F39C12", "blocks": [{"type": "text", "text": text}]}, **extra}
 
 
 def perms(**overrides):
@@ -73,81 +80,25 @@ def make_guild(channel):
 
 
 class BuildMessageTests(unittest.IsolatedAsyncioTestCase):
-    # discord.ui.View() (used when a message has buttons) requires a running event loop, hence
-    # IsolatedAsyncioTestCase even though build_message() itself is a plain sync function.
+    # DesignerView needs a running event loop, hence IsolatedAsyncioTestCase.
     def setUp(self):
         self.channel = make_channel()
         self.guild = make_guild(self.channel)
 
-    async def test_content_too_long_rejected(self):
-        with self.assertRaises(AnnouncementError):
-            build_message(self.guild, {"content": "x" * 2001})
+    async def test_old_shape_row_fails_cleanly(self):
+        with self.assertRaisesRegex(AnnouncementError, "old editor"):
+            build_message(self.guild, {"content": "hello", "embeds": []})
 
-    async def test_needs_content_or_embed(self):
+    async def test_invalid_card_rejected(self):
         with self.assertRaises(AnnouncementError):
-            build_message(self.guild, {"content": ""})
+            build_message(self.guild, {"card": {"blocks": []}})
 
-    async def test_too_many_embeds_rejected(self):
-        embeds = [{"title": "t"} for _ in range(11)]
-        with self.assertRaises(AnnouncementError):
-            build_message(self.guild, {"embeds": embeds})
-
-    async def test_embed_title_limit(self):
-        with self.assertRaises(AnnouncementError):
-            build_message(self.guild, {"embeds": [{"title": "x" * 257}]})
-
-    async def test_too_many_fields_rejected(self):
-        fields = [{"name": "n", "value": "v"} for _ in range(26)]
-        with self.assertRaises(AnnouncementError):
-            build_message(self.guild, {"embeds": [{"title": "t", "fields": fields}]})
-
-    async def test_embed_total_char_limit(self):
-        with self.assertRaises(AnnouncementError):
-            build_message(self.guild, {"embeds": [{"description": "x" * 6001}]})
-
-    async def test_bad_url_rejected(self):
-        with self.assertRaises(AnnouncementError):
-            build_message(self.guild, {"embeds": [{"title": "t", "image_url": "javascript:alert(1)"}]})
-
-    async def test_valid_message_builds_embed_button_and_mentions(self):
-        built = build_message(self.guild, {
-            "content": "hi",
-            "embeds": [{
-                "author_name": "Author", "title": "Title", "description": "Body", "color": "#F39C12",
-                "fields": [{"name": "N", "value": "V", "inline": True}],
-                "footer": "foot", "timestamp": True,
-            }],
-            "buttons": [{"label": "Go", "url": "https://example.com"}],
-            "mention_roles": [str(ROLE_ID)],
-            "mention_everyone": True,
-        })
-        self.assertEqual(built.content, "hi")
-        self.assertEqual(len(built.embeds), 1)
-        raw = built.embeds[0].to_dict()
-        self.assertEqual(raw["title"], "Title")
-        self.assertEqual(raw["color"], 0xF39C12)
-        self.assertEqual(raw["fields"][0]["name"], "N")
-        self.assertIsNotNone(built.view)
+    async def test_valid_message_builds_view_and_mentions(self):
+        built = build_message(self.guild, card_payload(mention_roles=[str(ROLE_ID)], mention_everyone=True))
+        self.assertIsInstance(built.view, discord.ui.DesignerView)
+        self.assertEqual(built.view.to_components()[0]["accent_color"], 0xF39C12)
         self.assertTrue(built.mentions.everyone)
         self.assertEqual([r.id for r in built.mentions.roles], [ROLE_ID])
-
-
-class BuildViewAndMentionsTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.guild = make_guild(make_channel())
-
-    async def test_too_many_buttons_rejected(self):
-        buttons = [{"label": "a", "url": "https://x.com"} for _ in range(6)]
-        with self.assertRaises(AnnouncementError):
-            build_view(buttons)
-
-    async def test_button_without_url_rejected(self):
-        with self.assertRaises(AnnouncementError):
-            build_view([{"label": "a"}])
-
-    async def test_valid_buttons_use_link_style(self):
-        view = build_view([{"label": "Go", "url": "https://example.com"}])
-        self.assertEqual(view.children[0].style, discord.ButtonStyle.link)
 
     async def test_unknown_role_rejected(self):
         with self.assertRaises(AnnouncementError):
@@ -206,7 +157,7 @@ def scheduled_row(row_id=1, payload=None, send_at=None):
         "id": row_id,
         "author_id": 1,
         "channel_id": CHANNEL_ID,
-        "payload": json.dumps(payload or {"content": "hello"}),
+        "payload": json.dumps(payload or card_payload("hello")),
         "status": "scheduled",
         "send_at": send_at or (datetime.now(timezone.utc) - timedelta(seconds=5)),
         "error": None,
@@ -247,7 +198,7 @@ class SendScheduledTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_scheduled_success(self):
         channel = make_channel()
         guild = make_guild(channel)
-        pool = FakePool([scheduled_row(payload={"content": "hello world"})])
+        pool = FakePool([scheduled_row(payload=card_payload("hello world"))])
         with patch("bulmaai.services.panel_announcements.get_pool", AsyncMock(return_value=pool)):
             result = await send_scheduled(self._bot(guild), 1)
         self.assertEqual(result["status"], "sent")
@@ -257,7 +208,7 @@ class SendScheduledTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_scheduled_missing_permission_marks_failed(self):
         channel = make_channel(send_messages=False)
         guild = make_guild(channel)
-        pool = FakePool([scheduled_row(payload={"content": "hello"})])
+        pool = FakePool([scheduled_row(payload=card_payload("hello"))])
         with patch("bulmaai.services.panel_announcements.get_pool", AsyncMock(return_value=pool)):
             result = await send_scheduled(self._bot(guild), 1)
         self.assertEqual(result["status"], "failed")
@@ -268,7 +219,7 @@ class SendScheduledTests(unittest.IsolatedAsyncioTestCase):
     async def test_translation_failure_does_not_block_the_main_send(self):
         channel = make_channel()
         guild = make_guild(channel)
-        payload = {"content": "hello", "translate": {"es": True}}
+        payload = card_payload("hello", translate={"es": True})
         pool = FakePool([scheduled_row(payload=payload)])
         bot = self._bot(guild)
         bot.get_cog = lambda _name: object()  # truthy stand-in for the AiAnnTranslation cog
@@ -421,9 +372,6 @@ class AnnouncePanelHttpTests(unittest.IsolatedAsyncioTestCase):
         core_pool_patch = patch("bulmaai.web.core.get_pool", AsyncMock(return_value=SimpleNamespace(execute=AsyncMock())))
         core_pool_patch.start()
         self.addCleanup(core_pool_patch.stop)
-        presets_patch = patch("bulmaai.web.routes_presets.all_presets", return_value=[])
-        presets_patch.start()
-        self.addCleanup(presets_patch.stop)
         self.addCleanup(patch.stopall)
 
         self.client = TestClient(TestServer(create_app(self.bot)))
@@ -442,13 +390,15 @@ class AnnouncePanelHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_helper_is_denied(self):
         self.login(HELPER_ID)
-        self.assertEqual((await self.write("POST", "/api/announce", {"content": "hi"})).status, 403)
+        self.assertEqual((await self.write("POST", "/api/announce", card_payload("hi"))).status, 403)
 
     async def test_immediate_send(self):
         body = {
-            "channel_id": str(CHANNEL_ID), "content": "Hello",
-            "embeds": [{"title": "T", "description": "D"}],
-            "buttons": [{"label": "Go", "url": "https://example.com"}],
+            "channel_id": str(CHANNEL_ID),
+            "card": {"accent_color": None, "blocks": [
+                {"type": "text", "text": f"Hello <@&{ROLE_ID}>"},
+                {"type": "buttons", "buttons": [{"label": "Go", "url": "https://example.com", "emoji": "🧡"}]},
+            ]},
             "mention_roles": [str(ROLE_ID)], "mention_everyone": False,
         }
         response = await self.write("POST", "/api/announce", body)
@@ -457,24 +407,25 @@ class AnnouncePanelHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.channel.sent), 1)
         self.assertEqual(self.pool.rows[data["id"]]["status"], "sent")
         kwargs = self.channel.sent[0]
-        self.assertEqual(kwargs["embeds"][0].title, "T")
+        self.assertEqual(set(kwargs), {"view", "allowed_mentions"})
+        self.assertIsInstance(kwargs["view"], discord.ui.DesignerView)
         self.assertEqual([r.id for r in kwargs["allowed_mentions"].roles], [ROLE_ID])
 
     async def test_immediate_send_validation_error(self):
-        body = {"channel_id": str(CHANNEL_ID), "embeds": [{"title": "x" * 300}]}
+        body = {"channel_id": str(CHANNEL_ID), **card_payload("x" * 4001)}
         response = await self.write("POST", "/api/announce", body)
         self.assertEqual(response.status, 400)
         self.assertEqual(len(self.channel.sent), 0)
 
     async def test_schedule_create_requires_future_time(self):
         past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-        body = {"channel_id": str(CHANNEL_ID), "content": "hi", "send_at": past}
+        body = {"channel_id": str(CHANNEL_ID), **card_payload("hi"), "send_at": past}
         response = await self.write("POST", "/api/announce", body)
         self.assertEqual(response.status, 400)
 
     async def test_schedule_create_edit_cancel_and_send_now(self):
         future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        body = {"channel_id": str(CHANNEL_ID), "content": "later", "send_at": future}
+        body = {"channel_id": str(CHANNEL_ID), **card_payload("later"), "send_at": future}
         created = await self.write("POST", "/api/announce", body)
         self.assertEqual(created.status, 200, await created.text())
         row = await created.json()
@@ -485,13 +436,14 @@ class AnnouncePanelHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(listed["items"]), 1)
 
         new_future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
-        updated = await self.write("PUT", f"/api/announce/scheduled/{row['id']}", dict(body, content="edited", send_at=new_future))
+        updated = await self.write("PUT", f"/api/announce/scheduled/{row['id']}", dict(body, **card_payload("edited"), send_at=new_future))
         self.assertEqual(updated.status, 200, await updated.text())
 
         sent_now = await self.write("POST", f"/api/announce/scheduled/{row['id']}/send-now", None)
         self.assertEqual(sent_now.status, 200, await sent_now.text())
         self.assertEqual(len(self.channel.sent), 1)
-        self.assertEqual(self.channel.sent[0]["content"], "edited")
+        self.assertIsInstance(self.channel.sent[0]["view"], discord.ui.DesignerView)
+        self.assertIn("edited", json.loads(self.pool.rows[row["id"]]["payload"])["card"]["blocks"][0]["text"])
 
         # Already sent: cancel and a second send-now must both fail.
         self.assertEqual((await self.write("POST", f"/api/announce/scheduled/{row['id']}/cancel", None)).status, 409)
@@ -499,19 +451,19 @@ class AnnouncePanelHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_scheduled(self):
         future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        row = await (await self.write("POST", "/api/announce", {"channel_id": str(CHANNEL_ID), "content": "x", "send_at": future})).json()
+        row = await (await self.write("POST", "/api/announce", {"channel_id": str(CHANNEL_ID), **card_payload("x"), "send_at": future})).json()
         cancelled = await self.write("POST", f"/api/announce/scheduled/{row['id']}/cancel", None)
         self.assertEqual(cancelled.status, 200)
         self.assertEqual(self.pool.rows[row["id"]]["status"], "cancelled")
 
     async def test_history_lists_sent_messages(self):
-        await self.write("POST", "/api/announce", {"channel_id": str(CHANNEL_ID), "content": "hi"})
+        await self.write("POST", "/api/announce", {"channel_id": str(CHANNEL_ID), **card_payload("hi")})
         history = await (await self.client.get("/api/announce/history")).json()
         self.assertEqual(len(history["items"]), 1)
         self.assertEqual(history["items"][0]["status"], "sent")
 
     async def test_draft_crud(self):
-        created = await self.write("POST", "/api/announce/drafts", {"content": "draft body", "channel_id": str(CHANNEL_ID)})
+        created = await self.write("POST", "/api/announce/drafts", {**card_payload("draft body"), "channel_id": str(CHANNEL_ID)})
         self.assertEqual(created.status, 200, await created.text())
         row = await created.json()
         self.assertEqual(row["status"], "draft")
@@ -519,9 +471,9 @@ class AnnouncePanelHttpTests(unittest.IsolatedAsyncioTestCase):
         listed = await (await self.client.get("/api/announce/drafts")).json()
         self.assertEqual(len(listed["items"]), 1)
 
-        updated = await self.write("PUT", f"/api/announce/drafts/{row['id']}", {"content": "changed", "channel_id": str(CHANNEL_ID)})
+        updated = await self.write("PUT", f"/api/announce/drafts/{row['id']}", {**card_payload("changed"), "channel_id": str(CHANNEL_ID)})
         self.assertEqual(updated.status, 200)
-        self.assertEqual((await updated.json())["payload"]["content"], "changed")
+        self.assertEqual((await updated.json())["payload"]["card"]["blocks"][0]["text"], "changed")
 
         deleted = await self.write("DELETE", f"/api/announce/drafts/{row['id']}", None)
         self.assertEqual(deleted.status, 200)
@@ -530,23 +482,56 @@ class AnnouncePanelHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((await self.write("DELETE", f"/api/announce/drafts/{row['id']}", None)).status, 404)
 
-    async def test_load_and_edit_existing_message_supports_fields(self):
-        embed = discord.Embed(title="Old", description="Body", color=0x112233)
-        embed.add_field(name="F", value="V", inline=True)
-        message = SimpleNamespace(
-            id=555, author=SimpleNamespace(id=999), content="old", embeds=[embed], components=[],
+    def _message(self, card, rows=()):
+        view = build_card_view(card, extra_rows=rows)
+        components = [_component_factory(c) for c in view.to_components()]
+        return SimpleNamespace(
+            id=555, author=SimpleNamespace(id=999), components=components,
             jump_url="https://discord.com/channels/1/10/555", edit=AsyncMock(),
         )
+
+    async def test_load_and_edit_existing_message(self):
+        card = {"accent_color": "#112233", "blocks": [
+            {"type": "section", "text": "Side", "thumbnail_url": "https://x.com/a.png"},
+            {"type": "separator", "divider": False, "spacing": "large"},
+            {"type": "gallery", "images": [{"url": "https://x.com/b.png", "description": None}]},
+        ]}
+        message = self._message(card)
         self.channel.fetch_message = AsyncMock(return_value=message)
 
         loaded = await (await self.client.get("/api/announce/message", params={"ref": "555", "channel_id": str(CHANNEL_ID)})).json()
-        self.assertEqual(loaded["embeds"][0]["fields"][0], {"name": "F", "value": "V", "inline": True})
+        self.assertEqual(loaded["card"], card)
 
-        body = {"content": "", "embeds": [dict(loaded["embeds"][0], title="New")]}
-        response = await self.write("PATCH", f"/api/announce/{CHANNEL_ID}/555", body)
+        edited = dict(loaded["card"], blocks=[{"type": "text", "text": "New"}])
+        response = await self.write("PATCH", f"/api/announce/{CHANNEL_ID}/555", {"card": edited})
         self.assertEqual(response.status, 200, await response.text())
         kwargs = message.edit.await_args.kwargs
-        self.assertEqual(kwargs["embeds"][0].title, "New")
+        self.assertEqual(kwargs["view"].to_components()[0]["components"][0]["content"], "New")
+        self.assertEqual(kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+
+    async def test_edit_keeps_language_buttons_and_load_hides_them(self):
+        message = self._message(CARD, rows=[language_row("rules")])
+        self.channel.fetch_message = AsyncMock(return_value=message)
+        loaded = await (await self.client.get("/api/announce/message", params={"ref": "555", "channel_id": str(CHANNEL_ID)})).json()
+        self.assertEqual(loaded["card"]["blocks"], CARD["blocks"])
+        await self.write("PATCH", f"/api/announce/{CHANNEL_ID}/555", {"card": loaded["card"]})
+        rows = message.edit.await_args.kwargs["view"].to_components()[0]["components"]
+        self.assertEqual(rows[-1]["components"][1]["custom_id"], "tpl_lang:rules:es")
+
+    async def test_load_non_card_message_is_409(self):
+        self.channel.fetch_message = AsyncMock(
+            return_value=SimpleNamespace(id=5, author=SimpleNamespace(id=999), components=[], jump_url="x")
+        )
+        response = await self.client.get("/api/announce/message", params={"ref": "5", "channel_id": str(CHANNEL_ID)})
+        self.assertEqual(response.status, 409)
+
+    async def test_preview_and_templates_endpoints(self):
+        ok = await self.write("POST", "/api/cards/preview", {"card": CARD})
+        data = await ok.json()
+        self.assertEqual((data["chars"], data["components"]), (5, 2))
+        self.assertEqual((await self.write("POST", "/api/cards/preview", {"card": {"blocks": []}})).status, 400)
+        listed = await (await self.client.get("/api/announce/templates")).json()
+        self.assertEqual([t["id"] for t in listed["templates"][:2]], ["rules", "support"])
 
 
 if __name__ == "__main__":

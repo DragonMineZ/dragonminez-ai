@@ -20,7 +20,7 @@ from bulmaai.services.discord_oauth import (
     build_discord_oauth_state,
     parse_discord_oauth_state,
 )
-from bulmaai.services import patron_page
+from bulmaai.services import panel_logs, patron_page
 from bulmaai.services.mojang import minecraft_username_exists
 from bulmaai.services.patreon_access import (
     PatreonCreatorClient,
@@ -210,29 +210,6 @@ class BrowserFlowDestination:
 
     async def send(self, content: str, **kwargs) -> None:
         self.messages.append(str(content))
-
-
-async def _pick_staff_channel(
-    bot: discord.Bot,
-    ctx_or_inter: discord.Interaction | discord.ApplicationContext | None = None,
-    *,
-    staff_channel_id: int | None = None,
-) -> discord.abc.Messageable | None:
-    if staff_channel_id:
-        channel = bot.get_channel(staff_channel_id)
-        if channel is None:
-            try:
-                channel = await bot.fetch_channel(staff_channel_id)
-            except Exception:
-                log.exception("Failed to fetch Patreon staff log channel %s", staff_channel_id)
-                channel = None
-        if channel is not None and hasattr(channel, "send"):
-            return channel
-
-    if ctx_or_inter is not None and not isinstance(ctx_or_inter.channel, discord.DMChannel):
-        return ctx_or_inter.channel
-
-    return None
 
 
 class PatreonWhitelistFlowCog(ReloadableCog):
@@ -1394,30 +1371,17 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         member: discord.Member,
         context: str,
     ) -> None:
-        channel = await _pick_staff_channel(
-            self.bot, staff_channel_id=self.bot.settings.patreon_ai_log_channel_id
-        )
-        if channel is None:
-            log.warning(
-                "Patreon ai-log channel unavailable; `%s` did not resolve on Mojang (%s)",
-                nickname,
-                context,
-            )
-            return
-        await channel.send(
+        await self._log_staff_info(
             f"`{nickname}` ({context} by {member.mention}) did not resolve to an official "
-            "Mojang/Minecraft account. Allowed anyway (Mojang lookup is warn-but-allow).",
-            allowed_mentions=discord.AllowedMentions.none(),
+            "Mojang/Minecraft account. Allowed anyway (Mojang lookup is warn-but-allow)."
         )
 
     async def _log_staff_info(self, content: str) -> None:
-        channel = await _pick_staff_channel(
-            self.bot, staff_channel_id=self.bot.settings.patreon_staff_channel_id
+        """Staff-facing Patreon notes live in the web panel's Bot logs, not in a Discord channel."""
+        mentioned = re.search(r"<@!?(\d{17,20})>", content)
+        await panel_logs.record(
+            "patreon", content.split(".")[0][:120], content, user_id=int(mentioned.group(1)) if mentioned else None
         )
-        if channel is None:
-            log.warning("Patreon staff log channel unavailable: %s", content)
-            return
-        await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
 
     async def _handle_patreon_oauth_callback(
         self, code: str, state: str, *, confirm: str = ""

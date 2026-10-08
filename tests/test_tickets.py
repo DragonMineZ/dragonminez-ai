@@ -29,7 +29,6 @@ SETTINGS = SimpleNamespace(
     ticket_tester_role_ids=(TESTER_ROLE,),
     ticket_dm_transcript=True,
     ticket_max_open_per_user=2,
-    ai_ticket_transcript_channel_id=555,
     ticket_transcript_public_url="https://tickets.example",
     ai_ticket_category_id=1,
     ticket_closed_category_id=2,

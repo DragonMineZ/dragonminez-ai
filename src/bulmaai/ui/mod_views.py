@@ -3,6 +3,8 @@ restart; cogs/mod_interactions.py routes clicks by prefix (these views have no c
 
 import discord
 
+from bulmaai.ui.mod_cards import ALERT
+
 QUICK = "modqa"  # modqa:<action>:<user_id>[:<channel_id>:<message_id>]
 APPEAL = "modappeal"  # modappeal:<guild_id>, on the ban DM
 APPEAL_REVIEW = "modappeal-review"  # modappeal-review:<accept|deny>:<user_id>
@@ -77,6 +79,6 @@ def allowlist_view(hit_id: int, domains: tuple[str, ...]) -> discord.ui.View:
 def parse_custom_id(custom_id: str | None) -> tuple[str, list[str]] | None:
     """('modqa', ['ban', '123']) for our buttons, None for anyone else's."""
     prefix, _, rest = (custom_id or "").partition(":")
-    if prefix not in (QUICK, APPEAL, APPEAL_REVIEW, RAID, TUNE) or not rest:
+    if prefix not in (QUICK, APPEAL, APPEAL_REVIEW, RAID, TUNE, ALERT) or not rest:
         return None
     return prefix, rest.split(":")

@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from datetime import datetime, timezone
@@ -12,10 +13,11 @@ import discord
 from discord.components import _component_factory
 from discord.guild import BanEntry
 
-from bulmaai.cogs.mod_interactions import ModInteractionsCog, TextModal
+from bulmaai.cogs.mod_interactions import ModInteractionsCog, TextModal, _alert_summary
 from bulmaai.services.automod_hits import AutomodHit
 from bulmaai.services.mod_actions import ActionResult
 from bulmaai.services.mod_cases import ModCase
+from bulmaai.ui.mod_cards import ALERT_ACTIONS_ID, ALERT_HANDLED_ID, ALERT_SUMMARY_ID, alert_card, alert_container
 from bulmaai.ui.mod_views import allowlist_view, appeal_review_view, quick_actions_view
 
 GUILD_ID = 1
@@ -558,6 +560,159 @@ class TuneTests(Base):
             await self.cog.on_interaction(inter)
         self.assertIn("no domains", inter.response.send_message.await_args.args[0].lower())
         self.bot.reload_settings.assert_not_called()
+
+
+def alert_card_message(message_id=500):
+    """A sent Components V2 automod alert, the way Discord hands it back."""
+    view = alert_card(
+        "### 🚨 Moderation Alert · blocked_domain\nblocked link",
+        None,
+        list(quick_actions_view(5, actions=("timeout", "ban", "falsepos")).children),
+        color=discord.Color.red(),
+        snapshot="👤 **spammer** (`5`)\n-# 1 prior case",
+        quote="> buy nitro",
+    )
+    return SimpleNamespace(
+        id=message_id,
+        flags=SimpleNamespace(is_components_v2=True),
+        embeds=[],
+        components=[_component_factory(payload) for payload in view.to_components()],
+        edit=AsyncMock(),
+    )
+
+
+def apply_edit(message, view):
+    message.components = [_component_factory(payload) for payload in view.to_components()]
+
+
+def card_texts(view):
+    container = alert_container(view)
+    return {item.id: item.content for item in container.items if isinstance(item, discord.ui.TextDisplay) and item.id}
+
+
+def card_buttons(view):
+    return {b.custom_id: b for b in alert_container(view).get_item(ALERT_ACTIONS_ID).children}
+
+
+class AlertCardTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.store = {}
+
+        async def save(message_id, details):
+            self.store[message_id] = details
+
+        async def load(message_id):
+            return self.store.get(message_id)
+
+        for name, fake in (("save", save), ("load", load)):
+            patcher = patch(f"bulmaai.services.mod_alert_cards.{name}", fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def click(self, custom_id, alert, role=MOD_ROLE):
+        inter = self.interaction(custom_id, self.member(2, role), guild=self.guild, message=alert)
+        with (
+            patch(PERFORM, AsyncMock(return_value=ActionResult(action="timeout", case_id=7))),
+            patch(HIT_FOR_ALERT, AsyncMock(return_value=None)),
+        ):
+            await self.cog.on_interaction(inter)
+        return inter
+
+    async def test_summary_prefills_reasons_from_the_card(self):
+        self.assertEqual(_alert_summary(alert_card_message()), "🚨 Moderation Alert · blocked_domain blocked link")
+
+    async def test_first_click_saves_details_and_collapses(self):
+        alert = alert_card_message()
+        await self.click("modqa:timeout:5", alert)
+
+        view = alert.edit.await_args.kwargs["view"]
+        texts = card_texts(view)
+        self.assertEqual(texts[ALERT_SUMMARY_ID], "✅ **Handled** · blocked_domain · **spammer**")
+        self.assertEqual(texts[ALERT_HANDLED_ID], "-# Timeout 24h by <@2> | case #7")
+        buttons = card_buttons(view)
+        self.assertTrue(buttons["modqa:timeout:5"].disabled)
+        self.assertFalse(buttons["modqa:ban:5"].disabled)  # still available after a timeout
+        self.assertEqual(buttons["modcard:show"].label, "Show details")
+        saved = json.dumps(self.store[500], ensure_ascii=False)
+        self.assertIn("buy nitro", saved)
+        self.assertNotIn("Handled", saved)
+        self.assertIsNotNone(alert.edit.await_args.kwargs["allowed_mentions"])
+
+    async def test_show_and_hide_round_trip(self):
+        alert = alert_card_message()
+        await self.click("modqa:timeout:5", alert)
+        apply_edit(alert, alert.edit.await_args.kwargs["view"])
+
+        shown = await self.click("modcard:show", alert, role=HELPER_ROLE)
+        view = shown.response.edit_message.await_args.kwargs["view"]
+        texts = card_texts(view)
+        self.assertNotIn(ALERT_SUMMARY_ID, texts)
+        self.assertEqual(texts[ALERT_HANDLED_ID], "-# Timeout 24h by <@2> | case #7")
+        self.assertIn("buy nitro", json.dumps(view.to_components(), ensure_ascii=False))
+        self.assertEqual(card_buttons(view)["modcard:hide"].label, "Hide details")
+        self.assertTrue(card_buttons(view)["modqa:timeout:5"].disabled)
+        apply_edit(alert, view)
+
+        # a click while expanded keeps it expanded and adds the line
+        await self.click("modqa:falsepos:5", alert)
+        view = alert.edit.await_args.kwargs["view"]
+        self.assertEqual(card_texts(view)[ALERT_HANDLED_ID].count("-# "), 2)
+        self.assertIn("modcard:hide", card_buttons(view))
+        apply_edit(alert, view)
+
+        hidden = await self.click("modcard:hide", alert, role=HELPER_ROLE)
+        view = hidden.response.edit_message.await_args.kwargs["view"]
+        texts = card_texts(view)
+        self.assertEqual(texts[ALERT_SUMMARY_ID], "✅ **Handled** · blocked_domain · **spammer**")
+        self.assertEqual(texts[ALERT_HANDLED_ID].count("-# "), 2)
+        self.assertTrue(card_buttons(view)["modqa:ban:5"].disabled)  # the dismiss disabled everything
+
+    async def test_later_click_on_a_collapsed_card_stays_collapsed(self):
+        alert = alert_card_message()
+        await self.click("modqa:timeout:5", alert)
+        apply_edit(alert, alert.edit.await_args.kwargs["view"])
+        await self.click("modqa:falsepos:5", alert)  # no hit on record -> dismissed, disables every quick button
+        view = alert.edit.await_args.kwargs["view"]
+        texts = card_texts(view)
+        self.assertIn(ALERT_SUMMARY_ID, texts)
+        self.assertEqual(texts[ALERT_HANDLED_ID].count("-# "), 2)
+        buttons = card_buttons(view)
+        self.assertTrue(all(b.disabled for cid, b in buttons.items() if cid.startswith("modqa:")))
+        self.assertFalse(buttons["modcard:show"].disabled)
+
+    async def test_show_without_saved_details_says_so(self):
+        alert = alert_card_message()
+        await self.click("modqa:timeout:5", alert)
+        apply_edit(alert, alert.edit.await_args.kwargs["view"])
+        self.store.clear()
+        inter = await self.click("modcard:show", alert, role=HELPER_ROLE)
+        inter.response.edit_message.assert_not_awaited()
+        self.assertIn("gone", inter.response.send_message.await_args.args[0])
+
+    async def test_failed_save_leaves_the_card_expanded(self):
+        alert = alert_card_message()
+        with patch("bulmaai.services.mod_alert_cards.save", AsyncMock(side_effect=OSError("db"))):
+            await self.click("modqa:timeout:5", alert)
+        view = alert.edit.await_args.kwargs["view"]
+        self.assertNotIn(ALERT_SUMMARY_ID, card_texts(view))
+        self.assertNotIn("modcard:hide", card_buttons(view))
+
+    async def test_report_embed_has_no_jump_link(self):
+        from bulmaai.cogs.mod_interactions import _report_embed
+
+        message = SimpleNamespace(
+            id=700, author=self.member(5), content="buy nitro", attachments=[],
+            channel=SimpleNamespace(id=600), jump_url="https://discord.com/channels/1/600/700",
+        )
+        embed = _report_embed(self.member(3), message, "scam")
+        self.assertNotIn("Jump", " ".join(f.value for f in embed.fields))
+
+    async def test_legacy_embed_alert_still_gets_a_handled_field(self):
+        alert = staff_message(quick_actions_view(5))
+        await self.click("modqa:timeout:5", alert)
+        self.assertEqual(handled(alert), "Timeout 24h by <@2> | case #7")
+        self.assertEqual(disabled_ids(alert), {"modqa:timeout:5"})
 
 
 if __name__ == "__main__":

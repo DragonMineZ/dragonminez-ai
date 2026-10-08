@@ -288,7 +288,6 @@ class WarnStrikeTests(unittest.IsolatedAsyncioTestCase):
                 moderation_image_burst_timeout_seconds=7 * 24 * 3600,
                 moderation_image_burst_purge_seconds=600,
                 moderation_log_channel_id=None,
-                discord_log_channel_id=None,
             )
         )
         cog._recent_message_channels = {}
@@ -340,7 +339,6 @@ class RuleWiringTests(unittest.IsolatedAsyncioTestCase):
             moderation_image_burst_timeout_seconds=7 * 24 * 3600,
             moderation_image_burst_purge_seconds=600,
             moderation_log_channel_id=None,
-            discord_log_channel_id=None,
             moderation_disabled_filters=("zalgo",),
             moderation_filter_rules="",
         )
@@ -378,12 +376,15 @@ class RuleWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self._warned(ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps", warn=True)))
 
 
-class HandledFieldCarryForwardTests(unittest.IsolatedAsyncioTestCase):
-    """cogs/mod_interactions.py stamps a "Handled" field on the alert when a mod clicks a button;
-    the debounced re-render must not wipe it, and must leave that message's view alone."""
+class HandledCardTests(unittest.IsolatedAsyncioTestCase):
+    """cogs/mod_interactions.py collapses the alert card when a mod clicks a button;
+    the debounced re-render must then leave the message alone."""
 
-    async def test_flush_log_update_preserves_handled_field_and_leaves_view_alone(self) -> None:
+    async def test_flush_log_update_skips_a_handled_card_and_rerenders_an_open_one(self) -> None:
+        from discord.components import _component_factory
+
         from bulmaai.cogs import moderation as moderation_cog
+        from bulmaai.ui.mod_cards import collapsed_alert
 
         self.addCleanup(
             setattr, moderation_cog, "LOG_UPDATE_DEBOUNCE_SECONDS", moderation_cog.LOG_UPDATE_DEBOUNCE_SECONDS
@@ -391,13 +392,10 @@ class HandledFieldCarryForwardTests(unittest.IsolatedAsyncioTestCase):
         moderation_cog.LOG_UPDATE_DEBOUNCE_SECONDS = 0
 
         cog = ModerationCog.__new__(ModerationCog)
-
-        handled_embed = discord.Embed(title="Moderation Alert")
-        handled_embed.add_field(name="Handled", value="Timed out by SomeMod", inline=True)
         edit_calls: list[dict] = []
 
         class LogMessage:
-            embeds = [handled_embed]
+            components: list = []
 
             async def edit(self, **kwargs):
                 edit_calls.append(kwargs)
@@ -406,7 +404,7 @@ class HandledFieldCarryForwardTests(unittest.IsolatedAsyncioTestCase):
             id=1,
             guild=SimpleNamespace(id=1),
             author=SimpleNamespace(id=3),
-            jump_url="https://discord.com/channels/1/2/1",
+            channel=SimpleNamespace(id=2),
             attachments=[],
         )
         incident = _Incident(
@@ -416,12 +414,15 @@ class HandledFieldCarryForwardTests(unittest.IsolatedAsyncioTestCase):
         incident.log_message = LogMessage()
         incident.revision = 1
 
-        await cog._flush_log_update(incident)
-
+        await cog._flush_log_update(incident)  # still open: re-rendered
         self.assertEqual(len(edit_calls), 1)
-        self.assertNotIn("view", edit_calls[0])  # omitted on purpose: keeps whatever view is there
-        rebuilt_fields = {field.name: field.value for field in edit_calls[0]["embed"].fields}
-        self.assertEqual(rebuilt_fields.get("Handled"), "Timed out by SomeMod")
+        self.assertEqual(edit_calls[0]["allowed_mentions"].everyone, False)
+
+        collapsed = collapsed_alert("✅ **Handled** · x", ["Timed out"], [])
+        incident.log_message.components = [_component_factory(p) for p in collapsed.to_components()]
+        incident.revision = 2
+        await cog._flush_log_update(incident)
+        self.assertEqual(len(edit_calls), 1)  # handled: untouched
 
 
 if __name__ == "__main__":

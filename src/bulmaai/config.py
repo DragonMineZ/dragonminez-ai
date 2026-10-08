@@ -67,8 +67,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.tickets",
     "bulmaai.cogs.github_cmds",
     "bulmaai.cogs.ai_ann_translation",
-    "bulmaai.cogs.rules",
-    "bulmaai.cogs.support_us",
+    "bulmaai.cogs.message_templates",
     "bulmaai.cogs.log_parser",
     "bulmaai.cogs.dmzdebug",
     "bulmaai.cogs.moderation",
@@ -91,7 +90,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.mod_log_sync",
     "bulmaai.cogs.scheduled_announcements",
     "bulmaai.cogs.console",
-    "bulmaai.cogs.v2_preview",  # throwaway mockups, remove once the V2 designs are picked
+    "bulmaai.cogs.mod_case_cards",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -158,9 +157,7 @@ DEFAULT_PATREON_ELIGIBLE_TIER_IDS: Sequence[str] = (
     "23999392",
     "23999460",
 )
-DEFAULT_PATREON_STAFF_CHANNEL_ID = 1493390527004147876
 DEFAULT_PATREON_ADMIN_PING_ROLE_ID = 1309022450671161476
-DEFAULT_PATREON_AI_LOG_CHANNEL_ID = DEFAULT_PATREON_STAFF_CHANNEL_ID
 DEFAULT_PATREON_CONTRIBUTOR_ROLE_ID = 1287877272224665640
 DEFAULT_PATREON_BENEFACTOR_ROLE_ID = 1287877305259130900
 DEFAULT_PATREON_OAUTH_REDIRECT_URI = "https://downloads.dragonminez.com/patreon/oauth/callback"
@@ -177,7 +174,6 @@ DEFAULT_AI_SUPPORT_HISTORY_LIMIT = 20
 DEFAULT_AI_SUPPORT_TIMEOUT_SECONDS = 70
 DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 0
 DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS = 1.5
-DEFAULT_AI_TICKET_TRANSCRIPT_CHANNEL_ID: int | None = 1493390527004147876
 DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE = 0.6
 DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT = 3.0
 DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS = 10
@@ -228,7 +224,6 @@ DEFAULT_CURSEFORGE_PROJECT_SLUG = "minecraft/mc-mods/dragonminez"
 DEFAULT_CURSEFORGE_ANNOUNCEMENT_CHANNEL_ID = DEFAULT_RELEASES_CHANNEL_ID
 DEFAULT_CURSEFORGE_POLL_MINUTES = 15
 DEFAULT_DISCORD_LOG_FORWARDING_ENABLED = True
-DEFAULT_DISCORD_LOG_CHANNEL_ID = 1493390527004147876
 DEFAULT_DISCORD_LOG_MIN_LEVEL = "WARNING"
 # Hot-reloadable updates on origin are tested and applied on their own; full restarts still wait for Bruno.
 DEFAULT_SELF_UPDATE_AUTO_APPLY = True
@@ -371,8 +366,6 @@ class Settings:
     patreon_oauth_client_secret: str | None
     patreon_oauth_redirect_uri: str
     patreon_webhook_secret: str | None
-    patreon_staff_channel_id: int | None
-    patreon_ai_log_channel_id: int | None
     patreon_admin_ping_role_id: int | None
     patreon_contributor_role_id: int | None
     patreon_benefactor_role_id: int | None
@@ -403,7 +396,6 @@ class Settings:
     ai_support_timeout_seconds: int
     ai_support_typing_lead_seconds: int
     ai_support_debounce_seconds: float
-    ai_ticket_transcript_channel_id: int | None
     ai_ticket_resolve_min_confidence: float
     ai_ticket_resolve_prompt_exponent: float
     ai_ticket_close_delay_seconds: int
@@ -426,7 +418,6 @@ class Settings:
     curseforge_announcement_channel_id: int | None
     curseforge_poll_minutes: int
     discord_log_forwarding_enabled: bool
-    discord_log_channel_id: int | None
     discord_log_min_level: str
     self_update_auto_apply: bool
     moderation_enabled: bool
@@ -740,14 +731,6 @@ def _build_settings_from_env() -> Settings:
         patreon_oauth_client_secret=PATREON_OAUTH_CLIENT_SECRET,
         patreon_oauth_redirect_uri=DEFAULT_PATREON_OAUTH_REDIRECT_URI,
         patreon_webhook_secret=PATREON_WEBHOOK_SECRET,
-        patreon_staff_channel_id=_get_env_int(
-            "PATREON_STAFF_CHANNEL_ID",
-            DEFAULT_PATREON_STAFF_CHANNEL_ID,
-        ),
-        patreon_ai_log_channel_id=_get_env_int(
-            "PATREON_AI_LOG_CHANNEL_ID",
-            DEFAULT_PATREON_AI_LOG_CHANNEL_ID,
-        ),
         patreon_admin_ping_role_id=_get_env_int(
             "PATREON_ADMIN_PING_ROLE_ID",
             DEFAULT_PATREON_ADMIN_PING_ROLE_ID,
@@ -854,7 +837,6 @@ def _build_settings_from_env() -> Settings:
             "AI_SUPPORT_DEBOUNCE_SECONDS",
             DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS,
         ),
-        ai_ticket_transcript_channel_id=_get_env_int("AI_TICKET_TRANSCRIPT_CHANNEL_ID", DEFAULT_AI_TICKET_TRANSCRIPT_CHANNEL_ID),
         ai_ticket_resolve_min_confidence=_get_env_float_default("AI_TICKET_RESOLVE_MIN_CONFIDENCE", DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE),
         ai_ticket_resolve_prompt_exponent=_get_env_float_default("AI_TICKET_RESOLVE_PROMPT_EXPONENT", DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT),
         ai_ticket_close_delay_seconds=_get_env_int("AI_TICKET_CLOSE_DELAY_SECONDS", DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS),
@@ -928,10 +910,6 @@ def _build_settings_from_env() -> Settings:
             DEFAULT_DISCORD_LOG_FORWARDING_ENABLED,
         ),
         self_update_auto_apply=_get_env_bool("SELF_UPDATE_AUTO_APPLY", DEFAULT_SELF_UPDATE_AUTO_APPLY),
-        discord_log_channel_id=_get_env_int(
-            "DISCORD_LOG_CHANNEL_ID",
-            DEFAULT_DISCORD_LOG_CHANNEL_ID,
-        ),
         discord_log_min_level=(
             _get_env("DISCORD_LOG_MIN_LEVEL", DEFAULT_DISCORD_LOG_MIN_LEVEL)
             or DEFAULT_DISCORD_LOG_MIN_LEVEL

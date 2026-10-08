@@ -7,7 +7,6 @@ AI answers inside tickets still come from AITicketsCog (same category); this cog
 import asyncio
 import base64
 import html as html_lib
-import io
 import logging
 import re
 from enum import IntEnum
@@ -36,7 +35,7 @@ from bulmaai.services.tickets import (
     open_channel_name,
     reserve_ticket,
 )
-from bulmaai.ui.support_views import PATREON_URL
+from bulmaai.services.patron_page import PATREON_URL
 from bulmaai.ui.ticket_views import (
     CATEGORIES,
     MSG,
@@ -609,22 +608,9 @@ class TicketsCog(ReloadableCog):
                 delete_channel=False,
                 announce=False,
             )
-        # ponytail: without the AI cog there is no DB row or hosted page, so the file goes straight to the archive channel.
-        html = await self.export_html(channel)
-        target_id = self.settings.ai_ticket_transcript_channel_id
-        if html is None or target_id is None or len(html) > channel.guild.filesize_limit - 65_536:
-            return False
-        try:
-            target = self.bot.get_channel(target_id) or await self.bot.fetch_channel(target_id)
-            await target.send(
-                f"🎫 Ticket #{ticket.ticket_id:04d} ({ticket.category}) · owner <@{ticket.owner_id}>",
-                file=discord.File(io.BytesIO(html), filename=f"{channel.name}-transcript.html"),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            return True
-        except discord.HTTPException:
-            log.exception("Failed to post ticket transcript", extra={"transcript_channel_id": target_id})
-            return False
+        # Without the AI cog there is no DB row or hosted page, so there is nothing to show in the panel.
+        log.warning("AI tickets cog isn't loaded; ticket transcript not archived", extra={"channel_id": channel.id})
+        return False
 
     # ---- /ticket ---------------------------------------------------------------------------------
 

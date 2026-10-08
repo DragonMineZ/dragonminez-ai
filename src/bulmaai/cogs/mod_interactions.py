@@ -11,8 +11,21 @@ import discord
 from discord.ext import commands
 
 from bulmaai.config import set_setting_override
-from bulmaai.services import automod_hits, joiner_alerts, mod_actions, mod_cases
+from bulmaai.services import automod_hits, joiner_alerts, mod_actions, mod_alert_cards, mod_cases
 from bulmaai.services.ai_guard import defang
+from bulmaai.ui.mod_cards import (
+    ALERT,
+    ALERT_HANDLED_ID,
+    ALERT_SUMMARY_ID,
+    alert_container,
+    clone_buttons,
+    collapsed_alert,
+    detail_dicts,
+    expanded_alert,
+    handled_lines,
+    summary_text,
+    trim_lines,
+)
 from bulmaai.ui.mod_views import (
     APPEAL,
     APPEAL_REVIEW,
@@ -106,19 +119,39 @@ async def _fail(interaction: discord.Interaction, error: Exception, custom_id: s
         pass
 
 
+def _first_text(components) -> str | None:
+    for component in components:
+        if content := getattr(component, "content", None):
+            return content
+        if found := _first_text(getattr(component, "components", None) or []):
+            return found
+    return None
+
+
 def _alert_summary(message: discord.Message | None) -> str | None:
-    """'Title: description' of the alert's embed, flattened and trimmed, to prefill reasons."""
-    embed = message.embeds[0] if message is not None and message.embeds else None
-    if embed is None:
+    """'Title: description' of the alert (embed or Components V2 card), flattened and trimmed, to prefill reasons."""
+    if message is None:
         return None
-    text = ": ".join(part for part in (embed.title, embed.description) if part)
+    embed = message.embeds[0] if message.embeds else None
+    if embed is not None:
+        text = ": ".join(part for part in (embed.title, embed.description) if part)
+    else:
+        text = (_first_text(getattr(message, "components", None) or []) or "").lstrip("# ")
     return " ".join(text.split())[:200] or None
 
 
+def _is_card(message: discord.Message) -> bool:
+    return bool(getattr(getattr(message, "flags", None), "is_components_v2", False))
+
+
 async def _mark_handled(message: discord.Message | None, line: str, custom_id: str | None = None) -> None:
-    """Appends line to the embed's Handled field and disables the clicked button (every button when
-    custom_id is None). The view is rebuilt from the message's own components so the rest stay."""
+    """Records line on the alert and disables the clicked button (every quick button when custom_id is None).
+    Card alerts collapse to a one-liner (modcard:show brings the details back);
+    embed alerts get a Handled field. The buttons are rebuilt from the message's own components so the rest stay."""
     if message is None:
+        return
+    if _is_card(message):
+        await _mark_card_handled(message, line, custom_id)
         return
     embeds = [embed.copy() for embed in message.embeds] or [discord.Embed()]
     embed = embeds[0]
@@ -137,6 +170,37 @@ async def _mark_handled(message: discord.Message | None, line: str, custom_id: s
             item.disabled = True
     try:
         await message.edit(embeds=embeds, view=view)
+    except discord.HTTPException:
+        log.warning(
+            "Couldn't update a handled moderation message",
+            exc_info=True,
+            extra={"event": "mod_handled_edit_failed", "message_id": message.id},
+        )
+
+
+async def _mark_card_handled(message: discord.Message, line: str, custom_id: str | None) -> None:
+    container = alert_container(discord.ui.DesignerView.from_message(message, timeout=None))
+    if container is None:
+        return
+    lines = trim_lines(handled_lines(container) + [line])
+    buttons = clone_buttons(container, quick_disabled=custom_id or "")
+    if summary := container.get_item(ALERT_SUMMARY_ID):  # collapsed: stay collapsed
+        view = collapsed_alert(summary.content, lines, buttons)
+    elif container.get_item(ALERT_HANDLED_ID):  # expanded after "Show details": stay expanded
+        view = expanded_alert(detail_dicts(container), lines, buttons)
+    else:  # first click: save the details, then collapse
+        details = detail_dicts(container)
+        try:
+            await mod_alert_cards.save(message.id, details)
+            view = collapsed_alert(summary_text(details), lines, buttons)
+        except Exception:
+            log.exception(
+                "Couldn't save an alert's details; leaving it expanded",
+                extra={"event": "mod_alert_card_save_failed", "message_id": message.id},
+            )
+            view = expanded_alert(details, lines, buttons, toggle=False)
+    try:
+        await message.edit(view=view, allowed_mentions=NO_MENTIONS)
     except discord.HTTPException:
         log.warning(
             "Couldn't update a handled moderation message",
@@ -184,7 +248,6 @@ def _report_embed(reporter: discord.abc.User, message: discord.Message, reason: 
     if message.attachments:
         names = ", ".join(f"`{attachment.filename}`" for attachment in message.attachments[:10])
         embed.add_field(name="Attachments", value=names[:1024], inline=False)
-    embed.add_field(name="Link", value=f"[Jump to message]({message.jump_url})", inline=False)
     return embed
 
 
@@ -212,6 +275,7 @@ class ModInteractionsCog(commands.Cog):
             APPEAL: self._appeal,
             APPEAL_REVIEW: self._review,
             TUNE: self._tune,
+            ALERT: self._card,
         }.get(parsed[0])
         if not handler:
             return  # someone else's button, or modraid: (cogs/raid_guard.py)
@@ -236,6 +300,27 @@ class ModInteractionsCog(commands.Cog):
             await user.send(text)
         except discord.HTTPException:
             pass  # usually they share no server with the bot any more
+
+    # --- alert cards (modcard:<show|hide>) ---
+
+    async def _card(self, interaction: discord.Interaction, parts: list[str]) -> None:
+        """Expands a collapsed automod alert from its saved details, or collapses it again."""
+        if parts[0] not in ("show", "hide") or not await self._staff(interaction, "mod.warn"):
+            return
+        message = interaction.message
+        container = alert_container(discord.ui.DesignerView.from_message(message, timeout=None))
+        if container is None:
+            return
+        lines, buttons = handled_lines(container), clone_buttons(container)
+        if parts[0] == "show":
+            details = await mod_alert_cards.load(message.id)
+            if not details:
+                await _reply(interaction, "The saved details for this alert are gone.")
+                return
+            view = expanded_alert(details, lines, buttons)
+        else:
+            view = collapsed_alert(summary_text(detail_dicts(container)), lines, buttons)
+        await interaction.response.edit_message(view=view, allowed_mentions=NO_MENTIONS)
 
     # --- quick actions (modqa:<action>:<user_id>[:<channel_id>:<message_id>]) ---
 

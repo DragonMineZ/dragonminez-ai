@@ -44,6 +44,13 @@ class LadderTests(unittest.TestCase):
         self.assertEqual(pick_step(steps, {7 * DAY: 3, 30 * DAY: 5}).duration_seconds, 3 * DAY)
         self.assertEqual(pick_step(steps, {7 * DAY: 1, 30 * DAY: 9}).action, "ban")
 
+    def test_warm_ladder_and_expiry(self):
+        steps = parse_ladder("1=1h, 2=1d, 3=3d, 4=ban:7d")
+        self.assertEqual(steps[-1], LadderStep(4, None, "ban", 7 * DAY))
+        self.assertEqual(pick_step(steps, {None: 5}), steps[-1])
+        expiry = [mod_actions.warn_expiry_seconds("2w, 3w, 4w, 60d", n) for n in (1, 2, 3, 4, 9)]
+        self.assertEqual(expiry, [14 * DAY, 21 * DAY, 28 * DAY, 60 * DAY, 60 * DAY])
+
     def test_format_duration(self):
         self.assertEqual(format_duration(None), "permanent")
         self.assertEqual(format_duration(90), "1m 30s")

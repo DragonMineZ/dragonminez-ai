@@ -86,7 +86,7 @@
     "Exempt roles": "Roles exentos",
     "Members with any of these roles are never checked. Staff are always exempt.": "Los miembros con cualquiera de estos roles nunca se revisan. El staff siempre está exento.",
     "Warn ladder": "Escalera de advertencias",
-    "What warn strikes lead to, e.g. 2/7d=24h, 5/30d=3d, 7/30d=ban.": "A qué llevan las advertencias, p. ej. 2/7d=24h, 5/30d=3d, 7/30d=ban.",
+    "What warn strikes lead to, e.g. 1=1h, 2=1d, 3=3d, 4=ban:7d.": "A qué llevan las advertencias, p. ej. 1=1h, 2=1d, 3=3d, 4=ban:7d.",
     "DM members when automod or staff act on them": "Enviar MD a los miembros cuando automod o el staff actúan sobre ellos",
     "Filter channels…": "Filtrar canales…",
     "Filter roles…": "Filtrar roles…",
@@ -448,7 +448,7 @@
       h("div", {}, field(t("Log channel"), logSelect), h("div", { class: "muted small" }, t("Where automod alerts go."))),
       h("div", {}, h("label", {}, t("Ignored channels")), h("div", { class: "muted small hint" }, t("Automod never checks messages in these channels.")), channels.el),
       h("div", {}, h("label", {}, t("Exempt roles")), h("div", { class: "muted small hint" }, t("Members with any of these roles are never checked. Staff are always exempt.")), exempt.el),
-      h("div", {}, field(t("Warn ladder"), ladder), h("div", { class: "muted small" }, t("What warn strikes lead to, e.g. 2/7d=24h, 5/30d=3d, 7/30d=ban."))),
+      h("div", {}, field(t("Warn ladder"), ladder), h("div", { class: "muted small" }, t("What warn strikes lead to, e.g. 1=1h, 2=1d, 3=3d, 4=ban:7d."))),
       h("label", { class: "row check" }, dm, t("DM members when automod or staff act on them")),
       h("div", { class: "row end" }, save)));
     if (locked) for (const el of container.querySelectorAll("input, select, textarea, button")) el.disabled = true;

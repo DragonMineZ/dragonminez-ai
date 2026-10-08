@@ -491,8 +491,10 @@ class Settings:
     dyno_modlog_channel_id: int | None = 1501735528356118528
 
     # Moderation suite (Dyno replacement). Durations use shorthand like 30m / 24h / 3d.
-    # Warn ladder: "<warns>/<window>=<timeout duration|kick|ban>", comma separated; highest matched step wins.
-    moderation_warn_ladder: str = "2/7d=24h, 5/30d=3d, 7/30d=ban"
+    # Warn ladder: "<active warns>[/<window>]=<timeout duration|kick|ban|ban:<duration>>", comma separated; highest matched step wins.
+    moderation_warn_ladder: str = "1=1h, 2=1d, 3=3d, 4=ban:7d"
+    # How long the Nth active warn lasts before it expires (the last value covers every warn past the list).
+    moderation_warn_expiry: str = "2w, 3w, 4w, 60d"
     moderation_dm_on_action: bool = True
     moderation_appeals_enabled: bool = True
     moderation_appeals_channel_id: int | None = None  # empty = the moderation log channel

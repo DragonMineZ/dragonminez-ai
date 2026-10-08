@@ -121,6 +121,8 @@ def parse_ladder(text: str | None) -> tuple[LadderStep, ...]:
         window = parse_duration_seconds(match[2]) if match and match[2] else None
         if match and outcome in ("kick", "ban"):
             steps.append(LadderStep(int(match[1]), window, outcome))
+        elif match and outcome.startswith("ban:") and (duration := parse_duration_seconds(outcome[4:])):
+            steps.append(LadderStep(int(match[1]), window, "ban", duration))
         elif match and (duration := parse_duration_seconds(outcome)):
             steps.append(LadderStep(int(match[1]), window, "timeout", min(duration, MAX_TIMEOUT_SECONDS)))
         else:
@@ -133,6 +135,12 @@ def pick_step(steps: tuple[LadderStep, ...], counts: dict[int | None, int]) -> L
     so every warn past a threshold re-applies that step."""
     matched = [step for step in steps if counts.get(step.window_seconds, 0) >= step.warns]
     return max(matched, key=lambda step: step.warns, default=None)
+
+
+def warn_expiry_seconds(text: str | None, number: int) -> int | None:
+    """Lifetime of the Nth active warn from '2w, 3w, 4w, 60d'; past the list the last value applies."""
+    values = [seconds for chunk in (text or "").split(",") if (seconds := parse_duration_seconds(chunk))]
+    return values[min(number, len(values)) - 1] if values else None
 
 
 async def escalate(
@@ -450,6 +458,13 @@ async def perform(
     expires_at = (
         discord.utils.utcnow() + timedelta(seconds=duration_seconds) if action in ("timeout", "ban") and duration_seconds else None
     )
+    if action == "warn" and record:
+        try:
+            active = await mod_cases.count_active_since(guild.id, target_id, "warn", None)
+            lifetime = warn_expiry_seconds(getattr(settings, "moderation_warn_expiry", ""), active + 1)
+            expires_at = discord.utils.utcnow() + timedelta(seconds=lifetime) if lifetime else None
+        except Exception:
+            log.warning("Couldn't work out the warn expiry for %s", target_id, exc_info=True)
     by = moderator.name if moderator is not None else "BulmaAI"
     audit_reason = (f"{reason or 'No reason given'} (via {source} by {by})" if record else reason or "")[:512] or None
 

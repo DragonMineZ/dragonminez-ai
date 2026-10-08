@@ -796,7 +796,7 @@ class ModCommandsCog(ReloadableCog):
             if guild is None:
                 continue
             try:
-                if case.action == "timeout":  # Discord already lifted it; the card flips to "expired"
+                if case.action in ("timeout", "warn"):  # Discord already lifted a timeout; the card flips to "expired"
                     await mod_actions.end_case(self.bot, case.guild_id, case.id, ended_by=None, note="expired")
                     continue
                 if case.action != "ban":

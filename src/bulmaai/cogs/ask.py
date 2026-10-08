@@ -16,7 +16,7 @@ from bulmaai.services.openai_client import (
     is_transient_ai_error,
     run_support_agent,
 )
-from bulmaai.utils.permissions import is_staff
+from bulmaai.utils.permissions import has_patreon_access_role, is_staff
 
 log = logging.getLogger(__name__)
 
@@ -56,14 +56,19 @@ class AskCog(commands.Cog):
         "question", description="Your DragonMineZ question", required=True, max_length=ASK_MAX_QUESTION_LENGTH
     )
     @discord.option(
-        "public",
-        description="Share the answer with the channel instead of just you",
+        "private",
+        description="Only show the answer to you (Patreon supporters and staff)",
         required=False,
         default=False,
     )
-    async def ask(self, ctx: discord.ApplicationContext, question: str, public: bool = False) -> None:
+    async def ask(self, ctx: discord.ApplicationContext, question: str, private: bool = False) -> None:
         settings = self.bot.settings
         channel_id = ctx.channel.id
+        public = not private
+
+        if private and not (is_staff(ctx.author, settings=settings) or has_patreon_access_role(ctx.author, settings=settings)):
+            await ctx.respond("Private answers are for Patreon supporters and staff. Run `/ask` again without `private`.", ephemeral=True)
+            return
 
         if not is_ask_channel_allowed(channel_id, settings.ask_allowed_channel_ids):
             await ctx.respond("`/ask` isn't enabled in this channel.", ephemeral=True)

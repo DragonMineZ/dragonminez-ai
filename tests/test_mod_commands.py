@@ -192,7 +192,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reason 5", payload)
         self.assertNotIn("reason 6", payload)  # page 2
         self.assertIn("Page 1/2 (7 warnings)", payload)
-        self.assertIn("**1/2** in 7d → timeout 1d", payload)
+        self.assertIn("**1/2** warns in 7d → timeout 1d", payload)
         self.assertIn("Next warn → **timeout 1d**", payload)
 
     async def test_mute_rejects_bad_duration_and_caps_long_ones(self):

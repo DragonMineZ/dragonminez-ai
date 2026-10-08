@@ -21,6 +21,7 @@ from bulmaai.services.mod_actions import (
     parse_duration_seconds,
     parse_ladder,
     pick_step,
+    warn_expiry_seconds,
 )
 from bulmaai.ui.mod_cards import reply_card
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -77,7 +78,7 @@ def purge_check(
 
 
 def _step_text(step: LadderStep) -> str:
-    return f"timeout {format_duration(step.duration_seconds)}" if step.action == "timeout" else step.action
+    return f"{step.action} {format_duration(step.duration_seconds)}" if step.duration_seconds else step.action
 
 
 def _ladder_bar(count: int, needed: int) -> str:
@@ -242,11 +243,16 @@ class ModCommandsCog(ReloadableCog):
             )
             for window in {step.window_seconds for step in steps}
         }
-        lines = [
-            f"`{_ladder_bar(counts[step.window_seconds], step.warns)}` **{counts[step.window_seconds]}/{step.warns}** in "
-            f"{format_duration(step.window_seconds) if step.window_seconds else 'all time'} → {_step_text(step)}"
-            for step in steps
-        ]
+        expiry = getattr(self.bot.settings, "moderation_warn_expiry", "")
+        lines = []
+        for step in steps:
+            count = counts[step.window_seconds]
+            window = f" in {format_duration(step.window_seconds)}" if step.window_seconds else ""
+            lasts = warn_expiry_seconds(expiry, step.warns)
+            tail = f" · expires after {format_duration(lasts)}" if lasts else ""
+            lines.append(
+                f"`{_ladder_bar(count, step.warns)}` **{count}/{step.warns}** warns{window} → {_step_text(step)}{tail}"
+            )
         upcoming = pick_step(steps, {window: count + 1 for window, count in counts.items()})
         lines.append(f"-# Next warn → {f'**{_step_text(upcoming)}**' if upcoming else 'no automatic action'}")
         return "### Warn ladder\n" + "\n".join(lines)

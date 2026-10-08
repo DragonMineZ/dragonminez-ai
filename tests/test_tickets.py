@@ -156,7 +156,7 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
     async def test_persistent_views_have_fixed_custom_ids(self):
         ids = lambda view: [child.custom_id for child in view.children]
         self.assertEqual(ids(views.TicketPanelView()), [views.PANEL_SELECT_ID])
-        self.assertEqual(ids(views.TicketControlView()), ["ticket_btn_close"])
+        self.assertEqual(ids(views.TicketControlView()), ["ticket_btn_close", views.AI_BUTTON_ID])
         self.assertEqual(
             ids(views.TicketClosedView()), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"]
         )
@@ -341,7 +341,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(channel.set_permissions.await_args.kwargs["overwrite"].send_messages, True)
         channel.edit.assert_awaited_once_with(name="crash-0042")
         view = channel.get_partial_message.return_value.edit.await_args.kwargs["view"]
-        self.assertEqual([c.custom_id for c in view.children], ["ticket_btn_close"])
+        self.assertEqual([c.custom_id for c in view.children], ["ticket_btn_close", "ticket_btn_ai"])
 
     async def test_member_leaving_closes_and_deletes(self):
         cog, channel = make_cog(), make_channel()
@@ -368,7 +368,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         close.assert_not_called()
 
     async def test_reopen_lets_the_ticket_be_archived_again(self):
-        ai_cog = SimpleNamespace(forget_archived=MagicMock())
+        ai_cog = SimpleNamespace(forget_archived=MagicMock(), is_ticket_ai_enabled=lambda _id: True)
         cog, channel = make_cog(), make_channel()
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
         with patch.object(cog_module, "mark_reopened", AsyncMock(return_value=make_ticket())):
@@ -677,3 +677,22 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiToggleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_button_shows_state_and_toggle_flips_it_publicly(self):
+        on, off = views.TicketControlView(True), views.TicketControlView(False)
+        self.assertEqual((on.children[1].label, off.children[1].label), ("AI support: On", "AI support: Off"))
+        cog = make_cog()
+        ai_cog = SimpleNamespace(is_ticket_ai_enabled=lambda _id: True, set_ticket_ai_enabled=AsyncMock())
+        cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
+        interaction = SimpleNamespace(
+            channel_id=900,
+            user=SimpleNamespace(id=STAFF_ID, roles=[SimpleNamespace(id=HELPER_ROLE)], mention=f"<@{STAFF_ID}>"),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())):
+            await cog.on_toggle_ai(interaction)
+        ai_cog.set_ticket_ai_enabled.assert_awaited_once_with(900, False)
+        self.assertIn("AI support is now **off**", interaction.followup.send.await_args.args[0])

@@ -468,12 +468,25 @@ class AITicketsCog(ReloadableCog):
         self._cancel_pending_task(_pending_key(message, in_ticket=in_ticket))
 
     async def _mark_ticket_escalated(self, channel_id: int) -> None:
+        changed = channel_id not in self._escalated_ticket_channels
         self._escalated_ticket_channels.add(channel_id)
         self._cancel_pending_task((channel_id, 0))
         try:
             await set_ticket_ai_disabled(channel_id, True)
         except Exception:
             log.exception("Failed to persist AI ticket disabled state for channel %s", channel_id)
+        if changed:
+            await self._sync_ticket_button(channel_id, False)
+
+    async def _sync_ticket_button(self, channel_id: int, enabled: bool) -> None:
+        """Best effort: the ticket's "AI support: On/Off" button shows the new state."""
+        tickets = self.bot.get_cog("TicketsCog")
+        if tickets is None:
+            return
+        try:
+            await tickets.refresh_ai_button(channel_id, enabled)
+        except Exception:
+            log.warning("Couldn't refresh the AI support button in %s", channel_id, exc_info=True)
 
     def is_ticket_ai_enabled(self, channel_id: int) -> bool:
         return channel_id not in self._escalated_ticket_channels
@@ -483,11 +496,14 @@ class AITicketsCog(ReloadableCog):
         if not enabled:
             await self._mark_ticket_escalated(channel_id)
             return
+        changed = channel_id in self._escalated_ticket_channels
         self._escalated_ticket_channels.discard(channel_id)
         try:
             await set_ticket_ai_disabled(channel_id, False)
         except Exception:
             log.exception("Failed to persist AI ticket enabled state for channel %s", channel_id)
+        if changed:
+            await self._sync_ticket_button(channel_id, True)
 
     @discord.slash_command(name="aisupport", description="Toggle AI support on or off in this ticket channel.")
     async def aisupport(self, ctx: discord.ApplicationContext):

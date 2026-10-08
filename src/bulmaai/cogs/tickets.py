@@ -429,7 +429,7 @@ class TicketsCog(ReloadableCog):
             await self._safely(channel.set_permissions(owner, overwrite=overwrite, reason="Ticket re-opened"), channel)
         await self._move(channel, self.settings.ai_ticket_category_id)
         await self._rename(channel, ticket.channel_name or open_channel_name("ticket", ticket.ticket_id))
-        await self._set_buttons(channel, ticket, TicketControlView())
+        await self._set_buttons(channel, ticket, TicketControlView(self._ai_enabled(channel.id)))
         await self._safely(
             channel.send(embed=reopened_embed(f"<@{opener_id}>"), allowed_mentions=discord.AllowedMentions.none()),
             channel,
@@ -484,6 +484,31 @@ class TicketsCog(ReloadableCog):
             return
         await interaction.response.defer()
         await self.close_ticket(interaction.channel, closer_id=interaction.user.id, reason=None)
+
+    def _ai_enabled(self, channel_id: int) -> bool:
+        ai = self.bot.get_cog("AITicketsCog")
+        return ai is None or ai.is_ticket_ai_enabled(channel_id)
+
+    async def on_toggle_ai(self, interaction: discord.Interaction) -> None:
+        if await self._gate(interaction, Rank.HELPER, denied="staff_only") is None:
+            return
+        ai = self.bot.get_cog("AITicketsCog")
+        if ai is None:
+            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
+        enable = not ai.is_ticket_ai_enabled(interaction.channel_id)
+        await interaction.response.defer()
+        await ai.set_ticket_ai_enabled(interaction.channel_id, enable)  # also flips the button (refresh_ai_button)
+        await interaction.followup.send(
+            f"🤖 AI support is now **{'on' if enable else 'off'}** (by {interaction.user.mention}).",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def refresh_ai_button(self, channel_id: int, enabled: bool) -> None:
+        """Called by the AI tickets cog whenever AI support flips, by hand or by escalation."""
+        ticket = await get_ticket_by_channel(channel_id)
+        channel = self.bot.get_channel(channel_id)
+        if ticket is not None and ticket.status == STATUS_OPEN and isinstance(channel, discord.TextChannel):
+            await self._set_buttons(channel, ticket, TicketControlView(enabled))
 
     async def on_transcript(self, interaction: discord.Interaction) -> None:
         ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only", want_open=None)

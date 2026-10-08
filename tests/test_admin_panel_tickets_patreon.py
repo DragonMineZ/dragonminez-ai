@@ -158,7 +158,7 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get("/api/transcripts/abc")).status, 400)
 
     async def test_cog_toggle_changes_cog_state(self):
-        cog = AITicketsCog(SimpleNamespace())
+        cog = AITicketsCog(SimpleNamespace(get_cog=lambda name: None))
         with patch("bulmaai.cogs.ai_tickets.set_ticket_ai_disabled", AsyncMock()) as persist:
             await cog.set_ticket_ai_enabled(5, False)
             self.assertFalse(cog.is_ticket_ai_enabled(5))

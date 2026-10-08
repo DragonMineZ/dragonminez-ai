@@ -15,6 +15,7 @@ CLOSE_BUTTON_ID = "ticket_btn_close"
 TRANSCRIPT_BUTTON_ID = "ticket_btn_transcript"
 REOPEN_BUTTON_ID = "ticket_btn_reopen"
 DELETE_BUTTON_ID = "ticket_btn_delete"
+AI_BUTTON_ID = "ticket_btn_ai"
 COG_NAME = "TicketsCog"
 
 BLURPLE = discord.Color.from_rgb(88, 101, 242)
@@ -347,10 +348,23 @@ class TicketPanelView(discord.ui.View):
 
 
 class TicketControlView(discord.ui.View):
-    """Close button on the first ticket message while the ticket is open."""
+    """Close button, plus the staff-only AI support toggle that doubles as its status, on the first
+    ticket message while the ticket is open."""
 
-    def __init__(self) -> None:
+    def __init__(self, ai_enabled: bool = True) -> None:
         super().__init__(timeout=None)
+        toggle = discord.ui.Button(
+            label="AI support: On" if ai_enabled else "AI support: Off",
+            emoji="🤖",
+            style=discord.ButtonStyle.success if ai_enabled else discord.ButtonStyle.secondary,
+            custom_id=AI_BUTTON_ID,
+        )
+        toggle.callback = self.toggle_ai
+        self.add_item(toggle)
+
+    async def toggle_ai(self, interaction: discord.Interaction) -> None:
+        if cog := await _cog_or_error(interaction):
+            await cog.on_toggle_ai(interaction)
 
     @discord.ui.button(
         label=tri("Close", "Cerrar"),

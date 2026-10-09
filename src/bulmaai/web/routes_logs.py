@@ -12,8 +12,6 @@ from bulmaai.database.db import get_pool
 
 
 routes = web.RouteTableDef()
-# Dyno bans/kicks/timeouts already show up in Discord's own audit log (Dyno as the executor), so
-# skip those when pulling Dyno's mod_cases rows into the merged Server logs feed.
 
 
 def _match_member(guild: discord.Guild, query: str) -> discord.Member | None:

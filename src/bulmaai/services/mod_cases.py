@@ -1,4 +1,4 @@
-"""Moderation case log (table mod_cases): panel/command actions, automod hits and synced Dyno/Discord cases."""
+"""Moderation case log (table mod_cases): panel/command actions, automod hits and synced Discord audit-log cases (plus historical Dyno imports)."""
 
 from dataclasses import dataclass
 from datetime import datetime

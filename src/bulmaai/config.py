@@ -485,10 +485,6 @@ class Settings:
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"
-    # Dyno (being phased out): its bans/kicks/timeouts come from the Discord audit log; warns and the
-    # real moderator come from its mod-log channel embeds when this channel is set.
-    dyno_user_id: int = 155149108183695360
-    dyno_modlog_channel_id: int | None = 1501735528356118528
 
     # Moderation suite (Dyno replacement). Durations use shorthand like 30m / 24h / 3d.
     # Warn ladder: "<active warns>[/<window>]=<timeout duration|kick|ban|ban:<duration>>", comma separated; highest matched step wins.

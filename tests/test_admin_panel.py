@@ -154,6 +154,19 @@ class PanelApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200, await response.text())
         setter.assert_called_once_with("showcase_threshold", "7")
 
+    async def test_settings_list_has_sections_labels_and_help(self):
+        self.login(OWNER_ID)
+        with patch("bulmaai.web.routes_settings.load_settings_overrides", return_value={}):
+            response = await self.client.get("/api/settings")
+        self.assertEqual(response.status, 200, await response.text())
+        data = await response.json()
+        section_ids = [s["id"] for s in data["sections"]]
+        self.assertEqual(section_ids[-1], "advanced")
+        item = next(s for s in data["settings"] if s["name"] == "showcase_threshold")
+        self.assertEqual(item["section"], "community")
+        self.assertTrue(item["label"] and item["help"])
+        self.assertTrue(all(s["section"] in section_ids for s in data["settings"]))
+
     async def test_public_url_origin_is_accepted_when_host_is_rewritten(self):
         self.login(OWNER_ID)
         object.__setattr__(self.bot.settings, "panel_public_url", "https://panel.example")

@@ -23,8 +23,8 @@
     "Bot": "Bot",
     "Timed out": "Silenciado",
     "Joined": "Se unió",
-    "Users": "Usuarios",
-    "← Users": "← Usuarios",
+    "Members": "Miembros",
+    "← Members": "← Miembros",
     "Activity": "Actividad",
     "Mod cases": "Casos de moderación",
     "When": "Cuándo",
@@ -33,7 +33,7 @@
     "By": "Por",
     "Dyno (deprecated)": "Dyno (obsoleto)",
     "via Discord": "vía Discord",
-    "View in Audit log ›": "Ver en el registro de auditoría ›",
+    "View all cases ›": "Ver todos los casos ›",
     "Tickets": "Tickets",
     "Bug reports": "Reportes de errores",
     "Patreon": "Patreon",
@@ -99,6 +99,15 @@
     "Clear warnings ({n})": "Borrar advertencias ({n})",
     "Remove all {n} active warnings? They stop counting toward the warn ladder.":
       "¿Eliminar las {n} advertencias activas? Dejan de contar para la escalera de advertencias.",
+    "Spam": "Spam",
+    "Advertising": "Publicidad",
+    "NSFW content": "Contenido NSFW",
+    "Harassment / toxicity": "Acoso / toxicidad",
+    "Scam or phishing link": "Enlace de estafa o phishing",
+    "Off-topic / wrong channel": "Fuera de tema / canal equivocado",
+    "Permanent": "Permanente",
+    "Act": "Actuar",
+    "Quick actions": "Acciones rápidas",
   });
 
   const ACTION_KIND = { warn: "warn", note: "", timeout: "warn", kick: "danger", ban: "danger", softban: "danger", delete: "danger", alert: "warn", unban: "ok", untimeout: "ok", appeal: "" };
@@ -120,12 +129,21 @@
     Panel.go(`#/users/${encodeURIComponent(id)}`);
   }
 
+  // User cell + "Act" button that opens the quick-actions popup without triggering the row click.
+  function withAct(cell, id) {
+    if (!id || !["mod.warn", "mod.timeout", "mod.kick", "mod.ban"].some(can)) return cell;
+    return h("div", { class: "row" }, cell, h("button", {
+      class: "btn small ghost", type: "button", title: t("Quick actions"),
+      onclick: (e) => { e.stopPropagation(); Panel.openUserCard(String(id)); },
+    }, t("Act")));
+  }
+
   function caseColumns({ withUser }) {
     const autoSources = ["automod", "escalation", "antiraid", "tempban"];
     const cols = [
       { label: "#", render: (c) => h("span", { class: "mono" }, String(c.id)) },
       { label: t("When"), render: (c) => time(c.created_at) },
-      withUser ? { label: t("User"), render: (c) => user(c.user || c.user_id) } : null,
+      withUser ? { label: t("User"), render: (c) => withAct(user(c.user || c.user_id), c.user_id) } : null,
       { label: t("Action"), render: (c) => h("div", { class: "row" },
         actionBadge(c.action),
         c.active === false ? badge(t("removed")) : null,
@@ -278,7 +296,7 @@
     observer.observe(sentinel);
 
     view.append(
-      h("h1", {}, t("Users")),
+      h("h1", {}, t("Members")),
       h("div", { class: "card stack" },
         h("div", { class: "row members-toolbar" }, field(t("Search"), search), field(t("Role"), roleSelect), field(t("Sort"), sortSelect), count),
         idHint,
@@ -312,7 +330,33 @@
     { id: "unban", label: "Unban", perm: "mod.ban", show: (p) => p.banned !== false && !p.member },
   ];
 
-  async function runAction(button, profile, action) {
+  // Inserted text stays English: reasons go to DMs and the mod log of a multilingual server.
+  const REASONS = ["Spam", "Advertising", "NSFW content", "Harassment / toxicity", "Scam or phishing link", "Off-topic / wrong channel"];
+
+  function reasonChips(textarea) {
+    return h("div", { class: "chips" }, REASONS.map((phrase) => h("button", {
+      class: "chip", type: "button",
+      onclick: () => {
+        const cur = textarea.value.trim();
+        if (!cur) textarea.value = phrase;
+        else if (!cur.includes(phrase)) textarea.value = `${cur}; ${phrase}`;
+        textarea.focus();
+      },
+    }, t(phrase))));
+  }
+
+  // Preset buttons that fill `input`; the one matching the current value shows as pressed.
+  function presetChips(input, presets) {
+    const chips = presets.map(([label, value]) => h("button", {
+      class: "chip", type: "button", "aria-pressed": String(input.value === value),
+      onclick: () => { input.value = value; sync(); },
+    }, label));
+    const sync = () => chips.forEach((c, i) => c.setAttribute("aria-pressed", String(input.value === presets[i][1])));
+    input.addEventListener("input", () => chips.forEach((c) => c.setAttribute("aria-pressed", "false")));
+    return h("div", { class: "chips" }, chips);
+  }
+
+  async function runAction(button, profile, action, onDone) {
     const name = profile.user.display_name || profile.user.name;
     const reason = h("textarea", { rows: "3", maxlength: "400", placeholder: t(action.optionalReason ? "Optional" : "Required") });
     const minutes = action.minutes ? h("input", { type: "number", min: "1", max: "40320", value: "60" }) : null;
@@ -320,10 +364,12 @@
     const banLength = action.duration ? h("input", { type: "text", placeholder: "7d" }) : null;
     const ok = await dialog(t("{action}: {name}", { action: t(action.label), name }), [
       action.help ? h("p", { class: "muted" }, t(action.help)) : null,
-      minutes ? field(t("Duration in minutes (max 40320 = 28 days)"), minutes) : null,
-      banLength ? field(t("Duration (e.g. 7d; empty = permanent)"), banLength) : null,
+      minutes ? field(t("Duration in minutes (max 40320 = 28 days)"), h("div", { class: "stack" },
+        presetChips(minutes, [["10m", "10"], ["1h", "60"], ["6h", "360"], ["1d", "1440"], ["3d", "4320"], ["7d", "10080"]]), minutes)) : null,
+      banLength ? field(t("Duration (e.g. 7d; empty = permanent)"), h("div", { class: "stack" },
+        presetChips(banLength, [["1d", "1d"], ["7d", "7d"], ["30d", "30d"], [t("Permanent"), ""]]), banLength)) : null,
       hours ? field(t("Delete their messages from the last N hours (0–168)"), hours) : null,
-      field(t("Reason"), reason),
+      field(t("Reason"), h("div", { class: "stack" }, reason, reasonChips(reason))),
     ], { confirmLabel: t(action.label), danger: Boolean(action.danger) });
     if (!ok) return;
     const body = { reason: reason.value.trim() };
@@ -335,31 +381,33 @@
     if (!result) return;
     if (result.escalation) Panel.toast(t("Warn ladder applied: {action}", { action: t(result.escalation) }));
     if (result.dm_sent === false) Panel.toast(t("Couldn't DM the user (DMs closed); the warning is still recorded."), true);
-    Panel.refresh();
+    if (onDone) onDone(); else Panel.refresh();
   }
 
-  function clearWarnsButton(profile, count) {
-    const button = h("button", { class: "btn", type: "button" }, t("Clear warnings ({n})", { n: count }));
+  function clearWarnsButton(profile, count, cls, onDone) {
+    const button = h("button", { class: cls, type: "button" }, t("Clear warnings ({n})", { n: count }));
     button.addEventListener("click", async () => {
       const ok = await dialog(t("Clear warnings"), [h("p", {}, t("Remove all {n} active warnings? They stop counting toward the warn ladder.", { n: count }))], { confirmLabel: t("Clear warnings"), danger: true });
       if (!ok) return;
-      await run(button, () => api(`/api/users/${profile.user.id}/clearwarns`, { method: "POST", body: {} }), t("{action}: done", { action: t("Clear warnings") }));
-      Panel.refresh();
+      const result = await run(button, () => api(`/api/users/${profile.user.id}/clearwarns`, { method: "POST", body: {} }), t("{action}: done", { action: t("Clear warnings") }));
+      if (onDone && result !== undefined) onDone(); else if (!onDone) Panel.refresh();
     });
     return button;
   }
 
-  function actionBar(profile) {
+  // Reused by the user popup (panel.js openUserCard) with compact buttons and its own onDone.
+  function actionBar(profile, { onDone, compact = false } = {}) {
+    const size = compact ? " small" : "";
     const buttons = ACTIONS
       .filter((a) => can(a.perm) && (!a.member || profile.member) && (!a.show || a.show(profile)))
       .map((a) => {
-        const button = h("button", { class: a.danger ? "btn danger" : "btn", type: "button" }, t(a.label));
-        button.addEventListener("click", () => runAction(button, profile, a));
+        const button = h("button", { class: (a.danger ? "btn danger" : "btn") + size, type: "button" }, t(a.label));
+        button.addEventListener("click", () => runAction(button, profile, a, onDone));
         return button;
       });
     const cases = profile.sections.cases && profile.sections.cases.data;
     const activeWarns = (cases || []).filter((c) => c.action === "warn" && c.active !== false).length;
-    if (can("mod.cases.remove") && activeWarns) buttons.push(clearWarnsButton(profile, activeWarns));
+    if (can("mod.cases.remove") && activeWarns) buttons.push(clearWarnsButton(profile, activeWarns, `btn${size}`, onDone));
     return buttons.length ? h("div", { class: "row" }, buttons) : null;
   }
 
@@ -376,7 +424,7 @@
     ];
 
     view.append(
-      h("p", {}, h("a", { href: "#/users" }, t("← Users"))),
+      h("p", {}, h("a", { href: "#/users" }, t("← Members"))),
       h("div", { class: "card stack" },
         h("div", { class: "row spread" },
           h("div", { class: "profile-head" },
@@ -401,7 +449,7 @@
         stat(t("Last download"), time(d.last_download_at)))),
       section(t("Mod cases"), s.cases, (cases) => [
         table(caseColumns({ withUser: false }), cases, { empty: t("No cases.") }),
-        h("p", { class: "small" }, h("a", { href: `#/audit/${p.user.id}` }, t("View in Audit log ›")))]),
+        h("p", { class: "small" }, h("a", { href: `#/audit/${p.user.id}` }, t("View all cases ›")))]),
       section(t("Tickets"), s.tickets, (tickets) => table([
         { label: t("Closed"), render: (t2) => time(t2.closed_at) },
         { label: t("Title"), render: (t2) => t2.title || t2.channel_name || "—" },
@@ -430,14 +478,15 @@
 
   Panel.page({
     id: "users",
-    title: "Users",
+    title: "Members",
     perm: "users.view",
-    group: "Moderation",
     async render(view, args) {
       if (args[0]) await renderProfile(view, args[0]);
       else await renderMembers(view);
     },
   });
 
-  Panel.caseColumns = caseColumns;  // shared with the Audit log page in logs.js
+  Panel.caseColumns = caseColumns;  // shared with the Cases page in logs.js
+  Panel.actionBar = actionBar;
+  Panel.withAct = withAct;
 })();

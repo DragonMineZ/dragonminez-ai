@@ -218,7 +218,6 @@
     id: "tickets",
     title: t("Tickets"),
     perm: "tickets.view",
-    group: "Community",
     async render(view, args) {
       if (args[0] === "transcript" && args[1]) return transcriptDetail(view, args[1]);
       const open = h("div", { class: "card" });

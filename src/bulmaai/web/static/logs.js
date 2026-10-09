@@ -1,5 +1,5 @@
 "use strict";
-// Logs group: Audit log (mod cases), Flagged joiners and Website logs (panel actions).
+// Cases (mod cases), Flagged joiners, and Logs (bot logs + panel activity tabs).
 
 (() => {
   const { h, api, run, time, user, badge, table, field, suggest, userSuggest, t, i18n } = Panel;
@@ -17,7 +17,7 @@
     "Reason": "Motivo",
     "Dyno (deprecated)": "Dyno (obsoleto)",
     "No entries match.": "Ninguna entrada coincide.",
-    "Website logs": "Registros del sitio",
+    "Panel activity": "Actividad del panel",
     "Every change made through this panel. Action filter matches by prefix.":
       "Cada cambio hecho a través de este panel. El filtro de acción coincide por prefijo.",
     "Details": "Detalles",
@@ -26,7 +26,7 @@
     "No cases match.": "Ningún caso coincide.",
     "User": "Usuario",
     "Source": "Fuente",
-    "Audit log": "Registro de auditoría",
+    "Cases": "Casos",
     "Flagged joiners": "Ingresos marcados",
     "New-account and returning-offender alerts from raid_guard: posted the moment they're flagged, and auto-dismissed after 1h if no staff click resolves them first.":
       "Alertas de raid_guard por cuenta nueva o infractor recurrente: publicadas en el momento en que se marcan, y descartadas automáticamente tras 1h si ningún miembro del staff las resuelve antes.",
@@ -46,7 +46,7 @@
   // ---- Bot logs (replaces the Discord log channel) -------------------------------------------------
 
   i18n({
-    "Bot logs": "Registros del bot",
+    "Bot": "Bot",
     "Errors, automod/purge/case notices and update news, kept for a year. Names and IDs open a quick profile.":
       "Errores, avisos de automod/purge/casos y novedades de actualización, guardados un año. Los nombres e IDs abren un perfil rápido.",
     "Level": "Nivel",
@@ -70,138 +70,168 @@
 
   const LOG_LEVEL_KINDS = { info: "", warning: "warn", error: "danger", critical: "danger" };
 
-  Panel.page({
-    id: "bot-logs",
-    title: "Bot logs",
-    group: "Moderation",
-    perm: "logs.view",
-    async render(view, args) {
-      const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: args[0] || "" });
-      const textInput = h("input", { type: "text", placeholder: t("Search text…"), size: "22" });
-      const sourceSelect = h("select", {}, h("option", { value: "" }, t("All sources")));
-      const levelSelect = h("select", {},
-        h("option", { value: "" }, t("All levels")),
-        h("option", { value: "warning" }, t("Warnings and up")),
-        h("option", { value: "error" }, t("Errors and up")));
-      const apply = h("button", { class: "btn primary", type: "submit" }, t("Apply"));
-      const more = h("button", { class: "btn", type: "button", hidden: true }, t("Load more"));
-      const results = h("div");
-      let logs = [];
-      let nextBefore = null;
-      let sourcesLoaded = false;
+  async function renderBotLogs(view, userId) {
+    const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: userId || "" });
+    const textInput = h("input", { type: "text", placeholder: t("Search text…"), size: "22" });
+    const sourceSelect = h("select", {}, h("option", { value: "" }, t("All sources")));
+    const levelSelect = h("select", {},
+      h("option", { value: "" }, t("All levels")),
+      h("option", { value: "warning" }, t("Warnings and up")),
+      h("option", { value: "error" }, t("Errors and up")));
+    const apply = h("button", { class: "btn primary", type: "submit" }, t("Apply"));
+    const more = h("button", { class: "btn", type: "button", hidden: true }, t("Load more"));
+    const results = h("div");
+    let logs = [];
+    let nextBefore = null;
+    let sourcesLoaded = false;
 
-      const load = async (append) => {
-        const params = new URLSearchParams();
-        if (userInput.value.trim()) params.set("user_id", userInput.value.trim());
-        if (textInput.value.trim()) params.set("q", textInput.value.trim());
-        if (sourceSelect.value) params.set("source", sourceSelect.value);
-        if (levelSelect.value) params.set("level", levelSelect.value);
-        if (append && nextBefore) params.set("before_id", String(nextBefore));
-        const data = await api(`/api/logs?${params}`);
-        logs = append ? logs.concat(data.logs) : data.logs;
-        nextBefore = data.next_before_id;
-        more.hidden = !nextBefore;
-        if (!sourcesLoaded) {
-          sourcesLoaded = true;
-          for (const s of data.sources) sourceSelect.append(h("option", { value: s }, s));
-        }
-        results.replaceChildren(table([
-          { label: t("When"), render: (l) => time(l.created_at) },
-          { label: t("Level"), render: (l) => badge(l.level, LOG_LEVEL_KINDS[l.level] || "") },
-          { label: t("Source"), render: (l) => badge(l.source, "accent") },
-          { label: t("User"), render: (l) => (l.user_id ? Panel.mention(l.user_id, l.user && l.user.display_name) : "") },
-          {
-            label: t("Details"),
-            render: (l) => h("div", {},
-              h("strong", {}, l.title),
-              h("pre", { class: "log-body small" }, Panel.richText(l.body)),
-              l.data && l.data.traceback
-                ? h("details", {}, h("summary", { class: "small muted" }, t("Traceback")), h("pre", { class: "small" }, l.data.traceback))
-                : null),
-          },
-        ], logs, { empty: t("No logs match.") }));
-      };
+    const load = async (append) => {
+      const params = new URLSearchParams();
+      if (userInput.value.trim()) params.set("user_id", userInput.value.trim());
+      if (textInput.value.trim()) params.set("q", textInput.value.trim());
+      if (sourceSelect.value) params.set("source", sourceSelect.value);
+      if (levelSelect.value) params.set("level", levelSelect.value);
+      if (append && nextBefore) params.set("before_id", String(nextBefore));
+      const data = await api(`/api/logs?${params}`);
+      logs = append ? logs.concat(data.logs) : data.logs;
+      nextBefore = data.next_before_id;
+      more.hidden = !nextBefore;
+      if (!sourcesLoaded) {
+        sourcesLoaded = true;
+        for (const s of data.sources) sourceSelect.append(h("option", { value: s }, s));
+      }
+      results.replaceChildren(table([
+        { label: t("When"), render: (l) => time(l.created_at) },
+        { label: t("Level"), render: (l) => badge(l.level, LOG_LEVEL_KINDS[l.level] || "") },
+        { label: t("Source"), render: (l) => badge(l.source, "accent") },
+        { label: t("User"), render: (l) => (l.user_id ? Panel.mention(l.user_id, l.user && l.user.display_name) : "") },
+        {
+          label: t("Details"),
+          render: (l) => h("div", {},
+            h("strong", {}, l.title),
+            h("pre", { class: "log-body small" }, Panel.richText(l.body)),
+            l.data && l.data.traceback
+              ? h("details", {}, h("summary", { class: "small muted" }, t("Traceback")), h("pre", { class: "small" }, l.data.traceback))
+              : null),
+        },
+      ], logs, { empty: t("No logs match.") }));
+    };
 
-      more.addEventListener("click", () => run(more, () => load(true)));
-      const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(false)); } },
-        field(t("User"), userSuggest(userInput)), field(t("Source"), sourceSelect), field(t("Level"), levelSelect),
-        field(t("Text"), textInput), apply);
-      view.append(
-        h("h1", {}, t("Bot logs")),
-        h("p", { class: "muted" }, t("Errors, automod/purge/case notices and update news, kept for a year. Names and IDs open a quick profile.")),
-        h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
-      await load(false);
-    },
-  });
+    more.addEventListener("click", () => run(more, () => load(true)));
+    const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(false)); } },
+      field(t("User"), userSuggest(userInput)), field(t("Source"), sourceSelect), field(t("Level"), levelSelect),
+      field(t("Text"), textInput), apply);
+    view.append(
+      h("p", { class: "muted" }, t("Errors, automod/purge/case notices and update news, kept for a year. Names and IDs open a quick profile.")),
+      h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
+    await load(false);
+  }
 
-  // ---- Website logs -----------------------------------------------------------------------------
+  // ---- Panel activity --------------------------------------------------------------------------
 
   function detailsText(details) {
     if (!details || (typeof details === "object" && !Object.keys(details).length)) return "";
     return JSON.stringify(details, null, 1);
   }
 
+  async function renderPanelActivity(view) {
+    const actorInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22" });
+    const actionInput = h("input", { type: "text", placeholder: t("All actions"), size: "22" });
+    const apply = h("button", { class: "btn primary", type: "button" }, t("Apply"));
+    const more = h("button", { class: "btn", type: "button" }, t("Load more"));
+    const body = h("div");
+    let entries = [];
+
+    const actionsData = await api("/api/audit/actions").catch(() => ({ actions: [] }));
+    const actorField = userSuggest(actorInput);
+    const actionField = suggest(actionInput, actionsData.actions);
+
+    const draw = (hasMore) => {
+      body.replaceChildren(table([
+        { label: t("When"), render: (e) => time(e.created_at) },
+        { label: t("Actor"), render: (e) => user(e.actor) },
+        { label: t("Action"), render: (e) => badge(e.action) },
+        { label: t("Target"), render: (e) => (e.target ? h("span", { class: "mono" }, e.target) : "") },
+        { label: t("Details"), render: (e) => h("pre", { class: "small" }, detailsText(e.details)) },
+      ], entries, { empty: t("No audit entries match.") }));
+      more.hidden = !hasMore;
+    };
+
+    const load = async (reset) => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (actorInput.value.trim()) params.set("actor_id", actorInput.value.trim());
+      if (actionInput.value.trim()) params.set("action", actionInput.value.trim());
+      if (!reset && entries.length) params.set("before_id", String(entries[entries.length - 1].id));
+      const data = await api(`/api/audit?${params}`);
+      entries = reset ? data.entries : entries.concat(data.entries);
+      draw(data.has_more);
+    };
+
+    apply.addEventListener("click", () => run(apply, () => load(true)));
+    more.addEventListener("click", () => run(more, () => load(false)));
+    for (const input of [actorInput, actionInput]) {
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") apply.click(); });
+    }
+
+    view.append(
+      h("p", { class: "muted" }, t("Every change made through this panel. Action filter matches by prefix.")),
+      h("div", { class: "card stack" },
+        h("div", { class: "row" }, field(t("Actor"), actorField), field(t("Action"), actionField), apply),
+        body,
+        h("div", { class: "row" }, more)));
+    await load(true);
+  }
+
+  // ---- Logs page: Bot (default, #/logs) and Panel activity (#/logs/panel) tabs -----------------
+
   Panel.page({
-    id: "website-logs",
-    title: "Website logs",
-    group: "Moderation",
-    perm: "audit.view",
-    async render(view) {
-      const actorInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22" });
-      const actionInput = h("input", { type: "text", placeholder: t("All actions"), size: "22" });
-      const apply = h("button", { class: "btn primary", type: "button" }, t("Apply"));
-      const more = h("button", { class: "btn", type: "button" }, t("Load more"));
+    id: "logs",
+    title: "Logs",
+    perm: "logs.view",
+    async render(view, args) {
+      const canPanel = Panel.can("audit.view");
+      let tab = args[0] === "panel" && canPanel ? "panel" : "bot";
+      const tabsEl = h("div", { class: "tabs", role: "tablist" });
+      const panes = {};
       const body = h("div");
-      let entries = [];
 
-      const actionsData = await api("/api/audit/actions").catch(() => ({ actions: [] }));
-      const actorField = userSuggest(actorInput);
-      const actionField = suggest(actionInput, actionsData.actions);
-
-      const draw = (hasMore) => {
-        body.replaceChildren(table([
-          { label: t("When"), render: (e) => time(e.created_at) },
-          { label: t("Actor"), render: (e) => user(e.actor) },
-          { label: t("Action"), render: (e) => badge(e.action) },
-          { label: t("Target"), render: (e) => (e.target ? h("span", { class: "mono" }, e.target) : "") },
-          { label: t("Details"), render: (e) => h("pre", { class: "small" }, detailsText(e.details)) },
-        ], entries, { empty: t("No audit entries match.") }));
-        more.hidden = !hasMore;
+      const show = async () => {
+        const fresh = !panes[tab];
+        if (fresh) panes[tab] = h("div");
+        body.replaceChildren(panes[tab]);
+        if (!fresh) return;
+        try {
+          await (tab === "panel" ? renderPanelActivity(panes.panel) : renderBotLogs(panes.bot, args[0] !== "panel" ? args[0] : ""));
+        } catch (error) {
+          panes[tab].append(h("p", { class: "error" }, error.message));
+        }
+      };
+      const drawTabs = () => {
+        tabsEl.replaceChildren(...[["bot", "Bot"], ["panel", "Panel activity"]]
+          .filter(([id]) => id !== "panel" || canPanel)
+          .map(([id, label]) => h("button", { type: "button", role: "tab", "aria-selected": String(tab === id), "aria-current": String(tab === id),
+            onclick: () => { tab = id; history.replaceState(null, "", `#/logs${id === "bot" ? "" : "/panel"}`); drawTabs(); show(); } }, t(label))));
       };
 
-      const load = async (reset) => {
-        const params = new URLSearchParams({ limit: "50" });
-        if (actorInput.value.trim()) params.set("actor_id", actorInput.value.trim());
-        if (actionInput.value.trim()) params.set("action", actionInput.value.trim());
-        if (!reset && entries.length) params.set("before_id", String(entries[entries.length - 1].id));
-        const data = await api(`/api/audit?${params}`);
-        entries = reset ? data.entries : entries.concat(data.entries);
-        draw(data.has_more);
-      };
-
-      apply.addEventListener("click", () => run(apply, () => load(true)));
-      more.addEventListener("click", () => run(more, () => load(false)));
-      for (const input of [actorInput, actionInput]) {
-        input.addEventListener("keydown", (e) => { if (e.key === "Enter") apply.click(); });
-      }
-
-      view.append(
-        h("h1", {}, t("Website logs")),
-        h("p", { class: "muted" }, t("Every change made through this panel. Action filter matches by prefix.")),
-        h("div", { class: "card stack" },
-          h("div", { class: "row" }, field(t("Actor"), actorField), field(t("Action"), actionField), apply),
-          body,
-          h("div", { class: "row" }, more)));
-      await load(true);
+      drawTabs();
+      view.append(h("h1", {}, t("Logs")), tabsEl, body);
+      await show();
     },
   });
 
-  // ---- Cases (Audit log) -------------------------------------------------------------------------
+  // Old URLs: #/bot-logs and #/website-logs now live as tabs on #/logs.
+  for (const [id, hash] of [["bot-logs", "#/logs"], ["website-logs", "#/logs/panel"]]) {
+    Panel.page({
+      id, title: "Logs", perm: "logs.view", hidden: true,
+      render() { history.replaceState(null, "", hash); Panel.refresh(); },
+    });
+  }
+
+  // ---- Cases (mod cases) -------------------------------------------------------------------------
 
   Panel.page({
     id: "audit",
-    title: "Audit log",
-    group: "Moderation",
+    title: "Cases",
     perm: "mod.cases.view",
     async render(view, args) {
       const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: args[0] || "" });
@@ -238,7 +268,7 @@
       const form = h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); run(apply, () => load(false)); } },
         field(t("User"), userField), field(t("Moderator"), userSuggest(modInput)), field(t("Action"), actionField), field(t("Source"), sourceSelect), apply);
       view.append(
-        h("h1", {}, t("Audit log")),
+        h("h1", {}, t("Cases")),
         h("div", { class: "card stack" }, form, results, h("div", { class: "row" }, more)));
       await load(false);
     },
@@ -255,7 +285,6 @@
   Panel.page({
     id: "joiner-alerts",
     title: "Flagged joiners",
-    group: "Moderation",
     perm: "mod.cases.view",
     async render(view, args) {
       const userInput = h("input", { type: "text", placeholder: t("Name or Discord ID"), size: "22", value: args[0] || "" });
@@ -277,7 +306,7 @@
         more.hidden = !nextBefore;
         results.replaceChildren(table([
           { label: t("When"), render: (a) => time(a.created_at) },
-          { label: t("User"), render: (a) => user(a.user) },
+          { label: t("User"), render: (a) => (Panel.withAct ? Panel.withAct(user(a.user), a.user_id) : user(a.user)) },
           { label: t("Flag"), render: (a) => badge(JOINER_ALERT_REASONS[a.reason] || a.reason, "accent") },
           { label: t("Action taken"), render: (a) => a.action_taken },
           {

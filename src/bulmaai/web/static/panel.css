@@ -175,15 +175,23 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
+.topbar, .backdrop { display: none; }
 @media (max-width: 760px) {
-  .app { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; }
-  #nav { display: flex; overflow-x: auto; padding: 0 8px 8px; }
-  .nav-group { display: flex; align-items: center; }
-  .nav-group-panel { grid-template-rows: 1fr !important; }
-  .nav-group a { margin-left: 0; }
-  #nav a { white-space: nowrap; }
-  .view { padding: 16px; }
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
+  .topbar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 16px; position: sticky; top: 0; z-index: 20;
+    background: var(--surface); border-bottom: 1px solid var(--border); font-weight: 600;
+  }
+  .topbar #topbar-guild { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu-toggle { font-size: 18px; line-height: 1; padding: 6px 10px; }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 260px; max-width: 85vw; height: 100%; z-index: 40;
+    transform: translateX(-100%); visibility: hidden; transition: transform .22s ease, visibility .22s;
+    box-shadow: 0 0 24px rgba(0, 0, 0, .4);
+  }
+  .app.nav-open .sidebar { transform: none; visibility: visible; }
+  .backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, .5); }
+  .view { padding: 16px; overflow-x: clip; }
 }
 
 /* ---- Users tab: member grid (moderation.js) --------------------------------------------------- */
@@ -195,6 +203,26 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 .sentinel { height: 1px; }
 .profile-head { display: flex; align-items: center; gap: 14px; }
 .avatar-lg { width: 72px; height: 72px; border-radius: 50%; background: var(--surface-2); flex: none; }
+
+/* ---- Dashboard (dashboard.js) ---- */
+.dash-find { width: 100%; }
+.dash-finder .suggest { display: block; }
+.dash-tiles { margin-bottom: 16px; }
+.dash-tile { display: block; margin-bottom: 0; color: var(--text); text-decoration: none; transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
+.dash-tile:hover, .dash-tile:focus-visible { transform: translateY(-2px); border-color: var(--accent); box-shadow: 0 6px 18px rgba(0,0,0,.25); outline: none; }
+.dash-tile.warn, .dash-tile.warn:hover, .dash-tile.warn:focus-visible { border-left: 3px solid var(--warn); }
+a.badge { text-decoration: none; }
+.dash-list > * + * { border-top: 1px solid var(--border); }
+.dash-item { padding: 8px 0; min-width: 0; }
+@media (max-width: 760px) { .dash-tiles { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---- Moderation quick actions ---- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.stack > * + .chips, .stack > .chips + * { margin-top: 6px; }
+.chip { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.chip:hover { border-color: var(--muted); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 
 /* ---- Discord-style message preview (cardeditor.js) ------------------------------------------ */
 .d-message { display: flex; gap: 16px; background: #313338; color: #dbdee1; padding: 16px; border-radius: var(--radius); font: 15px/1.375 var(--font); }
@@ -358,3 +386,36 @@ img.broken { visibility: visible; min-height: 48px; background: repeating-linear
 .grow-field { flex: 1; min-width: 200px; }
 .grow-field input { width: 100%; }
 .row.end-align { align-items: flex-end; }
+
+/* ---- Settings page: section list + setting rows (settings.js) -------------------------------- */
+.settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+.settings-sections { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 16px; }
+.settings-sections button { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 0; border-radius: 6px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background-color .15s ease; }
+.settings-sections button:hover { background: var(--surface-2); }
+.settings-sections button[aria-current="true"] { background: var(--surface-2); color: var(--accent); font-weight: 600; }
+.settings-sections button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.settings-sections hr { width: 100%; border: 0; border-top: 1px solid var(--border); margin: 6px 0; }
+.settings-pane > h2 { margin-bottom: 4px; }
+.settings-group { margin: 20px 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); font-variant-caps: all-small-caps; letter-spacing: .05em; }
+.settings-group:first-child { margin-top: 0; }
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 14px 0; border-top: 1px solid var(--border); }
+.setting-rows .setting-row:first-child { border-top: 0; padding-top: 0; }
+.setting-rows .setting-row:last-child { padding-bottom: 0; }
+.setting-label { font-weight: 600; }
+.setting-meta { margin-top: 4px; gap: 6px; }
+.setting-key { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.setting-control { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.setting-control > select, .setting-control > textarea, .setting-control > input:not([type="checkbox"]) { width: 100%; }
+.setting-control textarea { min-height: 60px; }
+.setting-actions { gap: 6px; }
+
+@media (max-width: 900px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-sections { flex-direction: row; overflow-x: auto; position: static; padding-bottom: 4px; }
+  .settings-sections button { flex: none; width: auto; white-space: nowrap; padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px; }
+  .settings-sections hr { width: auto; align-self: stretch; margin: 0 4px; border-top: 0; border-left: 1px solid var(--border); }
+}
+
+@media (max-width: 600px) {
+  .setting-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+}

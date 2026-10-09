@@ -6,7 +6,7 @@
   Panel.i18n({
     "unknown role ({id})": "rol desconocido ({id})",
     "guild owner": "propietario del servidor",
-    "Overview": "Resumen",
+    "Bot health": "Estado del bot",
     "Recent updates": "Actualizaciones recientes",
     "When": "Cuándo",
     "Commit": "Commit",
@@ -14,7 +14,7 @@
     "Result": "Resultado",
     "Took": "Duración",
     "No updates recorded yet.": "Aún no hay actualizaciones registradas.",
-    "Staff": "Staff",
+    "Staff & access": "Staff y accesos",
     "Bot": "Bot",
     "not connected": "no conectado",
     "Websocket latency": "Latencia de Websocket",
@@ -112,9 +112,8 @@
 
   Panel.page({
     id: "overview",
-    title: t("Overview"),
+    title: "Bot health",
     perm: "status.view",
-    group: "Dashboard",
     async render(view) {
       const body = h("div");
       const reload = async () => {
@@ -138,16 +137,15 @@
       };
       const refresh = h("button", { class: "btn small ghost", type: "button" }, t("Refresh"));
       refresh.addEventListener("click", () => run(refresh, reload));
-      view.append(h("div", { class: "row spread" }, h("h1", {}, t("Overview")), refresh), body);
+      view.append(h("div", { class: "row spread" }, h("h1", {}, t("Bot health")), refresh), body);
       await reload();
     },
   });
 
   Panel.page({
     id: "staff",
-    title: t("Staff"),
+    title: "Staff & access",
     perm: "audit.view",
-    group: "Dashboard",
     async render(view) {
       const data = await api("/api/staff");
       const tiers = TIER_ORDER.filter((t) => data.tiers.includes(t));
@@ -176,7 +174,7 @@
         })));
 
       view.append(
-        h("h1", {}, t("Staff")),
+        h("h1", {}, t("Staff & access")),
         h("p", { class: "muted" }, t("Permissions for staff in this panel website.")),
         ...groups,
         h("div", { class: "card" },

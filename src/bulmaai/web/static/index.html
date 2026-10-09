@@ -6,17 +6,19 @@
   <meta name="robots" content="noindex, nofollow">
   <title>BulmaAI Panel</title>
   <link rel="stylesheet" href="/static/panel.css">
-  <!-- panel.js first; each module script registers its pages with Panel.page(), nav follows this order. -->
+  <!-- panel.js first; nav order comes from NAV in panel.js. moderation.js before logs.js (Panel.caseColumns),
+       cardeditor.js before announce/templates (Panel.cardEditor). -->
   <script defer src="/static/panel.js"></script>
   <script defer src="/static/status.js"></script>
-  <script defer src="/static/logs.js"></script>
   <script defer src="/static/moderation.js"></script>
+  <script defer src="/static/logs.js"></script>
+  <script defer src="/static/dashboard.js"></script>
   <script defer src="/static/automod.js"></script>
   <script defer src="/static/tickets.js"></script>
-  <script defer src="/static/patreon.js"></script>
   <script defer src="/static/cardeditor.js"></script>
-  <script defer src="/static/templates.js"></script>
   <script defer src="/static/announce.js"></script>
+  <script defer src="/static/templates.js"></script>
+  <script defer src="/static/patreon.js"></script>
   <script defer src="/static/settings.js"></script>
 </head>
 <body>
@@ -31,7 +33,12 @@
     </div>
   </div>
   <div id="app" class="app" hidden>
-    <aside class="sidebar">
+    <header class="topbar">
+      <button id="menu-toggle" class="btn ghost menu-toggle" type="button" aria-label="Menu" data-i18n-label="Menu" aria-expanded="false" aria-controls="sidebar"><span aria-hidden="true">&#9776;</span></button>
+      <span id="topbar-guild">BulmaAI</span>
+    </header>
+    <div id="backdrop" class="backdrop" hidden></div>
+    <aside id="sidebar" class="sidebar">
       <div class="brand"><img id="guild-icon" alt=""><span id="guild-name">BulmaAI</span></div>
       <nav id="nav"></nav>
       <div class="me">

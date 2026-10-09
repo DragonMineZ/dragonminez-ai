@@ -4,6 +4,14 @@
 
 const Panel = (() => {
   const pages = [];
+  // Sidebar layout. A null group = top-level links; ids not registered or not permitted are skipped.
+  // Pages registered but missing here stay routable (aliases, hidden pages).
+  const NAV = [
+    [null, ["dashboard"]],
+    ["Moderation", ["users", "audit", "joiner-alerts", "automod"]],
+    ["Support & Community", ["tickets", "announce", "templates", "patreon"]],
+    ["System", ["settings", "overview", "staff", "logs"]],
+  ];
   const collapsed = new Set();  // nav groups the user closed this session
   let me = null;
   let guildCache = null;
@@ -44,6 +52,7 @@ const Panel = (() => {
   function translateStatic() {
     document.documentElement.lang = locale();
     for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
+    for (const el of document.querySelectorAll("[data-i18n-label]")) el.setAttribute("aria-label", t(el.dataset.i18nLabel));
   }
 
   function h(tag, attrs, ...children) {
@@ -229,7 +238,8 @@ const Panel = (() => {
         h("div", { class: "row" }, Object.keys(counts).length
           ? Object.entries(counts).map(([action, n]) => badge(`${n}× ${action}`, action === "warn" ? "warn" : ""))
           : h("span", { class: "muted small" }, t("No recent cases."))),
-        cases.slice(0, 5).map((c) => h("div", { class: "small" }, badge(c.action), " ", c.reason || "—", " ", time(c.created_at))));
+        cases.slice(0, 5).map((c) => h("div", { class: "small" }, badge(c.action), " ", c.reason || "—", " ", time(c.created_at))),
+        Panel.actionBar ? Panel.actionBar(p, { compact: true, onDone: () => { el.close(); route(); } }) : null);
     } catch (error) {
       body.replaceChildren(h("span", { class: "muted" }, error.message));
     }
@@ -291,36 +301,58 @@ const Panel = (() => {
     document.getElementById("login").hidden = false;
   }
 
-  // Pages sharing a `group` fold into one dropdown, placed where the group's first page
-  // registered. The panel's height animates via CSS grid-template-rows (0fr <-> 1fr), so opening
-  // and closing both slide instead of just the browser's default instant <details> toggle.
+  function navGroups() {
+    return NAV.map(([group, ids]) => [group, ids.map((id) => pages.find((p) => p.id === id))
+      .filter((p) => p && !p.hidden && can(p.perm))]).filter(([, members]) => members.length);
+  }
+
+  // Each NAV group folds into one dropdown. The panel's height animates via CSS grid-template-rows
+  // (0fr <-> 1fr), so opening and closing both slide instead of an instant toggle.
   function renderNav(current) {
     const link = (p) => h("a", { href: `#/${p.id}`, "aria-current": p.id === current ? "page" : null }, t(p.title));
-    const visible = pages.filter((p) => !p.hidden && can(p.perm));
-    const done = new Set();
     const items = [];
-    for (const p of visible) {
-      if (!p.group) { items.push(link(p)); continue; }
-      if (done.has(p.group)) continue;
-      done.add(p.group);
-      const members = visible.filter((x) => x.group === p.group);
-      const open = members.some((x) => x.id === current) || !collapsed.has(p.group);
+    for (const [group, members] of navGroups()) {
+      if (!group) { items.push(...members.map(link)); continue; }
+      const open = members.some((x) => x.id === current) || !collapsed.has(group);
       const panel = h("div", { class: "nav-group-panel" }, h("div", { class: "nav-group-inner" }, members.map(link)));
-      const toggle = h("button", { class: "nav-group-toggle", type: "button", "aria-expanded": String(open) }, t(p.group));
+      const toggle = h("button", { class: "nav-group-toggle", type: "button", "aria-expanded": String(open) }, t(group));
       toggle.addEventListener("click", () => {
         const next = toggle.getAttribute("aria-expanded") !== "true";
         toggle.setAttribute("aria-expanded", String(next));
-        if (next) collapsed.delete(p.group); else collapsed.add(p.group);
+        if (next) collapsed.delete(group); else collapsed.add(group);
       });
       items.push(h("div", { class: "nav-group" }, toggle, panel));
     }
     document.getElementById("nav").replaceChildren(...items);
   }
 
+  // Mobile (<=760px) off-canvas sidebar; CSS hides the top bar and backdrop on desktop.
+  function setDrawer(open) {
+    document.getElementById("app").classList.toggle("nav-open", open);
+    document.getElementById("menu-toggle").setAttribute("aria-expanded", String(open));
+    document.getElementById("backdrop").hidden = !open;
+  }
+
+  function mountDrawer() {
+    const toggle = document.getElementById("menu-toggle");
+    const isOpen = () => toggle.getAttribute("aria-expanded") === "true";
+    toggle.addEventListener("click", () => {
+      setDrawer(!isOpen());
+      if (isOpen()) { const first = document.querySelector("#nav a, #nav button"); if (first) first.focus(); }
+    });
+    document.getElementById("backdrop").addEventListener("click", () => setDrawer(false));
+    document.getElementById("nav").addEventListener("click", (e) => { if (e.target.closest("a")) setDrawer(false); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && isOpen()) { setDrawer(false); toggle.focus(); }
+    });
+  }
+
   async function route() {
     const [id, ...args] = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
-    const visible = pages.filter((p) => can(p.perm));
-    const target = visible.find((p) => p.id === id) || visible[0];
+    const permitted = pages.filter((p) => can(p.perm));
+    const target = permitted.find((p) => p.id === id)
+      || navGroups().flatMap(([, members]) => members)[0] || permitted.find((p) => !p.hidden);
+    setDrawer(false);
     renderNav(target && target.id);
     // A fresh container per navigation: a slow render from the previous page keeps appending to
     // its own detached container instead of this one.
@@ -388,6 +420,8 @@ const Panel = (() => {
     document.getElementById("login").hidden = true;
     document.getElementById("app").hidden = false;
     document.getElementById("guild-name").textContent = me.guild.name;
+    document.getElementById("topbar-guild").textContent = me.guild.name;
+    mountDrawer();
     if (me.guild.icon) document.getElementById("guild-icon").src = me.guild.icon;
     document.getElementById("me-avatar").src = me.user.avatar;
     document.getElementById("me-name").textContent = me.user.display_name;
@@ -419,13 +453,17 @@ const Panel = (() => {
     "moderator": "moderador",
     "helper": "helper",
     "Logs": "Registros",
+    "Moderation": "Moderación",
+    "Support & Community": "Soporte y comunidad",
+    "System": "Sistema",
+    "Menu": "Menú",
   });
 
   document.addEventListener("DOMContentLoaded", boot);
 
   return {
     h, api, toast, run, can, time, user, badge, mention, richText, table, field, dialog, guild, suggest, userSuggest,
-    channelName, roleName, userName, channelSelect, page, go, me: () => me, refresh: route,
+    channelName, roleName, userName, channelSelect, page, go, me: () => me, refresh: route, openUserCard,
     t, i18n, locale, lang: () => lang,
   };
 })();

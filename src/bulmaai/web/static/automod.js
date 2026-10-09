@@ -493,11 +493,13 @@
       table(columns, images, { empty: t("No scam images saved yet.") }));
   }
 
+  Panel.switchInput = switchInput;
+  Panel.idPicker = idPicker;
+
   Panel.page({
     id: "automod",
     title: "Automod",
     perm: "mod.cases.view",
-    group: "Moderation",
     async render(view, args) {
       const canSettings = can("settings.view");
       let tab = args[0] === "defaults" && canSettings ? "defaults" : args[0] === "scam-images" ? "scam-images" : "filters";

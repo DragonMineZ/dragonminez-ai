@@ -56,9 +56,8 @@
 
   Panel.page({
     id: "announce",
-    title: "Announce",
+    title: "Announcements",
     perm: "announce.send",
-    group: "Community",
     async render(view) {
       let composerMode = null; // null | {kind:"edit", channel_id, message_id, jump_url} | {kind:"schedule", id}
       let draftId = null;
@@ -378,7 +377,7 @@
       }
 
       view.append(
-        h("h1", {}, t("Announce")),
+        h("h1", {}, t("Announcements")),
         h("p", { class: "muted" }, t("Build a message as the bot out of blocks (text, images, buttons…), then send it now, schedule it, or save a draft.")),
         anchor,
         h("details", { class: "card" },
@@ -459,7 +458,7 @@
     "Also post a Spanish translation": "También publicar una traducción al español",
     "Also post a Portuguese translation": "También publicar una traducción al portugués",
     "Send at (leave blank to send immediately)": "Enviar el (deja vacío para enviar de inmediato)",
-    "Announce": "Anunciar",
+    "Announcements": "Anuncios",
     "Build a message as the bot out of blocks (text, images, buttons…), then send it now, schedule it, or save a draft.":
       "Arma un mensaje como el bot con bloques (texto, imágenes, botones…), luego envíalo ya, prográmalo o guarda un borrador.",
     "Load an existing bot message to edit": "Cargar un mensaje existente del bot para editarlo",

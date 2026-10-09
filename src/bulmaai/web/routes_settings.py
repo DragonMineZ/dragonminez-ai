@@ -13,6 +13,7 @@ from bulmaai.config import (
     set_setting_override,
 )
 from bulmaai.web.core import BOT, Actor, api_error, audit, read_json, requires
+from bulmaai.web.settings_meta import SECTIONS, describe
 
 
 routes = web.RouteTableDef()
@@ -27,7 +28,7 @@ def _kind(name: str) -> tuple[str, bool]:
 
 
 def _hint(name: str) -> str | None:
-    for suffix, hint in (("channel_id", "channel"), ("role_id", "role"), ("user_id", "user")):
+    for suffix, hint in (("channel_id", "channel"), ("category_id", "channel"), ("role_id", "role"), ("user_id", "user")):
         if name.endswith(suffix) or name.endswith(suffix + "s"):
             return hint
     return None
@@ -69,6 +70,7 @@ async def list_settings(request: web.Request, actor: Actor) -> web.Response:
     items = []
     for name in get_editable_setting_names():
         kind, optional = _kind(name)
+        section, label, help_text = describe(name)
         items.append(
             {
                 "name": name,
@@ -79,9 +81,13 @@ async def list_settings(request: web.Request, actor: Actor) -> web.Response:
                 "default": _jsonable(getattr(defaults, name)),
                 "overridden": name in overrides,
                 "owner_only": _owner_only(name),
+                "section": section,
+                "label": label,
+                "help": help_text,
             }
         )
-    return web.json_response({"settings": items})
+    sections = [{"id": id_, "title": title, "description": description} for id_, title, description in SECTIONS]
+    return web.json_response({"settings": items, "sections": sections})
 
 
 @routes.put("/api/settings/{name}")

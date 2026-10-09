@@ -250,7 +250,6 @@
     id: "templates",
     title: "Templates",
     perm: "presets.edit",
-    group: "Community",
     async render(view, args) {
       if (args[0]) await renderEdit(view, args[0]);
       else await renderList(view);

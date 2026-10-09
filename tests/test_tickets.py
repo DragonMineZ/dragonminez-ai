@@ -26,7 +26,6 @@ SETTINGS = SimpleNamespace(
     panel_admin_role_ids=(ADMIN_ROLE,),
     panel_moderator_role_ids=(MOD_ROLE,),
     panel_helper_role_ids=(HELPER_ROLE,),
-    ticket_tester_role_ids=(TESTER_ROLE,),
     ticket_dm_transcript=True,
     ticket_max_open_per_user=2,
     ticket_transcript_public_url="https://tickets.example",
@@ -105,20 +104,17 @@ class RankTests(unittest.TestCase):
             self.assertEqual(self.rank(member(STAFF_ID, role)), Rank.MOD)
         self.assertEqual(self.rank(member(STAFF_ID, HELPER_ROLE)), Rank.HELPER)
 
-    def test_tester_is_read_only_unless_owner_or_staff(self):
-        self.assertEqual(self.rank(member(STAFF_ID, TESTER_ROLE)), Rank.TESTER)
-        self.assertEqual(self.rank(member(OWNER_ID, TESTER_ROLE)), Rank.OWNER)
-        self.assertEqual(self.rank(member(STAFF_ID, TESTER_ROLE, HELPER_ROLE)), Rank.HELPER)
+    def test_non_staff_non_owner_has_no_rank(self):
+        self.assertEqual(self.rank(member(OWNER_ID)), Rank.OWNER)
         self.assertEqual(self.rank(member(STAFF_ID)), Rank.NONE)
 
     def test_only_owner_and_up_may_close(self):
-        self.assertLess(Rank.TESTER, Rank.OWNER)
         self.assertLess(Rank.NONE, Rank.OWNER)
 
 
 class OverwriteTests(unittest.TestCase):
     def test_permission_matrix(self):
-        roles = {role_id: Snow(role_id) for role_id in (OWNER_ROLE, ADMIN_ROLE, MOD_ROLE, HELPER_ROLE, TESTER_ROLE)}
+        roles = {role_id: Snow(role_id) for role_id in (OWNER_ROLE, ADMIN_ROLE, MOD_ROLE, HELPER_ROLE)}
         guild = SimpleNamespace(default_role=Snow(1), me=Snow(2), get_role=roles.get)
         owner = Snow(OWNER_ID)
         overwrites = build_overwrites(guild, owner, SETTINGS)
@@ -127,10 +123,6 @@ class OverwriteTests(unittest.TestCase):
 
         o = overwrites[owner]
         self.assertEqual((o.view_channel, o.send_messages, o.read_message_history, o.attach_files), (True,) * 4)
-
-        t = overwrites[roles[TESTER_ROLE]]
-        self.assertEqual((t.view_channel, t.read_message_history), (True, True))
-        self.assertEqual((t.send_messages, t.add_reactions), (False, False))
 
         for role_id in (OWNER_ROLE, ADMIN_ROLE, MOD_ROLE):
             m = overwrites[roles[role_id]]
@@ -530,16 +522,16 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock(), edit_message=AsyncMock()),
         )
 
-    async def test_testers_cannot_use_any_button(self):
+    async def test_non_staff_cannot_use_any_button(self):
         cog = make_cog()
-        tester = member(STAFF_ID, TESTER_ROLE)
+        outsider = member(STAFF_ID)
         with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())), \
                 patch.object(cog, "archive", AsyncMock()) as archive, \
                 patch.object(cog, "close_ticket", AsyncMock()) as close, \
                 patch.object(cog, "reopen_ticket", AsyncMock()) as reopen, \
                 patch.object(cog, "delete_ticket", AsyncMock()) as delete:
             for handler in (cog.on_transcript, cog.on_close, cog.on_reopen, cog.on_delete):
-                interaction = self.interaction(tester)
+                interaction = self.interaction(outsider)
                 await handler(interaction)
                 interaction.response.send_message.assert_awaited_once()
                 self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])

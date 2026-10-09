@@ -178,8 +178,6 @@ DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE = 0.6
 DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT = 3.0
 DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS = 10
 DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS: Sequence[int] = (1472821034418962573, 1341595261960589343)
-# Read-only observers of every ticket; the same Tester role as the dev-jar flow.
-DEFAULT_TICKET_TESTER_ROLE_IDS: Sequence[int] = (1286814599215317034,)
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
 DEFAULT_ANNOUNCEMENT_SPANISH_CHANNEL_ID = 1280350384992288778
@@ -472,7 +470,6 @@ class Settings:
     panel_moderator_role_ids: Sequence[int] = (1352882775304175668, 1472821034418962573)  # DMZ Dev, Moderator
     panel_helper_role_ids: Sequence[int] = (1341595261960589343, 1341596685339725885)  # DMZ Helper, Staff
     # In-house tickets (cogs/tickets.py); category and archive channel reuse the ai_ticket_* ids.
-    ticket_tester_role_ids: Sequence[int] = DEFAULT_TICKET_TESTER_ROLE_IDS
     ticket_max_open_per_user: int = 2
     # Closed tickets move here; re-opening moves them back to ai_ticket_category_id.
     ticket_closed_category_id: int | None = 1303543643377893466
@@ -839,7 +836,6 @@ def _build_settings_from_env() -> Settings:
         ai_ticket_resolve_prompt_exponent=_get_env_float_default("AI_TICKET_RESOLVE_PROMPT_EXPONENT", DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT),
         ai_ticket_close_delay_seconds=_get_env_int("AI_TICKET_CLOSE_DELAY_SECONDS", DEFAULT_AI_TICKET_CLOSE_DELAY_SECONDS),
         ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
-        ticket_tester_role_ids=_get_env_int_list("TICKET_TESTER_ROLE_IDS", DEFAULT_TICKET_TESTER_ROLE_IDS),
         ticket_max_open_per_user=_get_env_int("TICKET_MAX_OPEN_PER_USER", 2) or 2,
         ticket_closed_category_id=_get_env_int("TICKET_CLOSED_CATEGORY_ID", 1303543643377893466),
         welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID", DEFAULT_WELCOME_CHANNEL_ID),

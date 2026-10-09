@@ -89,10 +89,9 @@ _DONATE = re.compile(r'<a href="https://ko-fi\.com/mahtoid">DONATE</a>')
 
 class Rank(IntEnum):
     NONE = 0
-    TESTER = 1
-    OWNER = 2
-    HELPER = 3
-    MOD = 4
+    OWNER = 1
+    HELPER = 2
+    MOD = 3
 
 
 def _ids(*groups) -> set[int]:
@@ -100,7 +99,7 @@ def _ids(*groups) -> set[int]:
 
 
 def member_rank(member: discord.abc.User, owner_id: int | None, settings) -> Rank:
-    """Highest hat wins. A tester who isn't staff or the ticket's owner is read-only, whatever else they click."""
+    """Highest hat wins."""
     if is_bruno(member):
         return Rank.MOD
     role_ids = {role.id for role in getattr(member, "roles", [])}
@@ -110,18 +109,15 @@ def member_rank(member: discord.abc.User, owner_id: int | None, settings) -> Ran
         return Rank.HELPER
     if member.id == owner_id:
         return Rank.OWNER
-    if role_ids & _ids(settings.ticket_tester_role_ids):
-        return Rank.TESTER
     return Rank.NONE
 
 
 def build_overwrites(
     guild: discord.Guild, owner: discord.Member | None, settings, *, closed: bool = False
 ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
-    """closed: staff only, so the owner, testers and anyone /ticket add-ed lose the channel."""
+    """closed: staff only, so the owner and anyone /ticket add-ed lose the channel."""
     mods = _ids(settings.panel_owner_role_ids, settings.panel_admin_role_ids, settings.panel_moderator_role_ids)
     helpers = _ids(settings.panel_helper_role_ids) - mods
-    testers = set() if closed else _ids(settings.ticket_tester_role_ids) - mods - helpers
 
     overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -141,9 +137,6 @@ def build_overwrites(
         )
     staff_kwargs = dict(view_channel=True, send_messages=True, read_message_history=True)
     for role_ids, overwrite in (
-        (testers, discord.PermissionOverwrite(
-            view_channel=True, read_message_history=True, send_messages=False, add_reactions=False
-        )),
         (helpers, discord.PermissionOverwrite(manage_messages=False, **staff_kwargs)),
         (mods, discord.PermissionOverwrite(manage_messages=True, **staff_kwargs)),
     ):

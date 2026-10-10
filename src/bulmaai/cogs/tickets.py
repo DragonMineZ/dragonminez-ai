@@ -733,22 +733,22 @@ class TicketsCog(ReloadableCog):
         await ctx.channel.set_permissions(target, overwrite=overwrite, reason=f"/ticket add by {ctx.author}")
         await ctx.respond(f"➕ {target.mention} was added to this ticket.", allowed_mentions=discord.AllowedMentions.none())
 
-    @ticket.command(name="assign", description="Assign this ticket to a staff member")
-    @discord.option("staff", discord.Member, description="Staff member who will handle it")
-    async def assign(self, ctx: discord.ApplicationContext, staff: discord.Member):
+    @ticket.command(name="assign", description="Assign this ticket to a member")
+    @discord.option("member", discord.Member, description="Member who will handle it")
+    async def assign(self, ctx: discord.ApplicationContext, member: discord.Member):
         if await self._command_gate(ctx, Rank.HELPER) is None:
             return
-        if staff.bot or member_rank(staff, None, self.settings) < Rank.HELPER:
-            return await ctx.respond("You can only assign a ticket to a staff member.", ephemeral=True)
+        if member.bot:
+            return await ctx.respond("You can't assign a ticket to a bot.", ephemeral=True)
         # ponytail: no stored assignee, the ping is the record; add a column if a "my tickets" view is wanted.
-        overwrite = ctx.channel.overwrites_for(staff)
+        overwrite = ctx.channel.overwrites_for(member)
         overwrite.view_channel = True
         overwrite.send_messages = True
         overwrite.read_message_history = True
-        await ctx.channel.set_permissions(staff, overwrite=overwrite, reason=f"/ticket assign by {ctx.author}")
+        await ctx.channel.set_permissions(member, overwrite=overwrite, reason=f"/ticket assign by {ctx.author}")
         await ctx.respond(
-            f"📌 {staff.mention}, this ticket was assigned to you by {ctx.author.mention}. Please take care of it.",
-            allowed_mentions=discord.AllowedMentions(users=[staff]),
+            f"📌 {member.mention}, this ticket was assigned to you by {ctx.author.mention}. Please take care of it.",
+            allowed_mentions=discord.AllowedMentions(users=[member]),
         )
 
     @ticket.command(name="remove", description="Hide this ticket from a user or role")

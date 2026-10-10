@@ -2,7 +2,7 @@
 Requirements:
 - Minecraft 1.20.1, Forge 47.x (47.4.10+), Java 17. Fabric/NeoForge and other Minecraft versions are not supported.
 - Required dependencies: GeckoLib 4.8.3+, TerraBlender 3.0.1.10+, Curios API 5.14.1+ (all for 1.20.1). A missing or outdated one is the most common startup crash.
-- The Trello board is outdated for v2.0+; the GitHub wiki is the reference.
+- The Trello board is outdated for v2.0+; the wiki at wiki.dragonminez.com is the reference.
 
 Common fixes:
 - "Priceless" or broken form values: close the game or server, back up and delete `config/dragonminez`, restart or run `/dmzreload`. This only resets configs, not worlds or progress.

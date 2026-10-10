@@ -1,10 +1,9 @@
 import argparse
 import asyncio
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,23 +15,14 @@ from bulmaai.config import load_settings
 from bulmaai.services.wiki_knowledge import (
     apply_wiki_sync,
     list_remote_wiki_files,
-    load_wiki_pages,
+    load_mediawiki_pages,
     plan_wiki_sync,
 )
 
 
-def _clone_wiki(git_url: str, destination: Path) -> Path:
-    subprocess.run(
-        ["git", "clone", "--depth", "1", git_url, str(destination)],
-        check=True,
-    )
-    return destination
-
-
 async def _run(
     *,
-    wiki_dir: Path | None,
-    wiki_git_url: str | None,
+    api_url: str | None,
     vector_store_id: str | None,
     base_url: str | None,
     dry_run: bool,
@@ -52,14 +42,12 @@ async def _run(
         )
 
     resolved_base_url = base_url or settings.wiki_base_url
-    resolved_git_url = wiki_git_url or settings.wiki_git_url
+    resolved_api_url = api_url or settings.wiki_api_url
 
-    with tempfile.TemporaryDirectory(prefix="dmz-wiki-") as tmp:
-        source_dir = wiki_dir or _clone_wiki(resolved_git_url, Path(tmp) / "wiki")
-        pages = load_wiki_pages(source_dir, base_url=resolved_base_url)
+    pages = load_mediawiki_pages(resolved_api_url, base_url=resolved_base_url)
 
     if not pages:
-        raise RuntimeError(f"No wiki pages found in {source_dir}; refusing to sync an empty set.")
+        raise RuntimeError(f"No wiki pages found at {resolved_api_url}; refusing to sync an empty set.")
 
     remote_files = await list_remote_wiki_files(vector_store_id=target_vector_store_id)
     plan = plan_wiki_sync(pages, remote_files)
@@ -86,18 +74,12 @@ async def _run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sync the DragonMineZ GitHub wiki into the OpenAI support vector store."
+        description="Sync the DragonMineZ wiki (wiki.dragonminez.com) into the OpenAI support vector store."
     )
     parser.add_argument(
-        "--wiki-dir",
-        type=Path,
+        "--api-url",
         default=None,
-        help="Path to an already-cloned wiki checkout. Omit to clone --wiki-git-url.",
-    )
-    parser.add_argument(
-        "--wiki-git-url",
-        default=None,
-        help="Wiki git URL to clone when --wiki-dir is not given. Defaults to WIKI_GIT_URL.",
+        help="MediaWiki api.php endpoint to read pages from. Defaults to WIKI_API_URL.",
     )
     parser.add_argument(
         "--vector-store-id",
@@ -119,14 +101,13 @@ def main() -> None:
     try:
         asyncio.run(
             _run(
-                wiki_dir=args.wiki_dir,
-                wiki_git_url=args.wiki_git_url,
+                api_url=args.api_url,
                 vector_store_id=args.vector_store_id,
                 base_url=args.base_url,
                 dry_run=args.dry_run,
             )
         )
-    except (RuntimeError, subprocess.CalledProcessError) as exc:
+    except (RuntimeError, requests.RequestException) as exc:
         raise SystemExit(str(exc)) from exc
 
 

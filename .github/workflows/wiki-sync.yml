@@ -1,7 +1,7 @@
 name: Wiki Knowledge Sync
 
 on:
-  # Fired by the gollum workflow in DragonMineZ/dragonminez (see docs/wiki-sync.md).
+  # Manual or external trigger (for example a hook on the wiki host); the payload is ignored.
   repository_dispatch:
     types: [wiki-updated]
   workflow_dispatch:
@@ -11,8 +11,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # Weekly fallback in case a dispatch is missed.
-    - cron: "0 6 * * 1"
+    # Main trigger: the self-hosted MediaWiki (wiki.dragonminez.com) sends no GitHub edit events.
+    - cron: "17 */6 * * *"
 
 permissions:
   contents: read

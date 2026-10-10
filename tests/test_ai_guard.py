@@ -14,7 +14,7 @@ SETTINGS = SimpleNamespace(
     moderation_banned_words=("slur*",),
     moderation_allowed_domains=("curseforge.com",),
     moderation_blocked_domains=("evil.example",),
-    wiki_base_url="https://wiki.dragonminez.com/",
+    wiki_base_url="https://wiki.dragonminez.com/wiki/Special:MyLanguage",
 )
 
 
@@ -71,6 +71,10 @@ class ScreenReplyTests(unittest.TestCase):
         text, flags = screen_reply("grab Java at https://adoptium.net", SETTINGS)
         self.assertEqual((text, flags), ("grab Java at https://adoptium.net", {"unknown_link"}))
         self.assertIn("invite", screen_reply("join discord.gg/abc", SETTINGS)[1])
+
+    def test_wiki_source_links_keep_their_label(self) -> None:
+        link = "[Beginner's Guide](<https://wiki.dragonminez.com/wiki/Special:MyLanguage/Beginner%27s_Guide>)"
+        self.assertEqual(screen_reply(f"See {link}.", SETTINGS), (f"See {link}.", frozenset()))
 
 
 class AskPublicTests(unittest.TestCase):

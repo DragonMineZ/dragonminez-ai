@@ -41,6 +41,10 @@ REPEAT_NOTE = (
     "Your draft repeated one of your earlier replies in this transcript. The requester is still stuck: "
     "do not restate it. Give a genuinely different next step, ask one targeted question, or hand off to staff."
 )
+CLARIFY_LOOP_NOTE = (
+    "You already asked the requester a clarifying question and they answered it. Do not ask another one: "
+    "answer with what you have now, or hand off to staff."
+)
 
 
 class ConversationMessage(TypedDict, total=False):
@@ -546,8 +550,14 @@ def _tool_names_for_trace(tools: list[dict[str, Any]], tool_results: list[ToolCa
     return list(dict.fromkeys(names))
 
 
-def _needs_escalation(result: AgentResult, *, repeat: bool, threshold: float) -> bool:
-    if repeat or result.get("reply") == "(no reply)":
+def _is_clarify_loop(result: AgentResult, previous_replies: list[str]) -> bool:
+    """A second question in a row: paraphrased re-asks slip past the repeat check."""
+    # ponytail: "?" anywhere in the last reply counts as a question; a false hit only costs an escalation.
+    return result.get("kind") == "clarify" and bool(previous_replies) and "?" in previous_replies[-1]
+
+
+def _needs_escalation(result: AgentResult, *, repeat: bool, threshold: float, clarify_loop: bool = False) -> bool:
+    if repeat or clarify_loop or result.get("reply") == "(no reply)":
         return True
     kind = result.get("kind")
     confidence = result.get("confidence")
@@ -623,10 +633,11 @@ async def run_support_agent(
 
     previous_replies = _assistant_replies(messages)
     repeat = _is_repeat(result["reply"], previous_replies)
+    clarify_loop = _is_clarify_loop(result, previous_replies)
     threshold = float(getattr(runtime_settings, "ai_support_escalation_confidence", 0.7))
     route = ai_budget.escalation_route(runtime_settings)
     if (
-        not _needs_escalation(result, repeat=repeat, threshold=threshold)
+        not _needs_escalation(result, repeat=repeat, threshold=threshold, clarify_loop=clarify_loop)
         or route is None
         or route == (model, fast_effort, False)
     ):
@@ -640,7 +651,7 @@ async def run_support_agent(
             effort=effort,
             use_tools=use_tools,
             workflow="support_escalation",
-            notes=[REPEAT_NOTE] if repeat else [],
+            notes=[*([REPEAT_NOTE] if repeat else []), *([CLARIFY_LOOP_NOTE] if clarify_loop else [])],
         )
     except asyncio.CancelledError:
         raise
@@ -654,7 +665,7 @@ async def run_support_agent(
         return result
     second["escalated"] = True
     second["paused"] = False
-    if _is_repeat(second["reply"], previous_replies):
+    if _is_repeat(second["reply"], previous_replies) or _is_clarify_loop(second, previous_replies):
         second["kind"] = "handoff"
     await _record_traces(second_trace, drafts=[trace])
     return second

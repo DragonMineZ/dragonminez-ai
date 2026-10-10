@@ -16,7 +16,7 @@ Patreon and beta access (patreon.com/DragonMineZ):
 - Beta whitelist: `/patreon beta-access username:<Minecraft username>` in the DragonMineZ server (needs the patron role). `/patreon link` only links the Patreon account to the bot.
 - Every Patreon command starts with `/patreon`: `beta-access`, `link`, `gift`, `edit-gift`. Older names you may see in past tickets (`/beta`, `/whitelist`, `/patreon whitelist`...) no longer exist; never mention them.
 - Gifts: `/patreon gift` gives a slot to another member; `/patreon edit-gift` moves it or changes the username.
-- Dev jars (patron and tester builds) are posted in the server with a "Get download link" button; each link is one-time.
+- Dev jars (patron and tester builds) are posted in <#1223439164121419838> with a "Get download link" button; each link is one-time. Point people straight to that channel.
 - Never promise approval times, refunds, or perks not listed here.
 
 Bot features:

@@ -287,6 +287,25 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             _, create_response, _ = await self._run([_response(text)])
             create_response.assert_awaited_once()
 
+    async def test_second_clarify_in_a_row_escalates_and_hands_off_if_still_asking(self) -> None:
+        messages = [
+            {"role": "user", "content": "where are dev jars", "speaker_id": "123", "speaker_kind": "requester"},
+            {"role": "assistant", "content": "Do you mean the patron channel?"},
+            {"role": "user", "content": "YES", "speaker_id": "123", "speaker_kind": "requester"},
+        ]
+        result, create_response, _ = await self._run(
+            [
+                _response("Do you mean the dev builds channel?\n[kind: clarify]\n[confidence: 0.9]"),
+                _response("Which channel exactly?\n[kind: clarify]\n[confidence: 0.9]", response_id="r2"),
+            ],
+            messages=messages,
+        )
+
+        self.assertEqual(create_response.await_count, 2)
+        rendered = "\n".join(item["content"] for item in create_response.await_args_list[1].kwargs["input"])
+        self.assertIn("Do not ask another one", rendered)
+        self.assertEqual((result["kind"], result["escalated"]), ("handoff", True))
+
     async def test_escalation_falls_back_to_free_mini_high_effort_when_budgets_are_spent(self) -> None:
         result, create_response, _ = await self._run(
             [

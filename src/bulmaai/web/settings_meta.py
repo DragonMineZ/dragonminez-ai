@@ -182,8 +182,8 @@ META: dict[str, tuple[str, str, str]] = {
     "openai_faq_vector_store_id": ("advanced", "FAQ vector store", "Vector store scripts/suggest_support_faq.py uploads to."),
     "openai_faq_generated_path": ("advanced", "FAQ output file", "Where scripts/suggest_support_faq.py writes the generated FAQ."),
     "openai_wiki_vector_store_id": ("advanced", "Wiki vector store", "Vector store scripts/sync_wiki_knowledge.py uploads the wiki to; empty = the first support vector store."),
-    "wiki_git_url": ("advanced", "Wiki git URL", "Git URL scripts/sync_wiki_knowledge.py clones the wiki from."),
-    "wiki_base_url": ("advanced", "Wiki URL", "Public wiki address; used for source links in AI replies, and links to it are trusted."),
+    "wiki_api_url": ("advanced", "Wiki API URL", "MediaWiki api.php address scripts/sync_wiki_knowledge.py reads the wiki pages from."),
+    "wiki_base_url": ("advanced", "Wiki URL", "Base for wiki source links in AI replies; the page title is appended (Special:MyLanguage opens it in the reader's language). Links to its host are trusted."),
     # Advanced: GitHub
     "GH_APP_ID": ("advanced", "GitHub App ID", "GitHub App the bot authenticates as."),
     "GH_INSTALLATION_ID": ("advanced", "GitHub App installation", "Installation id of the GitHub App on the organization."),

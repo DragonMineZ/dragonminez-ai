@@ -147,6 +147,37 @@ class ConfigSettingsTests(unittest.TestCase):
             "https://downloads.dragonminez.com",
         )
 
+    def test_wiki_settings_default_to_mediawiki_and_are_environment_configurable(self) -> None:
+        base_env = {
+            "DISCORD_TOKEN": "dummy-discord-token",
+            "OPENAI_KEY": "dummy-openai-key",
+            "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
+        }
+        with patch.dict(os.environ, base_env, clear=True):
+            defaults = load_settings(include_overrides=False)
+        with patch.dict(
+            os.environ,
+            {**base_env, "WIKI_API_URL": "http://127.0.0.1:8080/api.php", "WIKI_BASE_URL": "http://127.0.0.1:8080/wiki"},
+            clear=True,
+        ):
+            settings = load_settings(include_overrides=False)
+
+        self.assertEqual(defaults.wiki_api_url, "https://wiki.dragonminez.com/api.php")
+        self.assertEqual(defaults.wiki_base_url, "https://wiki.dragonminez.com/wiki/Special:MyLanguage")
+        self.assertEqual(settings.wiki_api_url, "http://127.0.0.1:8080/api.php")
+        self.assertEqual(settings.wiki_base_url, "http://127.0.0.1:8080/wiki")
+
+    def test_stored_override_for_removed_wiki_git_url_is_ignored(self) -> None:
+        overrides = {
+            "wiki_git_url": "https://github.com/DragonMineZ/dragonminez.wiki.git",
+            "wiki_api_url": "https://wiki.example.test/api.php",
+        }
+        with patch("bulmaai.config.load_settings_overrides", return_value=overrides):
+            settings = load_settings()
+
+        self.assertFalse(hasattr(settings, "wiki_git_url"))
+        self.assertEqual(settings.wiki_api_url, "https://wiki.example.test/api.php")
+
     def test_patreon_oauth_settings_are_environment_configurable(self) -> None:
         with patch.dict(
             os.environ,

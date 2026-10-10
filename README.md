@@ -4,7 +4,7 @@ BulmaAI is the official Discord bot for the [DragonMineZ](https://github.com/Dra
 
 ## What it does
 
-- **AI Support** — Ask questions in a support thread and BulmaAI answers using our [wiki](https://github.com/DragonMineZ/dragonminez/wiki) and FAQ knowledge, including reading attached logs and screenshots.
+- **AI Support** — Ask questions in a support thread and BulmaAI answers using our [wiki](https://wiki.dragonminez.com) and FAQ knowledge, including reading attached logs and screenshots.
 - **Bug Reports** — Report a bug and BulmaAI helps triage it, linking it to a tracked GitHub issue when needed.
 - **Crash/Log Help** — Post or upload a `latest.log`, `debug.log`, or `crash-report.txt` and BulmaAI automatically summarizes the errors for you.
 - **Patreon Beta Access** — Link your Patreon account and request/gift beta whitelist access for the mod.

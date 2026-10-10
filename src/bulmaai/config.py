@@ -114,8 +114,8 @@ DEFAULT_OPENAI_FAQ_VECTOR_STORE_ID: str | None = None
 DEFAULT_OPENAI_FAQ_GENERATED_PATH = "data/knowledge/generated/dragonminez-faq.md"
 # Wiki knowledge sync (scripts/sync_wiki_knowledge.py).
 DEFAULT_OPENAI_WIKI_VECTOR_STORE_ID: str | None = "vs_69fd2b417b148191ad2aa252afd0e034"
-DEFAULT_WIKI_GIT_URL = "https://github.com/DragonMineZ/dragonminez.wiki.git"
-DEFAULT_WIKI_BASE_URL = "https://github.com/DragonMineZ/dragonminez/wiki"
+DEFAULT_WIKI_API_URL = "https://wiki.dragonminez.com/api.php"
+DEFAULT_WIKI_BASE_URL = "https://wiki.dragonminez.com/wiki/Special:MyLanguage"
 # Pin helper models to incentive-eligible IDs where possible.
 DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
 DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini-2025-04-14"
@@ -326,7 +326,7 @@ class Settings:
     openai_faq_vector_store_id: str | None
     openai_faq_generated_path: str
     openai_wiki_vector_store_id: str | None
-    wiki_git_url: str
+    wiki_api_url: str
     wiki_base_url: str
     openai_vision_model: str
     openai_translation_model: str
@@ -654,7 +654,7 @@ def _build_settings_from_env() -> Settings:
             "OPENAI_WIKI_VECTOR_STORE_ID",
             DEFAULT_OPENAI_WIKI_VECTOR_STORE_ID,
         ),
-        wiki_git_url=_get_env("WIKI_GIT_URL", DEFAULT_WIKI_GIT_URL) or DEFAULT_WIKI_GIT_URL,
+        wiki_api_url=_get_env("WIKI_API_URL", DEFAULT_WIKI_API_URL) or DEFAULT_WIKI_API_URL,
         wiki_base_url=(
             _get_env("WIKI_BASE_URL", DEFAULT_WIKI_BASE_URL) or DEFAULT_WIKI_BASE_URL
         ),

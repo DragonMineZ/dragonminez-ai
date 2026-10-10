@@ -206,6 +206,16 @@ def dm_created(number: int, category: TicketCategory, channel: discord.TextChann
     )
 
 
+def dm_assigned(number: int, channel: discord.TextChannel, by: discord.abc.User) -> discord.ui.DesignerView:
+    return _dm_card(
+        f"📌 Ticket #{number:04d}",
+        f"{by.display_name} assigned this ticket to you. Please take care of it.",
+        f"{by.display_name} te asignó este ticket. Por favor, encárgate de él.",
+        channel.guild,
+        _link_row(tri("Open ticket", "Abrir ticket"), "🎫", channel.jump_url),
+    )
+
+
 def dm_transcript(number: int, guild: discord.Guild, url: str, expires_at: datetime | None) -> discord.ui.DesignerView:
     if expires_at:
         when = f"<t:{int(expires_at.timestamp())}:R>"

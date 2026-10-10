@@ -54,6 +54,7 @@ from bulmaai.ui.ticket_views import (
     closed_row,
     closed_view,
     control_row,
+    dm_assigned,
     dm_created,
     dm_transcript,
     msg_created,
@@ -736,7 +737,8 @@ class TicketsCog(ReloadableCog):
     @ticket.command(name="assign", description="Assign this ticket to a member")
     @discord.option("member", discord.Member, description="Member who will handle it")
     async def assign(self, ctx: discord.ApplicationContext, member: discord.Member):
-        if await self._command_gate(ctx, Rank.HELPER) is None:
+        ticket = await self._command_gate(ctx, Rank.HELPER)
+        if ticket is None:
             return
         if member.bot:
             return await ctx.respond("You can't assign a ticket to a bot.", ephemeral=True)
@@ -750,6 +752,10 @@ class TicketsCog(ReloadableCog):
             f"📌 {member.mention}, this ticket was assigned to you by {ctx.author.mention}. Please take care of it.",
             allowed_mentions=discord.AllowedMentions(users=[member]),
         )
+        try:
+            await member.send(view=dm_assigned(ticket.ticket_id, ctx.channel, ctx.author))
+        except discord.HTTPException:
+            pass  # DMs closed; the ping in the ticket still reaches them
 
     @ticket.command(name="remove", description="Hide this ticket from a user or role")
     @discord.option("target", discord.abc.Mentionable, description="User or role to remove")

@@ -109,7 +109,7 @@ class ConsoleCog(ReloadableCog):
     async def _ban(self, guild: discord.Guild, args: list[str]) -> str:
         if not args:
             return "Usage: ban <user> [reason] [--delete-days N]"
-        delete_days = 0
+        delete_days = 7
         if "--delete-days" in args:
             index = args.index("--delete-days")
             try:

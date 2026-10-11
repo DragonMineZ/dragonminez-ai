@@ -360,7 +360,7 @@
     const name = profile.user.display_name || profile.user.name;
     const reason = h("textarea", { rows: "3", maxlength: "400", placeholder: t(action.optionalReason ? "Optional" : "Required") });
     const minutes = action.minutes ? h("input", { type: "number", min: "1", max: "40320", value: "60" }) : null;
-    const hours = action.hours ? h("input", { type: "number", min: "0", max: "168", value: action.id === "softban" ? "24" : "0" }) : null;
+    const hours = action.hours ? h("input", { type: "number", min: "0", max: "168", value: action.id === "softban" ? "24" : "168" }) : null;
     const banLength = action.duration ? h("input", { type: "text", placeholder: "7d" }) : null;
     const ok = await dialog(t("{action}: {name}", { action: t(action.label), name }), [
       action.help ? h("p", { class: "muted" }, t(action.help)) : null,

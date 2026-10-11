@@ -369,7 +369,7 @@ async def _moderate(request: web.Request, actor: Actor, action: str) -> web.Resp
             raise api_error(400, "minutes must be at least 1.")
         duration_seconds = min(minutes, MAX_TIMEOUT_MINUTES) * 60
     elif action in ("ban", "softban"):
-        hours = _whole_number(body, "delete_message_hours", 0 if action == "ban" else 24)
+        hours = _whole_number(body, "delete_message_hours", 168 if action == "ban" else 24)
         if not 0 <= hours <= MAX_BAN_DELETE_HOURS:
             raise api_error(400, f"delete_message_hours must be 0-{MAX_BAN_DELETE_HOURS}.")
         details["delete_message_hours"] = hours

@@ -443,14 +443,14 @@ class ModCommandsCog(ReloadableCog):
     @discord.option("user", discord.User, description="User to ban (IDs of non-members work)")
     @discord.option("reason", str, description="Shown to them in the DM", max_length=MAX_REASON_LENGTH)
     @discord.option("duration", str, description="e.g. 12h, 7d, 2w; empty = permanent", required=False)
-    @discord.option("delete_messages", str, description="Delete their recent messages", choices=list(BAN_DELETE_SECONDS))
+    @discord.option("delete_messages", str, description="Delete their recent messages (default 7d)", choices=list(BAN_DELETE_SECONDS), required=False)
     async def ban(
         self,
         ctx: discord.ApplicationContext,
         user: discord.User,
         reason: str,
         duration: str = None,
-        delete_messages: str = "none",
+        delete_messages: str = "7d",
     ):
         if not await self._allowed(ctx, "mod.ban"):
             return

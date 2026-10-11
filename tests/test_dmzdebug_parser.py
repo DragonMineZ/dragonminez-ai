@@ -167,6 +167,23 @@ JSON_DUMP = json.dumps(
             "currentFormGroup": "ssj",
         },
         "scope": "ALL",
+        "party": {
+            "client": {
+                "inParty": True,
+                "partyId": "p-1",
+                "leader": {"uuid": "1e5f-uuid", "name": "Steve", "leader": False},
+                "members": [{"uuid": "1e5f-uuid", "name": "Steve", "leader": False}],
+            },
+            "server": {"inParty": False, "members": []},
+            "pendingInvite": {"name": "Alex", "uuid": "a1-uuid", "expired": True},
+        },
+        "quests": {
+            "tracked": "saiyan_saga:3",
+            "lastCompleted": {"questId": "saiyan_saga:2", "status": "COMPLETED"},
+            "completed": ["saiyan_saga:1", "saiyan_saga:2"],
+            "inProgress": ["saiyan_saga:3"],
+            "failed": [],
+        },
         "sections": {
             "Stats": {"STR": 500, "SKP": 200},
             "Character": {"Race": "saiyan"},
@@ -306,6 +323,23 @@ class JsonParserTests(unittest.TestCase):
     def test_derived_and_sections(self):
         self.assertEqual(self.report.derived["battlePower"], 1234567.0)
         self.assertEqual(self.report.sections["Stats"]["STR"], 500)
+
+    def test_party_and_quests_map_to_text_shapes(self):
+        party = self.report.party
+        self.assertTrue(party["client"]["in_party"])
+        self.assertEqual(party["client"]["members"][0]["name"], "Steve")
+        self.assertFalse(party["server"]["in_party"])
+        self.assertTrue(party["pending_invite"]["expired"])
+        quests = self.report.quests
+        self.assertEqual(quests["tracked"], "saiyan_saga:3")
+        self.assertEqual(quests["last_completed"], {"quest_id": "saiyan_saga:2", "status": "COMPLETED"})
+        self.assertEqual(quests["in_progress"], ["saiyan_saga:3"])
+        self.assertEqual(len(quests["completed"]), 2)
+
+    def test_malformed_party_and_quests_are_harmless(self):
+        report = parse_debug(json.dumps({"schemaVersion": 1, "party": {"client": "x", "server": None}, "quests": {"completed": "x"}}))
+        self.assertEqual(report.party["client"]["members"], [])
+        self.assertEqual(report.quests["completed"], [])
 
     def test_newer_schema_warns(self):
         newer = JSON_DUMP.replace('"schemaVersion": 1', '"schemaVersion": 2')

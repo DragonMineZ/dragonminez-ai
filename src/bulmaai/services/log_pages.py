@@ -39,6 +39,7 @@ _RE_LEVEL = re.compile(r"^\[[^\]\n]*\]\s*\[[^\]\n]*?/(FATAL|ERROR|WARN|INFO|DEBU
 _RE_TRACE = re.compile(r"^\s+at |^\s*Caused by:|^\s*\.\.\. \d+ more|^\s*Suppressed:")
 _RE_DEBUG_HEADER = re.compile(r"^#{1,2} ")
 _RE_DEBUG_PAIR = re.compile(r"^(\s*(?:- )?)([\w .()\[\]:-]+?):( .*)?$")
+_RE_JSON_PAIR = re.compile(r'^( *)"([^"\n]*)": (.*)$')
 _LEVELS = ("ERROR", "WARN", "INFO", "DEBUG")
 
 
@@ -80,6 +81,11 @@ def _debug_rows(lines: list[str]) -> list[str]:
     for number, line in enumerate(lines, 1):
         if _RE_DEBUG_HEADER.match(line):
             body = f'<b class="h">{html.escape(line)}</b>'
+        elif match := _RE_JSON_PAIR.match(line):
+            value = match.group(3)
+            flag = " on" if value.rstrip(",") == "true" else (" off" if value.rstrip(",") == "false" else "")
+            body = (f'{match.group(1)}"<i class="k">{html.escape(match.group(2))}</i>": '
+                    f'<i class="v{flag}">{html.escape(value)}</i>')
         elif (match := _RE_DEBUG_PAIR.match(line)) and match.group(3) is not None:
             value = match.group(3)[1:]
             flag = " on" if value == "1b" else (" off" if value == "0b" else "")
@@ -89,6 +95,24 @@ def _debug_rows(lines: list[str]) -> list[str]:
             body = html.escape(line)
         rows.append(f'<div class="r l-INFO" id="L{number}"><a href="#L{number}">{number}</a><span>{body}</span></div>')
     return rows
+
+
+def _json_marks(lines: list[str]) -> list[tuple[int, str]]:
+    """Top-level blocks of a pretty-printed JSON dump, with "sections" swapped for the sections inside it."""
+    marks: list[tuple[int, str]] = []
+    in_sections = False
+    for number, line in enumerate(lines, 1):
+        match = _RE_JSON_PAIR.match(line)
+        if not match or match.group(3) not in ("{", "["):
+            continue
+        depth = len(match.group(1))
+        if depth == 2:
+            in_sections = match.group(2) == "sections"
+            if not in_sections:
+                marks.append((number, match.group(2)))
+        elif depth == 4 and in_sections:
+            marks.append((number, match.group(2)))
+    return marks
 
 
 def render(
@@ -105,7 +129,10 @@ def render(
     lines = text.splitlines()
     if kind == "dmzdebug":
         rows = _debug_rows(lines)
-        marks = [(i, line.strip("# :")) for i, line in enumerate(lines, 1) if line.startswith("# ")]
+        if text.lstrip().startswith("{"):
+            marks = _json_marks(lines)
+        else:
+            marks = [(i, line.strip("# :")) for i, line in enumerate(lines, 1) if line.startswith("# ")]
         mark_class = "sec"
     else:
         rows = _log_rows(lines)

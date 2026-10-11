@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import time
@@ -50,6 +51,16 @@ class RedactAndRenderTests(unittest.TestCase):
         self.assertIn('<a class="sec" href="#L6"><code>6</code> Status</a>', page)
         self.assertIn('<i class="k">IsAlive</i>: <i class="v on">1b</i>', page)
         self.assertNotIn('type="checkbox"', page)  # no level filters on a dump
+
+    def test_json_dmzdebug_page_lists_blocks_and_sections(self):
+        dump = json.dumps({"schemaVersion": 1, "player": {"name": "Goku", "online": True},
+                           "sections": {"Stats": {"STR": 5}, "Status": {"IsAlive": 1}}}, indent=2)
+        page = log_pages.render(dump, title="Goku.json", kind="dmzdebug")
+        self.assertIn('<code>3</code> player</a>', page)
+        self.assertIn('<code>8</code> Stats</a>', page)
+        self.assertIn('<code>11</code> Status</a>', page)
+        self.assertNotIn("</code> sections</a>", page)
+        self.assertIn('<i class="k">online</i>": <i class="v on">true</i>', page)
 
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):

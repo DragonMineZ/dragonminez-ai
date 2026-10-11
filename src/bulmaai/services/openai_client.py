@@ -432,11 +432,11 @@ async def _search_knowledge(query: str, settings: Any) -> list[dict[str, str]]:
     ]
 
 
-async def _prefetch(bot: Any, user_id: int, text: str) -> list[str]:
+async def _prefetch(bot: Any, user_id: int, text: str, account_key: Any = None) -> list[str]:
     if bot is None:
         return []
     try:
-        return await ai_tools.build_prefetch_lines(bot=bot, user_id=user_id, text=text)
+        return await ai_tools.build_prefetch_lines(bot=bot, user_id=user_id, text=text, account_key=account_key)
     except Exception:
         log.exception("Support prefetch failed", extra={"event": "support_prefetch_failed"})
         return []
@@ -609,7 +609,7 @@ async def run_support_agent(
     query = _knowledge_query(messages, user_id)
     knowledge, prefetch_lines = await asyncio.gather(
         _search_knowledge(query, runtime_settings),
-        _prefetch(bot, user_id, query),
+        _prefetch(bot, user_id, query, (channel_id, user_id) if ticket_conversation else None),
     )
     run = functools.partial(
         _run_once,

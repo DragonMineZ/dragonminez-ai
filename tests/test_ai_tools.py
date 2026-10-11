@@ -109,6 +109,18 @@ class PrefetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account, ['releases: {"v": 1}', 'requester_account: {"linked": true}'])
         self.assertFalse(releases.await_args_list[0].kwargs["include_patch_notes"])
 
+    async def test_ticket_account_is_fetched_once_and_reused(self) -> None:
+        ai_tools._account_cache.clear()
+        with (
+            patch.object(ai_tools, "get_latest_releases", AsyncMock(return_value={})),
+            patch.object(ai_tools, "get_patreon_status", AsyncMock(return_value={"linked": True})) as status,
+        ):
+            first = await ai_tools.build_prefetch_lines(bot=object(), user_id=1, text="hi", account_key=(9, 1))
+            second = await ai_tools.build_prefetch_lines(bot=object(), user_id=1, text="thanks", account_key=(9, 1))
+        status.assert_awaited_once()
+        self.assertIn('requester_account: {"linked": true}', first)
+        self.assertEqual(first, second)
+
 
 if __name__ == "__main__":
     unittest.main()

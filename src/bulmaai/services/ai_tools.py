@@ -232,8 +232,24 @@ async def _labeled(label: str, coro: Any) -> str | None:
         return None
 
 
-async def build_prefetch_lines(*, bot: Any, user_id: int, text: str) -> list[str]:
-    """Data for the tool-free first pass. Account data is only fetched when the conversation is about it."""
+ACCOUNT_CACHE_MAX = 500
+_account_cache: dict[Any, str] = {}
+
+
+async def _cached_account_line(key: Any, bot: Any, user_id: int) -> str | None:
+    if key not in _account_cache:
+        line = await _labeled("requester_account", get_patreon_status(str(user_id), _bot_context=bot))
+        if line is None:
+            return None
+        if len(_account_cache) >= ACCOUNT_CACHE_MAX:
+            _account_cache.pop(next(iter(_account_cache)))  # ponytail: oldest-first, no TTL; the escalation tools are live
+        _account_cache[key] = line
+    return _account_cache[key]
+
+
+async def build_prefetch_lines(*, bot: Any, user_id: int, text: str, account_key: Any = None) -> list[str]:
+    """Data for the tool-free first pass. Account data is fetched when the conversation is about it, or once
+    per ticket (account_key) and reused for the rest of that conversation."""
     # ponytail: keyword routing; the escalation pass has real tools for anything this misses.
     jobs = [
         _labeled(
@@ -241,7 +257,9 @@ async def build_prefetch_lines(*, bot: Any, user_id: int, text: str) -> list[str
             get_latest_releases(include_patch_notes=bool(PATCH_NOTES_TOPIC_RE.search(text)), _bot_context=bot),
         )
     ]
-    if ACCOUNT_TOPIC_RE.search(text):
+    if account_key is not None:
+        jobs.append(_cached_account_line(account_key, bot, user_id))
+    elif ACCOUNT_TOPIC_RE.search(text):
         jobs.append(_labeled("requester_account", get_patreon_status(str(user_id), _bot_context=bot)))
     if BUG_TOPIC_RE.search(text):
         jobs.append(_labeled("requester_bug_reports", get_user_bug_reports(str(user_id), _bot_context=bot)))

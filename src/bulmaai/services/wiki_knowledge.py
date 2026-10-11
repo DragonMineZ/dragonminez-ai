@@ -33,6 +33,7 @@ _TRANSLATION_PAGE_PROP = "translate-is-translation"
 _WIKI_PAGE_SUFFIXES = {".md", ".markdown"}
 
 _TVAR_RE = re.compile(r"<tvar\s+name\s*=[^>]*>(.*?)</tvar>", re.IGNORECASE | re.DOTALL)
+_LEGACY_TVAR_RE = re.compile(r"<tvar\|[^>]*>(.*?)</>", re.IGNORECASE | re.DOTALL)
 _TRANSLATE_TAG_RE = re.compile(r"</?translate(?:\s[^>]*)?>", re.IGNORECASE)
 _TRANSLATION_UNIT_MARKER_RE = re.compile(r"<!--T:\d+-->[ \t]*")
 _LANGUAGES_TAG_RE = re.compile(r"<languages\s*/>", re.IGNORECASE)
@@ -83,14 +84,15 @@ def wiki_page_url(slug: str, *, base_url: str = DEFAULT_WIKI_BASE_URL) -> str:
 
 
 def wiki_knowledge_filename(slug: str) -> str:
-    return f"{WIKI_KNOWLEDGE_FILENAME_PREFIX}{slug}.md"
+    # Subpage titles contain "/", which upload filenames may lose (basename), so encode it.
+    return f"{WIKI_KNOWLEDGE_FILENAME_PREFIX}{slug.replace('/', '%2F')}.md"
 
 
 def wiki_slug_from_filename(filename: str) -> str | None:
     name = (filename or "").strip()
     if not name.startswith(WIKI_KNOWLEDGE_FILENAME_PREFIX):
         return None
-    slug = name[len(WIKI_KNOWLEDGE_FILENAME_PREFIX):]
+    slug = name[len(WIKI_KNOWLEDGE_FILENAME_PREFIX):].replace("%2F", "/")
     for suffix in _WIKI_PAGE_SUFFIXES:
         if slug.lower().endswith(suffix):
             slug = slug[: -len(suffix)]
@@ -141,6 +143,7 @@ def clean_wikitext(text: str) -> str:
     """Strip Translate markup and behaviour switches; templates and tables stay as-is."""
     cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = _TVAR_RE.sub(r"\1", cleaned)
+    cleaned = _LEGACY_TVAR_RE.sub(r"\1", cleaned)
     cleaned = _TRANSLATE_TAG_RE.sub("", cleaned)
     cleaned = _TRANSLATION_UNIT_MARKER_RE.sub("", cleaned)
     cleaned = _LANGUAGES_TAG_RE.sub("", cleaned)

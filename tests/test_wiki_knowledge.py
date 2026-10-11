@@ -110,6 +110,15 @@ class WikiKnowledgeHelperTests(unittest.TestCase):
         self.assertEqual(filename, "wiki--Custom_Races.md")
         self.assertEqual(wiki_slug_from_filename(filename), "Custom_Races")
 
+    def test_subpage_filename_has_no_slash_and_roundtrips(self) -> None:
+        filename = wiki_knowledge_filename("Forms/Super_Saiyan")
+        self.assertEqual(filename, "wiki--Forms%2FSuper_Saiyan.md")
+        self.assertEqual(wiki_slug_from_filename(filename), "Forms/Super_Saiyan")
+        self.assertEqual(
+            wiki_url_for_citation_filename(filename),
+            ("Forms/Super Saiyan", f"{WIKI_BASE_URL}/Forms/Super_Saiyan"),
+        )
+
     def test_slug_from_unmanaged_filename_is_none(self) -> None:
         self.assertIsNone(wiki_slug_from_filename("patreon-discord-role-link.md"))
         self.assertIsNone(wiki_slug_from_filename("Dragonmine_Z_Trello_ExportedScript.pdf"))
@@ -171,6 +180,9 @@ class CleanWikitextTests(unittest.TestCase):
             "! A !! B\n"
             "|}",
         )
+
+    def test_strips_legacy_tvar_syntax(self) -> None:
+        self.assertEqual(clean_wikitext("<translate>Press <tvar|key>G</> to charge.</translate>"), "Press G to charge.")
 
     def test_markup_only_page_cleans_to_empty(self) -> None:
         self.assertEqual(clean_wikitext("<languages />\n__NOTOC__\n<translate>\n</translate>\n"), "")

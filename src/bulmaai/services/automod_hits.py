@@ -19,7 +19,6 @@ MIN_FALSE_POSITIVES = 3
 MIN_FALSE_POSITIVE_RATE = 0.2
 # filter reason -> (setting, how to loosen it)
 _KNOBS: dict[str, tuple[str, object]] = {
-    "excessive_caps": ("moderation_caps_percent", lambda value: min(value + 10, 95)),
     "excessive_emoji": ("moderation_emoji_limit", lambda value: value + 5),
     "wall_of_text": ("moderation_newline_limit", lambda value: value + 10),
     "mass_mention": ("moderation_mass_mention_limit", lambda value: value + 2),

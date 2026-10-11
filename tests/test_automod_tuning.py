@@ -67,34 +67,34 @@ class DHashTests(unittest.TestCase):
 
 
 class FreshSuggestionTests(unittest.IsolatedAsyncioTestCase):
-    settings = SimpleNamespace(moderation_caps_percent=80)
+    settings = SimpleNamespace(moderation_emoji_limit=80)
 
     async def _run(self, changed_at, recent):
-        pool = SimpleNamespace(fetch=AsyncMock(return_value=[{"target": "moderation_caps_percent", "changed": changed_at}]))
+        pool = SimpleNamespace(fetch=AsyncMock(return_value=[{"target": "moderation_emoji_limit", "changed": changed_at}]))
         with patch.object(automod_hits, "get_pool", AsyncMock(return_value=pool)),                 patch.object(automod_hits, "filter_stats", AsyncMock(return_value=recent)):
-            return await automod_hits.fresh_suggestions(1, [FilterStats("excessive_caps", 8, 0, 3)], NOW, self.settings)
+            return await automod_hits.fresh_suggestions(1, [FilterStats("excessive_emoji", 8, 0, 3)], NOW, self.settings)
 
     async def test_knob_changed_in_window_is_judged_on_hits_since_the_change(self):
         later = NOW.replace(day=5)
-        self.assertEqual(await self._run(later, [FilterStats("excessive_caps", 2, 0, 0)]), [])
-        (again,) = await self._run(later, [FilterStats("excessive_caps", 4, 0, 3)])
-        self.assertEqual((again.current, again.suggested), (80, 90))
+        self.assertEqual(await self._run(later, [FilterStats("excessive_emoji", 2, 0, 0)]), [])
+        (again,) = await self._run(later, [FilterStats("excessive_emoji", 4, 0, 3)])
+        self.assertEqual((again.current, again.suggested), (80, 85))
 
     async def test_change_before_the_window_keeps_the_suggestion(self):
         (suggestion,) = await self._run(NOW.replace(year=2025), [])
-        self.assertEqual(suggestion.suggested, 90)
+        self.assertEqual(suggestion.suggested, 85)
 
 class SuggestTests(unittest.TestCase):
-    settings = SimpleNamespace(moderation_caps_percent=70, moderation_zalgo_enabled=True, moderation_caps_min_length=20)
+    settings = SimpleNamespace(moderation_emoji_limit=70, moderation_zalgo_enabled=True)
 
     def test_noisy_filter_gets_a_loosening_suggestion(self):
-        stats = [FilterStats("excessive_caps", hits=10, confirmed=1, false_positives=4)]
+        stats = [FilterStats("excessive_emoji", hits=10, confirmed=1, false_positives=4)]
         (suggestion,) = automod_hits.suggest(stats, self.settings)
-        self.assertEqual((suggestion.setting, suggestion.current, suggestion.suggested), ("moderation_caps_percent", 70, 80))
+        self.assertEqual((suggestion.setting, suggestion.current, suggestion.suggested), ("moderation_emoji_limit", 70, 75))
 
     def test_quiet_or_rarely_wrong_filters_are_left_alone(self):
         stats = [
-            FilterStats("excessive_caps", hits=100, confirmed=0, false_positives=5),  # 5% FP rate
+            FilterStats("excessive_emoji", hits=100, confirmed=0, false_positives=5),  # 5% FP rate
             FilterStats("zalgo", hits=2, confirmed=0, false_positives=2),  # too few samples
         ]
         self.assertEqual(automod_hits.suggest(stats, self.settings), [])

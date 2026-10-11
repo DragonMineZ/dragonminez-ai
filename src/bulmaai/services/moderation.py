@@ -123,8 +123,6 @@ class ModerationConfig:
     duplicate_window_seconds: int = 30
     fast_message_count: int = 0
     fast_message_window_seconds: int = 8
-    caps_percent: int = 70
-    caps_min_length: int = 20
     emoji_limit: int = 0
     newline_limit: int = 0
     zalgo_enabled: bool = False
@@ -138,7 +136,6 @@ FILTER_OFF: dict[str, dict[str, Any]] = {
     "banned_word": {"banned_words": ()},
     "mass_mention": {"mass_mention_limit": 0},
     "everyone_ping": {"block_everyone_ping": False},
-    "excessive_caps": {"caps_percent": 0},
     "excessive_emoji": {"emoji_limit": 0},
     "wall_of_text": {"newline_limit": 0},
     "zalgo": {"zalgo_enabled": False},
@@ -533,17 +530,6 @@ def _check_content_rules(signal: MessageSignal, config: ModerationConfig) -> Mod
         return ModerationDecision(action=ModerationAction.DELETE, reason="everyone_ping")
 
     prose = _CODE_RE.sub("", content)
-    letters = [char for char in prose if char.isalpha()]
-    if config.caps_percent > 0 and len(letters) >= config.caps_min_length:
-        if letters:
-            caps_percent = sum(char.isupper() for char in letters) / len(letters) * 100
-            if caps_percent >= config.caps_percent:
-                return ModerationDecision(
-                    action=ModerationAction.DELETE,
-                    reason="excessive_caps",
-                    details=f"{caps_percent:.0f}% caps in {len(letters)} letters",
-                )
-
     if config.emoji_limit > 0:
         emoji_count = _count_emoji(prose)
         if emoji_count >= config.emoji_limit:

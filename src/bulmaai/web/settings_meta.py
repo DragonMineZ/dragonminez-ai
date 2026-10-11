@@ -80,8 +80,6 @@ META: dict[str, tuple[str, str, str]] = {
     "moderation_duplicate_window_seconds": ("automod", "Duplicates: window", "Length in seconds of the window used to count duplicate messages."),
     "moderation_fast_message_count": ("automod", "Fast messages: count", "Messages from one member inside the window that count as too fast; 0 turns it off."),
     "moderation_fast_message_window_seconds": ("automod", "Fast messages: window", "Length in seconds of the window used to count fast messages."),
-    "moderation_caps_percent": ("automod", "Caps: percent", "Messages with at least this percentage of capital letters are deleted; 0 turns it off."),
-    "moderation_caps_min_length": ("automod", "Caps: minimum letters", "The caps check only looks at messages with at least this many letters."),
     "moderation_emoji_limit": ("automod", "Emoji limit", "Messages with this many emoji are deleted; 0 turns it off."),
     "moderation_newline_limit": ("automod", "Line break limit", "Messages with this many line breaks outside code blocks are deleted; 0 turns it off."),
     "moderation_zalgo_enabled": ("automod", "Block zalgo text", "Deletes glitchy zalgo text."),

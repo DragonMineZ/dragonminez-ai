@@ -97,9 +97,9 @@ class FilterRuleTests(unittest.TestCase):
         self.assertEqual((timed.action, timed.timeout_seconds, timed.purge, timed.warn), (ModerationAction.TIMEOUT, 600, False, False))
         invite = ModerationDecision(action=ModerationAction.DELETE, reason="discord_invite")
         self.assertEqual(apply_rule_action(invite, rules, timeout_seconds=600).action, ModerationAction.ALERT)
-        caps = ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps")
+        caps = ModerationDecision(action=ModerationAction.DELETE, reason="excessive_emoji")
         self.assertIs(apply_rule_action(caps, rules, timeout_seconds=600), caps)
-        warned = apply_rule_action(caps, parse_filter_rules('{"excessive_caps": {"action": "warn"}}'), timeout_seconds=600)
+        warned = apply_rule_action(caps, parse_filter_rules('{"excessive_emoji": {"action": "warn"}}'), timeout_seconds=600)
         self.assertEqual((warned.action, warned.warn), (ModerationAction.DELETE, True))
 
 
@@ -125,23 +125,9 @@ class EveryonePingTests(unittest.TestCase):
         self.assertEqual(decision.action, ModerationAction.ALLOW)
 
 
-class ExcessiveCapsTests(unittest.TestCase):
-    def test_long_all_caps_message_is_deleted(self) -> None:
-        config = ModerationConfig(caps_percent=70, caps_min_length=20)
-        decision = evaluate_message(
-            _signal(content="THIS IS TOTALLY OUT OF CONTROL SPAM"), config, ModerationState(), now=1.0
-        )
-        self.assertEqual((decision.action, decision.reason), (ModerationAction.DELETE, "excessive_caps"))
-
-    def test_short_ok_is_not_caps_spam(self) -> None:
-        config = ModerationConfig(caps_percent=70, caps_min_length=20)
-        decision = evaluate_message(_signal(content="OK"), config, ModerationState(), now=1.0)
-        self.assertEqual(decision.action, ModerationAction.ALLOW)
-
-
 class CodeBlockExemptionTests(unittest.TestCase):
-    def test_fenced_log_paste_is_not_caps_or_wall_of_text(self) -> None:
-        config = ModerationConfig(caps_percent=70, caps_min_length=20, newline_limit=30)
+    def test_fenced_log_paste_is_not_wall_of_text(self) -> None:
+        config = ModerationConfig(newline_limit=30)
         log = "\n".join(f"[main/ERROR] FATAL MOD LOADING ERROR LINE {n}" for n in range(40))
         decision = evaluate_message(
             _signal(content=f"my game crashes:\n```\n{log}\n```"), config, ModerationState(), now=1.0
@@ -270,7 +256,7 @@ class EscalationTimeoutTests(unittest.TestCase):
         return incident.decision
 
     def test_repeated_human_shaped_hits_get_the_short_timeout(self) -> None:
-        decision = self._repeat("excessive_caps")
+        decision = self._repeat("excessive_emoji")
         self.assertEqual(decision.action, ModerationAction.TIMEOUT)
         self.assertEqual(decision.timeout_seconds, HUMAN_ESCALATION_TIMEOUT_SECONDS)
 
@@ -373,7 +359,7 @@ class RuleWiringTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rule_warn_flag_overrides_the_filter_default(self) -> None:
         self.assertFalse(await self._warned(ModerationDecision(action=ModerationAction.DELETE, reason="banned_word", warn=False)))
-        self.assertTrue(await self._warned(ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps", warn=True)))
+        self.assertTrue(await self._warned(ModerationDecision(action=ModerationAction.DELETE, reason="excessive_emoji", warn=True)))
 
 
 class HandledCardTests(unittest.IsolatedAsyncioTestCase):
@@ -408,7 +394,7 @@ class HandledCardTests(unittest.IsolatedAsyncioTestCase):
             attachments=[],
         )
         incident = _Incident(
-            decision=ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps"),
+            decision=ModerationDecision(action=ModerationAction.DELETE, reason="excessive_emoji"),
             first_message=message,
         )
         incident.log_message = LogMessage()

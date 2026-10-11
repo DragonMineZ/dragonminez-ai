@@ -163,7 +163,7 @@ class HitRecordingTests(unittest.IsolatedAsyncioTestCase):
     async def test_second_message_in_the_same_incident_does_not_record_another_hit(self) -> None:
         guild, author = _guild_and_author()
         cog = _make_cog()
-        decision = ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps")
+        decision = ModerationDecision(action=ModerationAction.DELETE, reason="excessive_emoji")
 
         with (
             patch("bulmaai.services.automod_hits.record_hit", AsyncMock(return_value=42)) as record_hit,
@@ -183,7 +183,7 @@ class DbFailureResilienceTests(unittest.IsolatedAsyncioTestCase):
         guild, author = _guild_and_author()
         message = _make_message(1, guild, author)
         cog = _make_cog()
-        decision = ModerationDecision(action=ModerationAction.DELETE, reason="excessive_caps")
+        decision = ModerationDecision(action=ModerationAction.DELETE, reason="excessive_emoji")
 
         with patch(
             "bulmaai.services.automod_hits.record_hit", AsyncMock(side_effect=RuntimeError("db down"))

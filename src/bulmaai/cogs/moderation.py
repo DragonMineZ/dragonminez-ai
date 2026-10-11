@@ -61,7 +61,7 @@ IMAGE_BURST_REASON = "image burst"
 # spam-bot-shaped incidents (image/link burst, cross-channel duplicate_spam) keep the long one.
 HUMAN_ESCALATION_TIMEOUT_SECONDS = 600
 _HUMAN_SHAPED_REASONS = frozenset(
-    {"excessive_caps", "excessive_emoji", "wall_of_text", "zalgo", "fast_messages", "duplicate_spam"}
+    {"excessive_emoji", "wall_of_text", "zalgo", "fast_messages", "duplicate_spam"}
 )
 _SEVERITY = {
     ModerationAction.ALLOW: 0,
@@ -80,7 +80,6 @@ _READABLE_REASONS = {
     "discord_invite": "a Discord invite link",
 }
 _NOTICE_TEXT = {
-    "excessive_caps": "please avoid excessive caps.",
     "excessive_emoji": "please use fewer emoji.",
     "wall_of_text": "please avoid walls of text.",
     "zalgo": "please avoid glitch/zalgo text.",
@@ -181,8 +180,6 @@ class ModerationCog(ReloadableCog):
             duplicate_window_seconds=settings.moderation_duplicate_window_seconds,
             fast_message_count=settings.moderation_fast_message_count,
             fast_message_window_seconds=settings.moderation_fast_message_window_seconds,
-            caps_percent=settings.moderation_caps_percent,
-            caps_min_length=settings.moderation_caps_min_length,
             emoji_limit=settings.moderation_emoji_limit,
             newline_limit=settings.moderation_newline_limit,
             zalgo_enabled=settings.moderation_zalgo_enabled,

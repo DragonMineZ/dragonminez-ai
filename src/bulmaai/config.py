@@ -501,8 +501,6 @@ class Settings:
     moderation_duplicate_window_seconds: int = 30
     moderation_fast_message_count: int = 8
     moderation_fast_message_window_seconds: int = 8
-    moderation_caps_percent: int = 70
-    moderation_caps_min_length: int = 20
     moderation_emoji_limit: int = 15
     moderation_newline_limit: int = 30
     moderation_zalgo_enabled: bool = True

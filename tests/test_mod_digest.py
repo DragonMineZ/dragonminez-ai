@@ -40,7 +40,7 @@ def fake_settings(**overrides):
         panel_guild_id=1,
         dev_guild_id=None,
         moderation_scam_images_enforce=False,
-        moderation_caps_percent=70,
+        moderation_emoji_limit=70,
         moderation_zalgo_enabled=True,
     )
     base.update(overrides)
@@ -102,7 +102,7 @@ class BuildEmbedsTests(unittest.TestCase):
             appeals=AppealStats(2, 1, 1),
             reports_received=1,
             antiraid_actions=2,
-            filter_stats=(FilterStats("excessive_caps", hits=10, confirmed=1, false_positives=4),),
+            filter_stats=(FilterStats("excessive_emoji", hits=10, confirmed=1, false_positives=4),),
             unreviewed_automod_hits=3,
         )
         overview, automod = mod_digest.build_cards(data, fake_settings())
@@ -128,20 +128,20 @@ class BuildEmbedsTests(unittest.TestCase):
         self.assertEqual(overview_values["Anti-raid actions"], "2")
 
         automod_values = fields_by_name(automod)
-        self.assertIn("excessive_caps", automod_values["Automod hits by filter"])
+        self.assertIn("excessive_emoji", automod_values["Automod hits by filter"])
         self.assertEqual(automod_values["Unreviewed automod hits"], "3")
-        self.assertIn("moderation_caps_percent", automod_values["Tuning suggestions"])
+        self.assertIn("moderation_emoji_limit", automod_values["Tuning suggestions"])
 
     def test_suggestions_render_setting_form_and_note_form(self):
         data = empty_data(
             filter_stats=(
-                FilterStats("excessive_caps", hits=10, confirmed=1, false_positives=4),
+                FilterStats("excessive_emoji", hits=10, confirmed=1, false_positives=4),
                 FilterStats("banned_word", hits=5, confirmed=0, false_positives=3),
             )
         )
-        _, automod = mod_digest.build_cards(data, fake_settings(moderation_caps_percent=70))
+        _, automod = mod_digest.build_cards(data, fake_settings(moderation_emoji_limit=70))
         value = fields_by_name(automod)["Tuning suggestions"]
-        self.assertIn("moderation_caps_percent 70 → 80", value)
+        self.assertIn("moderation_emoji_limit 70 → 75", value)
         self.assertIn("moderation_banned_words", value)
 
     def test_scam_image_section_shows_mode_counts_and_list_size(self):

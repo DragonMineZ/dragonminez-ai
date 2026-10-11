@@ -150,12 +150,8 @@ def tracked_quest_objectives(report: DebugReport) -> dict[str, Any] | None:
     for the tracked quest, or ``None``. Works off ``PlayerQuestData`` (raw NBT or
     JSON), which carries the per-objective cur/req detail (section 4.10).
     """
-    pqd = report.quests
-    # In the text format ``report.quests`` is the hand-written summary; the raw
-    # NBT lives under sections["PlayerQuestData (raw)"].
-    raw = report.sections.get("PlayerQuestData (raw)")
-    if raw is None and isinstance(pqd, dict) and "questState" in pqd:
-        raw = pqd
+    # ``report.quests`` is the summary; the raw NBT is "PlayerQuestData (raw)" in text dumps, "PlayerQuestData" in JSON.
+    raw = report.sections.get("PlayerQuestData (raw)") or report.sections.get("PlayerQuestData")
     if not isinstance(raw, dict):
         return None
 

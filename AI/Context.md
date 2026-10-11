@@ -26,6 +26,7 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
   - `ai_budget` (daily token budget, seeded from `support_traces`)
   - `tickets`, `ticket_transcripts`
   - `log_pages` (redact + render + 24h storage for uploaded logs). The `log_parser`/`dmzdebug` cogs post the cards; their `summary_for_ai` text is what the support AI sees for a log attachment (`ai_tickets._log_analyses`), never the raw file.
+  - `/dmzdebug` dumps: the mod (v2.2+, `DebugCommand`) writes `<player>.json` (`schemaVersion` 1, camelCase `party`/`quests` blocks, typed NBT under `sections`); v2.1 and older wrote the `<player>.log` text dump. `utils/dmzdebug_parser.py` reads both into one `DebugReport` (JSON `party`/`quests` are mapped to the text parser's snake_case shapes so `dmzdebug_diagnostics` handles both the same way).
   - `build_gate`, `patreon_*`
 - `ui/`: V2 card builders. `v2.py` holds the shared helpers. `tests/v2_helpers.py` has `walk`/`texts`/`buttons` for asserting on cards.
 - `web/`: the aiohttp staff panel (`server.py`, `routes_*.py`, `static/`). It runs on `127.0.0.1:8090` behind cloudflared and also serves ticket transcripts (`tickets.` host, `/t/<token>`), the 24h log viewer (`logs.` host, `/l/<token>`) and webhooks (Patreon, `/dmz-github-push`, release/dev-jar). The public hosts may only serve their own prefix (`server.security_middleware`).

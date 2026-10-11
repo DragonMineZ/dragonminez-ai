@@ -153,10 +153,26 @@ def _parse_json(text: str) -> DebugReport:
     sections = obj.get("sections")
     if isinstance(sections, dict):
         report.sections = sections
-        # PlayerQuestData carries party state in the JSON contract.
-        pqd = sections.get("PlayerQuestData")
-        if isinstance(pqd, dict):
-            report.quests = pqd
+
+    # The JSON keys are camelCase; the diagnostics share the text parser's snake_case shapes.
+    party = obj.get("party")
+    if isinstance(party, dict):
+        invite = party.get("pendingInvite")
+        report.party = {
+            "client": _json_party_side(party.get("client")),
+            "server": _json_party_side(party.get("server")),
+            "pending_invite": invite if isinstance(invite, dict) else None,
+        }
+    quests = obj.get("quests")
+    if isinstance(quests, dict):
+        last = quests.get("lastCompleted")
+        report.quests = {
+            "tracked": quests.get("tracked"),
+            "last_completed": {"quest_id": last.get("questId"), "status": last.get("status")} if isinstance(last, dict) else None,
+            "completed": _str_list(quests.get("completed")),
+            "in_progress": _str_list(quests.get("inProgress")),
+            "failed": _str_list(quests.get("failed")),
+        }
 
     if report.schema_version is not None and report.schema_version > SUPPORTED_SCHEMA_VERSION:
         report.warnings.append(
@@ -165,6 +181,25 @@ def _parse_json(text: str) -> DebugReport:
         )
 
     return report
+
+
+def _json_party_side(side: Any) -> dict[str, Any]:
+    side = side if isinstance(side, dict) else {}
+    leader = side.get("leader")
+    members = side.get("members")
+    out = {
+        "in_party": bool(side.get("inParty")),
+        "party_id": side.get("partyId"),
+        "leader": leader if isinstance(leader, dict) else None,
+        "members": [m for m in members if isinstance(m, dict)] if isinstance(members, list) else [],
+    }
+    if "pvpEnabled" in side:
+        out["pvp_enabled"] = bool(side.get("pvpEnabled"))
+    return out
+
+
+def _str_list(value: Any) -> list[str]:
+    return [str(v) for v in value] if isinstance(value, list) else []
 
 
 # ── Text format (sections 3–5) ───────────────────────────────────────────────

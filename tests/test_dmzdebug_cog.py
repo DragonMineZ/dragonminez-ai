@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from bulmaai.cogs.dmzdebug import build_card, summary_for_ai
@@ -148,9 +149,21 @@ class BuildCardJsonTests(unittest.IsolatedAsyncioTestCase):
         quests = _field(self.card, "Quests")
         self.assertIn("4/10", quests)
 
-    def test_no_crash_without_party(self):
-        # JSON dump has no hand-written party section; card should still build.
-        self.assertIsNone(_field(self.card, "Party"))
+    def test_party_desync_from_json(self):
+        party = _field(self.card, "Party")
+        self.assertIn("Desync detected", party)
+        self.assertIn("EXPIRED", party)
+
+    def test_quest_counts_from_json(self):
+        quests = _field(self.card, "Quests")
+        self.assertIn("Tracked: `saiyan_saga:3`", quests)
+        self.assertIn("2 completed", quests)
+
+    async def test_no_crash_without_party(self):
+        dump = json.loads(JSON_DUMP)
+        del dump["party"]
+        card = build_card(parse_debug(json.dumps(dump)), "Steve.json")
+        self.assertIsNone(_field(card, "Party"))
 
 
 if __name__ == "__main__":

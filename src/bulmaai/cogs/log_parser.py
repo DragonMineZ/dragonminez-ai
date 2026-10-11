@@ -5,15 +5,16 @@ import time
 from collections import defaultdict
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
+from bulmaai.services import log_pages
 from bulmaai.services.ai_guard import defang
 from bulmaai.services.moderation import ModerationState
 from bulmaai.utils.dmz_addons import check_addons
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
 from bulmaai.utils.log_parser import parse_log, LogReport
 from bulmaai.utils.permissions import is_admin
-from bulmaai.ui.v2 import TEXT_LIMIT, card, fit
+from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, trim
 
 log = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ def _summarise_stacktrace(raw: str) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        # Skip frame lines — they're noise in a short card snippet
-        if stripped.startswith("at ") or stripped.startswith("..."):
+        # Skip frame lines, they're noise in a short card snippet; our own frames say where it broke.
+        if stripped.startswith("...") or (stripped.startswith("at ") and "com.dragonminez" not in stripped):
             continue
         keep.append(stripped)
         if len(keep) >= 10:
@@ -82,7 +83,37 @@ def _is_high_confidence_name(filename: str) -> bool:
 
 # ── Card builder ──────────────────────────────────────────────────────────────
 
-def _build_card(report: LogReport, filename: str) -> discord.ui.DesignerView:
+def summary_for_ai(report: LogReport) -> str:
+    """The analysis as plain text for the support AI; the raw log never goes to the model."""
+    env = ", ".join(
+        f"{name} {value}"
+        for name, value in (
+            ("Minecraft", report.mc_version), ("Forge", report.forge_version), ("Java", report.java_version),
+            ("DragonMineZ", report.dragonminez_version), ("OS", report.operating_system),
+        )
+        if value
+    )
+    lines = [f"Environment: {env or 'not found in this file'}"]
+    if report.errors:
+        lines.append(f"Errors ({len(report.errors)}):")
+        lines += [f"- {_truncate(_clean_error_line(e), 200)}" for e in report.errors[:6]]
+    else:
+        lines.append("No errors after filtering known harmless noise.")
+    if report.stacktrace and (summary := _summarise_stacktrace(report.stacktrace)):
+        lines.append("Exception summary:\n" + _truncate(summary, 700))
+    bad_addons = [a for a in check_addons(report.mods, report.dragonminez_version) if a.compatible is False]
+    if bad_addons:
+        lines.append("Incompatible DMZ addons: " + ", ".join(
+            f"{a.mod_id} {a.version} (needs DMZ >= {a.min_dmz_version})" for a in bad_addons
+        ))
+    if report.mods:
+        lines.append(f"Mods ({len(report.mods)}): " + ", ".join(sorted(report.mods)))
+    else:
+        lines.append("Mod list: not in this file.")
+    return trim("\n".join(lines), 1500)
+
+
+def _build_card(report: LogReport, filename: str, page_url: str | None = None) -> discord.ui.DesignerView:
     """The analysis as a V2 card: what went wrong first, then the environment, then the mod lists.
     Everything from the uploaded file is defanged (no live links or pings)."""
     has_errors = bool(report.errors)
@@ -134,7 +165,7 @@ def _build_card(report: LogReport, filename: str) -> discord.ui.DesignerView:
         if not report.dragonminez_version:
             mods += "\n-# ℹ️ DragonMineZ was not detected among the loaded mods."
     else:
-        mods = "**🧩 Mods Detected**\n*No mods detected. Log may be incomplete or vanilla.*"
+        mods = "**🧩 Mods**\n*No mod list in this file (Forge's latest.log doesn't print one; debug.log and crash reports do).*"
     addons = check_addons(report.mods, report.dragonminez_version)
     if addons:
         mods += f"\n**🐉 DMZ Addons ({len(addons)})**\n" + "\n".join(
@@ -149,7 +180,8 @@ def _build_card(report: LogReport, filename: str) -> discord.ui.DesignerView:
     for block in fit([defang(problems), defang(environment), defang(mods)], TEXT_LIMIT - len(title) - len(footer)):
         items += [discord.ui.Separator(), block]
     items.append(footer)
-    return card(*items, color=colour)
+    buttons = [discord.ui.Button(label="Full log (24h)", emoji="📄", url=page_url)] if page_url else None
+    return card(*items, color=colour, buttons=buttons)
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -173,6 +205,7 @@ class LogParserCog(commands.Cog):
         self._pending: dict[int, list[str]] = {}
         self._parse_state = ModerationState()
         self._parse_events: dict[tuple[int, int], list[float]] = defaultdict(list)
+        self.purge_log_pages.start()
 
     def _may_auto_parse(self, user_id: int) -> bool:
         """A few log reports per user per minute: ten latest.log files per message shouldn't mean ten bot replies."""
@@ -216,7 +249,7 @@ class LogParserCog(commands.Cog):
             if looks_like_dmzdebug(text):
                 continue
 
-            if not _looks_like_mc_log(text):
+            if not looks_like_mc_log(text):
                 # Not a MC log → ignore completely, even if .log/.txt
                 continue
 
@@ -231,9 +264,7 @@ class LogParserCog(commands.Cog):
                 if not self._may_auto_parse(message.author.id):
                     continue
                 async with message.channel.typing():
-                    # Off the event loop: a multi-MB log still takes about a second to parse.
-                    report = await asyncio.to_thread(parse_log, text)
-                    view = _build_card(report, attachment.filename)
+                    view = await self._analyze(text, attachment.filename)
                 await message.reply(view=view, mention_author=False)
             else:
                 # ── Uncertain name → queue for admin approval ─────────────
@@ -296,14 +327,40 @@ class LogParserCog(commands.Cog):
             )
 
             async with message.channel.typing():
-                report = parse_log(text)
-                view = _build_card(report, attachment.filename)
+                view = await self._analyze(text, attachment.filename)
             await message.reply(view=view, mention_author=False)
+
+    async def _analyze(self, text: str, filename: str) -> discord.ui.DesignerView:
+        # Off the event loop: a multi-MB log still takes about a second to parse and render.
+        report = await asyncio.to_thread(parse_log, text)
+        url = None
+        try:
+            marks = [(n, _clean_error_line(e)) for n, e in zip(report.error_line_numbers, report.errors)]
+            facts = [
+                ("Minecraft", report.mc_version or ""), ("Forge", report.forge_version or ""),
+                ("Java", report.java_version or ""), ("DragonMineZ", report.dragonminez_version or ""),
+            ]
+            page = await asyncio.to_thread(
+                lambda: log_pages.render(log_pages.redact(text), title=filename, kind="log", facts=facts, marks=marks)
+            )
+            url = await log_pages.save(self.bot.settings, page)
+        except Exception:
+            log.exception("Failed to publish log page %s", filename)
+        return _build_card(report, filename, url)
+
+    @tasks.loop(hours=1)
+    async def purge_log_pages(self) -> None:
+        removed = await asyncio.to_thread(log_pages.purge, self.bot.settings)
+        if removed:
+            log.info("Purged %d expired log pages", removed)
+
+    def cog_unload(self) -> None:
+        self.purge_log_pages.cancel()
 
 
 # ── Detection helper ──────────────────────────────────────────────────────────
 
-def _looks_like_mc_log(text: str) -> bool:
+def looks_like_mc_log(text: str) -> bool:
     """Return True if the first portion of *text* contains Minecraft-related keywords."""
     indicators = (
         "minecraft",

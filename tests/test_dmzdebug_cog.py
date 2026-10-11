@@ -1,10 +1,10 @@
 import unittest
 
-from bulmaai.cogs.dmzdebug import build_card
+from bulmaai.cogs.dmzdebug import build_card, summary_for_ai
 from bulmaai.utils.dmzdebug_parser import parse_debug
 
 from test_dmzdebug_parser import JSON_DUMP, TEXT_DUMP
-from v2_helpers import section, texts
+from v2_helpers import buttons, section, texts
 
 
 def _field(view, name_fragment):
@@ -20,14 +20,11 @@ class BuildCardTextTests(unittest.IsolatedAsyncioTestCase):  # py-cord views nee
     def test_title_has_player(self):
         self.assertIn("## 🐉 Goku", texts(self.card)[0])
 
-    def test_legacy_note_for_text(self):
-        self.assertIn("Legacy text dump", _field(self.card, "Player"))
-
     def test_core_stats_rendered(self):
         stats = _field(self.card, "Stats")
         self.assertIn("Strength", stats)
         self.assertIn("500", stats)
-        self.assertIn("need the JSON dump", stats)
+        self.assertNotIn("JSON", stats)
 
     def test_identity_shows_race_and_class(self):
         player = _field(self.card, "Player")
@@ -73,6 +70,61 @@ class BuildCardTextTests(unittest.IsolatedAsyncioTestCase):  # py-cord views nee
     def test_card_fits_the_v2_text_limit(self):
         self.assertLessEqual(sum(map(len, texts(self.card))), 4000)
         self.assertTrue(texts(self.card)[-1].startswith("-# 📄 Goku.log"))
+
+
+# The v2.2 dump prints SNBT values: 1b booleans, 0.0f/5.0d numbers.
+NBT_DUMP = """##############
+## DMZ DEBUG ##
+## Vegeta ##
+##############
+
+# Resources:
+CurrentEnergy: 44020.0f
+TrainingPointsD: 5291005.0d
+
+# Status:
+IsAlive: 1b
+TailVisible: 1b
+IsStunned: 0b
+
+# Character:
+CurrentForm: supersaiyan4
+CurrentFormGroup: supersaiyan
+SelectedStackForm: x2
+SelectedStackFormGroup: kaioken
+FormMasteries:
+  supersaiyan:supersaiyan2: 100.0d
+  godritual:supersaiyangodritual: 0.0d
+"""
+
+
+class BuildCardNbtTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.report = parse_debug(NBT_DUMP)
+        self.card = build_card(self.report, "Vegeta.log", page_url="https://logs.example/l/" + "a" * 32)
+
+    def test_snbt_values_read_as_numbers_and_flags(self):
+        self.assertIn("**Energy** 44,020", _field(self.card, "Resources"))
+        self.assertIn("**TP** 5,291,005", _field(self.card, "Resources"))
+        state = _field(self.card, "State")
+        self.assertIn("Alive", state)
+        self.assertIn("Tail visible", state)
+        self.assertNotIn("Stunned", state)
+
+    def test_forms_show_stack_and_masteries_below_100(self):
+        forms = _field(self.card, "Forms")
+        self.assertIn("`kaioken` / `x2` (selected)", forms)
+        self.assertIn("1/2 at 100", forms)
+        self.assertIn("godritual:supersaiyangodritual", forms)
+
+    def test_full_dump_button_links_the_page(self):
+        self.assertEqual([b.url for b in buttons(self.card)], ["https://logs.example/l/" + "a" * 32])
+
+    def test_ai_summary_is_plain_text_of_the_sections(self):
+        summary = summary_for_ai(self.report)
+        self.assertIn("Vegeta", summary)
+        self.assertIn("supersaiyan4", summary)
+        self.assertLessEqual(len(summary), 2000)
 
 
 class BuildCardJsonTests(unittest.IsolatedAsyncioTestCase):

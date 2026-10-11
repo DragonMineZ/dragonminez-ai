@@ -25,9 +25,10 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
   - `openai_client` + `ai_tools` + `ai_guard` (AI calls, tools, output screening)
   - `ai_budget` (daily token budget, seeded from `support_traces`)
   - `tickets`, `ticket_transcripts`
+  - `log_pages` (redact + render + 24h storage for uploaded logs). The `log_parser`/`dmzdebug` cogs post the cards; their `summary_for_ai` text is what the support AI sees for a log attachment (`ai_tickets._log_analyses`), never the raw file.
   - `build_gate`, `patreon_*`
 - `ui/`: V2 card builders. `v2.py` holds the shared helpers. `tests/v2_helpers.py` has `walk`/`texts`/`buttons` for asserting on cards.
-- `web/`: the aiohttp staff panel (`server.py`, `routes_*.py`, `static/`). It runs on `127.0.0.1:8090` behind cloudflared and also serves ticket transcripts and webhooks (Patreon, `/dmz-github-push`, release/dev-jar).
+- `web/`: the aiohttp staff panel (`server.py`, `routes_*.py`, `static/`). It runs on `127.0.0.1:8090` behind cloudflared and also serves ticket transcripts (`tickets.` host, `/t/<token>`), the 24h log viewer (`logs.` host, `/l/<token>`) and webhooks (Patreon, `/dmz-github-push`, release/dev-jar). The public hosts may only serve their own prefix (`server.security_middleware`).
 - `github/`: GitHub App auth and API.
 - `utils/`: `permissions.py` (is_admin / is_staff / is_bruno / in_main_guild), log parsers, language detection.
 - `configs/prompts/`: support system prompt and facts.
@@ -40,6 +41,7 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
   - `message_templates.json` (rules and support-us templates)
   - `settings_overrides.json`
   - ticket transcripts (gitignored)
+  - `log_pages/`: redacted log/dmzdebug viewer pages, expired by file mtime after 24h (`services/log_pages`, swept hourly by the `log_parser` cog; gitignored)
 - AI support knowledge is an OpenAI vector store, synced from wiki.dragonminez.com by `scripts/sync_wiki_knowledge.py` (`.github/workflows/wiki-sync.yml`).
 
 ## Deploy

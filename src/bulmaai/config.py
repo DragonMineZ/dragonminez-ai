@@ -479,6 +479,10 @@ class Settings:
     ticket_transcript_public_url: str = "https://tickets.dragonminez.com"
     ticket_transcript_dir: str = "data/ticket_transcripts"
     ticket_transcript_retention_days: int = 30
+    # Analyzed logs and dmzdebug dumps, redacted and viewable for 24h at log_page_public_url/l/<token>
+    # (another public hostname on the same tunnel).
+    log_page_public_url: str = "https://logs.dragonminez.com"
+    log_page_dir: str = "data/log_pages"
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"
@@ -844,6 +848,8 @@ def _build_settings_from_env() -> Settings:
         or "https://tickets.dragonminez.com",
         ticket_transcript_dir=_get_env("TICKET_TRANSCRIPT_DIR", "data/ticket_transcripts") or "data/ticket_transcripts",
         ticket_transcript_retention_days=_get_env_int("TICKET_TRANSCRIPT_RETENTION_DAYS", 30) or 0,
+        log_page_public_url=_get_env("LOG_PAGE_PUBLIC_URL", "https://logs.dragonminez.com") or "https://logs.dragonminez.com",
+        log_page_dir=_get_env("LOG_PAGE_DIR", "data/log_pages") or "data/log_pages",
         openai_ticket_summary_model=_get_env("OPENAI_TICKET_SUMMARY_MODEL", DEFAULT_OPENAI_TICKET_SUMMARY_MODEL) or DEFAULT_OPENAI_TICKET_SUMMARY_MODEL,
         openai_ticket_vector_store_id=_get_env("OPENAI_TICKET_VECTOR_STORE_ID", DEFAULT_OPENAI_TICKET_VECTOR_STORE_ID),
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,

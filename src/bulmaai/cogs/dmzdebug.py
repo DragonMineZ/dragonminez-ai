@@ -9,10 +9,12 @@ party client-vs-server desync detector (see ``AI/dmzdebug-discord-parsing.md`` �
 
 import asyncio
 import logging
+from collections import Counter
 
 import discord
 from discord.ext import commands
 
+from bulmaai.services import log_pages
 from bulmaai.services.ai_guard import defang
 from bulmaai.utils import dmzdebug_diagnostics as diag
 from bulmaai.utils.dmzdebug_parser import (
@@ -23,7 +25,7 @@ from bulmaai.utils.dmzdebug_parser import (
     looks_like_dmzdebug,
     parse_debug,
 )
-from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, head
+from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, head, trim
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +68,8 @@ _RESOURCE_FIELDS: tuple[tuple[str, str], ...] = (
     ("Alignment", "Alignment"),
     ("ZenkaiCount", "Zenkai"),
     ("PendingAttributePoints", "Free attr pts"),
+    ("TrainingPointsD", "TP"),
+    ("DeathCount", "Deaths"),
 )
 
 
@@ -117,7 +121,9 @@ def _section(name: str, value: str) -> str:
     return f"**{name}**\n{value}"
 
 
-def build_card(report: DebugReport, filename: str, file_size: int | None = None) -> discord.ui.DesignerView:
+def build_card(
+    report: DebugReport, filename: str, file_size: int | None = None, page_url: str | None = None
+) -> discord.ui.DesignerView:
     desync = diag.detect_party_desync(report)
     warnings = diag.collect_warnings(report, filename=filename, file_size=file_size)
 
@@ -142,7 +148,21 @@ def build_card(report: DebugReport, filename: str, file_size: int | None = None)
     for block in fit(blocks, TEXT_LIMIT - len(title) - len(footer)):
         items += [discord.ui.Separator(), block]
     items.append(footer)
-    return card(*items, color=colour)
+    buttons = [discord.ui.Button(label="Full dump (24h)", emoji="📄", url=page_url)] if page_url else None
+    return card(*items, color=colour, buttons=buttons)
+
+
+def summary_for_ai(report: DebugReport) -> str:
+    """The card's sections as plain text for the support AI; the raw dump never goes to the model."""
+    parts = [
+        f"/dmzdebug dump of player {report.player_name or 'unknown'}",
+        _identity(report),
+        _warnings(diag.collect_warnings(report)),
+        _core_stats(report), _resources(report), _state(report), _form(report),
+        _skills(report), _techniques(report), _modifiers(report),
+        _quests(report), _party(report, diag.detect_party_desync(report)),
+    ]
+    return trim("\n".join(part for part in parts if part), 2000)
 
 
 def _identity(report: DebugReport) -> str:
@@ -176,8 +196,6 @@ def _identity(report: DebugReport) -> str:
             lines.append(f"🕒 {report.generated_at}")
         if report.online is not None:
             lines.append("🟢 online" if report.online else "⚪ offline")
-    else:
-        lines.append("📝 Legacy text dump — limited metadata (no mod/MC version).")
     if report.scope:
         lines.append(f"🔎 Scope: `{report.scope}`")
 
@@ -214,8 +232,6 @@ def _core_stats(report: DebugReport) -> str | None:
             derived_bits.append("❤️ " + " / ".join(maxes))
     if derived_bits:
         value += "\n" + " · ".join(derived_bits)
-    elif report.fmt == "text":
-        value += "\n*Derived BP / Level / Max HP need the JSON dump.*"
 
     return _section("📊 Stats", _truncate(value, 1024))
 
@@ -291,7 +307,9 @@ def _techniques(report: DebugReport) -> str | None:
 
     unlocked = tech.get("UnlockedTechniques")
     if isinstance(unlocked, list) and unlocked:
-        lines.append(f"🔓 {len(unlocked)} unlocked")
+        kinds = Counter(str(t.get("TechClassType", "?")).lower() for t in unlocked if isinstance(t, dict))
+        breakdown = " · ".join(f"{n} {kind}" for kind, n in kinds.most_common())
+        lines.append(f"🔓 {len(unlocked)} unlocked" + (f" ({breakdown})" if breakdown else ""))
 
     if as_bool(tech.get("TechniqueCharging")):
         pct = tech.get("TechniqueChargePercent")
@@ -312,15 +330,28 @@ def _form(report: DebugReport) -> str | None:
     if report.derived:
         group = group or report.derived.get("currentFormGroup")
         form = form or report.derived.get("currentForm")
-    if not (group or form):
-        return
 
-    lines = [f"Current: `{group or '?'}` / `{form or '?'}`"]
+    lines = [f"Current: `{group or '?'}` / `{form or '?'}`"] if group or form else []
     if isinstance(char, dict):
+        selected = _get(char, "SelectedForm")
+        if selected and selected != form:
+            lines.append(f"Selected: `{_get(char, 'SelectedFormGroup') or '?'}` / `{selected}`")
         prev = _get(char, "PreviousForm")
         if prev:
             lines.append(f"Previous: `{prev}`")
-    return _section("🔥 Form", _truncate("\n".join(lines), 1024))
+        if stack := _get(char, "CurrentStackForm"):
+            lines.append(f"Stack: `{_get(char, 'CurrentStackFormGroup') or '?'}` / `{stack}` (active)")
+        elif stack := _get(char, "SelectedStackForm"):
+            lines.append(f"Stack: `{_get(char, 'SelectedStackFormGroup') or '?'}` / `{stack}` (selected)")
+        for key, label in (("FormMasteries", "🏅 Masteries"), ("StackFormMasteries", "🏅 Stack masteries")):
+            masteries = char.get(key)
+            if isinstance(masteries, dict) and masteries:
+                # The full list is on the web page; the card names only the forms still below 100.
+                low = [f"`{name}` {_fmt_num(v)}" for name, v in masteries.items() if (as_number(v) or 0) < 100]
+                line = f"{label}: {len(masteries) - len(low)}/{len(masteries)} at 100"
+                lines.append(line + (" · " + " · ".join(low[:6]) if low else ""))
+    if lines:
+        return _section("🔥 Forms", _truncate("\n".join(lines), 1024))
 
 
 def _modifiers(report: DebugReport) -> str | None:
@@ -455,10 +486,30 @@ class DmzDebugCog(commands.Cog):
             try:
                 async with message.channel.typing():
                     report = await asyncio.to_thread(parse_debug, text)
-                    view = build_card(report, attachment.filename, attachment.size)
+                    url = await self._publish_page(text, attachment.filename, report)
+                    view = build_card(report, attachment.filename, attachment.size, url)
                 await message.reply(view=view, mention_author=False)
             except Exception:
                 log.exception("Failed to render dmzdebug dump %s", attachment.filename)
+
+    async def _publish_page(self, text: str, filename: str, report: DebugReport) -> str | None:
+        """The whole dump on the 24h log viewer; the card still posts if this fails."""
+        char = report.sections.get("Character")
+        char = char if isinstance(char, dict) else {}
+        facts = [
+            ("Player", report.player_name or ""),
+            ("Race", str(char.get("Race") or "")),
+            ("Class", str(char.get("Class") or "")),
+            ("Form", str(char.get("CurrentForm") or "")),
+        ]
+        try:
+            page = await asyncio.to_thread(
+                lambda: log_pages.render(log_pages.redact(text), title=filename, kind="dmzdebug", facts=facts)
+            )
+            return await log_pages.save(self.bot.settings, page)
+        except Exception:
+            log.exception("Failed to publish dmzdebug page %s", filename)
+            return None
 
     @staticmethod
     def _is_candidate(attachment: discord.Attachment) -> bool:

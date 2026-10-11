@@ -14,6 +14,7 @@ from aiohttp import web
 from bulmaai.services.discord_oauth import DiscordOAuthClient, build_discord_authorization_url
 from bulmaai.web import (
     routes_announce,
+    routes_log_pages,
     routes_logs,
     routes_moderation,
     routes_patreon,
@@ -53,6 +54,7 @@ MODULES = (
     routes_moderation,
     routes_tickets,
     routes_transcripts,
+    routes_log_pages,
     routes_patreon,
     routes_templates,
     routes_announce,
@@ -67,12 +69,16 @@ CSP = (
 
 @web.middleware
 async def security_middleware(request: web.Request, handler) -> web.StreamResponse:
-    # The tickets hostname shares this process (and tunnel) with the panel but may only ever serve /t/<token>.
+    # The tickets and logs hostnames share this process (and tunnel) with the panel but may only ever serve
+    # /t/<token> and /l/<token>.
     settings = request.app[BOT].settings
-    transcript_host = urlparse(settings.ticket_transcript_public_url).netloc
-    if request.host == transcript_host != urlparse(settings.panel_public_url).netloc:
-        if not request.path.startswith("/t/"):
-            return web.Response(status=404, text="Not found.")
+    public_hosts = {
+        urlparse(settings.ticket_transcript_public_url).netloc: "/t/",
+        urlparse(settings.log_page_public_url).netloc: "/l/",
+    }
+    prefix = public_hosts.get(request.host)
+    if prefix and request.host != urlparse(settings.panel_public_url).netloc and not request.path.startswith(prefix):
+        return web.Response(status=404, text="Not found.")
     # Cross-site write protection: every non-GET must come from this origin. The public URL's host
     # is accepted too, so it works behind proxies/tunnels that rewrite Host (e.g. cloudflared).
     if request.method not in {"GET", "HEAD", "OPTIONS"}:

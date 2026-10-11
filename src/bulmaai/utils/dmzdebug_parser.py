@@ -491,6 +491,10 @@ def _as_int(value: Any) -> int | None:
 
 # ── Typed accessors for renderers (bridge text/json) ─────────────────────────
 
+# SNBT type suffixes the dump prints: 1b, 0.0f, 5.0d, 0L, 3s.
+_NBT_SUFFIX = re.compile(r"^(-?\d+(?:\.\d+)?(?:[eE]-?\d+)?)[bBsSlLfFdD]$")
+
+
 def as_bool(value: Any) -> bool | None:
     """Interpret a leaf (raw text ``0``/``1`` or a real JSON bool) as a bool."""
     if isinstance(value, bool):
@@ -498,7 +502,7 @@ def as_bool(value: Any) -> bool | None:
     if isinstance(value, (int, float)):
         return value != 0
     if isinstance(value, str):
-        v = value.strip().lower()
+        v = _NBT_SUFFIX.sub(r"\1", value.strip().lower())
         if v in ("1", "true", "yes"):
             return True
         if v in ("0", "false", "no", ""):
@@ -514,7 +518,7 @@ def as_number(value: Any) -> float | None:
         return float(value)
     if isinstance(value, str):
         try:
-            return float(value.strip())
+            return float(_NBT_SUFFIX.sub(r"\1", value.strip()))
         except ValueError:
             return None
     return None

@@ -204,6 +204,8 @@ META: dict[str, tuple[str, str, str]] = {
     "phishdestroy_api_base_url": ("advanced", "PhishDestroy API URL", "Base URL of the PhishDestroy API."),
     "ticket_transcript_public_url": ("advanced", "Transcript public URL", "Public address hosted ticket transcripts are served from (/t/<token>)."),
     "ticket_transcript_dir": ("advanced", "Transcript folder", "Folder where hosted ticket transcripts are saved as HTML files."),
+    "log_page_public_url": ("advanced", "Log viewer public URL", "Public address the 24h log viewer pages are served from (/l/<token>)."),
+    "log_page_dir": ("advanced", "Log viewer folder", "Folder where analyzed logs are saved as HTML pages for 24 hours."),
     "patreon_oauth_client_id": ("advanced", "Patreon OAuth client ID", "Patreon app id for the beta-access Patreon sign-in."),
     "patreon_oauth_redirect_uri": ("advanced", "Patreon OAuth redirect", "Callback URL for the beta-access Patreon sign-in."),
     # Advanced: database

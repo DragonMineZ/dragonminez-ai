@@ -12,6 +12,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
 
+from bulmaai.cogs import ai_tickets
 from bulmaai.cogs.ai_tickets import (
     AITicketsCog,
     _build_resolve_view,
@@ -288,6 +289,43 @@ class ResolvePromptTests(unittest.IsolatedAsyncioTestCase):
             content,
             "it crashes\n[Image: Crash screen: NullPointerException]\n[Attachment] unseen.png\n[Attachment] notes.pdf",
         )
+
+    def test_message_content_inlines_the_parsed_log_not_the_file(self) -> None:
+        message = types.SimpleNamespace(
+            clean_content="game crashes on join",
+            attachments=[types.SimpleNamespace(id=7, filename="latest.log", content_type="text/plain")],
+        )
+        self.assertEqual(
+            _message_content(message, {7: "Environment: Forge 47.4.10"}),
+            "game crashes on join\n[Log analysis of latest.log]\nEnvironment: Forge 47.4.10",
+        )
+
+
+class LogAnalysesTests(unittest.IsolatedAsyncioTestCase):
+    def _message(self, attachment_id, filename, text):
+        attachment = types.SimpleNamespace(
+            id=attachment_id, filename=filename, size=len(text), read=AsyncMock(return_value=text.encode())
+        )
+        return types.SimpleNamespace(attachments=[attachment]), attachment
+
+    async def test_logs_and_dumps_are_summarized_once_and_other_files_skipped(self) -> None:
+        log_text = (
+            "[19:07:39] [main/INFO] [cp.mo.mo.Launcher/MODLAUNCHER]: ModLauncher running: args [--fml.forgeVersion, 47.4.10]\n"
+            "[19:07:40] [Render thread/ERROR] [dragonminez/]: Failed to load forms\n"
+        )
+        dump = "##############\n## DMZ DEBUG ##\n## Goku ##\n##############\n\n# Stats:\nSTR: 5\n"
+        log_msg, log_att = self._message(9001, "latest.log", log_text)
+        dump_msg, _ = self._message(9002, "Goku.log", dump)
+        notes_msg, _ = self._message(9003, "notes.txt", "just some notes")
+
+        analyses = await ai_tickets._log_analyses([log_msg, dump_msg, notes_msg])
+
+        self.assertIn("Forge 47.4.10", analyses[9001])
+        self.assertIn("Failed to load forms", analyses[9001])
+        self.assertIn("Goku", analyses[9002])
+        self.assertNotIn(9003, analyses)
+        await ai_tickets._log_analyses([log_msg])
+        log_att.read.assert_awaited_once()
 
 
 class CloseTicketTests(unittest.IsolatedAsyncioTestCase):

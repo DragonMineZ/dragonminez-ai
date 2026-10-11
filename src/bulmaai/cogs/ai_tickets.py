@@ -12,6 +12,8 @@ import discord
 from discord.ext import commands
 from openai import AsyncOpenAI
 
+from bulmaai.cogs import dmzdebug as dmzdebug_cog
+from bulmaai.cogs import log_parser as log_parser_cog
 from bulmaai.config import load_settings
 from bulmaai.services import ai_budget
 from bulmaai.services.ai_guard import can_post_publicly, defuse_mentions, safe_name, strip_links
@@ -45,7 +47,9 @@ from bulmaai.services.ticket_transcripts import (
     ticket_knowledge_filename,
     upload_ticket_knowledge,
 )
+from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
+from bulmaai.utils.log_parser import parse_log
 from bulmaai.utils.permissions import (
     can_use_ai_support,
     has_any_allowed_role,
@@ -65,6 +69,9 @@ CARD_TEXT_LIMIT = 3500
 AI_CARD_COLOR = discord.Color.from_rgb(88, 101, 242)
 AI_FOOTER = "-# 🤖 AI answer, it can make mistakes. · La IA puede equivocarse."
 MAX_IMAGE_ANALYSIS_CHARS = 1000
+# ponytail: per-process cache of parsed log summaries by attachment id; a restart only means re-parsing.
+_LOG_SUMMARIES: dict[int, str | None] = {}
+_LOG_SUMMARY_CACHE_SIZE = 256
 # ponytail: hard cap on transcript size; page through history if tickets ever exceed it.
 TRANSCRIPT_MESSAGE_LIMIT = 1000
 RESOLVE_BUTTON_PREFIX = "ticket_resolved:"
@@ -193,7 +200,7 @@ def _has_support_request_content(
     text = _strip_bot_mentions(message.content, bot_user)
     if len(text.strip()) >= 3:
         return True
-    return any(_is_image_attachment(attachment) for attachment in message.attachments)
+    return any(_is_image_attachment(a) or _is_log_attachment(a) for a in message.attachments)
 
 
 def _message_support_intent(
@@ -231,11 +238,42 @@ def _is_reply_to_bot(message: discord.Message, bot_user: discord.ClientUser | No
     return bot_user is not None and author is not None and getattr(author, "id", None) == bot_user.id
 
 
+def _is_log_attachment(attachment: discord.Attachment) -> bool:
+    return attachment.filename.lower().endswith(LOG_ATTACHMENT_EXTENSIONS)
+
+
 def _contains_log_attachment(message: discord.Message) -> bool:
-    return any(
-        attachment.filename.lower().endswith(LOG_ATTACHMENT_EXTENSIONS)
-        for attachment in message.attachments
-    )
+    return any(_is_log_attachment(attachment) for attachment in message.attachments)
+
+
+def _summarize_upload(text: str) -> str | None:
+    """The same analysis the log/dmzdebug cards show, as text for the model. None if it's neither."""
+    if looks_like_dmzdebug(text):
+        return dmzdebug_cog.summary_for_ai(parse_debug(text))
+    if log_parser_cog.looks_like_mc_log(text):
+        return log_parser_cog.summary_for_ai(parse_log(text))
+    return None
+
+
+async def _log_analyses(messages: list[discord.Message]) -> dict[int, str]:
+    """Parsed summaries of the log/dmzdebug files in these messages; the raw file never reaches the model."""
+    out: dict[int, str] = {}
+    for entry in messages:
+        for attachment in entry.attachments:
+            if not _is_log_attachment(attachment) or attachment.size > log_parser_cog.MAX_FILE_SIZE:
+                continue
+            if attachment.id not in _LOG_SUMMARIES:
+                try:
+                    text = (await attachment.read()).decode("utf-8", errors="replace")
+                except Exception:
+                    log.exception("Failed to read log attachment for AI context")
+                    continue
+                _LOG_SUMMARIES[attachment.id] = await asyncio.to_thread(_summarize_upload, text)
+                if len(_LOG_SUMMARIES) > _LOG_SUMMARY_CACHE_SIZE:
+                    _LOG_SUMMARIES.pop(next(iter(_LOG_SUMMARIES)))
+            if summary := _LOG_SUMMARIES.get(attachment.id):
+                out[attachment.id] = summary
+    return out
 
 
 def _is_image_attachment(attachment: discord.Attachment) -> bool:
@@ -283,6 +321,8 @@ def _message_content(
         analysis = (image_analyses or {}).get(getattr(attachment, "id", None))
         if analysis and _is_image_attachment(attachment):
             attachment_lines.append(f"[Image: {analysis[:MAX_IMAGE_ANALYSIS_CHARS]}]")
+        elif analysis and _is_log_attachment(attachment):
+            attachment_lines.append(f"[Log analysis of {attachment.filename}]\n{analysis}")
         else:
             attachment_lines.append(f"[Attachment] {attachment.filename}")
     if attachment_lines:
@@ -671,7 +711,7 @@ class AITicketsCog(ReloadableCog):
         ]
         messages.reverse()
         requester_id = message.author.id
-        analyses = {**await self._cached_image_analyses(messages), **image_analyses}
+        analyses = {**await self._cached_image_analyses(messages), **await _log_analyses(messages), **image_analyses}
 
         history: list[ConversationMessage] = []
         for entry in messages:
@@ -697,7 +737,11 @@ class AITicketsCog(ReloadableCog):
             if entry.id == message.id or entry.created_at >= cutoff
         ]
         relevant_messages.reverse()
-        analyses = {**await self._cached_image_analyses(relevant_messages), **image_analyses}
+        analyses = {
+            **await self._cached_image_analyses(relevant_messages),
+            **await _log_analyses(relevant_messages),
+            **image_analyses,
+        }
 
         history: list[ConversationMessage] = []
         for entry in relevant_messages:
@@ -857,7 +901,9 @@ class AITicketsCog(ReloadableCog):
             # Follow-ups ("still broken", "1.20.1") must reach the model; only pure acks are skipped.
             if not has_image and _is_ack_message(_strip_bot_mentions(message.content, self.bot.user)):
                 return
-        elif _message_support_intent(message, self.bot.user) == SUPPORT_INTENT_UNCLEAR:
+        elif not _contains_log_attachment(message) and (
+            _message_support_intent(message, self.bot.user) == SUPPORT_INTENT_UNCLEAR
+        ):
             return
         if ai_budget.is_paused(settings):
             await self._send_paused_notice(channel)
@@ -1394,8 +1440,6 @@ class AITicketsCog(ReloadableCog):
                 return
             if message.content.startswith(("!", "/", ".")):
                 return
-            if _contains_log_attachment(message):
-                return
             if not await self._can_use_support_from_message(message, settings=settings):
                 return
             self._schedule_support_response(message, in_ticket=False)
@@ -1424,9 +1468,6 @@ class AITicketsCog(ReloadableCog):
             return
         if message.content.startswith(("!", "/", ".")) and not mention_request:
             return
-        if _contains_log_attachment(message):
-            return
-
         self._schedule_support_response(message, in_ticket=in_ticket)
 
 

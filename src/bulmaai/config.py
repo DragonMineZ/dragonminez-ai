@@ -234,6 +234,7 @@ DEFAULT_MODERATION_BLOCKED_DOMAINS: Sequence[str] = ()
 DEFAULT_MODERATION_ALLOWED_DOMAINS: Sequence[str] = (
     "discord.com",
     "discord.gg",
+    "dragonminez.com",
     "curseforge.com",
     "github.com",
     "patreon.com",

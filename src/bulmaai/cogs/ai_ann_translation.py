@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 
 from bulmaai.cogs.ai_tickets import DISCORD_MESSAGE_LIMIT, _chunk_discord_message
 from bulmaai.services import ai_budget
+from bulmaai.utils.forwards import full_attachments, full_content
 from bulmaai.utils.permissions import is_admin
 
 log = logging.getLogger(__name__)
@@ -126,15 +127,17 @@ class AiAnnTranslation(commands.Cog):
         if message.channel.id != self.settings.announcement_source_channel_id:
             return
 
-        if not message.content.strip() and not message.attachments:
+        content = full_content(message)
+        attachments = full_attachments(message)
+        if not content and not attachments:
             return
 
-        log.info(f"Translating announcement from {message.author}: {message.content[:50]}...")
+        log.info(f"Translating announcement from {message.author}: {content[:50]}...")
 
         try:
             files_for_spanish = []
             files_for_portuguese = []
-            for attachment in message.attachments:
+            for attachment in attachments:
                 try:
                     file_bytes = await attachment.read()
                     files_for_spanish.append(
@@ -147,9 +150,9 @@ class AiAnnTranslation(commands.Cog):
                 except Exception as e:
                     log.warning(f"Failed to download attachment {attachment.filename}: {e}")
 
-            if message.content.strip():
-                spanish_text = await translate_text(self, message.content, "es")
-                portuguese_text = await translate_text(self, message.content, "pt")
+            if content:
+                spanish_text = await translate_text(self, content, "es")
+                portuguese_text = await translate_text(self, content, "pt")
 
                 spanish_text = swap_role_mentions(spanish_text, "es", self)
                 portuguese_text = swap_role_mentions(portuguese_text, "pt", self)

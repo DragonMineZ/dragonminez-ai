@@ -12,6 +12,7 @@ from bulmaai.services.ai_guard import defang
 from bulmaai.services.moderation import ModerationState
 from bulmaai.utils.dmz_addons import check_addons
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
+from bulmaai.utils.forwards import full_attachments
 from bulmaai.utils.log_parser import parse_log, LogReport
 from bulmaai.utils.permissions import is_admin
 from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, trim
@@ -221,7 +222,7 @@ class LogParserCog(commands.Cog):
 
         pending_urls: list[str] = []
 
-        for attachment in message.attachments:
+        for attachment in full_attachments(message):
             filename = attachment.filename.lower()
             if not any(filename.endswith(ext) for ext in ALLOWED_EXTENSIONS):
                 continue
@@ -307,7 +308,7 @@ class LogParserCog(commands.Cog):
         for url in urls:
             # Find the matching attachment by URL.
             attachment = next(
-                (a for a in message.attachments if a.url == url), None
+                (a for a in full_attachments(message) if a.url == url), None
             )
             if attachment is None:
                 continue

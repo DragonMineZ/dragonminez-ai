@@ -53,6 +53,7 @@ from bulmaai.services.tickets import ClosedGap, hide_closed_messages
 from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
+from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content
 from bulmaai.utils.log_parser import parse_log
 from bulmaai.utils.permissions import (
     can_use_ai_support,
@@ -205,20 +206,20 @@ def _has_support_request_content(
     message: discord.Message,
     bot_user: discord.ClientUser | None,
 ) -> bool:
-    text = _strip_bot_mentions(message.content, bot_user)
+    text = _strip_bot_mentions(full_content(message), bot_user)
     if len(text.strip()) >= 3:
         return True
-    return any(_is_image_attachment(a) or _is_log_attachment(a) for a in message.attachments)
+    return any(_is_image_attachment(a) or _is_log_attachment(a) for a in full_attachments(message))
 
 
 def _message_support_intent(
     message: discord.Message,
     bot_user: discord.ClientUser | None,
 ) -> SupportIntent:
-    text = _strip_bot_mentions(message.content, bot_user)
+    text = _strip_bot_mentions(full_content(message), bot_user)
     return classify_support_intent(
         text,
-        has_image=any(_is_image_attachment(attachment) for attachment in message.attachments),
+        has_image=any(_is_image_attachment(attachment) for attachment in full_attachments(message)),
     )
 
 
@@ -251,7 +252,7 @@ def _is_log_attachment(attachment: discord.Attachment) -> bool:
 
 
 def _contains_log_attachment(message: discord.Message) -> bool:
-    return any(_is_log_attachment(attachment) for attachment in message.attachments)
+    return any(_is_log_attachment(attachment) for attachment in full_attachments(message))
 
 
 def _summarize_upload(text: str) -> str | None:
@@ -267,7 +268,7 @@ async def _log_analyses(messages: list[discord.Message]) -> dict[int, str]:
     """Parsed summaries of the log/dmzdebug files in these messages; the raw file never reaches the model."""
     out: dict[int, str] = {}
     for entry in messages:
-        for attachment in entry.attachments:
+        for attachment in full_attachments(entry):
             if not _is_log_attachment(attachment) or attachment.size > log_parser_cog.MAX_FILE_SIZE:
                 continue
             if attachment.id not in _LOG_SUMMARIES:
@@ -323,9 +324,9 @@ def _message_content(
     image_analyses: dict[int, str] | None = None,
 ) -> str:
     """Text plus attachment markers. Images only show as text when analyzed before; never re-processed."""
-    content = message.clean_content.strip()
+    content = "\n".join(p for p in (message.clean_content.strip(), forwarded_content(message)) if p)
     attachment_lines: list[str] = []
-    for attachment in message.attachments:
+    for attachment in full_attachments(message):
         analysis = (image_analyses or {}).get(getattr(attachment, "id", None))
         if analysis and _is_image_attachment(attachment):
             attachment_lines.append(f"[Image: {analysis[:MAX_IMAGE_ANALYSIS_CHARS]}]")
@@ -694,7 +695,7 @@ class AITicketsCog(ReloadableCog):
         attachment_ids = [
             attachment.id
             for entry in messages
-            for attachment in entry.attachments
+            for attachment in full_attachments(entry)
             if _is_image_attachment(attachment) and getattr(attachment, "id", None) is not None
         ]
         if not attachment_ids:
@@ -772,7 +773,7 @@ class AITicketsCog(ReloadableCog):
 
     async def _extract_image_context(self, message: discord.Message) -> dict[int, str]:
         """Analyze up to 2 new screenshots; reuse cached analyses so an image is only processed once."""
-        attachments = [attachment for attachment in message.attachments if _is_image_attachment(attachment)][:2]
+        attachments = [attachment for attachment in full_attachments(message) if _is_image_attachment(attachment)][:2]
         if not attachments:
             return {}
 
@@ -905,10 +906,10 @@ class AITicketsCog(ReloadableCog):
 
         if in_ticket and channel.id in self._escalated_ticket_channels:
             return
-        has_image = any(_is_image_attachment(attachment) for attachment in message.attachments)
+        has_image = any(_is_image_attachment(attachment) for attachment in full_attachments(message))
         if in_ticket or _is_reply_to_bot(message, self.bot.user):
             # Follow-ups ("still broken", "1.20.1") must reach the model; only pure acks are skipped.
-            if not has_image and _is_ack_message(_strip_bot_mentions(message.content, self.bot.user)):
+            if not has_image and _is_ack_message(_strip_bot_mentions(full_content(message), self.bot.user)):
                 return
         elif not _contains_log_attachment(message) and (
             _message_support_intent(message, self.bot.user) == SUPPORT_INTENT_UNCLEAR
@@ -1494,7 +1495,7 @@ class AITicketsCog(ReloadableCog):
         if isinstance(channel, discord.DMChannel):
             if message.author.bot:
                 return
-            if message.content.startswith(("!", "/", ".")):
+            if full_content(message).startswith(("!", "/", ".")):
                 return
             if not await self._can_use_support_from_message(message, settings=settings):
                 return
@@ -1523,7 +1524,7 @@ class AITicketsCog(ReloadableCog):
         if in_ticket and channel.id in self._escalated_ticket_channels:
             await self._maybe_close_solved(channel, message)
             return
-        if message.content.startswith(("!", "/", ".")) and not mention_request:
+        if full_content(message).startswith(("!", "/", ".")) and not mention_request:
             return
         self._schedule_support_response(message, in_ticket=in_ticket)
 

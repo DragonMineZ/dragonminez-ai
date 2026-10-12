@@ -39,6 +39,7 @@ from bulmaai.services.moderation import (
 from bulmaai.services.ai_guard import defang
 from bulmaai.ui.mod_cards import ALERT_HANDLED_ID, ALERT_SUMMARY_ID, alert_card, quote_block
 from bulmaai.ui.mod_views import quick_action_buttons
+from bulmaai.utils.forwards import full_attachments, full_content
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_staff
 
@@ -206,11 +207,8 @@ class ModerationCog(ReloadableCog):
         if not message.guild or not isinstance(message.author, discord.Member):
             return None
         # A forward's text and files live in snapshots, not content/attachments; check them like the member's own.
-        forwarded = [
-            snapshot.message for snapshot in getattr(message, "snapshots", None) or () if getattr(snapshot, "message", None)
-        ]
-        content = "\n".join([message.content or "", *(item.content or "" for item in forwarded)]).strip()
-        attachments = [*message.attachments, *(a for item in forwarded for a in (item.attachments or ()))]
+        content = full_content(message)
+        attachments = full_attachments(message)
         return MessageSignal(
             guild_id=message.guild.id,
             channel_id=message.channel.id,

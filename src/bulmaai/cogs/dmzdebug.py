@@ -25,6 +25,7 @@ from bulmaai.utils.dmzdebug_parser import (
     looks_like_dmzdebug,
     parse_debug,
 )
+from bulmaai.utils.forwards import full_attachments
 from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, head, trim
 
 log = logging.getLogger(__name__)
@@ -463,7 +464,7 @@ class DmzDebugCog(commands.Cog):
             return
 
         # ponytail: two dumps per message is plenty; more is a flood, not a support question.
-        for attachment in [a for a in message.attachments if self._is_candidate(a)][:2]:
+        for attachment in [a for a in full_attachments(message) if self._is_candidate(a)][:2]:
 
             try:
                 raw = await attachment.read()

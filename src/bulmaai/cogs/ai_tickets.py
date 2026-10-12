@@ -77,6 +77,16 @@ MAX_IMAGE_ANALYSIS_CHARS = 1000
 # ponytail: per-process cache of parsed log summaries by attachment id; a restart only means re-parsing.
 _LOG_SUMMARIES: dict[int, str | None] = {}
 _LOG_SUMMARY_CACHE_SIZE = 256
+# ponytail: a /ask question isn't a channel message, so history can't see it. Remember it by answer message id
+# (in memory, a restart forgets it; the context window is only 30 min anyway).
+_ASK_QUESTIONS: dict[int, tuple[int, str, str]] = {}
+_ASK_QUESTIONS_SIZE = 256
+
+
+def remember_ask_question(answer_id: int, user_id: int, name: str, question: str) -> None:
+    _ASK_QUESTIONS[answer_id] = (user_id, name, question)
+    if len(_ASK_QUESTIONS) > _ASK_QUESTIONS_SIZE:
+        _ASK_QUESTIONS.pop(next(iter(_ASK_QUESTIONS)))
 # ponytail: hard cap on transcript size; page through history if tickets ever exceed it.
 TRANSCRIPT_MESSAGE_LIMIT = 1000
 RESOLVE_BUTTON_PREFIX = "ticket_resolved:"
@@ -755,6 +765,17 @@ class AITicketsCog(ReloadableCog):
 
         history: list[ConversationMessage] = []
         for entry in relevant_messages:
+            if asked := _ASK_QUESTIONS.get(entry.id):
+                asker_id, asker_name, question = asked
+                history.append(
+                    ConversationMessage(
+                        role="user",
+                        content=question,
+                        speaker_name=asker_name,
+                        speaker_id=str(asker_id),
+                        speaker_kind="requester" if asker_id == author_id else "participant",
+                    )
+                )
             serialized = self._serialize_message(entry, requester_id=author_id, image_analyses=analyses)
             if serialized is not None:
                 history.append(serialized)

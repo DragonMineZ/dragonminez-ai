@@ -67,3 +67,15 @@ class AskRateLimitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AskQuestionMemoryTests(unittest.TestCase):
+    def test_remembers_question_by_answer_id_and_stays_bounded(self) -> None:
+        from bulmaai.cogs import ai_tickets
+
+        ai_tickets._ASK_QUESTIONS.clear()
+        for answer_id in range(ai_tickets._ASK_QUESTIONS_SIZE + 5):
+            ai_tickets.remember_ask_question(answer_id, 7, "Bruno", "how do you reach namek?")
+        self.assertEqual(len(ai_tickets._ASK_QUESTIONS), ai_tickets._ASK_QUESTIONS_SIZE)
+        self.assertNotIn(0, ai_tickets._ASK_QUESTIONS)
+        self.assertEqual(ai_tickets._ASK_QUESTIONS[ai_tickets._ASK_QUESTIONS_SIZE + 4][2], "how do you reach namek?")

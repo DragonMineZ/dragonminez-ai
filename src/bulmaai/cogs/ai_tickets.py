@@ -72,7 +72,7 @@ DISCORD_MESSAGE_LIMIT = 1900
 # V2 cards allow 4000 characters of text per message; leave room for the footer.
 CARD_TEXT_LIMIT = 3500
 AI_CARD_COLOR = discord.Color.from_rgb(88, 101, 242)
-AI_FOOTER = "-# 🤖 AI answer, it can make mistakes. · La IA puede equivocarse."
+AI_FOOTER = "-# Bulma is AI and can make mistakes. · Bulma es una IA y puede equivocarse."
 MAX_IMAGE_ANALYSIS_CHARS = 1000
 # ponytail: per-process cache of parsed log summaries by attachment id; a restart only means re-parsing.
 _LOG_SUMMARIES: dict[int, str | None] = {}

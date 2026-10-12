@@ -130,3 +130,32 @@ class HandleUpdateTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PushWebhookTests(unittest.TestCase):
+    SECRET = "s3cret"
+
+    def deliver(self, event, payload, *, secret=SECRET):
+        import hashlib
+        import hmac
+        import json
+
+        body = json.dumps(payload).encode()
+        sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return self_update.push_webhook_response(
+            self.SECRET, body, {"X-Hub-Signature-256": sig, "X-GitHub-Event": event}
+        )
+
+    def test_push_to_main_triggers_a_check(self):
+        status, _, check = self.deliver("push", {"ref": "refs/heads/main", "repository": {"full_name": self_update.BOT_REPO}})
+        self.assertEqual((status, check), (202, True))
+
+    def test_other_branch_repo_or_event_does_not(self):
+        repo = {"full_name": self_update.BOT_REPO}
+        self.assertFalse(self.deliver("push", {"ref": "refs/heads/v2.2", "repository": repo})[2])
+        self.assertFalse(self.deliver("push", {"ref": "refs/heads/main", "repository": {"full_name": "x/y"}})[2])
+        self.assertEqual(self.deliver("ping", {})[:2], (200, "pong"))
+
+    def test_bad_signature_is_rejected(self):
+        status, _, check = self.deliver("push", {"ref": "refs/heads/main"}, secret="wrong")
+        self.assertEqual((status, check), (401, False))

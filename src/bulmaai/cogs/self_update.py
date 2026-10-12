@@ -1,5 +1,6 @@
 """Polls origin for new commits and gets them into the running bot with as little downtime as possible.
 
+A GitHub push webhook (BOT_PUSH_WEBHOOK_PATH) checks origin right away; the poll stays as a fallback.
 Each new upstream commit is planned (services/update_plan.py) and checked in a staging worktree, running
 only the tests that cover what changed. Docs/test-only updates just fast-forward; hot-reloadable ones are
 applied in-process on their own (cogs, services, panel routes, prompts) with rollback on failure. Anything
@@ -9,13 +10,19 @@ systemd brings the bot back on the new code.
 """
 
 import asyncio
+import json
 import logging
 import sys
 
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.services import panel_logs, update_engine
+from bulmaai.services import build_gate, panel_logs, update_engine
+from bulmaai.services.release_webhook import (
+    register_extra_raw_webhook_route,
+    text_http_response,
+    unregister_extra_raw_webhook_route,
+)
 from bulmaai.services.update_engine import git, run, tail
 from bulmaai.services.update_plan import plan_update
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -25,7 +32,10 @@ from bulmaai.ui.v2 import card, trim
 
 log = logging.getLogger(__name__)
 
-POLL_MINUTES = 3
+# Fallback only: the push webhook is what normally triggers an update.
+POLL_MINUTES = 10
+BOT_REPO = "DragonMineZ/dragonminez-ai"
+BOT_PUSH_WEBHOOK_PATH = "/dmz-bot-update"
 APPLY_BUTTON_ID = "self_update:apply"
 IMPORT_CHECK = (
     "import importlib, bulmaai.bot\n"
@@ -36,6 +46,24 @@ HOT_COLOR = discord.Colour.from_rgb(46, 204, 113)
 FAILED_COLOR = discord.Colour.from_rgb(231, 76, 60)
 RESTART_COLOR = discord.Colour.from_rgb(241, 196, 15)
 BRUNO_ONLY = discord.AllowedMentions(users=[discord.Object(BRUNO_ID)], everyone=False, roles=False)
+
+
+def push_webhook_response(secret: str | None, body: bytes, headers, *, branch: str = "main") -> tuple[int, str, bool]:
+    """(status, text, should_check) for a GitHub webhook delivery on the bot's own repo."""
+    if not build_gate.verify_signature(secret, body, headers.get("X-Hub-Signature-256")):
+        return 401, "Bad signature", False
+    event = headers.get("X-GitHub-Event")
+    if event == "ping":
+        return 200, "pong", False
+    if event != "push":
+        return 202, "Ignored", False
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return 400, "Invalid JSON body", False
+    if payload.get("ref") != f"refs/heads/{branch}" or (payload.get("repository") or {}).get("full_name") != BOT_REPO:
+        return 202, "Ignored", False
+    return 202, "Update check queued", True
 
 
 async def apply_update() -> tuple[bool, str]:
@@ -85,13 +113,37 @@ class SelfUpdateCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.handled_sha: str | None = None
+        self._checking = asyncio.Lock()
+        self._recheck = False
+        self._route_path: str | None = None
 
     async def on_startup(self) -> None:
+        self._register_webhook_route()
         if not self.poll.is_running():
             self.poll.start()
 
     async def on_shutdown(self) -> None:
+        if self._route_path is not None:
+            unregister_extra_raw_webhook_route(self._route_path)
+            self._route_path = None
         self.poll.cancel()
+
+    def _register_webhook_route(self) -> None:
+        secret = self.bot.settings.github_push_webhook_secret
+        if self._route_path is not None or not secret:
+            if not secret:
+                log.warning("GITHUB_PUSH_WEBHOOK_SECRET is missing; updates rely on the poll only.")
+            return
+        loop = asyncio.get_running_loop()
+
+        def handle(body: bytes, headers):
+            status, text, check = push_webhook_response(secret, body, headers, branch=self.bot.settings.GITHUB_BASE_BRANCH)
+            if check:
+                asyncio.run_coroutine_threadsafe(self._check(), loop)
+            return text_http_response(status, text)
+
+        self._route_path = BOT_PUSH_WEBHOOK_PATH
+        register_extra_raw_webhook_route(path=self._route_path, handle_request=handle)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
@@ -137,10 +189,19 @@ class SelfUpdateCog(ReloadableCog):
 
     @tasks.loop(minutes=POLL_MINUTES)
     async def poll(self) -> None:
-        if self.bot.update_lock.locked():
+        await self._check()
+
+    async def _check(self) -> None:
+        # One check at a time. A request that arrives mid-check or mid-update is remembered and re-run after.
+        if self.bot.update_lock.locked() or self._checking.locked():
+            self._recheck = True
             return
         try:
-            await self._poll_once()
+            async with self._checking:
+                self._recheck = True
+                while self._recheck:
+                    self._recheck = False
+                    await self._poll_once()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -166,6 +227,8 @@ class SelfUpdateCog(ReloadableCog):
             except Exception as error:
                 log.exception("Self-update of %s failed", upstream[:7])
                 await self._send(f"❌ Update to `{upstream[:7]}` crashed: `{error}`", color=FAILED_COLOR, ping=True)
+        if self._recheck:
+            await self._check()
 
     async def _handle_update(self, head: str, upstream: str) -> None:
         commits = await git("log", "--oneline", "--no-decorate", f"{head}..{upstream}")

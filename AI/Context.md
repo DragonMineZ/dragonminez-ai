@@ -49,7 +49,7 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
 
 - DigitalOcean VPS, systemd unit `dragonminez-ai-discord.service`, run from a venv. Logs: `journalctl -u dragonminez-ai-discord.service`.
 - Agents have no SSH access. Give the user commands to run.
-- `self_update` cog: "Pull & restart" from Discord.
+- `self_update` cog: a push webhook on this repo (`/dmz-bot-update`, signed with `GITHUB_PUSH_WEBHOOK_SECRET`, served by the release webhook server) triggers an immediate check of origin; a 10-minute poll is the fallback. Hot-reloadable commits apply on their own; the rest wait for "Pull & restart" from Discord.
 - `scripts/dmz-bot`: console CLI over a chmod-600 Unix socket (see Memory: VPS console).
 
 ## Build gate

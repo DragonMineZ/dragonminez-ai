@@ -1,6 +1,7 @@
 import os
 import types
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 
@@ -23,7 +24,20 @@ def _settings():
         GITHUB_OWNER="DragonMineZ",
         GITHUB_BASE_BRANCH="main",
         bug_report_repo="dragonminez",
+        curseforge_project_id=1,
     )
+
+
+_DEV_JAR = ("dragonminez-2.2.0__abcdef123456.jar", datetime(2026, 9, 28, tzinfo=timezone.utc))
+
+
+def _curseforge():
+    return types.SimpleNamespace(last_processed_at=datetime(2026, 9, 15, tzinfo=timezone.utc))
+
+
+def _closed(closed_at):
+    return {"number": 7, "title": "Crash", "state": "closed", "state_reason": "completed",
+            "closed_at": closed_at, "html_url": "https://github.com/x/7"}
 
 
 class PatreonStatusToolTests(unittest.IsolatedAsyncioTestCase):
@@ -80,7 +94,11 @@ class KnownIssuesToolTests(unittest.IsolatedAsyncioTestCase):
              "updated_at": "2026-09-20T10:00:00Z", "html_url": "https://github.com/x/1", "body": "long"},
             {"number": 2, "title": "Fix crash", "state": "closed", "pull_request": {}, "html_url": "https://github.com/x/2"},
         ]
-        with patch.object(ai_tools.GitHubService, "search_issues", AsyncMock(return_value=items)) as search:
+        with (
+            patch.object(ai_tools.GitHubService, "search_issues", AsyncMock(return_value=items)) as search,
+            patch.object(ai_tools, "get_curseforge_project_state", AsyncMock(return_value=_curseforge())),
+            patch.object(ai_tools, "get_published_dev_jar_state", AsyncMock(return_value=_DEV_JAR)),
+        ):
             result = await ai_tools.search_known_issues("Namek crash", _bot_context=types.SimpleNamespace(settings=_settings()))
 
         search.assert_awaited_once_with("Namek crash", per_page=8)
@@ -89,6 +107,72 @@ class KnownIssuesToolTests(unittest.IsolatedAsyncioTestCase):
             {"issues": [{"number": 1, "title": "Crash on Namek", "state": "open", "labels": ["bug"],
                          "updated_at": "2026-09-20", "url": "https://github.com/x/1"}]},
         )
+
+    async def _search(self, items, *, roles=(), curseforge=None, dev_jar=None, release_error=None):
+        member = types.SimpleNamespace(roles=[types.SimpleNamespace(id=role) for role in roles])
+        guild = types.SimpleNamespace(get_member=lambda user_id: member if user_id == 123 else None)
+        bot = types.SimpleNamespace(settings=_settings(), guilds=[guild])
+        curseforge_mock = (
+            AsyncMock(side_effect=release_error) if release_error else AsyncMock(return_value=curseforge or _curseforge())
+        )
+        with (
+            patch.object(ai_tools.GitHubService, "search_issues", AsyncMock(return_value=items)),
+            patch.object(ai_tools, "get_curseforge_project_state", curseforge_mock),
+            patch.object(ai_tools, "get_published_dev_jar_state", AsyncMock(return_value=dev_jar or _DEV_JAR)),
+        ):
+            return await ai_tools.search_known_issues("x", discord_user_id="123", _bot_context=bot)
+
+    async def test_patron_sees_dev_jar_fix(self) -> None:
+        for roles in ((10,), (20,)):
+            result = await self._search([_closed("2026-09-25T00:00:00Z")], roles=roles)
+            self.assertEqual(result["issues"][0]["fix"], "in_dev_jar")
+            self.assertEqual(result["issues"][0]["dev_jar_version"], "2.2.0")
+
+    async def test_non_patron_gets_pending_release_without_dev_jar_details(self) -> None:
+        result = await self._search([_closed("2026-09-25T00:00:00Z")], roles=(99,))
+        self.assertEqual(result["issues"][0]["fix"], "pending_release")
+        rendered = repr(result)
+        for leak in ("2.2.0", "dev_jar", "abcdef1", ".jar"):
+            self.assertNotIn(leak, rendered)
+
+    async def test_unknown_member_is_not_patron(self) -> None:
+        result = await self._search([_closed("2026-09-25T00:00:00Z")], roles=(10,))
+        bot = types.SimpleNamespace(settings=_settings(), guilds=[])
+        with (
+            patch.object(ai_tools.GitHubService, "search_issues", AsyncMock(return_value=[_closed("2026-09-25T00:00:00Z")])),
+            patch.object(ai_tools, "get_curseforge_project_state", AsyncMock(return_value=_curseforge())),
+            patch.object(ai_tools, "get_published_dev_jar_state", AsyncMock(return_value=_DEV_JAR)),
+        ):
+            unknown = await ai_tools.search_known_issues("x", discord_user_id="123", _bot_context=bot)
+        self.assertEqual(result["issues"][0]["fix"], "in_dev_jar")
+        self.assertEqual(unknown["issues"][0]["fix"], "pending_release")
+
+    async def test_fix_after_dev_jar_is_pending_even_for_patrons(self) -> None:
+        result = await self._search([_closed("2026-09-29T00:00:00Z")], roles=(10,))
+        self.assertEqual(result["issues"][0]["fix"], "pending_release")
+
+    async def test_fix_in_public_release(self) -> None:
+        for roles in ((10,), ()):
+            result = await self._search([_closed("2026-09-10T00:00:00Z")], roles=roles)
+            self.assertEqual(result["issues"][0]["fix"], "in_public_release")
+            self.assertNotIn("dev_jar_version", result["issues"][0])
+
+    async def test_not_planned_and_open_issues(self) -> None:
+        not_planned = {**_closed("2026-09-10T00:00:00Z"), "state_reason": "not_planned"}
+        open_issue = {"number": 3, "title": "Open", "state": "open", "state_reason": None}
+        result = await self._search([not_planned, open_issue], roles=(10,))
+        self.assertEqual(result["issues"][0]["fix"], "not_fixed")
+        self.assertNotIn("fix", result["issues"][1])
+
+    async def test_release_lookup_failure_omits_fix(self) -> None:
+        result = await self._search([_closed("2026-09-10T00:00:00Z")], roles=(10,), release_error=RuntimeError("db"))
+        self.assertEqual(len(result["issues"]), 1)
+        self.assertNotIn("fix", result["issues"][0])
+
+    def test_schema_takes_requester_id_and_is_identity_tool(self) -> None:
+        schema = ai_tools.TOOL_SCHEMAS["search_known_issues"]
+        self.assertIn("discord_user_id", schema["parameters"]["properties"])
+        self.assertIn("search_known_issues", ai_tools.IDENTITY_TOOLS)
 
 
 class PrefetchTests(unittest.IsolatedAsyncioTestCase):

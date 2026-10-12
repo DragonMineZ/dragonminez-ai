@@ -121,7 +121,24 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
             )["discord_user_id"],
             "555",
         )
-        self.assertEqual(_hydrate_tool_args(name="search_known_issues", args={"query": "x"}, user_id=1), {"query": "x"})
+        self.assertEqual(
+            _hydrate_tool_args(name="get_latest_releases", args={"include_patch_notes": True}, user_id=1),
+            {"include_patch_notes": True},
+        )
+
+    def test_hydrate_forces_requester_for_known_issues(self) -> None:
+        args = {"query": "x", "discord_user_id": "555"}
+        for kwargs in ({}, {"requester_is_staff": True, "channel_kind": "ticket"}, {"channel_kind": "dm"}):
+            self.assertEqual(
+                _hydrate_tool_args(name="search_known_issues", args=args, user_id=123, **kwargs),
+                {"query": "x", "discord_user_id": "123"},
+            )
+        self.assertEqual(
+            _hydrate_tool_args(
+                name="search_known_issues", args=args, user_id=123, requester_is_staff=True, channel_kind="dm"
+            )["discord_user_id"],
+            "555",
+        )
 
 
 class MarkerAndRepeatTests(unittest.TestCase):

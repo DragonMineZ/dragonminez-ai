@@ -21,6 +21,7 @@ from bulmaai.services.mod_digest import (
     ModeratorTotal,
     RepeatOffender,
     ScamImageStats,
+    SupportStats,
 )
 
 NOW = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)  # a Monday
@@ -162,6 +163,39 @@ class BuildEmbedsTests(unittest.TestCase):
         _, enforcing = mod_digest.build_cards(data, fake_settings(moderation_scam_images_enforce=True))
         self.assertIn("Mode: enforcing", fields_by_name(enforcing)["Scam images"])
 
+    def test_support_section_shows_ticket_and_ai_stats(self):
+        support = SupportStats(
+            opened=42, opened_last_week=37, closed=40, closed_last_week=40, still_open=7,
+            marked_solved=18, ai_replies=310, median_close_seconds=5 * 3600 + 12 * 60 + 30,
+        )
+        (card,) = mod_digest.build_cards(empty_data(support=support), fake_settings())
+        value = fields_by_name(card)["Support"]
+        self.assertEqual(
+            value.splitlines(),
+            [
+                "Opened: 42 (▲5)",
+                "Closed: 40",
+                "Still open: 7",
+                "Marked solved (AI): 18",
+                "AI replies (all servers): 310",
+                "Median time to close: 5h 12m",
+            ],
+        )
+
+    def test_support_section_omitted_when_all_zero(self):
+        (card,) = mod_digest.build_cards(empty_data(support=SupportStats(0, 0, 0, 0, 0, 0, 0, None)), fake_settings())
+        self.assertNotIn("Support", fields_by_name(card))
+
+    def test_support_without_closed_tickets_has_no_median_line(self):
+        (card,) = mod_digest.build_cards(empty_data(support=SupportStats(3, 0, 0, 0, 3, 0, 0, None)), fake_settings())
+        self.assertNotIn("Median", fields_by_name(card)["Support"])
+
+    def test_duration_formatting(self):
+        self.assertEqual(mod_digest._duration(20), "<1m")
+        self.assertEqual(mod_digest._duration(45 * 60), "45m")
+        self.assertEqual(mod_digest._duration(5 * 3600 + 12 * 60), "5h 12m")
+        self.assertEqual(mod_digest._duration(2 * 86400 + 3 * 3600 + 59 * 60), "2d 3h")
+
     def test_limits_are_respected_with_many_rows(self):
         offenders = tuple(RepeatOffender(user_id=1000 + i, count=50 - i) for i in range(200))
         filters = tuple(FilterStats(f"reason_{i}", hits=100, confirmed=10, false_positives=5) for i in range(40))
@@ -178,6 +212,22 @@ class BuildEmbedsTests(unittest.TestCase):
 
         for _, value in list(overview.fields) + list(automod.fields):
             self.assertLessEqual(len(value), 1024)
+
+
+class SupportQueryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_support_combines_ticket_transcript_and_trace_queries(self):
+        pool = SimpleNamespace(
+            fetchrow=AsyncMock(return_value={
+                "opened": 4, "opened_last_week": 2, "closed": 3, "closed_last_week": 1,
+                "still_open": 5, "median_close_seconds": 3600.0,
+            }),
+            fetchval=AsyncMock(side_effect=[2, 9]),
+        )
+        stats = await mod_digest._support(pool, 1, datetime(2025, 12, 29, tzinfo=timezone.utc), datetime(2025, 12, 22, tzinfo=timezone.utc))
+        self.assertEqual(stats, SupportStats(4, 2, 3, 1, 5, 2, 9, 3600.0))
+        solved_sql, trace_sql = (call.args[0] for call in pool.fetchval.await_args_list)
+        self.assertIn("guild_id = $1 AND resolved", solved_sql)
+        self.assertIn("'support_question', 'support_escalation'", trace_sql)
 
 
 class ChannelResolutionTests(unittest.IsolatedAsyncioTestCase):

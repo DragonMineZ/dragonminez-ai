@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from bulmaai.config import load_settings
@@ -21,7 +22,7 @@ from bulmaai.services.bug_reports import list_bug_reports_by_reporter
 from bulmaai.services.curseforge_state import get_curseforge_project_state
 from bulmaai.services.dev_jar_download_records import has_completed_dev_jar_download
 from bulmaai.services.dev_jar_downloads import parse_dev_jar_filename
-from bulmaai.services.dev_jar_published_state import get_published_dev_jar_file_name
+from bulmaai.services.dev_jar_published_state import get_published_dev_jar_file_name, get_published_dev_jar_state
 from bulmaai.services.patch_notes import build_patch_notes_url, get_patch_notes_state
 from bulmaai.services.patreon_grants import (
     get_patreon_link,
@@ -33,7 +34,7 @@ from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_r
 log = logging.getLogger(__name__)
 
 PATCH_NOTES_EXCERPT_CHARS = 1500
-IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports"})
+IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports", "search_known_issues"})
 ACCOUNT_TOPIC_RE = re.compile(
     r"(?i)\b(patreon|patron|beta|alpha|whitelist|allowlist|white[- ]?list|dev[- ]?jar|jar|tier|"
     r"access|acceso|acesso|gift|gifted|regalo|presente|role|rol|cargo|subscri\w*|suscri\w*|assin\w*)\b"
@@ -112,8 +113,64 @@ async def get_user_bug_reports(discord_user_id: str | None = None, _bot_context:
     }
 
 
-async def search_known_issues(query: str = "", _bot_context: Any = None) -> dict[str, Any]:
+def _parse_time(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else None
+    except ValueError:
+        return None
+
+
+async def _release_times(settings: Any) -> tuple[datetime, tuple[str, datetime] | None] | None:
+    """(public release time, (dev jar file, published_at) or None), or None when unknown."""
+    try:
+        curseforge, dev_jar = await asyncio.gather(
+            get_curseforge_project_state(settings.curseforge_project_id),
+            get_published_dev_jar_state(),
+        )
+    except Exception:
+        log.exception("Known-issue release lookup failed", extra={"event": "known_issues_release_lookup_failed"})
+        return None
+    if curseforge is None or curseforge.last_processed_at is None:
+        return None
+    return curseforge.last_processed_at, dev_jar
+
+
+def _fix_status(
+    item: dict[str, Any], times: tuple[datetime, tuple[str, datetime] | None], is_patron: bool
+) -> dict[str, Any]:
+    if item.get("state") != "closed":
+        return {}
+    if item.get("state_reason") != "completed":
+        return {"fix": "not_fixed"}
+    closed_at = _parse_time(item.get("closed_at"))
+    if closed_at is None:
+        return {}
+    # ponytail: date-based (closed_at vs release/publish time), not commit ancestry; use the compare API on the closing commit if it misreports.
+    public_at, dev_jar = times
+    if closed_at <= public_at:
+        return {"fix": "in_public_release"}
+    if is_patron and dev_jar is not None and closed_at <= dev_jar[1]:
+        fix: dict[str, Any] = {"fix": "in_dev_jar"}
+        try:
+            fix["dev_jar_version"] = parse_dev_jar_filename(dev_jar[0]).version
+        except ValueError:
+            pass
+        return fix
+    return {"fix": "pending_release"}
+
+
+async def search_known_issues(
+    query: str = "", discord_user_id: str | None = None, _bot_context: Any = None
+) -> dict[str, Any]:
     settings = _settings(_bot_context)
+    member = _find_member(_bot_context, int(discord_user_id or 0))
+    is_patron = bool(
+        member is not None
+        and (
+            has_patreon_access_role(member, settings=settings)
+            or has_any_allowed_role(member, settings.dev_jar_tester_role_ids)
+        )
+    )
     service = GitHubService(
         auth=GitHubAppAuth(
             app_id=settings.GH_APP_ID,
@@ -124,7 +181,10 @@ async def search_known_issues(query: str = "", _bot_context: Any = None) -> dict
         repo=settings.bug_report_repo,
         base_branch=settings.GITHUB_BASE_BRANCH,
     )
-    items = await service.search_issues(query.strip()[:200], per_page=8)
+    items, times = await asyncio.gather(
+        service.search_issues(query.strip()[:200], per_page=8),
+        _release_times(settings),
+    )
     return {
         "issues": [
             {
@@ -134,6 +194,7 @@ async def search_known_issues(query: str = "", _bot_context: Any = None) -> dict
                 "labels": [label.get("name") for label in item.get("labels") or [] if isinstance(label, dict)],
                 "updated_at": (item.get("updated_at") or "")[:10] or None,
                 "url": item.get("html_url"),
+                **(_fix_status(item, times, is_patron) if times is not None else {}),
             }
             for item in items
             if "pull_request" not in item
@@ -206,8 +267,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "search_known_issues": _function_schema(
         "search_known_issues",
-        "Search DragonMineZ GitHub issues (open and closed) for a crash/bug symptom to see if it is known or fixed.",
-        {"query": {"type": "string", "description": "A few keywords, e.g. an exception name or feature."}},
+        "Search DragonMineZ GitHub issues (open and closed) for a crash/bug symptom to see if it is known or fixed. "
+        "On closed issues, `fix` says where the fix is available to this requester: in_public_release (update "
+        "from CurseForge), in_dev_jar (patron dev jar, with dev_jar_version), pending_release (fixed, coming in "
+        "the next release), not_fixed (closed without a fix). Never mention or promise a dev jar unless "
+        "fix is in_dev_jar.",
+        {
+            "query": {"type": "string", "description": "A few keywords, e.g. an exception name or feature."},
+            "discord_user_id": _USER_ID_PROPERTY,
+        },
     ),
     "get_latest_releases": _function_schema(
         "get_latest_releases",

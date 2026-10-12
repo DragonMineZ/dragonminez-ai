@@ -58,6 +58,27 @@ class ScamImageStats:
 
 
 @dataclass(frozen=True, slots=True)
+class SupportStats:
+    opened: int
+    opened_last_week: int
+    closed: int
+    closed_last_week: int
+    still_open: int
+    marked_solved: int  # ticket_transcripts with resolved = TRUE closed this week
+    ai_replies: int  # sent support AI replies (all guilds: support_ai_traces has no guild_id)
+    median_close_seconds: float | None  # tickets closed this week; None when none closed
+
+    def is_empty(self) -> bool:
+        return not (
+            self.opened or self.opened_last_week or self.closed or self.closed_last_week
+            or self.still_open or self.marked_solved or self.ai_replies
+        )
+
+
+EMPTY_SUPPORT = SupportStats(0, 0, 0, 0, 0, 0, 0, None)
+
+
+@dataclass(frozen=True, slots=True)
 class DigestData:
     guild_id: int
     period_start: datetime
@@ -74,6 +95,7 @@ class DigestData:
     antiraid_actions: int
     # Set by collect(settings=...): suggestions judged only on hits since each knob last changed.
     suggestions: tuple[automod_hits.Suggestion, ...] | None = None
+    support: SupportStats = EMPTY_SUPPORT
 
 
 # --- queries (one per concern) -------------------------------------------------------------------
@@ -185,6 +207,63 @@ async def _reports_and_antiraid(pool, guild_id: int, week_start: datetime) -> tu
     return row["reports"], row["antiraid"]
 
 
+async def _ticket_counts(pool, guild_id: int, week_start: datetime, prev_start: datetime):
+    return await pool.fetchrow(
+        """
+        SELECT
+            count(*) FILTER (WHERE created_at >= $2) AS opened,
+            count(*) FILTER (WHERE created_at >= $3 AND created_at < $2) AS opened_last_week,
+            count(*) FILTER (WHERE closed_at >= $2) AS closed,
+            count(*) FILTER (WHERE closed_at >= $3 AND closed_at < $2) AS closed_last_week,
+            count(*) FILTER (WHERE status IN ('creating', 'open')) AS still_open,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM closed_at - created_at))
+                FILTER (WHERE closed_at >= $2) AS median_close_seconds
+        FROM tickets
+        WHERE guild_id = $1
+        """,
+        guild_id,
+        week_start,
+        prev_start,
+    )
+
+
+async def _marked_solved(pool, guild_id: int, week_start: datetime) -> int:
+    """Rows exist only for AI auto-solve or a staff Transcript click. Every writer passes the ticket
+    channel's guild, so NULL guild_id rows can't be attributed and are left out."""
+    return await pool.fetchval(
+        "SELECT count(*) FROM ticket_transcripts WHERE guild_id = $1 AND resolved AND closed_at >= $2",
+        guild_id,
+        week_start,
+    )
+
+
+async def _ai_replies(pool, week_start: datetime) -> int:
+    """support_ai_traces has no guild_id, so this counts every guild. support_draft rows were
+    replaced before sending and aren't replies users saw."""
+    return await pool.fetchval(
+        """
+        SELECT count(*) FROM support_ai_traces
+        WHERE created_at >= $1 AND workflow IN ('support_question', 'support_escalation')
+        """,
+        week_start,
+    )
+
+
+async def _support(pool, guild_id: int, week_start: datetime, prev_start: datetime) -> SupportStats:
+    tickets = await _ticket_counts(pool, guild_id, week_start, prev_start)
+    median = tickets["median_close_seconds"]
+    return SupportStats(
+        opened=tickets["opened"],
+        opened_last_week=tickets["opened_last_week"],
+        closed=tickets["closed"],
+        closed_last_week=tickets["closed_last_week"],
+        still_open=tickets["still_open"],
+        marked_solved=await _marked_solved(pool, guild_id, week_start),
+        ai_replies=await _ai_replies(pool, week_start),
+        median_close_seconds=float(median) if median is not None else None,
+    )
+
+
 async def collect(guild_id: int, *, now: datetime, settings=None) -> DigestData:
     """Aggregates the last 7 days (and the 7 before, for deltas) of moderation activity."""
     pool = await get_pool()
@@ -219,6 +298,7 @@ async def collect(guild_id: int, *, now: datetime, settings=None) -> DigestData:
             if settings is not None
             else None
         ),
+        support=await _support(pool, guild_id, week_start, prev_start),
     )
 
 
@@ -255,6 +335,30 @@ def _join_capped(lines: list[str], limit: int = FIELD_VALUE_LIMIT) -> str:
         omitted += 1
         suffix = f"… and {omitted} more"
     return suffix[:limit]
+
+
+def _duration(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m" if minutes else "<1m"
+
+
+def _support_lines(support: SupportStats) -> list[str]:
+    lines = [
+        f"Opened: {_delta(support.opened, support.opened_last_week)}",
+        f"Closed: {_delta(support.closed, support.closed_last_week)}",
+        f"Still open: {support.still_open}",
+        f"Marked solved (AI): {support.marked_solved}",
+        f"AI replies (all servers): {support.ai_replies}",
+    ]
+    if support.median_close_seconds is not None:
+        lines.append(f"Median time to close: {_duration(support.median_close_seconds)}")
+    return lines
 
 
 def _suggestion_line(suggestion: automod_hits.Suggestion) -> str:
@@ -311,6 +415,9 @@ def build_cards(data: DigestData, settings) -> list[DigestCard]:
 
     if data.antiraid_actions:
         overview_fields.append(("Anti-raid actions", str(data.antiraid_actions)))
+
+    if not data.support.is_empty():
+        overview_fields.append(("Support", _join_capped(_support_lines(data.support))))
 
     overview = DigestCard(
         "📊 Weekly Moderation Digest",

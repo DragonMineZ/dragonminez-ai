@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from bulmaai.database.db import get_pool
 
 
@@ -8,6 +10,16 @@ async def get_published_dev_jar_file_name() -> str | None:
             "SELECT artifact_file_name FROM dev_jar_published_state WHERE id = 1"
         )
     return value
+
+
+async def get_published_dev_jar_state() -> tuple[str, datetime] | None:
+    """The published dev jar's file name and when it was published."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT artifact_file_name, published_at FROM dev_jar_published_state WHERE id = 1"
+        )
+    return (row["artifact_file_name"], row["published_at"]) if row else None
 
 
 async def set_published_dev_jar_file_name(file_name: str) -> None:

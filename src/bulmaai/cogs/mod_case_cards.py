@@ -10,6 +10,7 @@ from discord.ext import commands
 from bulmaai.services import mod_actions, mod_cases
 from bulmaai.services.mod_actions import ModActionError
 from bulmaai.ui.mod_cards import CASE
+from bulmaai.ui.v2 import unbusy, while_busy
 from bulmaai.web.core import PERMISSIONS, resolve_member, tier_for
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ def _history_lines(cases: list[mod_cases.ModCase]) -> str:
 class ModCaseCardsCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
+        self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
 
     @property
     def settings(self):
@@ -151,23 +153,30 @@ class ModCaseCardsCog(commands.Cog):
         if not case.active:
             await _reply(interaction, f"Case #{case_id} was already ended.")
             return
-        await interaction.response.defer()
-        try:
-            if case.action == "warn":
-                if await mod_actions.end_case(self.bot, case.guild_id, case_id, ended_by=interaction.user.id) is None:
-                    await _reply(interaction, f"Case #{case_id} was already ended.")
-            else:
-                await mod_actions.perform(
-                    self.bot,
-                    interaction.guild,
-                    action=UNDO_ACTIONS[case.action],
-                    target_id=case.user_id,
-                    moderator=interaction.user,
-                    reason=f"Undone from case #{case_id}",
-                    source="case card",
-                )
-        except ModActionError as error:
-            await _reply(interaction, str(error))
+        async def undo() -> None:  # ending the case re-renders this card
+            try:
+                if case.action == "warn":
+                    if await mod_actions.end_case(self.bot, case.guild_id, case_id, ended_by=interaction.user.id) is None:
+                        await _reply(interaction, f"Case #{case_id} was already ended.")
+                        return await unbusy(interaction)
+                else:
+                    await mod_actions.perform(
+                        self.bot,
+                        interaction.guild,
+                        action=UNDO_ACTIONS[case.action],
+                        target_id=case.user_id,
+                        moderator=interaction.user,
+                        reason=f"Undone from case #{case_id}",
+                        source="case card",
+                    )
+            except ModActionError as error:
+                await _reply(interaction, str(error))
+                return await unbusy(interaction)
+            if interaction.message.id != case.log_message_id:  # a /case copy: the refresh only reached the mod-log card
+                fresh = await mod_cases.get_case(case.guild_id, case_id) or case
+                await interaction.edit_original_response(view=await mod_actions.render_case_card(self.bot, fresh))
+
+        await while_busy(interaction, self._working, undo, failed="Something went wrong undoing that case.")
 
     async def _history(self, interaction: discord.Interaction, case_id: int) -> None:
         if not await self._staff(interaction, "mod.cases.view"):

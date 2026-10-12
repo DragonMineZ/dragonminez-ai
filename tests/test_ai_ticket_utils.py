@@ -31,6 +31,8 @@ from bulmaai.cogs.ai_tickets import (
     _support_debounce_seconds,
 )
 from bulmaai.services.ticket_intake import owner_says_solved
+from bulmaai.ui.v2 import WORKING
+from v2_helpers import sent_message
 from bulmaai.services.ticket_pages import StoredPage
 from bulmaai.services.ticket_transcripts import TicketSummary, TranscriptLine
 from bulmaai.services.support_intent import (
@@ -260,6 +262,56 @@ class TicketHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history_items[-1]["age"], "just now")
 
 
+class ClosedTranscriptTests(unittest.IsolatedAsyncioTestCase):
+    async def test_messages_sent_while_closed_become_one_system_line(self) -> None:
+        from bulmaai.services.ticket_transcripts import render_transcript_text
+
+        def at(minute: int) -> datetime:
+            return datetime(2026, 10, 1, 12, minute, tzinfo=timezone.utc)
+
+        bot_user = types.SimpleNamespace(id=999, bot=True, name="BulmaAI", display_name="BulmaAI")
+        owner = types.SimpleNamespace(id=1, bot=False, name="goku", display_name="Goku")
+        helper = types.SimpleNamespace(id=2, bot=False, name="vegeta", display_name="Vegeta")
+
+        def said(author, minute: int, text: str):
+            return types.SimpleNamespace(author=author, clean_content=text, attachments=[], created_at=at(minute))
+
+        oldest_first = [
+            said(bot_user, 0, "welcome"), said(owner, 1, "it crashes"), said(bot_user, 2, "closed"),
+            said(helper, 3, "zzhidden one"), said(helper, 4, "zzhidden two"), said(bot_user, 5, "reopened"),
+            said(owner, 6, "thanks"),
+        ]
+
+        async def history(**kwargs):
+            for item in oldest_first:
+                yield item
+
+        tickets = types.SimpleNamespace(closed_spans_for=AsyncMock(return_value=[(at(2), at(5))]))
+        cogs = {"TicketsCog": tickets}
+        settings = types.SimpleNamespace(discord_staff_role_ids=())
+        cog = AITicketsCog(types.SimpleNamespace(settings=settings, user=bot_user, get_cog=cogs.get))
+        channel = types.SimpleNamespace(id=12, history=history)
+
+        lines, _ = await cog._collect_transcript(channel, 1)
+        tickets.closed_spans_for.assert_awaited_once_with(12)
+        self.assertEqual(
+            [(line.speaker_kind, line.content) for line in lines],
+            [
+                ("assistant", "welcome"), ("requester", "it crashes"), ("assistant", "closed"),
+                ("system", "2 messages were sent while this ticket was closed."), ("assistant", "reopened"),
+                ("requester", "thanks"),
+            ],
+        )
+        self.assertEqual(lines[3].created_at, at(3))
+        text = render_transcript_text(lines, channel_name="closed-0042")
+        self.assertIn("[2026-10-01 12:03 UTC] -- 2 messages were sent while this ticket was closed.", text)
+        self.assertNotIn("zzhidden", text)
+
+        cogs.clear()  # without the tickets cog nothing records closed stretches, so nothing is hidden
+        lines, _ = await cog._collect_transcript(channel, 1)
+        self.assertEqual(sum("zzhidden" in line.content for line in lines), 2)
+
+
 class ResolvePromptTests(unittest.IsolatedAsyncioTestCase):
     def test_probability_is_zero_below_floor_and_ramps_up(self) -> None:
         kwargs = {"min_confidence": 0.6, "exponent": 3.0}
@@ -339,6 +391,11 @@ class LogAnalysesTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        knowledge = patch("bulmaai.cogs.ai_tickets.knowledge_file_id", AsyncMock(return_value=None))
+        self.knowledge_file_id = knowledge.start()
+        self.addCleanup(knowledge.stop)
+
     def _cog(self) -> AITicketsCog:
         settings = types.SimpleNamespace(
             openai_ticket_summary_model="gpt-test",
@@ -400,6 +457,22 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         channel.delete.assert_awaited_once()
         self.assertNotIn(10, cog._closing_channels)
 
+    async def test_reclose_keeps_the_first_knowledge_file_instead_of_uploading_a_twin(self) -> None:
+        cog = self._cog()
+        self.knowledge_file_id.return_value = "file_first"
+        now = datetime.now(timezone.utc)
+        lines = [TranscriptLine(now, "staff", "Vegeta", "Update GeckoLib.")]
+        summary = TicketSummary("Crash", "Crash.", "Updated GeckoLib.", True, ("crash",), True)
+        collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, summary)
+
+        with collect, summarize, upload_p as upload, record_p as record, delete_p:
+            await cog._close_ticket(
+                self._channel(16), closed_by_id=5, requester_id=42, resolved=True, delete_channel=False, announce=False
+            )
+
+        upload.assert_not_called()
+        self.assertIsNone(record.await_args.kwargs["openai_file_id"])  # the row keeps file_first (COALESCE)
+
     async def test_close_links_the_hosted_page_and_records_it(self) -> None:
         cog = self._cog()
         expires = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -416,9 +489,8 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(record.await_args.kwargs["html_token"], "p" * 32)
         self.assertEqual(record.await_args.kwargs["html_expires_at"], expires)
-        # announce=False keeps staff-only details out of the ticket: only the transcript link is posted
-        self.assertIn(f"https://tickets.example/t/{'p' * 32}", channel.send.await_args.kwargs["view"].children[0].items[0].content)
-        channel.send.reset_mock()
+        # announce=False posts nothing: TicketsCog's closed card carries the transcript link
+        channel.send.assert_not_called()
 
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
         cog._archived_channels.clear()
@@ -505,16 +577,27 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         channel.id = 13
         channel.category = types.SimpleNamespace(id=77)
         channel.send = AsyncMock()
+        prompt = ai_tickets._build_resolve_view(42, "en")
+        no_id = f"{ai_tickets.RESOLVE_BUTTON_PREFIX}no:42:en"
         interaction = types.SimpleNamespace(
             channel=channel,
             user=types.SimpleNamespace(id=42),
+            data={"custom_id": no_id},
+            message=sent_message(prompt, channel_id=13),
             response=types.SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()),
+            edit_original_response=AsyncMock(),
+            followup=types.SimpleNamespace(send=AsyncMock()),
         )
 
         with patch("bulmaai.cogs.ai_tickets.set_ticket_ai_disabled", AsyncMock()):
             await cog._handle_resolve_answer(interaction, solved=False, requester_id=42, language="en")
 
-        interaction.response.edit_message.assert_awaited_once()
+        busy = interaction.response.edit_message.await_args.kwargs["view"]
+        clicked = [item for item in busy.walk_children() if isinstance(item, discord.ui.Button)]
+        self.assertEqual([(b.label, b.disabled) for b in clicked], [("Yes, it's solved", True), (WORKING, True)])
+        final = interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertIn("flagged this ticket for staff", str(final.to_components()))
+        self.assertEqual(cog._working, set())
         self.assertIn(13, cog._escalated_ticket_channels)
         ping = channel.send.await_args
         self.assertIn("<@&111> <@&222>", ping.args[0])

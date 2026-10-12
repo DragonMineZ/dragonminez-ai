@@ -14,17 +14,21 @@ from bulmaai.cogs import mod_case_cards
 from bulmaai.cogs.mod_case_cards import ModCaseCardsCog
 from bulmaai.services.mod_actions import ModActionError
 from bulmaai.services.mod_cases import ModCase
+from bulmaai.ui import v2
+from bulmaai.ui.v2 import card
 from bulmaai.web.core import Tier
+from v2_helpers import sent_message
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 CASES = "bulmaai.services.mod_cases."
 ACTIONS = "bulmaai.services.mod_actions."
+LOG_MESSAGE = 900  # the case's mod-log card, the message the tests click
 
 
 def case(**overrides):
     values = dict(
         id=12, guild_id=1, user_id=5, moderator_id=20, action="warn", reason="spam", duration_seconds=None,
-        source="command", created_at=NOW,
+        source="command", created_at=NOW, log_channel_id=800, log_message_id=LOG_MESSAGE,
     )
     values.update(overrides)
     return ModCase(**values)
@@ -36,15 +40,24 @@ def click(custom_id, guild_id=1):
     async def defer():
         done.append(True)
 
+    async def edit_message(**_):
+        done.append(True)
+
     return SimpleNamespace(
         type=discord.InteractionType.component,
         data={"custom_id": custom_id},
         guild=SimpleNamespace(id=guild_id),
         user=SimpleNamespace(id=50),
+        message=sent_message(card("case", buttons=[discord.ui.Button(label="Undo", custom_id=custom_id)]), message_id=LOG_MESSAGE),
         response=SimpleNamespace(
-            is_done=lambda: bool(done), send_message=AsyncMock(), send_modal=AsyncMock(), defer=AsyncMock(side_effect=defer)
+            is_done=lambda: bool(done),
+            send_message=AsyncMock(),
+            send_modal=AsyncMock(),
+            defer=AsyncMock(side_effect=defer),
+            edit_message=AsyncMock(side_effect=edit_message),
         ),
         followup=SimpleNamespace(send=AsyncMock()),
+        edit_original_response=AsyncMock(),
     )
 
 
@@ -96,8 +109,11 @@ class CaseCardButtonTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.cog.on_interaction(interaction)
         end.assert_awaited_once_with(self.bot, 1, 12, ended_by=50)
-        interaction.response.defer.assert_awaited_once()
+        busy = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertIn(v2.WORKING, [item.label for item in v2._action_rows(busy.children) for item in item.children])
         interaction.response.send_message.assert_not_awaited()  # the card changing is the confirmation
+        interaction.followup.send.assert_not_awaited()
+        interaction.edit_original_response.assert_not_awaited()  # end_case re-rendered the mod-log card
 
     async def test_undoing_a_timeout_lifts_it_and_reports_errors_privately(self):
         interaction = click("modcase:undo:12")
@@ -112,6 +128,8 @@ class CaseCardButtonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((kwargs["action"], kwargs["reason"], kwargs["source"]), ("untimeout", "Undone from case #12", "case card"))
         self.assertEqual(interaction.followup.send.await_args.args[0], "That user isn't in the server.")
         self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
+        restored = interaction.edit_original_response.await_args.kwargs["view"]  # the card comes back untouched
+        self.assertNotIn(v2.WORKING, [item.label for item in v2._action_rows(restored.children) for item in item.children])
 
     async def test_hierarchy_blocks_undo(self):
         interaction = click("modcase:undo:12")

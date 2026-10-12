@@ -36,6 +36,7 @@ from bulmaai.ui.build_gate_views import (
     preview_card,
     progress_card,
 )
+from bulmaai.ui.v2 import unbusy, while_busy
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin
 
@@ -64,6 +65,7 @@ class BuildGateCog(ReloadableCog):
         )
         self._lock = asyncio.Lock()
         self._changelog_lock = asyncio.Lock()
+        self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
         self._trackers: dict[int, asyncio.Task] = {}
         self._route_path: str | None = None
 
@@ -227,31 +229,34 @@ class BuildGateCog(ReloadableCog):
         if not is_admin(interaction.user):
             await interaction.response.send_message("Only administrators can answer build prompts.", ephemeral=True)
             return
-        await interaction.response.defer()
-        async with self._lock:
-            request = await build_gate.get(request_id)
-            if request is None or request.status != build_gate.PENDING:
-                await interaction.followup.send("This prompt was already handled, replaced or closed.", ephemeral=True)
-                return
-            if not approve:
-                rejected = await build_gate.transition(
-                    request_id, build_gate.REJECTED, from_status=build_gate.PENDING, by=interaction.user.id
-                )
-                if rejected:
-                    await interaction.edit_original_response(
-                        view=final_card(rejected, status=build_gate.REJECTED, note=f"Skipped by {interaction.user.display_name}")
+        async def decide() -> bool | None:
+            async with self._lock:
+                request = await build_gate.get(request_id)
+                if request is None or request.status != build_gate.PENDING:
+                    await interaction.followup.send("This prompt was already handled, replaced or closed.", ephemeral=True)
+                    return await unbusy(interaction)
+                if not approve:
+                    rejected = await build_gate.transition(
+                        request_id, build_gate.REJECTED, from_status=build_gate.PENDING, by=interaction.user.id
                     )
-                return
-            busy = await self._active_build()
-            if busy is not None:
-                await interaction.followup.send(
-                    f"A build is already running (#{busy.id} on **{busy.branch}**). Wait for it to finish, then click again.",
-                    ephemeral=True,
-                )
-                return
-            error = await self._start_build(request, interaction.user.id)
-        if error:
-            await interaction.followup.send(error, ephemeral=True)
+                    if rejected:
+                        await interaction.edit_original_response(
+                            view=final_card(rejected, status=build_gate.REJECTED, note=f"Skipped by {interaction.user.display_name}")
+                        )
+                        return
+                    return False
+                busy = await self._active_build()
+                if busy is not None:
+                    await interaction.followup.send(
+                        f"A build is already running (#{busy.id} on **{busy.branch}**). Wait for it to finish, then click again.",
+                        ephemeral=True,
+                    )
+                    return await unbusy(interaction)
+                error = await self._start_build(request, interaction.user.id)
+            if error:
+                await interaction.followup.send(error, ephemeral=True)
+
+        await while_busy(interaction, self._working, decide, failed="Couldn't answer this build prompt. Try again.")
 
     # --- changelog ------------------------------------------------------------------------------
 

@@ -49,8 +49,10 @@ def expiry_from_now(settings: Any) -> datetime | None:
     return datetime.now(timezone.utc) + timedelta(days=days) if days > 0 else None
 
 
-async def save_page(settings: Any, html: bytes) -> StoredPage:
-    token = new_token()
+async def save_page(settings: Any, html: bytes, *, reuse: StoredPage | None = None) -> StoredPage:
+    """reuse: the channel's current page, overwritten in place so its address never changes; a permanent page
+    stays permanent, any other restarts the retention clock."""
+    token = reuse.token if reuse else new_token()
     path = page_path(settings, token)
 
     def write() -> None:
@@ -58,7 +60,8 @@ async def save_page(settings: Any, html: bytes) -> StoredPage:
         path.write_bytes(html)
 
     await asyncio.to_thread(write)
-    return StoredPage(token=token, expires_at=expiry_from_now(settings))
+    expires_at = None if reuse and reuse.expires_at is None else expiry_from_now(settings)
+    return StoredPage(token=token, expires_at=expires_at)
 
 
 def remove_file(settings: Any, token: str) -> None:

@@ -23,6 +23,7 @@ from bulmaai.services.bug_reports import (
     upsert_triage,
 )
 from bulmaai.ui.bug_report_views import DUPLICATE_TITLE, FIXED_TITLE, message_text, restatus, triage_view
+from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_staff
 
@@ -81,6 +82,7 @@ class BugReportsCog(ReloadableCog):
         self.client = AsyncOpenAI(api_key=self.settings.openai_key)
         self._poll_lock = asyncio.Lock()
         self._creating_issues: set[int] = set()
+        self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
 
     @property
     def settings(self):
@@ -256,31 +258,25 @@ class BugReportsCog(ReloadableCog):
                 ephemeral=True,
             )
 
-        await interaction.response.defer(ephemeral=True)
-        repo = self.settings.bug_report_repo
-        service = _get_github_service(self.settings, repo)
+        async def create() -> None:
+            repo = self.settings.bug_report_repo
+            service = _get_github_service(self.settings, repo)
 
-        triage = self._triage_from_card(interaction, report)
-        body = _build_issue_body(
-            triage,
-            guild_id=report.guild_id or (interaction.guild_id if interaction.guild_id else None),
-            thread_id=thread_id,
-            reporter_id=report.reporter_id,
-        )
-        labels = await self._resolve_bug_labels(service)
-
-        try:
-            issue = await service.create_issue(title=triage.title, body=body, labels=labels)
-        except Exception as error:
-            log.exception("Failed to create issue for bug thread %s", thread_id)
-            return await interaction.followup.send(
-                f"Failed to create GitHub issue: {error}", ephemeral=True
+            triage = self._triage_from_card(interaction, report)
+            body = _build_issue_body(
+                triage,
+                guild_id=report.guild_id or (interaction.guild_id if interaction.guild_id else None),
+                thread_id=thread_id,
+                reporter_id=report.reporter_id,
             )
+            labels = await self._resolve_bug_labels(service)
+            issue = await service.create_issue(title=triage.title, body=body, labels=labels)
 
-        await set_tracked(thread_id, repo=repo, issue_number=issue["number"])
-        if interaction.message is not None:
+            await set_tracked(thread_id, repo=repo, issue_number=issue["number"])
             await interaction.message.edit(**restatus(interaction.message, "tracked"))
-        await interaction.followup.send(f"🐛 Issue created and now tracked: {issue['html_url']}")
+            await interaction.followup.send(f"🐛 Issue created and now tracked: {issue['html_url']}")
+
+        await while_busy(interaction, self._working, create, failed="Failed to create the GitHub issue.")
 
     async def _handle_not_a_bug(self, interaction: discord.Interaction, thread_id: int) -> None:
         if not is_staff(interaction.user, settings=self.settings):
@@ -294,26 +290,27 @@ class BugReportsCog(ReloadableCog):
                 "No triage data found for this report.", ephemeral=True
             )
 
-        await interaction.response.defer(ephemeral=True)
-        await set_status(thread_id, "dismissed")
-        if interaction.message is not None:
+        async def dismiss() -> None:
+            await set_status(thread_id, "dismissed")
             await interaction.message.edit(**restatus(interaction.message, "dismissed"))
 
-        thread = interaction.channel
-        if isinstance(thread, discord.Thread):
-            try:
-                await thread.send(
-                    "Thanks for the report! After review, this doesn't look like a bug we "
-                    "need to act on, so we're closing this post. Feel free to open a new one "
-                    "if you run into something else. 🙂"
-                )
-                # Public ack before archiving: a webhook message would reopen the thread.
-                await interaction.followup.send(f"🗂️ Marked as not a bug by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
-                await thread.edit(archived=True, locked=True)
-            except Exception:
-                log.exception("Failed to close dismissed bug thread %s", thread_id)
-        else:
-            await interaction.followup.send("Marked as not a bug.", ephemeral=True)
+            thread = interaction.channel
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.send(
+                        "Thanks for the report! After review, this doesn't look like a bug we "
+                        "need to act on, so we're closing this post. Feel free to open a new one "
+                        "if you run into something else. 🙂"
+                    )
+                    # Public ack before archiving: a webhook message would reopen the thread.
+                    await interaction.followup.send(f"🗂️ Marked as not a bug by {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
+                    await thread.edit(archived=True, locked=True)
+                except Exception:
+                    log.exception("Failed to close dismissed bug thread %s", thread_id)
+            else:
+                await interaction.followup.send("Marked as not a bug.", ephemeral=True)
+
+        await while_busy(interaction, self._working, dismiss, failed="Couldn't dismiss this report.")
 
     async def _handle_close_duplicate(self, interaction: discord.Interaction, thread_id: int) -> None:
         issue_number = self._suggested_issue_number(interaction, DUPLICATE_TITLE)
@@ -378,25 +375,26 @@ class BugReportsCog(ReloadableCog):
                 "No triage data found for this report.", ephemeral=True
             )
 
-        await interaction.response.defer(ephemeral=True)
-        await set_status(thread_id, stored_status)
-        if interaction.message is not None:
+        async def close() -> None:
+            await set_status(thread_id, stored_status)
             await interaction.message.edit(**restatus(interaction.message, display_status))
 
-        thread = interaction.channel
-        if isinstance(thread, discord.Thread):
-            try:
-                await thread.send(
-                    message_builder(report),
-                    allowed_mentions=_reporter_only(report),
-                )
-                # Public ack before archiving: a webhook message would reopen the thread.
-                await interaction.followup.send(f"🗂️ {ack} By {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
-                await thread.edit(archived=True, locked=True)
-            except Exception:
-                log.exception("Failed to close bug thread %s", thread_id)
-        else:
-            await interaction.followup.send(ack, ephemeral=True)
+            thread = interaction.channel
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.send(
+                        message_builder(report),
+                        allowed_mentions=_reporter_only(report),
+                    )
+                    # Public ack before archiving: a webhook message would reopen the thread.
+                    await interaction.followup.send(f"🗂️ {ack} By {interaction.user.mention}.", allowed_mentions=discord.AllowedMentions.none())
+                    await thread.edit(archived=True, locked=True)
+                except Exception:
+                    log.exception("Failed to close bug thread %s", thread_id)
+            else:
+                await interaction.followup.send(ack, ephemeral=True)
+
+        await while_busy(interaction, self._working, close, failed="Couldn't close this report.")
 
     @staticmethod
     def _suggested_issue_number(interaction: discord.Interaction, field_name: str) -> int | None:

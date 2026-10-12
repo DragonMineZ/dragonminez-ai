@@ -19,7 +19,7 @@ from bulmaai.ui.github_views import (
 )
 from bulmaai.utils.permissions import is_staff
 from bulmaai.web.core import Tier, tier_for
-from bulmaai.ui.v2 import card, facts
+from bulmaai.ui.v2 import card, facts, unbusy, while_busy
 
 log = logging.getLogger(__name__)
 settings = load_settings()
@@ -173,6 +173,7 @@ class GitHubCog(commands.Cog):
         self.bot = bot
         self.owner = settings.GITHUB_OWNER
         self.default_repo = settings.GITHUB_DEFAULT_REPO
+        self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
 
     github = discord.SlashCommandGroup("github", "GitHub issue management commands")
 
@@ -742,20 +743,22 @@ class GitHubCog(commands.Cog):
         _, owner, repo, issue_number_raw = custom_id.split(":")
         issue_number = int(issue_number_raw)
         service = _get_github_service(repo)
-        await interaction.response.defer()
+        async def reopen() -> None:
+            try:
+                issue = await service.reopen_issue(issue_number)
+            except Exception as error:
+                await interaction.followup.send(f"Failed to reopen issue: {error}")
+                return await unbusy(interaction)
 
-        try:
-            issue = await service.reopen_issue(issue_number)
-        except Exception as error:
-            return await interaction.followup.send(f"Failed to reopen issue: {error}")
+            view = await self._load_issue_board_view(
+                repo=repo,
+                issue_number=issue_number,
+                issue_state="open",
+            )
+            await interaction.message.edit(view=_issue_card(issue, owner, repo, buttons=view))
+            await interaction.followup.send(f"Issue #{issue_number} reopened by {interaction.user.mention}.")
 
-        view = await self._load_issue_board_view(
-            repo=repo,
-            issue_number=issue_number,
-            issue_state="open",
-        )
-        await interaction.message.edit(view=_issue_card(issue, owner, repo, buttons=view))
-        await interaction.followup.send(f"Issue #{issue_number} reopened by {interaction.user.mention}.")
+        await while_busy(interaction, self._working, reopen, failed="Failed to reopen the issue.")
 
     async def _handle_comment(self, interaction: discord.Interaction, custom_id: str):
         if not is_staff(interaction.user):
@@ -825,21 +828,23 @@ class GitHubCog(commands.Cog):
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)
         service = _get_github_service(repo)
-        await interaction.response.defer()
+        async def close() -> None:
+            try:
+                pr = await service.close_pr(pr_number)
+            except Exception as error:
+                await interaction.followup.send(f"Failed to close PR: {error}")
+                return await unbusy(interaction)
 
-        try:
-            pr = await service.close_pr(pr_number)
-        except Exception as error:
-            return await interaction.followup.send(f"Failed to close PR: {error}")
+            view = await self._load_pr_board_view(
+                repo=repo,
+                pr_number=pr_number,
+                pr_state="closed",
+                merged=False,
+            )
+            await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
+            await interaction.followup.send(f"PR #{pr_number} closed by {interaction.user.mention}.")
 
-        view = await self._load_pr_board_view(
-            repo=repo,
-            pr_number=pr_number,
-            pr_state="closed",
-            merged=False,
-        )
-        await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
-        await interaction.followup.send(f"PR #{pr_number} closed by {interaction.user.mention}.")
+        await while_busy(interaction, self._working, close, failed="Failed to close the PR.")
 
     async def _handle_pr_reopen(self, interaction: discord.Interaction, custom_id: str):
         if not self._is_github_admin(interaction.user):
@@ -848,21 +853,23 @@ class GitHubCog(commands.Cog):
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)
         service = _get_github_service(repo)
-        await interaction.response.defer()
+        async def reopen() -> None:
+            try:
+                pr = await service.reopen_pr(pr_number)
+            except Exception as error:
+                await interaction.followup.send(f"Failed to reopen PR: {error}")
+                return await unbusy(interaction)
 
-        try:
-            pr = await service.reopen_pr(pr_number)
-        except Exception as error:
-            return await interaction.followup.send(f"Failed to reopen PR: {error}")
+            view = await self._load_pr_board_view(
+                repo=repo,
+                pr_number=pr_number,
+                pr_state="open",
+                merged=False,
+            )
+            await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
+            await interaction.followup.send(f"PR #{pr_number} reopened by {interaction.user.mention}.")
 
-        view = await self._load_pr_board_view(
-            repo=repo,
-            pr_number=pr_number,
-            pr_state="open",
-            merged=False,
-        )
-        await interaction.message.edit(view=_pr_card(pr, owner, repo, buttons=view))
-        await interaction.followup.send(f"PR #{pr_number} reopened by {interaction.user.mention}.")
+        await while_busy(interaction, self._working, reopen, failed="Failed to reopen the PR.")
 
     async def _handle_pr_comment(self, interaction: discord.Interaction, custom_id: str):
         if not is_staff(interaction.user):

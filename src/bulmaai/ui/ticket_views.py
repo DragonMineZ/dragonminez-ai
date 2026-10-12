@@ -10,6 +10,8 @@ from datetime import datetime
 
 import discord
 
+from bulmaai.ui.v2 import ALREADY_WORKING, busy
+
 PANEL_SELECT_ID = "ticket_panel_select"
 CLOSE_BUTTON_ID = "ticket_btn_close"
 TRANSCRIPT_BUTTON_ID = "ticket_btn_transcript"
@@ -171,10 +173,6 @@ def msg_created(channel_mention: str) -> str:
     return f"✅ {tri('Your ticket is ready', 'Tu ticket está listo', 'Seu ticket está pronto')}: {channel_mention}"
 
 
-def msg_transcript_ready(url: str) -> str:
-    return f"📄 Transcript saved: {url}"
-
-
 # ---- Components V2 cards -----------------------------------------------------------------------
 # Buttons carry fixed custom ids and are routed by TicketsCog.on_interaction, so they survive restarts.
 # The ticket's button row has a fixed component id, so state changes can swap just that row.
@@ -247,9 +245,16 @@ def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
     )
 
 
-def closed_row(*, transcript: bool = True) -> discord.ui.ActionRow:
+def closed_row(url: str | None = None, *, saving: bool = False) -> discord.ui.ActionRow:
+    """Transcript slot: "Saving…" while the close archives it, then a link to the page, or Retry if that failed."""
+    if saving:
+        transcript = discord.ui.Button(label="Saving transcript…", custom_id=TRANSCRIPT_BUTTON_ID, disabled=True)
+    elif url:
+        transcript = discord.ui.Button(label="Transcript", emoji="📄", url=url)
+    else:
+        transcript = discord.ui.Button(label="Retry transcript", emoji="📄", custom_id=TRANSCRIPT_BUTTON_ID)
     return discord.ui.ActionRow(
-        discord.ui.Button(label="Transcript", emoji="📄", custom_id=TRANSCRIPT_BUTTON_ID, disabled=not transcript),
+        transcript,
         discord.ui.Button(label="Re-Open", emoji="🔓", style=discord.ButtonStyle.success, custom_id=REOPEN_BUTTON_ID),
         discord.ui.Button(label="Delete", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id=DELETE_BUTTON_ID),
         id=ACTIONS_ID,
@@ -288,7 +293,9 @@ def closed_view(mention: str | None, reason: str | None) -> discord.ui.DesignerV
     text = "### 🔒 Ticket closed\n" + (f"Closed by {mention}." if mention else "Closed.")
     if reason:
         text += f"\n**Reason** {reason[:1000]}"
-    return discord.ui.DesignerView(discord.ui.Container(discord.ui.TextDisplay(text), color=CLOSED_RED), closed_row(), timeout=None)
+    return discord.ui.DesignerView(
+        discord.ui.Container(discord.ui.TextDisplay(text), color=CLOSED_RED), closed_row(saving=True), timeout=None
+    )
 
 
 def reopened_view(mention: str) -> discord.ui.DesignerView:
@@ -324,38 +331,46 @@ def notice(text: str, color: discord.Color = BLURPLE) -> discord.ui.DesignerView
 
 
 class ClosePrompt(discord.ui.DesignerView):
-    """Private "close this ticket?" card; the choice runs on_choice(interaction, transcript)."""
+    """Private "close this ticket?" card; confirming runs on_confirm(interaction). Every close saves a transcript."""
 
-    def __init__(self, on_choice) -> None:
-        with_transcript = discord.ui.Button(
-            label=tri("Close + transcript", "Cerrar + transcripción"), emoji="📄", style=discord.ButtonStyle.primary
-        )
-        close_only = discord.ui.Button(label=tri("Just close", "Solo cerrar"), emoji="🔒", style=discord.ButtonStyle.danger)
+    def __init__(self, on_confirm) -> None:
+        close = discord.ui.Button(label=tri("Close", "Cerrar"), emoji="🔒", style=discord.ButtonStyle.danger)
         cancel = discord.ui.Button(label=tri("Cancel", "Cancelar"))
-        with_transcript.callback = lambda interaction: self._pick(interaction, True)
-        close_only.callback = lambda interaction: self._pick(interaction, False)
+        close.callback = self._confirm
         cancel.callback = self._cancel
         super().__init__(
             discord.ui.Container(
                 discord.ui.TextDisplay(
                     "### 🔒 Close this ticket?\n"
-                    "Once closed, only staff can see this channel. Want a transcript of the conversation? "
-                    "It's sent by DM and shown here.\n"
+                    "Once closed, only staff can see this channel. A transcript of the conversation is shown here "
+                    "and sent by DM.\n"
                     "-# ¿Cerrar este ticket? Después solo el staff podrá ver el canal. "
-                    "¿Quieres la transcripción? Te llega por MD y aparece aquí."
+                    "La transcripción aparece aquí y te llega por MD."
                 ),
-                discord.ui.ActionRow(with_transcript, close_only, cancel),
+                discord.ui.ActionRow(close, cancel),
                 color=CLOSED_RED,
             ),
             timeout=120,
             disable_on_timeout=True,
         )
-        self._on_choice = on_choice
+        self._on_confirm = on_confirm
+        self._close_id = close.custom_id
+        self._working = False
 
-    async def _pick(self, interaction: discord.Interaction, transcript: bool) -> None:
-        self.stop()
-        await interaction.response.edit_message(view=notice(f"⏳ {tri('Closing…', 'Cerrando…')}", discord.Color.dark_grey()))
-        await self._on_choice(interaction, transcript)
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        """on_confirm leaves the prompt in its final state; if it raises, the prompt comes back to try again."""
+        if self._working:
+            return await interaction.response.send_message(ALREADY_WORKING, ephemeral=True)
+        self._working = True
+        try:
+            await interaction.response.edit_message(view=busy(self, self._close_id))
+            await self._on_confirm(interaction)
+        except Exception:
+            await interaction.edit_original_response(view=ClosePrompt(self._on_confirm))
+            await interaction.followup.send(MSG["failed"], ephemeral=True)
+            raise  # View.on_error logs it
+        finally:
+            self.stop()
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         self.stop()

@@ -18,6 +18,7 @@ from discord.ext import commands, tasks
 from bulmaai.services import joiner_alerts, mod_actions, mod_cases
 from bulmaai.ui.mod_cards import alert_card, user_line
 from bulmaai.ui.mod_views import RAID, parse_custom_id, quick_action_buttons, raid_buttons
+from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, tier_for
 
@@ -70,6 +71,7 @@ class RaidGuardCog(ReloadableCog):
         self._raid_revision = 0
         self._raid_update_task: asyncio.Task | None = None
         self._debounce_seconds = RAID_ALERT_DEBOUNCE_SECONDS  # tests set this to 0
+        self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
 
     def _settings(self):
         return self.bot.settings
@@ -396,19 +398,25 @@ class RaidGuardCog(ReloadableCog):
 
         settings = self._settings()
         if action == "lockdown":
-            await interaction.response.defer()
-            locked, failed = await mod_actions.lockdown(
-                interaction.guild, settings, moderator_id=interaction.user.id, reason="Raid lockdown"
-            )
-            self._raid_locked = True
-            await interaction.message.edit(view=self._raid_card())
-            await interaction.followup.send(f"🔒 Raid lockdown: locked {locked} channel(s), {failed} failed.")
+
+            async def lock() -> None:
+                locked, failed = await mod_actions.lockdown(
+                    interaction.guild, settings, moderator_id=interaction.user.id, reason="Raid lockdown"
+                )
+                self._raid_locked = True
+                await interaction.message.edit(view=self._raid_card())
+                await interaction.followup.send(f"🔒 Raid lockdown: locked {locked} channel(s), {failed} failed.")
+
+            await while_busy(interaction, self._working, lock, failed="The lockdown failed. Try again or use /lockdown.")
         elif action == "unlock":
-            await interaction.response.defer()
-            unlocked, failed = await mod_actions.end_lockdown(interaction.guild, reason="Raid lockdown lifted")
-            self._raid_locked = False
-            await interaction.message.edit(view=self._raid_card())
-            await interaction.followup.send(f"🔓 Raid lockdown lifted: unlocked {unlocked} channel(s), {failed} failed.")
+
+            async def unlock() -> None:
+                unlocked, failed = await mod_actions.end_lockdown(interaction.guild, reason="Raid lockdown lifted")
+                self._raid_locked = False
+                await interaction.message.edit(view=self._raid_card())
+                await interaction.followup.send(f"🔓 Raid lockdown lifted: unlocked {unlocked} channel(s), {failed} failed.")
+
+            await while_busy(interaction, self._working, unlock, failed="Lifting the lockdown failed. Try again or use /lockdown.")
         elif action == "end":
             await interaction.response.edit_message(view=self._raid_card(ended_by=interaction.user))
             self._end_raid_mode()

@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -17,9 +18,12 @@ STATUS_DELETED = "deleted"
 _CREATING_GRACE = "5 minutes"
 _COLUMNS = (
     "ticket_id, guild_id, owner_id, channel_id, category, status, channel_name, language, "
-    "control_message_id, claimed_by, closed_by, close_reason, created_at, closed_at"
+    "control_message_id, claimed_by, closed_by, close_reason, created_at, closed_at, closed_periods"
 )
 _MAX_SLUG_LENGTH = 40
+
+# A closed stretch: (closed at, re-opened at), or (closed at, None) while it still is.
+Span = tuple[datetime, datetime | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +42,64 @@ class Ticket:
     close_reason: str | None
     created_at: datetime
     closed_at: datetime | None
+    # Finished stretches only; the current one is closed_at while the status is closed (see closed_spans).
+    closed_periods: tuple[tuple[datetime, datetime], ...] = ()
 
 
 def _ticket(row: Any) -> Ticket | None:
-    return Ticket(**{key: row[key] for key in Ticket.__slots__}) if row else None
+    if not row:
+        return None
+    values = {key: row[key] for key in Ticket.__slots__}
+    # tstzrange[] → (start, end); a range missing a bound would hide everything, so it's dropped.
+    values["closed_periods"] = tuple(
+        (period.lower, period.upper) for period in values["closed_periods"] if period.lower and period.upper
+    )
+    return Ticket(**values)
+
+
+def closed_spans(ticket: Ticket | None) -> list[Span]:
+    """Every stretch the ticket spent closed, oldest first. No tickets row: none."""
+    if ticket is None:
+        return []
+    spans: list[Span] = list(ticket.closed_periods)
+    if ticket.status == STATUS_CLOSED and ticket.closed_at is not None:
+        spans.append((ticket.closed_at, None))
+    return spans
+
+
+def closed_span_index(when: datetime, spans: Sequence[Span]) -> int | None:
+    """Which closed stretch `when` falls in, if any."""
+    return next((i for i, (start, end) in enumerate(spans) if start <= when and (end is None or when < end)), None)
+
+
+@dataclass(slots=True)
+class ClosedGap:
+    """Stands in for one closed stretch's hidden messages: the first one's time and how many there were."""
+
+    created_at: datetime
+    count: int = 1
+
+    @property
+    def notice(self) -> str:
+        sent = "1 message was" if self.count == 1 else f"{self.count} messages were"
+        return f"{sent} sent while this ticket was closed."
+
+
+def hide_closed_messages(messages: Iterable[Any], spans: Sequence[Span], *, bot_id: int | None) -> list[Any]:
+    """Oldest-first messages minus those sent while the ticket was closed (our bot's own cards stay). Each closed
+    stretch leaves one ClosedGap where its first hidden message was."""
+    entries: list[Any] = []
+    gaps: dict[int, ClosedGap] = {}
+    for message in messages:
+        span = closed_span_index(message.created_at, spans)
+        if span is None or message.author.id == bot_id:
+            entries.append(message)
+        elif span in gaps:
+            gaps[span].count += 1
+        else:
+            gaps[span] = ClosedGap(message.created_at)
+            entries.append(gaps[span])
+    return entries
 
 
 def sanitize_slug(raw: str, fallback: str) -> str:
@@ -182,10 +240,12 @@ async def mark_closed(
 
 
 async def mark_reopened(channel_id: int, *, pool: Any | None = None) -> Ticket | None:
+    """closed → open; the finished closed stretch goes into closed_periods (SET reads the old closed_at)."""
     resolved_pool = pool or await get_pool()
     row = await resolved_pool.fetchrow(
         f"""
-        UPDATE tickets SET status = 'open', closed_by = NULL, close_reason = NULL, closed_at = NULL
+        UPDATE tickets SET status = 'open', closed_by = NULL, close_reason = NULL, closed_at = NULL,
+            closed_periods = closed_periods || tstzrange(closed_at, now())
         WHERE channel_id = $1 AND status = 'closed'
         RETURNING {_COLUMNS}
         """,

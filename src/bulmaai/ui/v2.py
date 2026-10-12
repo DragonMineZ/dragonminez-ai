@@ -1,9 +1,15 @@
 """Small building blocks for Components V2 cards: a header with an optional thumbnail, text that fits the
 message's 4000-character budget, and button rows. Each feature lays out its own card with these."""
 
+import logging
+
 import discord
 
+log = logging.getLogger(__name__)
+
 TEXT_LIMIT = 3900  # a V2 message holds 4000 characters of text in total; leave a little room
+WORKING = "⏳ Working…"
+ALREADY_WORKING = "Already working on it."
 
 
 def trim(text: str, limit: int) -> str:
@@ -54,3 +60,54 @@ def card(*items, color: discord.Colour | int | None = None, buttons=None) -> dis
     """One container: strings become text blocks, None is skipped, components pass through; buttons go last."""
     parts = [discord.ui.TextDisplay(item) if isinstance(item, str) else item for item in items if item]
     return discord.ui.DesignerView(discord.ui.Container(*parts, *rows(buttons), color=color), timeout=None)
+
+
+def _action_rows(items):
+    for item in items:
+        if isinstance(item, discord.ui.ActionRow):
+            yield item
+        else:
+            yield from _action_rows(getattr(item, "items", None) or [])
+
+
+def busy(view: discord.ui.DesignerView, custom_id: str, label: str = WORKING) -> discord.ui.DesignerView:
+    """view with every button in custom_id's row disabled and that button reading label; link buttons stay as they are."""
+    for row in _action_rows(view.children):
+        clickable = [item for item in row.children if isinstance(item, discord.ui.Button) and item.custom_id]
+        if any(item.custom_id == custom_id for item in clickable):
+            for item in clickable:
+                item.disabled = True
+                if item.custom_id == custom_id:
+                    item.label, item.emoji = label, None
+    return view
+
+
+async def while_busy(interaction: discord.Interaction, working: set[int], work, *, failed: str) -> None:
+    """Runs work() while the clicked card shows the button working with its row disabled; work leaves the card in its
+    final state. Another click on the same message meanwhile only gets ALREADY_WORKING. If work raises or returns False,
+    the card comes back as it was and the clicker gets failed (ephemeral)."""
+    message = interaction.message
+    if message.id in working:
+        return await interaction.response.send_message(ALREADY_WORKING, ephemeral=True)
+    working.add(message.id)
+    try:
+        custom_id = (interaction.data or {}).get("custom_id")
+        await interaction.response.edit_message(view=busy(discord.ui.DesignerView.from_message(message, timeout=None), custom_id))
+        try:
+            ok = await work() is not False
+        except Exception:
+            log.exception("Button action failed", extra={"message_id": message.id, "custom_id": custom_id})
+            ok = False
+        if not ok:
+            try:
+                await interaction.edit_original_response(view=discord.ui.DesignerView.from_message(message, timeout=None))
+            except discord.HTTPException:
+                pass
+            await interaction.followup.send(failed, ephemeral=True)
+    finally:
+        working.discard(message.id)
+
+
+async def unbusy(interaction: discord.Interaction) -> None:
+    """Inside while_busy work that already told the clicker why nothing happened: puts the card back as it was."""
+    await interaction.edit_original_response(view=discord.ui.DesignerView.from_message(interaction.message, timeout=None))

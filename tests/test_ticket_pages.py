@@ -49,6 +49,18 @@ class PageStorageTests(unittest.IsolatedAsyncioTestCase):
         self.settings.ticket_transcript_retention_days = 0
         self.assertIsNone((await ticket_pages.save_page(self.settings, b"x")).expires_at)
 
+    async def test_save_page_reuses_the_token_and_keeps_a_permanent_page_permanent(self):
+        first = await ticket_pages.save_page(self.settings, b"old")
+        again = await ticket_pages.save_page(self.settings, b"new", reuse=first)
+        self.assertEqual(again.token, first.token)
+        self.assertEqual(ticket_pages.page_path(self.settings, first.token).read_bytes(), b"new")
+        self.assertIsNotNone(again.expires_at)  # retention clock restarts
+
+        permanent = ticket_pages.StoredPage(token=first.token, expires_at=None)
+        kept = await ticket_pages.save_page(self.settings, b"newer", reuse=permanent)
+        self.assertEqual((kept.token, kept.expires_at), (first.token, None))
+        self.assertEqual(len(list(Path(self._dir.name).glob("*.html"))), 1)
+
     async def test_purge_removes_only_files_nothing_points_to(self):
         directory = Path(self._dir.name)
         live, stale, fresh = "l" * 32, "s" * 32, "f" * 32

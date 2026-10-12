@@ -533,6 +533,9 @@ CREATE TABLE IF NOT EXISTS tickets (
     deleted_at          TIMESTAMPTZ
 );
 
+-- Finished closed stretches (re-open appends one); messages sent in them stay out of transcripts.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_periods TSTZRANGE[] NOT NULL DEFAULT '{}';
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_channel_id
     ON tickets (channel_id) WHERE channel_id IS NOT NULL;
 

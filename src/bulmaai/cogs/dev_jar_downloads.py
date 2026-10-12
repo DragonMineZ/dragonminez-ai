@@ -54,6 +54,7 @@ from bulmaai.ui.dev_jar_views import (
     build_dev_jar_download_view,
     build_dev_jar_review_view,
 )
+from bulmaai.ui.v2 import unbusy, while_busy
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 
@@ -115,6 +116,7 @@ class DevJarDownloadsCog(ReloadableCog):
         self._webhook_path: str | None = None
         self._get_paths: list[str] = []
         self._pending_review_lock = asyncio.Lock()
+        self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
 
     @property
     def settings(self):
@@ -524,14 +526,13 @@ class DevJarDownloadsCog(ReloadableCog):
         interaction: discord.Interaction,
         review: PendingDevJarReview,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
         async with self._pending_review_lock:
             if not await self._review_still_current(review):
                 await interaction.followup.send(
                     "This dev jar review was already handled or replaced by a newer push.",
                     ephemeral=True,
                 )
-                return
+                return await unbusy(interaction)
             try:
                 artifact = self._refresh_artifact_stat(review.artifact)
             except FileNotFoundError:
@@ -539,7 +540,7 @@ class DevJarDownloadsCog(ReloadableCog):
                     f"Cannot publish: `{review.artifact.file_name}` is no longer on disk.",
                     ephemeral=True,
                 )
-                return
+                return await unbusy(interaction)
 
             await self._post_download_announcement(
                 artifact,
@@ -577,14 +578,13 @@ class DevJarDownloadsCog(ReloadableCog):
         # carry forward and reappear on the next push's prompt instead of being
         # lost. The message link is cleared so that next push posts a fresh
         # prompt rather than trying to re-edit this discard record.
-        await interaction.response.defer(ephemeral=True)
         async with self._pending_review_lock:
             if not await self._review_still_current(review):
                 await interaction.followup.send(
                     "This dev jar review was already handled or replaced by a newer push.",
                     ephemeral=True,
                 )
-                return
+                return await unbusy(interaction)
             deleted = self._delete_artifact_file(review.artifact)
             if interaction.message is not None:
                 view, _ = build_dev_jar_review_view(
@@ -651,10 +651,10 @@ class DevJarDownloadsCog(ReloadableCog):
                 ephemeral=True,
             )
             return
-        if publish:
-            await self._publish_pending_review(interaction, review)
-        else:
-            await self._discard_pending_review(interaction, review)
+        decide = self._publish_pending_review if publish else self._discard_pending_review
+        await while_busy(
+            interaction, self._working, lambda: decide(interaction, review), failed="Couldn't finish that. Try again."
+        )
 
     async def _handle_download_button(
         self,

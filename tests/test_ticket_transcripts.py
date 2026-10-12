@@ -14,6 +14,7 @@ from bulmaai.services.ticket_transcripts import (
     TranscriptLine,
     anonymize_lines,
     get_image_analyses,
+    record_ticket_transcript,
     render_knowledge_markdown,
     render_transcript_text,
     summarize_ticket,
@@ -227,6 +228,56 @@ class TicketTranscriptTests(unittest.IsolatedAsyncioTestCase):
         sql, args = conn.fetch_calls[0]
         self.assertIn("ticket_image_analyses", sql)
         self.assertEqual(args[0], [111, 222])
+
+
+class RecordConnection:
+    """Answers UPDATE with how many rows it hit; collects every statement."""
+
+    def __init__(self, updated: int) -> None:
+        self.updated = updated
+        self.statements = []
+
+    def transaction(self):
+        return FakeAcquire(self)
+
+    async def execute(self, sql, *args):
+        self.statements.append((sql, args))
+        return f"UPDATE {self.updated}" if sql.strip().startswith("UPDATE") else "INSERT 0 1"
+
+
+class RecordTranscriptTests(unittest.IsolatedAsyncioTestCase):
+    async def record(self, conn):
+        await record_ticket_transcript(
+            channel_id=900,
+            guild_id=1,
+            channel_name="closed-0042",
+            requester_id=100,
+            closed_by_id=200,
+            resolved=False,
+            ai_confidence=None,
+            message_count=3,
+            summary=None,
+            transcript="text",
+            openai_file_id=None,
+            html_token="k" * 32,
+            html_expires_at=None,
+            pool=FakePool(conn),
+        )
+
+    async def test_reclose_updates_the_channels_row_in_place(self) -> None:
+        conn = RecordConnection(updated=1)
+        await self.record(conn)
+        self.assertEqual(len(conn.statements), 1)  # no DELETE, no INSERT: same id
+        sql, args = conn.statements[0]
+        self.assertIn("WHERE id = (SELECT max(id) FROM ticket_transcripts WHERE channel_id = $1)", sql)
+        self.assertIn("COALESCE($15, openai_file_id)", sql)  # the first close's knowledge file is kept
+        self.assertEqual((args[0], args[15], args[16]), (900, "k" * 32, None))
+
+    async def test_first_close_inserts(self) -> None:
+        conn = RecordConnection(updated=0)
+        await self.record(conn)
+        self.assertEqual([sql.split()[0] for sql, _ in conn.statements], ["UPDATE", "INSERT"])
+        self.assertFalse(any("DELETE" in sql for sql, _ in conn.statements))
 
 
 if __name__ == "__main__":

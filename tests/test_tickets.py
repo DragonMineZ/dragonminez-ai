@@ -17,6 +17,8 @@ from bulmaai.services import tickets as db
 from bulmaai.services.ticket_pages import StoredPage
 from bulmaai.services.ticket_intake import triage_intake
 from bulmaai.ui import ticket_views as views
+from bulmaai.ui import v2
+from v2_helpers import sent_message
 
 OWNER_ROLE, ADMIN_ROLE, MOD_ROLE, HELPER_ROLE, TESTER_ROLE = 11, 12, 13, 14, 15
 OWNER_ID, STAFF_ID = 100, 200
@@ -203,7 +205,7 @@ class FakeConn:
     async def fetchrow(self, query, *args):
         self.rows.append(args)
         keys = db.Ticket.__slots__
-        values = dict(zip(keys, [args[0], args[1], args[2], None, args[3], "creating", None, args[4], None, None, None, None, None, None]))
+        values = dict(zip(keys, [args[0], args[1], args[2], None, args[3], "creating", None, args[4], None, None, None, None, None, None, []]))
         return values
 
 
@@ -314,13 +316,12 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
         with (
             patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed,
-            patch.object(cog, "_archive", AsyncMock()) as archive,
+            patch.object(cog, "archive", AsyncMock()) as archive,
             patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
             ticket = await cog.close_ticket(channel, closer_id=STAFF_ID, reason="done")
         self.assertEqual(ticket.ticket_id, 42)
         closed.assert_awaited_once_with(900, closed_by=STAFF_ID, reason="done")
-        archive.assert_not_called()  # transcripts are on request only
         ai_cog.ticket_closed.assert_awaited_once_with(900)
         edits = [call.kwargs for call in channel.edit.await_args_list]
         self.assertNotIn(owner, edits[0]["overwrites"])  # staff only from here on
@@ -329,18 +330,40 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         sent = channel.send.await_args.kwargs["view"]
         self.assertIn("<@200>", texts(sent))
         self.assertEqual(custom_ids(sent), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"])
+        saving = next(item for item in walk(sent) if getattr(item, "custom_id", None) == "ticket_btn_transcript")
+        self.assertEqual((saving.label, saving.disabled), ("Saving transcript…", True))
+        # every close archives, and the archive updates the card it just posted
+        archive.assert_awaited_once_with(channel, ticket, closed_by_id=STAFF_ID, card=channel.send.return_value)
 
-    async def test_close_with_transcript_archives_and_dms_the_owner(self):
-        cog, channel = make_cog(), make_channel()
+    async def test_close_always_archives_swaps_in_the_link_and_dms_the_owner(self):
+        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
+        cog, channel = make_cog(), make_channel(owner)
+        page = StoredPage(token="e" * 32, expires_at=None)
         with (
             patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))),
             patch.object(cog, "_archive", AsyncMock(return_value=True)) as archive,
-            patch.object(cog, "_dm_transcript_link", AsyncMock()) as dm,
-            patch.object(cog, "_set_row", AsyncMock()),
+            patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=page)),
+            patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
-            await cog.close_ticket(channel, closer_id=OWNER_ID, reason=None, transcript=True)
+            await cog.close_ticket(channel, closer_id=OWNER_ID, reason=None)
         archive.assert_awaited_once()
-        dm.assert_awaited_once()
+        card, row = set_row.await_args.args
+        self.assertIs(card, channel.send.return_value)
+        link = row.children[0]
+        self.assertEqual(link.url, f"{SETTINGS.ticket_transcript_public_url}/t/{'e' * 32}")
+        self.assertEqual(link.label, "Transcript")
+        owner.send.assert_awaited_once()
+
+    async def test_failed_archive_leaves_a_retry_button(self):
+        cog, channel = make_cog(), make_channel()
+        with (
+            patch.object(cog, "_archive", AsyncMock(return_value=False)),
+            patch.object(cog, "_set_row", AsyncMock()) as set_row,
+        ):
+            self.assertIsNone(await cog.archive(channel, make_ticket(), closed_by_id=STAFF_ID, card="closed card"))
+        card, row = set_row.await_args.args
+        retry = row.children[0]
+        self.assertEqual((card, retry.custom_id, retry.label, retry.disabled), ("closed card", views.TRANSCRIPT_BUTTON_ID, "Retry transcript", False))
 
     async def test_closing_twice_does_nothing(self):
         cog, channel = make_cog(), make_channel()
@@ -405,7 +428,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cog, "_archive", AsyncMock(return_value=True)),
             patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=page)),
         ):
-            self.assertTrue(await cog.archive(channel, make_ticket(), closed_by_id=STAFF_ID))
+            self.assertIs(await cog.archive(channel, make_ticket(), closed_by_id=STAFF_ID), page)
         view = owner.send.await_args.kwargs["view"]
         self.assertIn("<t:", texts(view))
         button = next(item for item in view.walk_children() if isinstance(item, discord.ui.Button))
@@ -422,15 +445,17 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 await cog.archive(channel, make_ticket(), closed_by_id=STAFF_ID)
         owner.send.assert_not_called()
 
-    async def test_build_page_hosts_the_export(self):
+    async def test_build_page_hosts_the_export_at_the_channels_existing_address(self):
         cog, channel = make_cog(), make_channel()
-        page = StoredPage(token="b" * 32, expires_at=None)
+        existing, page = StoredPage(token="a" * 32, expires_at=None), StoredPage(token="b" * 32, expires_at=None)
         with (
             patch.object(cog, "export_html", AsyncMock(return_value=b"<html/>")),
+            patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=existing)) as current,
             patch.object(cog_module, "save_page", AsyncMock(return_value=page)) as save,
         ):
             self.assertIs(await cog.build_page(channel), page)
-        save.assert_awaited_once_with(SETTINGS, b"<html/>")
+        current.assert_awaited_once_with(900)
+        save.assert_awaited_once_with(SETTINGS, b"<html/>", reuse=existing)
         with patch.object(cog, "export_html", AsyncMock(return_value=None)):
             self.assertIsNone(await cog.build_page(channel))
 
@@ -474,6 +499,90 @@ class TranscriptPolishTests(unittest.TestCase):
         self.assertIn('href="https://www.patreon.com/DragonMineZ"', html)
 
 
+BOT_ID = 9  # make_cog's bot user
+
+
+def at(minute):
+    return datetime(2026, 10, 1, 12, minute, tzinfo=timezone.utc)
+
+
+def said(message_id, author_id, minute, content="", reference=None):
+    """Enough of a discord.Message for hide_closed_messages and chat_exporter."""
+    author = SimpleNamespace(
+        id=author_id, name=f"user{author_id}", display_name=f"User {author_id}", discriminator="0", bot=author_id == BOT_ID,
+        public_flags=SimpleNamespace(verified_bot=False), display_avatar="https://cdn/a.png", created_at=at(0), joined_at=at(0),
+    )
+    return SimpleNamespace(
+        id=message_id, author=author, content=content, created_at=at(minute), edited_at=None, type=discord.MessageType.default,
+        reference=reference, interaction=None, interaction_metadata=None, stickers=[], attachments=[], embeds=[],
+        components=[], reactions=[], webhook_id=None, mentions=[], channel=SimpleNamespace(type=discord.ChannelType.text),
+    )
+
+
+class ClosedStretchTests(unittest.IsolatedAsyncioTestCase):
+    """Messages sent while a ticket was closed never reach a transcript; a notice stands in for each closed stretch."""
+
+    SPANS = [(at(2), at(5)), (at(7), None)]
+
+    def test_spans_are_past_periods_plus_the_current_close(self):
+        past = ((at(2), at(5)),)
+        self.assertEqual(db.closed_spans(make_ticket(closed_periods=past)), [(at(2), at(5))])
+        self.assertEqual(db.closed_spans(make_ticket(status="closed", closed_at=at(7), closed_periods=past)), self.SPANS)
+        self.assertEqual(db.closed_spans(None), [])  # no tickets row: nothing is hidden
+
+    def test_rows_turn_ranges_into_pairs_and_drop_unbounded_ones(self):
+        from asyncpg import Range
+
+        values = [42, 1, OWNER_ID, 900, "bug", "open", None, "en", None, None, None, None, at(0), None]
+        row = dict(zip(db.Ticket.__slots__, [*values, [Range(at(2), at(5)), Range(None, at(6)), Range(empty=True)]]))
+        self.assertEqual(db._ticket(row).closed_periods, ((at(2), at(5)),))
+
+    def test_closed_messages_collapse_into_one_count_per_stretch_and_bot_cards_stay(self):
+        messages = [
+            said(1, BOT_ID, 0), said(2, OWNER_ID, 1), said(3, BOT_ID, 2), said(4, STAFF_ID, 2), said(5, STAFF_ID, 4),
+            said(6, BOT_ID, 5), said(7, STAFF_ID, 5), said(8, BOT_ID, 7), said(9, STAFF_ID, 8),
+        ]
+        entries = db.hide_closed_messages(messages, self.SPANS, bot_id=BOT_ID)
+        self.assertEqual(
+            [entry.notice if isinstance(entry, db.ClosedGap) else entry.id for entry in entries],
+            [
+                1, 2, 3, "2 messages were sent while this ticket was closed.", 6, 7, 8,
+                "1 message was sent while this ticket was closed.",
+            ],
+        )
+        self.assertEqual(entries[3].created_at, at(2))  # where the first hidden message was
+        self.assertEqual(db.hide_closed_messages(messages, [], bot_id=BOT_ID), messages)
+
+    async def test_html_export_drops_closed_messages_and_marks_each_gap(self):
+        cog, channel = make_cog(), make_channel()
+        channel.topic, channel.created_at = "Ticket #0042 · bug · owner 100", at(0)
+        quoting_hidden = SimpleNamespace(message_id=discord.utils.time_snowflake(at(3)), channel_id=900)
+        oldest_first = [
+            said(1, BOT_ID, 0, "welcome card"), said(2, OWNER_ID, 1, "it crashes"), said(3, BOT_ID, 2, "closed card"),
+            said(4, STAFF_ID, 3, "zzhidden one"), said(5, STAFF_ID, 4, "zzhidden two"), said(6, BOT_ID, 5, "reopened card"),
+            said(7, STAFF_ID, 6, "following up", reference=quoting_hidden), said(8, BOT_ID, 7, "closed again"),
+            said(9, STAFF_ID, 8, "zzhidden three"),
+        ]
+
+        async def history(limit):
+            for message in reversed(oldest_first):
+                yield message
+
+        channel.history = history
+        channel.fetch_message = AsyncMock(side_effect=AssertionError("fetched a hidden message"))
+        ticket = make_ticket(status="closed", closed_at=at(7), closed_periods=((at(2), at(5)),))
+        with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=ticket)):
+            html = (await cog.export_html(channel)).decode()
+
+        self.assertNotIn("zzhidden", html)
+        chat = html[html.index('<div class="chatlog">') :]
+        markers = ("closed card", "2 messages were sent", "reopened card", "following up", "closed again", "1 message was sent")
+        spots = [chat.index(marker) for marker in markers]
+        self.assertEqual(spots, sorted(spots))
+        self.assertLess(spots[-1], chat.index('<div class="footer">'))
+        self.assertIn("6 messages", html.split("<style>")[0])  # the link preview counts only what's shown
+
+
 class StaffPingTests(unittest.IsolatedAsyncioTestCase):
     def message(self, author, *, users=(), roles=()):
         staff = member(STAFF_ID, HELPER_ROLE)
@@ -515,12 +624,21 @@ class StaffPingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
-    def interaction(self, user):
+    def interaction(self, user, custom_id=None, card=None):
+        """A click on custom_id on the closed card (or card)."""
         return SimpleNamespace(
             user=user,
             channel_id=900,
+            data={"custom_id": custom_id},
+            message=sent_message(card or views.closed_view(None, None)),
             response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock(), edit_message=AsyncMock()),
+            edit_original_response=AsyncMock(),
+            followup=SimpleNamespace(send=AsyncMock()),
         )
+
+    def busy_row(self, interaction):
+        view = interaction.response.edit_message.await_args.kwargs["view"]
+        return {item.custom_id or item.url: (item.label, item.disabled) for item in walk(view) if isinstance(item, discord.ui.Button)}
 
     async def test_non_staff_cannot_use_any_button(self):
         cog = make_cog()
@@ -553,8 +671,8 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             ):
                 interaction.channel = make_channel()
                 interaction.edit_original_response = AsyncMock()
-                await cog._close_from_prompt(interaction, True)
-            close.assert_awaited_once_with(interaction.channel, closer_id=OWNER_ID, reason=None, transcript=True)
+                await cog._close_from_prompt(interaction)
+            close.assert_awaited_once_with(interaction.channel, closer_id=OWNER_ID, reason=None)
             self.assertIn("d" * 32, str(interaction.edit_original_response.await_args.kwargs["view"].to_components()))
         with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed"))):
             for handler in (cog.on_reopen, cog.on_transcript):
@@ -562,44 +680,87 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
                 await handler(interaction)
                 interaction.response.send_message.assert_awaited_once()
 
-    async def test_helper_gets_public_transcript_link_and_button_is_disabled(self):
+    async def test_retry_or_old_transcript_button_rearchives_into_the_card_without_posting(self):
         cog = make_cog()
-        interaction = self.interaction(member(STAFF_ID, HELPER_ROLE))
+        ai_cog = SimpleNamespace(forget_archived=MagicMock(), _close_ticket=AsyncMock(return_value=True))
+        cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
+        retry_card = views.closed_view(None, None)
+        retry_card.remove_item(views.ACTIONS_ID)
+        retry_card.add_item(views.closed_row())
+        interaction = self.interaction(member(STAFF_ID, HELPER_ROLE), views.TRANSCRIPT_BUTTON_ID, retry_card)
         interaction.channel = make_channel()
-        interaction.message = "closed card"
-        interaction.followup = SimpleNamespace(send=AsyncMock())
         page = StoredPage(token="c" * 32, expires_at=None)
         with (
             patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed", closed_by=OWNER_ID))),
-            patch.object(cog, "archive", AsyncMock(return_value=True)) as archive,
             patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=page)),
             patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
             await cog.on_transcript(interaction)
-        archive.assert_awaited_once()
-        self.assertEqual(archive.await_args.kwargs["closed_by_id"], OWNER_ID)
-        self.assertIn("c" * 32, interaction.followup.send.await_args.args[0])
-        self.assertNotIn("ephemeral", interaction.followup.send.await_args.kwargs)
-        interaction.response.defer.assert_awaited_once_with()
+        ai_cog.forget_archived.assert_called_once_with(900)  # the close already archived it once
+        self.assertEqual(ai_cog._close_ticket.await_args.kwargs["closed_by_id"], OWNER_ID)
+        self.assertFalse(ai_cog._close_ticket.await_args.kwargs["announce"])
+        # first the card shows the click is being handled, with its row disabled
+        self.assertEqual(
+            self.busy_row(interaction),
+            {
+                views.TRANSCRIPT_BUTTON_ID: (v2.WORKING, True),
+                views.REOPEN_BUTTON_ID: ("Re-Open", True),
+                views.DELETE_BUTTON_ID: ("Delete", True),
+            },
+        )
+        interaction.followup.send.assert_not_called()  # the card's link button is the only note
+        interaction.edit_original_response.assert_not_called()  # nothing to restore
         message, row = set_row.await_args.args
-        self.assertEqual(message, "closed card")
-        self.assertTrue(row.get_item("ticket_btn_transcript").disabled)
+        self.assertIs(message, interaction.message)
+        self.assertEqual(row.children[0].url, f"{SETTINGS.ticket_transcript_public_url}/t/{'c' * 32}")
         self.assertFalse(row.get_item("ticket_btn_reopen").disabled)
 
     async def test_reopen_strips_the_closed_card_buttons(self):
         cog = make_cog()
-        interaction = self.interaction(member(STAFF_ID, MOD_ROLE))
+        interaction = self.interaction(member(STAFF_ID, MOD_ROLE), views.REOPEN_BUTTON_ID)
         interaction.guild = SimpleNamespace(get_member=lambda _id: member(_id))
         interaction.channel = make_channel()
-        interaction.message = "closed card"
         with (
             patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed"))),
             patch.object(cog, "reopen_ticket", AsyncMock()) as reopen,
             patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
             await cog.on_reopen(interaction)
-        set_row.assert_awaited_once_with("closed card", None)
+        self.assertEqual(self.busy_row(interaction)[views.REOPEN_BUTTON_ID], (v2.WORKING, True))
+        set_row.assert_awaited_once_with(interaction.message, None)
         reopen.assert_awaited_once()
+
+    async def test_second_click_while_working_is_turned_away(self):
+        cog = make_cog()
+        cog._working.add(1)  # the first click on this card is still running
+        interaction = self.interaction(member(STAFF_ID, MOD_ROLE), views.REOPEN_BUTTON_ID)
+        interaction.guild = SimpleNamespace(get_member=lambda _id: member(_id))
+        with (
+            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed"))),
+            patch.object(cog, "reopen_ticket", AsyncMock()) as reopen,
+        ):
+            await cog.on_reopen(interaction)
+        interaction.response.send_message.assert_awaited_once_with(v2.ALREADY_WORKING, ephemeral=True)
+        interaction.response.edit_message.assert_not_called()
+        reopen.assert_not_called()
+        self.assertEqual(cog._working, {1})  # still the first click's
+
+    async def test_failed_work_restores_the_row_and_releases_the_card(self):
+        cog = make_cog()
+        interaction = self.interaction(member(STAFF_ID, MOD_ROLE), views.REOPEN_BUTTON_ID)
+        interaction.guild = SimpleNamespace(get_member=lambda _id: member(_id))
+        interaction.channel = make_channel()
+        with (
+            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed"))),
+            patch.object(cog, "reopen_ticket", AsyncMock(side_effect=RuntimeError("boom"))),
+            self.assertLogs(v2.log, "ERROR"),
+        ):
+            await cog.on_reopen(interaction)
+        restored = interaction.edit_original_response.await_args.kwargs["view"]
+        reopen_button = next(item for item in walk(restored) if getattr(item, "custom_id", None) == views.REOPEN_BUTTON_ID)
+        self.assertEqual((reopen_button.label, reopen_button.disabled), ("Re-Open", False))
+        interaction.followup.send.assert_awaited_once_with(views.MSG["failed"], ephemeral=True)
+        self.assertEqual(cog._working, set())
 
     async def test_helper_cannot_delete_but_mod_can(self):
         cog = make_cog()
@@ -609,11 +770,12 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             interaction = self.interaction(member(STAFF_ID, HELPER_ROLE))
             await cog.on_delete(interaction)
             delete.assert_not_called()
-            interaction = self.interaction(member(STAFF_ID, MOD_ROLE))
+            interaction = self.interaction(member(STAFF_ID, MOD_ROLE), views.DELETE_BUTTON_ID)
             interaction.channel = make_channel()
-            interaction.followup = SimpleNamespace(send=AsyncMock())
             await cog.on_delete(interaction)
             delete.assert_awaited_once()
+        self.assertEqual(self.busy_row(interaction)[views.DELETE_BUTTON_ID], (v2.WORKING, True))
+        interaction.followup.send.assert_awaited_once_with(views.MSG["deleting"])
 
     async def test_open_ticket_cannot_be_reopened_or_deleted_via_stale_buttons(self):
         cog = make_cog()
@@ -726,13 +888,56 @@ class AiToggleTests(unittest.IsolatedAsyncioTestCase):
         cog = make_cog()
         ai_cog = SimpleNamespace(is_ticket_ai_enabled=lambda _id: True, set_ticket_ai_enabled=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
+        welcome = views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@1>")
         interaction = SimpleNamespace(
             channel_id=900,
             user=SimpleNamespace(id=STAFF_ID, roles=[SimpleNamespace(id=HELPER_ROLE)], mention=f"<@{STAFF_ID}>"),
-            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
+            data={"custom_id": views.AI_BUTTON_ID},
+            message=sent_message(welcome),
+            response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(), edit_message=AsyncMock()),
+            edit_original_response=AsyncMock(),
             followup=SimpleNamespace(send=AsyncMock()),
         )
         with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())):
             await cog.on_toggle_ai(interaction)
         ai_cog.set_ticket_ai_enabled.assert_awaited_once_with(900, False)
         self.assertIn("AI support is now **off**", interaction.followup.send.await_args.args[0])
+        busy = interaction.response.edit_message.await_args.kwargs["view"]
+        labels = [(item.label, item.disabled) for item in walk(busy) if isinstance(item, discord.ui.Button)]
+        self.assertEqual(labels, [(v2.WORKING, True), ("Close | Cerrar", True)])
+
+
+class BusyCardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_busy_disables_the_clicked_row_and_relabels_only_the_clicked_button(self):
+        card = views.closed_view(None, None)
+        card.remove_item(views.ACTIONS_ID)
+        card.add_item(views.closed_row("https://tickets.example/t/x"))
+        view = v2.busy(discord.ui.DesignerView.from_message(sent_message(card), timeout=None), views.DELETE_BUTTON_ID)
+        link, reopen, delete = [item for item in walk(view) if isinstance(item, discord.ui.Button)]
+        self.assertEqual((link.url, link.label, link.disabled), ("https://tickets.example/t/x", "Transcript", False))
+        self.assertEqual((reopen.label, reopen.disabled, str(reopen.emoji)), ("Re-Open", True, "🔓"))
+        self.assertEqual((delete.label, delete.disabled, delete.emoji), (v2.WORKING, True, None))
+        self.assertEqual(delete.style, discord.ButtonStyle.danger)  # keeps its colour
+
+    async def test_busy_leaves_other_rows_alone(self):
+        prompt = views.ClosePrompt(AsyncMock())
+        other = discord.ui.ActionRow(discord.ui.Button(label="Other", custom_id="other"))
+        prompt.add_item(other)
+        v2.busy(prompt, prompt._close_id)
+        self.assertEqual((other.children[0].label, other.children[0].disabled), ("Other", False))
+        close, cancel = [item for item in walk(prompt.children[0]) if isinstance(item, discord.ui.Button)]
+        self.assertEqual((close.label, close.disabled, cancel.disabled), (v2.WORKING, True, True))
+
+    async def test_close_prompt_confirm_shows_working_and_ignores_a_second_click(self):
+        on_confirm = AsyncMock()
+        prompt = views.ClosePrompt(on_confirm)
+        first = SimpleNamespace(response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
+        await prompt._confirm(first)
+        on_confirm.assert_awaited_once_with(first)
+        busy = first.response.edit_message.await_args.kwargs["view"]
+        self.assertIs(busy, prompt)
+        self.assertEqual(busy.children[0].items[1].children[0].label, v2.WORKING)
+        second = SimpleNamespace(response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
+        await prompt._confirm(second)
+        second.response.send_message.assert_awaited_once_with(v2.ALREADY_WORKING, ephemeral=True)
+        self.assertEqual(on_confirm.await_count, 1)

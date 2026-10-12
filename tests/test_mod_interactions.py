@@ -173,10 +173,13 @@ class Base(unittest.IsolatedAsyncioTestCase):  # py-cord Views/Modals need a run
             message=message,
             response=FakeResponse(),
             followup=SimpleNamespace(send=AsyncMock()),
+            edit_original_response=AsyncMock(),
         )
 
     def modal_interaction(self, user, *, guild=None):
-        return self.interaction("modal", user, guild=guild)
+        interaction = self.interaction("modal", user, guild=guild)
+        interaction.type = discord.InteractionType.modal_submit
+        return interaction
 
 
 class QuickActionTests(Base):
@@ -258,6 +261,7 @@ class QuickActionTests(Base):
             await self.cog.on_interaction(inter)
         self.assertEqual(inter.followup.send.await_args.args[0], "That user isn't in the server.")
         alert.edit.assert_not_awaited()
+        inter.edit_original_response.assert_awaited_once()  # the alert comes back from Working, untouched
 
     async def test_dismissing_a_joiner_alert_resolves_it_so_the_sweep_leaves_it_alone(self):
         moderator = self.member(2, MOD_ROLE)

@@ -40,6 +40,7 @@ from bulmaai.services.ticket_transcripts import (
     TranscriptLine,
     delete_image_analyses,
     get_image_analyses,
+    knowledge_file_id,
     record_ticket_transcript,
     render_knowledge_markdown,
     render_transcript_text,
@@ -48,6 +49,8 @@ from bulmaai.services.ticket_transcripts import (
     ticket_knowledge_filename,
     upload_ticket_knowledge,
 )
+from bulmaai.services.tickets import ClosedGap, hide_closed_messages
+from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.log_parser import parse_log
@@ -99,6 +102,7 @@ AI_PAUSED_TEXT = (
     "My AI circuits are recharging for today ⚡ I'll be back at 00:00 UTC. "
     "A staff member will help you in the meantime."
 )
+RESOLVE_FAILED_TEXT = "Something went wrong, please try again."
 RESOLVE_PROMPT_TEXT: dict[str, dict[str, str]] = {
     "en": {
         "question": "Have I solved your problem?",
@@ -459,6 +463,7 @@ class AITicketsCog(ReloadableCog):
         # ponytail: in-memory, a restart just shows "n/a" confidence on the close embed.
         self._last_confidence: dict[int, float] = {}
         self._closing_channels: set[int] = set()
+        self._working: set[int] = set()  # "solved?" prompts whose answer is still being handled (ui.v2.while_busy)
         # ponytail: in-memory dedupe; reopening a ticket clears its entry (forget_archived), a restart clears all.
         self._archived_channels: set[int] = set()
         self._paused_notices: dict[int, date] = {}
@@ -1174,24 +1179,24 @@ class AITicketsCog(ReloadableCog):
             return await interaction.response.send_message("This ticket is already closing.", ephemeral=True)
 
         text = _resolve_text(language)
-        self._resolve_prompts.pop(channel.id, None)
-        view = _card(
-            text["thanks"] if solved else text["escalated"],
-            discord.Color.green() if solved else discord.Color.orange(),
-        )
-        await interaction.response.edit_message(view=view)
-        if solved:
-            await self._close_ticket(
-                channel,
-                closed_by_id=user.id,
-                requester_id=requester_id,
-                resolved=True,
-                delete_channel=True,
-            )
-            return
 
-        await self._mark_ticket_escalated(channel.id)
-        await self._ping_escalation_roles(channel, requester_id)
+        async def answer() -> None:
+            if solved:
+                await interaction.edit_original_response(view=_card(text["thanks"], discord.Color.green()))
+                await self._close_ticket(
+                    channel,
+                    closed_by_id=user.id,
+                    requester_id=requester_id,
+                    resolved=True,
+                    delete_channel=True,
+                )
+                return
+            await self._mark_ticket_escalated(channel.id)
+            await self._ping_escalation_roles(channel, requester_id)
+            self._resolve_prompts.pop(channel.id, None)
+            await interaction.edit_original_response(view=_card(text["escalated"], discord.Color.orange()))
+
+        await while_busy(interaction, self._working, answer, failed=RESOLVE_FAILED_TEXT)
 
     async def _maybe_close_solved(self, channel: discord.TextChannel, message: discord.Message) -> None:
         """The AI is off here; the owner saying it's solved closes the ticket like the "Yes" button."""
@@ -1237,10 +1242,15 @@ class AITicketsCog(ReloadableCog):
         channel: discord.TextChannel,
         requester_id: int | None,
     ) -> tuple[list[TranscriptLine], int | None]:
-        messages = [
+        history = [
             entry
             async for entry in channel.history(limit=TRANSCRIPT_MESSAGE_LIMIT, oldest_first=True)
         ]
+        # Messages sent while the ticket was closed stay out; without the tickets cog nothing records those stretches.
+        tickets = self.bot.get_cog("TicketsCog")
+        spans = await tickets.closed_spans_for(channel.id) if tickets is not None else []
+        entries = hide_closed_messages(history, spans, bot_id=getattr(self.bot.user, "id", None))
+        messages = [entry for entry in entries if not isinstance(entry, ClosedGap)]
         if requester_id is None:
             # Our welcome message mentions the owner; fall back to the first non-staff human.
             requester_id = next(
@@ -1262,7 +1272,10 @@ class AITicketsCog(ReloadableCog):
             )
         analyses = await self._cached_image_analyses(messages)
         lines: list[TranscriptLine] = []
-        for entry in messages:
+        for entry in entries:
+            if isinstance(entry, ClosedGap):
+                lines.append(TranscriptLine(entry.created_at, "system", "System", entry.notice))
+                continue
             if entry.author.bot and entry.author != self.bot.user:
                 continue
             content = _message_content(entry, analyses)
@@ -1316,6 +1329,7 @@ class AITicketsCog(ReloadableCog):
         try:
             closed_at = datetime.now(timezone.utc)
             lines, requester_id = await self._collect_transcript(channel, requester_id)
+            message_count = sum(line.speaker_kind != "system" for line in lines)
             transcript = render_transcript_text(lines, channel_name=channel.name)
             page = await self._build_page(channel)
 
@@ -1346,16 +1360,18 @@ class AITicketsCog(ReloadableCog):
             staff_reviewed = any(line.speaker_kind == "staff" for line in lines)
             if summary is not None and summary.knowledge_worthy and staff_reviewed and vector_store_id:
                 try:
-                    openai_file_id = await upload_ticket_knowledge(
-                        render_knowledge_markdown(summary, lines, closed_at=closed_at),
-                        filename=ticket_knowledge_filename(channel.id, closed_at),
-                        vector_store_id=vector_store_id,
-                        attributes={
-                            "source": "ticket",
-                            "resolved": resolved,
-                            "closed_at": closed_at.date().isoformat(),
-                        },
-                    )
+                    # ponytail: a re-close keeps the first close's knowledge file; no vector-store delete helper yet.
+                    if await knowledge_file_id(channel.id) is None:
+                        openai_file_id = await upload_ticket_knowledge(
+                            render_knowledge_markdown(summary, lines, closed_at=closed_at),
+                            filename=ticket_knowledge_filename(channel.id, closed_at),
+                            vector_store_id=vector_store_id,
+                            attributes={
+                                "source": "ticket",
+                                "resolved": resolved,
+                                "closed_at": closed_at.date().isoformat(),
+                            },
+                        )
                 except Exception:
                     log.exception("Failed to upload ticket knowledge", extra={"channel_id": channel.id})
 
@@ -1367,7 +1383,7 @@ class AITicketsCog(ReloadableCog):
                 resolved=resolved,
                 summary=summary,
                 confidence=confidence,
-                message_count=len(lines),
+                message_count=message_count,
                 open_for=closed_at - channel.created_at,
                 added_to_knowledge=openai_file_id is not None,
                 closed_at=closed_at,
@@ -1383,7 +1399,7 @@ class AITicketsCog(ReloadableCog):
                     closed_by_id=closed_by_id,
                     resolved=resolved,
                     ai_confidence=confidence,
-                    message_count=len(lines),
+                    message_count=message_count,
                     summary=summary,
                     transcript=transcript,
                     openai_file_id=openai_file_id,
@@ -1404,12 +1420,9 @@ class AITicketsCog(ReloadableCog):
                 else "📋 Ticket summary and transcript saved."
             )
             try:
+                # announce=False: TicketsCog's closed card shows the transcript link itself.
                 if announce:
                     await channel.send(view=_build_close_card(**card_args, note=note))
-                elif page is not None:
-                    await channel.send(
-                        view=_card(f"🧾 A transcript of this ticket was created: {page_url(settings, page.token)}")
-                    )
             except discord.HTTPException:
                 # Expected when the channel was already deleted.
                 log.info("Could not post close embed in ticket", extra={"channel_id": channel.id})

@@ -22,6 +22,7 @@ SPEAKER_LABELS = {
     "staff": "Staff",
     "assistant": "BulmaAI",
     "participant": "User",
+    "system": "System",  # notices we add, e.g. how many messages were sent while the ticket was closed
 }
 
 _MIN_ANONYMIZED_NAME_LENGTH = 3
@@ -134,7 +135,9 @@ async def delete_image_analyses(channel_id: int, *, pool: Any | None = None) -> 
 def render_transcript_text(lines: Sequence[TranscriptLine], *, channel_name: str) -> str:
     header = f"Transcript: #{channel_name}"
     entries = [
-        f"[{line.created_at:%Y-%m-%d %H:%M} UTC] {line.speaker_name} ({line.speaker_kind}): {line.content}"
+        f"[{line.created_at:%Y-%m-%d %H:%M} UTC] -- {line.content}"
+        if line.speaker_kind == "system"
+        else f"[{line.created_at:%Y-%m-%d %H:%M} UTC] {line.speaker_name} ({line.speaker_kind}): {line.content}"
         for line in lines
     ]
     return "\n".join([header, "=" * len(header), *entries]) + "\n"
@@ -324,36 +327,62 @@ async def record_ticket_transcript(
     html_expires_at: datetime | None = None,
     pool: Any | None = None,
 ) -> None:
-    """A re-opened ticket closes again with its full history, so the new row replaces the old one
-    (the old hosted file becomes an orphan that ticket_pages.purge removes)."""
+    """One row per channel: a re-opened ticket closes again with its full history and updates that row in place
+    (same id; the page token comes from ticket_pages.save_page(reuse=...), so the address stays the same).
+    A None openai_file_id keeps the file the first close taught; a None html_token (export failed) keeps the old page."""
+    args = (
+        channel_id,
+        guild_id,
+        channel_name,
+        requester_id,
+        closed_by_id,
+        resolved,
+        ai_confidence,
+        message_count,
+        summary.title if summary else None,
+        summary.problem if summary else None,
+        summary.resolution if summary else None,
+        list(summary.tags) if summary else [],
+        summary.knowledge_worthy if summary else False,
+        transcript,
+        openai_file_id,
+        html_token,
+        html_expires_at,
+    )
     resolved_pool = pool or await get_pool()
     async with resolved_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("DELETE FROM ticket_transcripts WHERE channel_id = $1", channel_id)
-            await conn.execute(
+            updated = await conn.execute(
                 """
-                INSERT INTO ticket_transcripts (
-                    channel_id, guild_id, channel_name, requester_id, closed_by_id,
-                    resolved, ai_confidence, message_count, title, problem, resolution,
-                    tags, knowledge_worthy, transcript, openai_file_id, html_token, html_expires_at, closed_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+                UPDATE ticket_transcripts SET
+                    guild_id = $2, channel_name = $3, requester_id = $4, closed_by_id = $5,
+                    resolved = $6, ai_confidence = $7, message_count = $8, title = $9, problem = $10, resolution = $11,
+                    tags = $12, knowledge_worthy = $13, transcript = $14, openai_file_id = COALESCE($15, openai_file_id),
+                    html_token = COALESCE($16, html_token),
+                    html_expires_at = CASE WHEN $16::text IS NULL THEN html_expires_at ELSE $17 END, closed_at = now()
+                WHERE id = (SELECT max(id) FROM ticket_transcripts WHERE channel_id = $1)
                 """,
-                channel_id,
-                guild_id,
-                channel_name,
-                requester_id,
-                closed_by_id,
-                resolved,
-                ai_confidence,
-                message_count,
-                summary.title if summary else None,
-                summary.problem if summary else None,
-                summary.resolution if summary else None,
-                list(summary.tags) if summary else [],
-                summary.knowledge_worthy if summary else False,
-                transcript,
-                openai_file_id,
-                html_token,
-                html_expires_at,
+                *args,
             )
+            if updated.endswith(" 0"):
+                await conn.execute(
+                    """
+                    INSERT INTO ticket_transcripts (
+                        channel_id, guild_id, channel_name, requester_id, closed_by_id,
+                        resolved, ai_confidence, message_count, title, problem, resolution,
+                        tags, knowledge_worthy, transcript, openai_file_id, html_token, html_expires_at, closed_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+                    """,
+                    *args,
+                )
+
+
+async def knowledge_file_id(channel_id: int, *, pool: Any | None = None) -> str | None:
+    """The vector-store file an earlier close of this channel uploaded; a re-close keeps it rather than adding a twin."""
+    resolved_pool = pool or await get_pool()
+    return await resolved_pool.fetchval(
+        "SELECT openai_file_id FROM ticket_transcripts WHERE channel_id = $1 AND openai_file_id IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        channel_id,
+    )

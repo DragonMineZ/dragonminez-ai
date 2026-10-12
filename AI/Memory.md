@@ -25,6 +25,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
   - Mod replies don't mention whether the DM was delivered.
 - Alerts about deleted messages never show "Jump to message". Quote the captured text instead.
 - Handled alerts collapse (`alert_card` in `ui/mod_cards.py`).
+- Card buttons that do slow work run through `ui/v2.while_busy`: the click disables the row and shows "⏳ Working…" at once, and a second click gets "Already working on it.". No silent `defer()` on buttons.
 
 ## Moderation
 
@@ -60,7 +61,10 @@ Console actions are private to Bruno:
 - Testers can't see tickets.
 - Re-Open and Delete are mod/admin only.
 - Max 2 open tickets per user.
-- Transcripts are made only via the staff Transcript button or AI auto-solve, never on close or delete. They're hosted at `tickets.dragonminez.com/t/<token>` by the panel's aiohttp app.
+- Every close (button, `/ticket close`, owner left) makes a transcript; there is no "close without transcript". They're hosted at `tickets.dragonminez.com/t/<token>` by the panel's aiohttp app.
+  - One address per ticket: re-open and re-close overwrite the same file and DB row (same token). A page staff made permanent stays permanent.
+  - The closed card's transcript button shows "Saving transcript…", then links to the page (or "Retry transcript" if archiving failed). No separate "transcript saved" message in the channel.
+  - Messages sent while the ticket was closed (except the bot's own) never reach any transcript, summary or knowledge file; one "N messages were sent while this ticket was closed." notice stands in per closed stretch (`services/tickets.hide_closed_messages`, stretches from `tickets.closed_periods` + `closed_at`).
 - Modal-submit `defer()` defaults to `invisible=True`, which edits the panel message publicly.
 
 ## Patreon beta whitelist

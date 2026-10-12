@@ -41,7 +41,7 @@ from bulmaai.ui.mod_views import (
     quick_action_buttons,
 )
 from bulmaai.web.core import PERMISSIONS, tier_for
-from bulmaai.ui.v2 import card
+from bulmaai.ui.v2 import card, unbusy, while_busy
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +139,18 @@ def _alert_summary(message: discord.Message | None) -> str | None:
     return " ".join(text.split())[:200] or None
 
 
+async def _start(interaction: discord.Interaction) -> None:
+    """A button click already answered through while_busy (its card shows Working); a reason modal still has to."""
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True, invisible=False)
+
+
+async def _put_back(interaction: discord.Interaction) -> None:
+    """After an error a button click already explained: its card comes back from Working, untouched."""
+    if interaction.type == discord.InteractionType.component:
+        await unbusy(interaction)
+
+
 async def _mark_handled(message: discord.Message | None, line: str, custom_id: str | None = None) -> None:
     """Records line on the alert card and disables the clicked button (every quick button when custom_id is None).
     The card collapses to a one-liner (modcard:show brings the details back); its buttons are rebuilt from the
@@ -233,6 +245,7 @@ class ModInteractionsCog(commands.Cog):
         self.bot = bot
         # ponytail: in-memory per-reporter cooldown; resets on restart, pruned on every report.
         self._last_report: dict[int, float] = {}
+        self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
 
     @property
     def settings(self):
@@ -306,7 +319,11 @@ class ModInteractionsCog(commands.Cog):
         custom_id = interaction.data["custom_id"]
         if action not in ASK_REASON:
             reason = _alert_summary(alert) or "Quick action from a staff alert"
-            await self._run_quick(interaction, action, user_id, parts[2:], alert, custom_id, reason)
+
+            async def run() -> None:
+                await self._run_quick(interaction, action, user_id, parts[2:], alert, custom_id, reason)
+
+            await while_busy(interaction, self._working, run, failed="Something went wrong, the action may not have gone through.")
             return
 
         async def submit(modal_interaction: discord.Interaction, reason: str) -> None:
@@ -334,7 +351,7 @@ class ModInteractionsCog(commands.Cog):
         custom_id: str,
         reason: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True, invisible=False)
+        await _start(interaction)
         moderator = interaction.user
         if action == "falsepos":
             await self._false_positive(interaction, alert, moderator)
@@ -348,7 +365,7 @@ class ModInteractionsCog(commands.Cog):
         if action == "delete":
             if error := await self._delete(int(extra[0]), int(extra[1]), moderator):
                 await interaction.followup.send(error, ephemeral=True)
-                return
+                return await _put_back(interaction)
         elif action != "dismiss":
             try:
                 result = await mod_actions.perform(
@@ -363,7 +380,7 @@ class ModInteractionsCog(commands.Cog):
                 )
             except mod_actions.ModActionError as error:
                 await interaction.followup.send(str(error), ephemeral=True)
-                return
+                return await _put_back(interaction)
             if result.case_id:
                 line += f" | case #{result.case_id}"
                 reply = f"Done: {label} (case #{result.case_id})."
@@ -423,7 +440,7 @@ class ModInteractionsCog(commands.Cog):
         explicit, staff-decided learn of the hit's images (mark_confirmed(..., learn=True))."""
         if error := await self._delete(int(extra[0]), int(extra[1]), moderator):
             await interaction.followup.send(error, ephemeral=True)
-            return
+            return await _put_back(interaction)
         learned = await self._confirm_hit(alert, moderator.id, learn=True)
         plural = "s" if learned != 1 else ""
         line = f"Deleted & learned {learned} image{plural} by {moderator.mention}"
@@ -594,7 +611,11 @@ class ModInteractionsCog(commands.Cog):
             return
         staff_message = interaction.message
         if decision == "accept":
-            await self._decide(interaction, user_id, staff_message, accepted=True, reason="")
+
+            async def accept() -> None:
+                await self._decide(interaction, user_id, staff_message, accepted=True, reason="")
+
+            await while_busy(interaction, self._working, accept, failed="Something went wrong, the appeal may not have been answered.")
             return
 
         async def submit(modal_interaction: discord.Interaction, reason: str) -> None:
@@ -621,7 +642,7 @@ class ModInteractionsCog(commands.Cog):
         accepted: bool,
         reason: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True, invisible=False)
+        await _start(interaction)
         guild = interaction.guild
         try:
             result = await mod_actions.perform(
@@ -635,7 +656,7 @@ class ModInteractionsCog(commands.Cog):
             )
         except mod_actions.ModActionError as error:
             await interaction.followup.send(str(error), ephemeral=True)
-            return
+            return await _put_back(interaction)
         if accepted:
             await self._dm(user_id, f"Your ban appeal for **{guild.name}** was accepted, you can rejoin the server.")
         else:

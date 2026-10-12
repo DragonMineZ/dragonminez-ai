@@ -1387,12 +1387,21 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 guild=MAIN_GUILD, guild_permissions=SimpleNamespace(administrator=True), roles=[]
             ),
         )
+        cog._working = set()
+
+        async def run_work(interaction, working, work, *, failed):
+            await work()
+
         with patch(
             "bulmaai.cogs.dev_jar_downloads.get_pending_dev_jar_review",
             new=AsyncMock(return_value=review),
-        ):
+        ), patch(
+            "bulmaai.cogs.dev_jar_downloads.while_busy",
+            new=AsyncMock(side_effect=run_work),
+        ) as busy:
             await cog._handle_review_decision(staff, publish=True)
         publish_mock.assert_awaited_once_with(staff, review)
+        self.assertIs(busy.await_args.args[1], cog._working)
 
         # A staff click with nothing pending (e.g. already handled) gets a notice.
         staff_stale = SimpleNamespace(

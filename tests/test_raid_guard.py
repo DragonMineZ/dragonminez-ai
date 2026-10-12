@@ -20,6 +20,8 @@ from bulmaai.cogs.raid_guard import (
     offense_breakdown,
 )
 from bulmaai.services import joiner_alerts, mod_actions
+from bulmaai.ui import v2
+from v2_helpers import sent_message
 
 JOINER_ALERTS_RECORD = "bulmaai.services.joiner_alerts.record"
 JOINER_ALERTS_DUE = "bulmaai.services.joiner_alerts.due"
@@ -371,7 +373,7 @@ class RaidButtonTests(unittest.IsolatedAsyncioTestCase):
         self.cog = make_cog(self.settings)
 
     def make_interaction(self, member, action):
-        message = SimpleNamespace(edit=AsyncMock())
+        message = sent_message(self.cog._raid_card())
         interaction = SimpleNamespace(
             type=discord.InteractionType.component,
             data={"custom_id": f"modraid:{action}"},
@@ -400,13 +402,37 @@ class RaidButtonTests(unittest.IsolatedAsyncioTestCase):
         lockdown.assert_awaited_once()
         self.assertEqual(lockdown.await_args.args[0], self.guild)
         self.assertEqual(lockdown.await_args.kwargs["moderator_id"], moderator.id)
-        interaction.response.defer.assert_awaited_once()
+        busy = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertIn(v2.WORKING, [item.label for item in _walk(busy) if isinstance(item, discord.ui.Button)])
         interaction.message.edit.assert_awaited_once()
         edited_view = interaction.message.edit.await_args.kwargs["view"]
         self.assertIn("modraid:unlock", all_ids(edited_view))
         self.assertIn("🔒 locked", all_text(edited_view))
         interaction.followup.send.assert_awaited_once()
         self.assertIn("4", interaction.followup.send.await_args.args[0])
+
+    async def test_second_lockdown_click_while_working_is_turned_away(self):
+        moderator = make_member(20, guild=self.guild, roles=[SimpleNamespace(id=200)])
+        first = self.make_interaction(moderator, "lockdown")
+        second = self.make_interaction(moderator, "lockdown")
+        second.message = first.message
+        release = asyncio.Event()
+
+        async def slow_lockdown(*args, **kwargs):
+            await release.wait()
+            return 4, 0
+
+        with patch("bulmaai.services.mod_actions.lockdown", AsyncMock(side_effect=slow_lockdown)) as lockdown:
+            running = asyncio.create_task(self.cog.on_interaction(first))
+            await asyncio.sleep(0)
+            await self.cog.on_interaction(second)
+            release.set()
+            await running
+        lockdown.assert_awaited_once()
+        second.response.send_message.assert_awaited_once_with(v2.ALREADY_WORKING, ephemeral=True)
+        second.response.edit_message.assert_not_called()
+        first.message.edit.assert_awaited_once()
+        self.assertEqual(self.cog._working, set())
 
     async def test_moderator_end_clears_raid_state_and_removes_buttons(self):
         self.cog._raid_until = 999999999.0

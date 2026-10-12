@@ -91,6 +91,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.scheduled_announcements",
     "bulmaai.cogs.console",
     "bulmaai.cogs.mod_case_cards",
+    "bulmaai.cogs.presence",
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"

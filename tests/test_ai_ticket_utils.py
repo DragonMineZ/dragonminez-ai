@@ -23,6 +23,7 @@ from bulmaai.cogs.ai_tickets import (
     _chunk_discord_message,
     _has_user_visible_tool_result,
     _is_ack_message,
+    _is_solved_message,
     _is_pinging_bot,
     _is_reply_to_bot,
     _relative_age,
@@ -76,6 +77,15 @@ class DiscordMessageChunkTests(unittest.TestCase):
             self.assertTrue(_is_ack_message(ack), ack)
         for follow_up in ("still broken", "1.20.1", "ok but it crashes again", "no funciona"):
             self.assertFalse(_is_ack_message(follow_up), follow_up)
+
+    def test_solved_messages_close_but_hedged_ones_do_not(self) -> None:
+        for solved in ("thank you, works a treat", "it works now!", "solved, ty", "fixed it thanks", "ya funciona, gracias"):
+            self.assertTrue(_is_solved_message(solved), solved)
+        for not_solved in (
+            "thanks", "still not working", "doesn't work", "it works but crashes on join", "does it work on 1.20.1?",
+            "no funciona", "will it be fixed in 2.2", "nothing works", "",
+        ):
+            self.assertFalse(_is_solved_message(not_solved), not_solved)
 
     def test_relative_age_renders_compact_units(self) -> None:
         now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)

@@ -80,6 +80,18 @@ ACK_MESSAGE_RE = re.compile(
     r"(?i)^\W*((thanks?|thank (you|u)|thx|ty)( (so|very) much| a lot| bro| man)?|tysm|tyvm|ok|okay|k|kk|cool|nice|"
     r"great|perfect|got it|(muchas )?gracias|vale|listo|perfecto|dale|obrigad[oa]|valeu|beleza)\W*$"
 )
+# ponytail: keyword heuristic for "it's solved" once the AI is off; a hedge word or "?" blocks it.
+# Ceiling: an odd phrasing can slip either way; swap for a cheap model check if false closes show up.
+SOLVED_MESSAGE_RE = re.compile(
+    r"(?i)\b(works?|worked|working|solved|fixed|resolved|sorted|figured it out|"
+    r"funciona|funcion[oó]|resuelto|solucionado|arreglado)\b"
+)
+SOLVED_HEDGE_RE = re.compile(
+    r"(?i)(n't|\?|\b(not|no|dont|doesnt|didnt|isnt|wont|cant|nothing|still|but|if|when|will|should|why|how|"
+    r"anymore|aun|a[uú]n|todav[ií]a|sigue|pero|nada)\b)"
+)
+SOLVED_MESSAGE_MAX_CHARS = 120
+SOLVED_CLOSE_TEXT = "Glad it's sorted! 🎉 Thanks for reaching out, this ticket will be closed now."
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
 # ponytail: in-memory per-user window (a restart resets it); stops one member draining the shared daily AI budget.
@@ -217,6 +229,16 @@ def _message_support_intent(
 def _is_ack_message(text: str) -> bool:
     """Pure thanks/ok replies need no AI answer, even inside tickets."""
     return bool(ACK_MESSAGE_RE.fullmatch(text.strip()))
+
+
+def _is_solved_message(text: str) -> bool:
+    """Short "thanks, works a treat" style replies from the owner once staff took over."""
+    text = text.strip()
+    return (
+        0 < len(text) <= SOLVED_MESSAGE_MAX_CHARS
+        and bool(SOLVED_MESSAGE_RE.search(text))
+        and not SOLVED_HEDGE_RE.search(text)
+    )
 
 
 def _relative_age(created_at: datetime | None, now: datetime | None = None) -> str | None:
@@ -1189,6 +1211,25 @@ class AITicketsCog(ReloadableCog):
         await self._mark_ticket_escalated(channel.id)
         await self._ping_escalation_roles(channel, requester_id)
 
+    async def _maybe_close_solved(self, channel: discord.TextChannel, message: discord.Message) -> None:
+        """The AI is off here; the owner saying it's solved closes the ticket like the "Yes" button."""
+        if channel.id in self._closing_channels or not _is_solved_message(message.content):
+            return
+        if not await self._is_ticket_owner(channel, message.author.id):
+            return
+        log.info("Ticket owner said it's solved, closing", extra={"channel_id": channel.id})
+        try:
+            await channel.send(view=_card(SOLVED_CLOSE_TEXT, discord.Color.green()))
+        except discord.HTTPException:
+            log.info("Could not post solved note in ticket", extra={"channel_id": channel.id})
+        await self._close_ticket(
+            channel,
+            closed_by_id=message.author.id,
+            requester_id=message.author.id,
+            resolved=True,
+            delete_channel=True,
+        )
+
     async def _collect_transcript(
         self,
         channel: discord.TextChannel,
@@ -1465,6 +1506,7 @@ class AITicketsCog(ReloadableCog):
         if _is_staff_ticket_message(message, in_ticket=in_ticket, settings=settings):
             return
         if in_ticket and channel.id in self._escalated_ticket_channels:
+            await self._maybe_close_solved(channel, message)
             return
         if message.content.startswith(("!", "/", ".")) and not mention_request:
             return

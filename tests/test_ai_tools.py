@@ -82,6 +82,7 @@ class PatreonStatusToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["whitelist_entries"], [{"minecraft_username": "Vegeta", "kind": "gift"}])
         self.assertEqual(status["gifts_given"], 1)
         self.assertFalse(status["downloaded_current_dev_jar"])
+        self.assertEqual(status["current_dev_jar"], "dmz.jar")
         rendered = repr(status)
         for secret in ("Son Goku", "p-secret", "m-secret", "23999392", "2026-09-01"):
             self.assertNotIn(secret, rendered)
@@ -173,6 +174,39 @@ class KnownIssuesToolTests(unittest.IsolatedAsyncioTestCase):
         schema = ai_tools.TOOL_SCHEMAS["search_known_issues"]
         self.assertIn("discord_user_id", schema["parameters"]["properties"])
         self.assertIn("search_known_issues", ai_tools.IDENTITY_TOOLS)
+
+
+class LatestReleasesToolTests(unittest.IsolatedAsyncioTestCase):
+    async def _releases(self, roles):
+        member = types.SimpleNamespace(roles=[types.SimpleNamespace(id=role) for role in roles])
+        guild = types.SimpleNamespace(get_member=lambda user_id: member if user_id == 123 else None)
+        settings = types.SimpleNamespace(
+            **vars(_settings()), patch_notes_repo="r", patch_notes_branch="main", patch_notes_file_path="notes.md"
+        )
+        curseforge = types.SimpleNamespace(
+            last_processed_file_name="dmz-2.1.jar", last_processed_file_url="https://cf/x", last_processed_at=None
+        )
+        with (
+            patch.object(ai_tools, "get_curseforge_project_state", AsyncMock(return_value=curseforge)),
+            patch.object(ai_tools, "get_published_dev_jar_file_name", AsyncMock(return_value=_DEV_JAR[0])),
+            patch.object(ai_tools, "get_patch_notes_state", AsyncMock(return_value=None)),
+        ):
+            return await ai_tools.get_latest_releases(
+                discord_user_id="123", _bot_context=types.SimpleNamespace(settings=settings, guilds=[guild])
+            )
+
+    async def test_dev_jar_only_for_patrons_and_testers(self) -> None:
+        for roles in ((10,), (20,)):
+            result = await self._releases(roles)
+            self.assertEqual(result["current_dev_jar_for_patrons"]["version"], "2.2.0")
+        result = await self._releases((99,))
+        self.assertEqual(result["latest_public_release"]["file"], "dmz-2.1.jar")
+        for leak in ("2.2.0", "dev_jar", "abcdef1"):
+            self.assertNotIn(leak, repr(result))
+
+    def test_is_identity_tool(self) -> None:
+        self.assertIn("discord_user_id", ai_tools.TOOL_SCHEMAS["get_latest_releases"]["parameters"]["properties"])
+        self.assertIn("get_latest_releases", ai_tools.IDENTITY_TOOLS)
 
 
 class PrefetchTests(unittest.IsolatedAsyncioTestCase):

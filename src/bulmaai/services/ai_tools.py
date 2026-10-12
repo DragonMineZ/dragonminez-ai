@@ -34,7 +34,7 @@ from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_r
 log = logging.getLogger(__name__)
 
 PATCH_NOTES_EXCERPT_CHARS = 1500
-IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports", "search_known_issues"})
+IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports", "search_known_issues", "get_latest_releases"})
 ACCOUNT_TOPIC_RE = re.compile(
     r"(?i)\b(patreon|patron|beta|alpha|whitelist|allowlist|white[- ]?list|dev[- ]?jar|jar|tier|"
     r"access|acceso|acesso|gift|gifted|regalo|presente|role|rol|cargo|subscri\w*|suscri\w*|assin\w*)\b"
@@ -55,6 +55,18 @@ def _find_member(bot: Any, user_id: int) -> Any:
         if member is not None:
             return member
     return None
+
+
+def _is_patron(bot: Any, settings: Any, discord_user_id: str | None) -> bool:
+    """Patreon access role or tester role: the people who have the dev jar."""
+    member = _find_member(bot, int(discord_user_id or 0))
+    return bool(
+        member is not None
+        and (
+            has_patreon_access_role(member, settings=settings)
+            or has_any_allowed_role(member, settings.dev_jar_tester_role_ids)
+        )
+    )
 
 
 async def get_patreon_status(discord_user_id: str | None = None, _bot_context: Any = None) -> dict[str, Any]:
@@ -87,7 +99,7 @@ async def get_patreon_status(discord_user_id: str | None = None, _bot_context: A
         "gifts_given": sum(1 for grant in grants if str(grant.kind) == "gift"),
         "gifted_access_received": [{"minecraft_username": grant.minecraft_username} for grant in gifted],
         "can_download_dev_jar": can_download,
-        "current_dev_jar": published,
+        "current_dev_jar": published if can_download else None,
         "downloaded_current_dev_jar": bool(
             published and await has_completed_dev_jar_download(user_id, published)
         ),
@@ -163,14 +175,7 @@ async def search_known_issues(
     query: str = "", discord_user_id: str | None = None, _bot_context: Any = None
 ) -> dict[str, Any]:
     settings = _settings(_bot_context)
-    member = _find_member(_bot_context, int(discord_user_id or 0))
-    is_patron = bool(
-        member is not None
-        and (
-            has_patreon_access_role(member, settings=settings)
-            or has_any_allowed_role(member, settings.dev_jar_tester_role_ids)
-        )
-    )
+    is_patron = _is_patron(_bot_context, settings, discord_user_id)
     service = GitHubService(
         auth=GitHubAppAuth(
             app_id=settings.GH_APP_ID,
@@ -202,7 +207,10 @@ async def search_known_issues(
     }
 
 
-async def get_latest_releases(include_patch_notes: bool = True, _bot_context: Any = None) -> dict[str, Any]:
+async def get_latest_releases(
+    include_patch_notes: bool = True, discord_user_id: str | None = None, _bot_context: Any = None
+) -> dict[str, Any]:
+    """The dev jar is shown only to patrons and testers: everyone else only has the public release."""
     settings = _settings(_bot_context)
     curseforge, published, patch_notes = await asyncio.gather(
         get_curseforge_project_state(settings.curseforge_project_id),
@@ -228,11 +236,12 @@ async def get_latest_releases(include_patch_notes: bool = True, _bot_context: An
             if curseforge
             else None
         ),
-        "current_dev_jar_for_patrons": dev_jar,
         "patch_notes_url": build_patch_notes_url(
             settings.patch_notes_repo, settings.patch_notes_branch, settings.patch_notes_file_path
         ),
     }
+    if _is_patron(_bot_context, settings, discord_user_id):
+        result["current_dev_jar_for_patrons"] = dev_jar
     if include_patch_notes and patch_notes is not None:
         result["patch_notes_excerpt"] = patch_notes.content[:PATCH_NOTES_EXCERPT_CHARS]
     return result
@@ -279,8 +288,12 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "get_latest_releases": _function_schema(
         "get_latest_releases",
-        "Latest public CurseForge release, current patron dev jar version, and the patch notes.",
-        {"include_patch_notes": {"type": "boolean", "description": "Include a patch notes excerpt."}},
+        "Latest public CurseForge release and the patch notes; the current dev jar version only when the "
+        "requester is a patron. Never mention a dev jar version that isn't in this output.",
+        {
+            "include_patch_notes": {"type": "boolean", "description": "Include a patch notes excerpt."},
+            "discord_user_id": _USER_ID_PROPERTY,
+        },
     ),
 }
 TOOL_FUNCS = {
@@ -322,7 +335,11 @@ async def build_prefetch_lines(*, bot: Any, user_id: int, text: str, account_key
     jobs = [
         _labeled(
             "releases",
-            get_latest_releases(include_patch_notes=bool(PATCH_NOTES_TOPIC_RE.search(text)), _bot_context=bot),
+            get_latest_releases(
+                include_patch_notes=bool(PATCH_NOTES_TOPIC_RE.search(text)),
+                discord_user_id=str(user_id),
+                _bot_context=bot,
+            ),
         )
     ]
     if account_key is not None:

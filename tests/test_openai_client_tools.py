@@ -122,7 +122,7 @@ class OpenAIClientToolTests(unittest.IsolatedAsyncioTestCase):
             "555",
         )
         self.assertEqual(
-            _hydrate_tool_args(name="get_latest_releases", args={"include_patch_notes": True}, user_id=1),
+            _hydrate_tool_args(name="not_an_identity_tool", args={"include_patch_notes": True}, user_id=1),
             {"include_patch_notes": True},
         )
 

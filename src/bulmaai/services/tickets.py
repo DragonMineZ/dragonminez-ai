@@ -18,7 +18,7 @@ STATUS_DELETED = "deleted"
 _CREATING_GRACE = "5 minutes"
 _COLUMNS = (
     "ticket_id, guild_id, owner_id, channel_id, category, status, channel_name, language, "
-    "control_message_id, claimed_by, closed_by, close_reason, created_at, closed_at, closed_periods"
+    "control_message_id, claimed_by, closed_by, close_reason, created_at, closed_at, closed_periods, delete_at"
 )
 _MAX_SLUG_LENGTH = 40
 
@@ -44,6 +44,8 @@ class Ticket:
     closed_at: datetime | None
     # Finished stretches only; the current one is closed_at while the status is closed (see closed_spans).
     closed_periods: tuple[tuple[datetime, datetime], ...] = ()
+    # Closed as solved: the sweep deletes the channel then, unless the owner re-opens it first.
+    delete_at: datetime | None = None
 
 
 def _ticket(row: Any) -> Ticket | None:
@@ -200,6 +202,12 @@ async def get_ticket_by_channel(channel_id: int, *, pool: Any | None = None) -> 
     return _ticket(row)
 
 
+async def get_ticket_by_id(ticket_id: int, *, pool: Any | None = None) -> Ticket | None:
+    resolved_pool = pool or await get_pool()
+    row = await resolved_pool.fetchrow(f"SELECT {_COLUMNS} FROM tickets WHERE ticket_id = $1", ticket_id)
+    return _ticket(row)
+
+
 async def get_open_tickets_by_owner(owner_id: int, *, pool: Any | None = None) -> list[Ticket]:
     resolved_pool = pool or await get_pool()
     rows = await resolved_pool.fetch(
@@ -217,36 +225,48 @@ async def list_active_tickets(*, pool: Any | None = None) -> list[Ticket]:
     return [_ticket(row) for row in rows]
 
 
+async def list_due_solved(*, pool: Any | None = None) -> list[Ticket]:
+    """Solved tickets whose re-open window is over."""
+    resolved_pool = pool or await get_pool()
+    rows = await resolved_pool.fetch(
+        f"SELECT {_COLUMNS} FROM tickets WHERE status = 'closed' AND delete_at <= now() AND channel_id IS NOT NULL"
+    )
+    return [_ticket(row) for row in rows]
+
+
 async def mark_closed(
     channel_id: int,
     *,
     closed_by: int | None,
     reason: str | None,
+    delete_at: datetime | None = None,
     pool: Any | None = None,
 ) -> Ticket | None:
-    """open → closed. None when it wasn't open, so two racing closes only run once."""
+    """open → closed. None when it wasn't open, so two racing closes only run once. delete_at: closed as solved."""
     resolved_pool = pool or await get_pool()
     row = await resolved_pool.fetchrow(
         f"""
-        UPDATE tickets SET status = 'closed', closed_by = $2, close_reason = $3, closed_at = now()
+        UPDATE tickets SET status = 'closed', closed_by = $2, close_reason = $3, closed_at = now(), delete_at = $4
         WHERE channel_id = $1 AND status = 'open'
         RETURNING {_COLUMNS}
         """,
         channel_id,
         closed_by,
         reason,
+        delete_at,
     )
     return _ticket(row)
 
 
 async def mark_reopened(channel_id: int, *, pool: Any | None = None) -> Ticket | None:
-    """closed → open; the finished closed stretch goes into closed_periods (SET reads the old closed_at)."""
+    """closed → open; the finished closed stretch goes into closed_periods (SET reads the old closed_at). A solved
+    ticket past its delete_at stays closed for the sweep."""
     resolved_pool = pool or await get_pool()
     row = await resolved_pool.fetchrow(
         f"""
-        UPDATE tickets SET status = 'open', closed_by = NULL, close_reason = NULL, closed_at = NULL,
+        UPDATE tickets SET status = 'open', closed_by = NULL, close_reason = NULL, closed_at = NULL, delete_at = NULL,
             closed_periods = closed_periods || tstzrange(closed_at, now())
-        WHERE channel_id = $1 AND status = 'closed'
+        WHERE channel_id = $1 AND status = 'closed' AND (delete_at IS NULL OR delete_at > now())
         RETURNING {_COLUMNS}
         """,
         channel_id,

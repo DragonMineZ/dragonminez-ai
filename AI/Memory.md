@@ -59,7 +59,8 @@ Console actions are private to Bruno:
 - In-house tickets (`cogs/tickets.py`). Ticket Tool is gone and its compat code is deleted. Don't re-add it.
 - Strings are EN | ES only (no PT). Inside tickets everything is English.
 - Testers can't see tickets.
-- Re-Open and Delete are mod/admin only.
+- Re-Open and Delete are mod/admin only. The one exception is the owner's DM button after a "Solved" close (below).
+- Staff "Solved" button: closes the ticket (archived as resolved) and DMs the owner the transcript plus a Re-open button; if the DM fails, a notice goes in the ticket channel. The ticket auto-deletes 12h later (`tickets.delete_at`, swept by `_delete_solved`) unless the owner re-opens it from that DM, the only way an owner can re-open. Any re-open clears the deadline.
 - Max 2 open tickets per user.
 - Every close (button, `/ticket close`, owner left) makes a transcript; there is no "close without transcript". They're hosted at `tickets.dragonminez.com/t/<token>` by the panel's aiohttp app.
   - One address per ticket: re-open and re-close overwrite the same file and DB row (same token). A page staff made permanent stays permanent.

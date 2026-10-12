@@ -18,6 +18,9 @@ TRANSCRIPT_BUTTON_ID = "ticket_btn_transcript"
 REOPEN_BUTTON_ID = "ticket_btn_reopen"
 DELETE_BUTTON_ID = "ticket_btn_delete"
 AI_BUTTON_ID = "ticket_btn_ai"
+SOLVED_BUTTON_ID = "ticket_btn_solved"
+# + ticket id; on the owner's "solved" DM, routed by prefix (there's no channel to look the ticket up by).
+SOLVED_REOPEN_PREFIX = "ticket_solved_reopen:"
 ACTIONS_ID = 800  # the button row on the welcome / closed cards
 COG_NAME = "TicketsCog"
 
@@ -151,6 +154,12 @@ MSG = {
     "deleting": "🗑️ Deleting this ticket…",
     "delete_failed": "❌ I couldn't delete this channel. Check my Manage Channels permission.",
     "transcript_failed": "❌ I couldn't generate the transcript.",
+    "cannot_reopen": tri("This ticket can no longer be re-opened.", "Este ticket ya no se puede reabrir."),
+    "not_your_ticket": tri("This isn't your ticket.", "Este ticket no es tuyo."),
+    "reopen_gone": tri(
+        "This ticket can't be re-opened: its channel is gone or you left the server.",
+        "Este ticket no se puede reabrir: su canal ya no existe o saliste del servidor.",
+    ),
     "protected_target": "You can't remove the ticket owner or staff.",
     "done": "Done.",
     "no_staff_pings": (
@@ -229,8 +238,48 @@ def dm_transcript(number: int, guild: discord.Guild, url: str, expires_at: datet
     )
 
 
+def dm_solved(
+    number: int, guild: discord.Guild, url: str | None, expires_at: datetime | None, delete_at: datetime, ticket_id: int
+) -> discord.ui.DesignerView:
+    """Replaces dm_transcript when staff close a ticket as solved; its Re-open button is the owner's only way back.
+    url None: the transcript failed, so only the re-open part."""
+    en = [f"Ticket #{number:04d} was marked as solved by staff and closed."]
+    es = [f"El staff marcó el ticket #{number:04d} como resuelto y lo cerró."]
+    if url and expires_at:
+        until = f"<t:{int(expires_at.timestamp())}:f> (<t:{int(expires_at.timestamp())}:R>)"
+        en.append(f"Your answer is in the transcript; it's available until {until}.")
+        es.append(f"Tu respuesta está en la transcripción; disponible hasta {until}.")
+    elif url:
+        en.append("Your answer is in the transcript; it's kept permanently.")
+        es.append("Tu respuesta está en la transcripción; se guarda para siempre.")
+    deadline = f"<t:{int(delete_at.timestamp())}:R>"
+    en.append(f"Still not solved? Re-open it before {deadline}; after that the ticket is deleted.")
+    es.append(f"¿Sigue sin resolverse? Reábrelo antes de {deadline}; después el ticket se eliminará.")
+    buttons = [discord.ui.Button(label=tri("View transcript", "Ver transcripción"), emoji="📄", url=url)] if url else []
+    buttons.append(
+        discord.ui.Button(
+            label=tri("Re-open ticket", "Reabrir ticket"),
+            emoji="🔓",
+            style=discord.ButtonStyle.success,
+            custom_id=f"{SOLVED_REOPEN_PREFIX}{ticket_id}",
+        )
+    )
+    return _dm_card(f"✅ Ticket #{number:04d}", " ".join(en), " ".join(es), guild, discord.ui.ActionRow(*buttons))
+
+
+def dm_reopened(number: int, channel: discord.TextChannel) -> discord.ui.DesignerView:
+    """What the solved DM turns into once its Re-open button worked."""
+    return _dm_card(
+        f"🔓 Ticket #{number:04d}",
+        "Your ticket was re-opened. Staff will answer you there.",
+        "Tu ticket fue reabierto. El staff te responderá allí.",
+        channel.guild,
+        _link_row(tri("Open ticket", "Abrir ticket"), "🎫", channel.jump_url),
+    )
+
+
 def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
-    """Staff-only AI toggle (doubles as its status) and Close, while the ticket is open."""
+    """Staff-only AI toggle (doubles as its status) and Solved, plus Close, while the ticket is open."""
     return discord.ui.ActionRow(
         discord.ui.Button(
             label="AI support: On" if ai_enabled else "AI support: Off",
@@ -241,6 +290,7 @@ def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
         discord.ui.Button(
             label=tri("Close", "Cerrar"), emoji="🔒", style=discord.ButtonStyle.danger, custom_id=CLOSE_BUTTON_ID
         ),
+        discord.ui.Button(label="Solved", emoji="✅", style=discord.ButtonStyle.primary, custom_id=SOLVED_BUTTON_ID),
         id=ACTIONS_ID,
     )
 

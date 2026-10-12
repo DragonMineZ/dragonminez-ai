@@ -10,6 +10,7 @@ import html as html_lib
 import io
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 
 import chat_exporter
@@ -22,6 +23,7 @@ from bulmaai.services.ai_guard import defuse_mentions
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
 from bulmaai.services.ticket_pages import StoredPage, get_page_for_channel, page_url, purge, save_page
 from bulmaai.services.tickets import (
+    STATUS_CLOSED,
     STATUS_OPEN,
     ClosedGap,
     Span,
@@ -33,8 +35,10 @@ from bulmaai.services.tickets import (
     closed_spans,
     get_open_tickets_by_owner,
     get_ticket_by_channel,
+    get_ticket_by_id,
     hide_closed_messages,
     list_active_tickets,
+    list_due_solved,
     mark_closed,
     mark_deleted,
     mark_reopened,
@@ -51,6 +55,8 @@ from bulmaai.ui.ticket_views import (
     MSG,
     PANEL_SELECT_ID,
     REOPEN_BUTTON_ID,
+    SOLVED_BUTTON_ID,
+    SOLVED_REOPEN_PREFIX,
     TRANSCRIPT_BUTTON_ID,
     CLOSED_RED,
     ClosePrompt,
@@ -61,6 +67,8 @@ from bulmaai.ui.ticket_views import (
     control_row,
     dm_assigned,
     dm_created,
+    dm_reopened,
+    dm_solved,
     dm_transcript,
     msg_created,
     msg_limit,
@@ -70,7 +78,7 @@ from bulmaai.ui.ticket_views import (
     transcript_link_view,
     welcome_view,
 )
-from bulmaai.ui.v2 import while_busy
+from bulmaai.ui.v2 import unbusy, while_busy
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_bruno
@@ -88,6 +96,8 @@ INLINE_TOTAL_LIMIT = 5_000_000
 RENAME_TIMEOUT_SECONDS = 10
 REASON_LEFT = "User left the server."
 PING_WARN_REASON = "Pinged staff in a ticket"
+# A ticket closed as solved is deleted this long after, unless its owner re-opens it from the DM.
+SOLVED_DELETE_HOURS = 12
 # chat_exporter's <head> puts raw HTML (emoji <img>) into the link-preview meta tags; ours replaces it.
 _HEAD_META = re.compile(r"<title>.*?(?=<style>)", re.S)
 _DONATE = re.compile(r'<a href="https://ko-fi\.com/mahtoid">DONATE</a>')
@@ -247,8 +257,9 @@ class TicketsCog(ReloadableCog):
         return self.bot.settings
 
     async def on_startup(self) -> None:
-        if not self._purge_pages.is_running():
-            self._purge_pages.start()
+        for loop in (self._purge_pages, self._delete_solved):
+            if not loop.is_running():
+                loop.start()
         try:
             # Channels deleted while the bot was offline would otherwise count against their owner's limit.
             for ticket in await list_active_tickets():
@@ -259,6 +270,7 @@ class TicketsCog(ReloadableCog):
 
     async def on_shutdown(self) -> None:
         self._purge_pages.cancel()
+        self._delete_solved.cancel()
 
     @tasks.loop(hours=1)
     async def _purge_pages(self) -> None:
@@ -270,18 +282,37 @@ class TicketsCog(ReloadableCog):
         if removed:
             log.info("Purged %d expired or orphaned ticket transcript files", removed)
 
+    @tasks.loop(minutes=5)
+    async def _delete_solved(self) -> None:
+        """Solved tickets whose re-open window is over; the deadline lives in the DB, so restarts don't lose it."""
+        try:
+            due = await list_due_solved()
+        except Exception:
+            return log.exception("Could not list solved tickets to delete")
+        for ticket in due:
+            try:
+                channel = self.bot.get_channel(ticket.channel_id)
+                if isinstance(channel, discord.TextChannel):
+                    await self.delete_ticket(channel, ticket)
+                else:
+                    await mark_deleted(ticket.channel_id)
+            except Exception:
+                log.exception("Failed to delete solved ticket", extra={"ticket_id": ticket.ticket_id})
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type != discord.InteractionType.component:
             return
-        handler = {
+        custom_id = (interaction.data or {}).get("custom_id") or ""
+        handler = self.on_solved_reopen if custom_id.startswith(SOLVED_REOPEN_PREFIX) else {
             PANEL_SELECT_ID: self.on_panel_select,
             CLOSE_BUTTON_ID: self.on_close,
             AI_BUTTON_ID: self.on_toggle_ai,
             TRANSCRIPT_BUTTON_ID: self.on_transcript,
             REOPEN_BUTTON_ID: self.on_reopen,
             DELETE_BUTTON_ID: self.on_delete,
-        }.get((interaction.data or {}).get("custom_id"))
+            SOLVED_BUTTON_ID: self.on_solved,
+        }.get(custom_id)
         if handler is None:
             return
         try:
@@ -440,10 +471,19 @@ class TicketsCog(ReloadableCog):
 
     # ---- close / reopen ---------------------------------------------------------------------------
 
-    async def close_ticket(self, channel: discord.TextChannel, *, closer_id: int | None, reason: str | None) -> Ticket | None:
+    async def close_ticket(
+        self,
+        channel: discord.TextChannel,
+        *,
+        closer_id: int | None,
+        reason: str | None,
+        resolved: bool | None = None,
+        delete_at: datetime | None = None,
+        dm: bool = True,
+    ) -> Ticket | None:
         """Staff-only overwrites, move to the closed category, rename, post the closed card, then archive the
-        transcript (see archive). None if it wasn't open."""
-        ticket = await mark_closed(channel.id, closed_by=closer_id, reason=reason)
+        transcript (see archive). None if it wasn't open. delete_at: closed as solved (see on_solved)."""
+        ticket = await mark_closed(channel.id, closed_by=closer_id, reason=reason, delete_at=delete_at)
         if ticket is None:
             return None
         if (ai_cog := self.bot.get_cog(AI_COG)) is not None:
@@ -466,7 +506,7 @@ class TicketsCog(ReloadableCog):
         if card is not None:
             self._working.add(card.id)
         try:
-            await self.archive(channel, ticket, closed_by_id=closer_id, card=card)
+            await self.archive(channel, ticket, closed_by_id=closer_id, card=card, resolved=resolved, dm=dm)
         finally:
             if card is not None:
                 self._working.discard(card.id)
@@ -643,6 +683,72 @@ class TicketsCog(ReloadableCog):
 
         await while_busy(interaction, self._working, delete, failed=MSG["delete_failed"])
 
+    async def on_solved(self, interaction: discord.Interaction) -> None:
+        """Staff close as solved: the owner gets a DM to re-open it within SOLVED_DELETE_HOURS, then the sweep
+        (_delete_solved) deletes it."""
+        if await self._gate(interaction, Rank.HELPER, denied="staff_only") is None:
+            return
+
+        async def solve() -> bool:
+            delete_at = datetime.now(timezone.utc) + timedelta(hours=SOLVED_DELETE_HOURS)
+            reason = f"✅ Solved. Deletes <t:{int(delete_at.timestamp())}:R> unless the owner re-opens it."
+            ticket = await self.close_ticket(
+                interaction.channel, closer_id=interaction.user.id, reason=reason, resolved=True, delete_at=delete_at, dm=False
+            )
+            if ticket is None:
+                return False
+            await self._dm_solved(interaction.channel, ticket, delete_at)
+            return True
+
+        await while_busy(interaction, self._working, solve, failed=MSG["failed"])
+
+    async def _dm_solved(self, channel: discord.TextChannel, ticket: Ticket, delete_at: datetime) -> None:
+        """The solved DM (in place of the transcript one); staff hear about it in the channel if it can't be sent."""
+        try:
+            page = await get_page_for_channel(channel.id)
+        except Exception:
+            log.exception("Could not look up hosted transcript", extra={"channel_id": channel.id})
+            page = None
+        owner = channel.guild.get_member(ticket.owner_id)
+        if owner is not None:
+            url = page_url(self.settings, page.token) if page else None
+            view = dm_solved(ticket.ticket_id, channel.guild, url, page and page.expires_at, delete_at, ticket.ticket_id)
+            try:
+                await owner.send(view=view)
+                return
+            except discord.HTTPException:
+                log.info("Could not DM solved ticket", extra={"user_id": ticket.owner_id})
+        await self._safely(
+            channel.send(
+                view=notice(f"⚠️ I couldn't DM <@{ticket.owner_id}> that their ticket was solved (DMs closed or they left)."),
+                allowed_mentions=discord.AllowedMentions.none(),
+            ),
+            channel,
+        )
+
+    async def on_solved_reopen(self, interaction: discord.Interaction) -> None:
+        """The Re-open button on the owner's solved DM: the only way an owner re-opens, and only before delete_at."""
+        ticket_id = int(interaction.data["custom_id"].removeprefix(SOLVED_REOPEN_PREFIX))
+        ticket = await get_ticket_by_id(ticket_id)
+        if ticket is None or ticket.owner_id != interaction.user.id:
+            return await interaction.response.send_message(MSG["not_your_ticket"], ephemeral=True)
+        if ticket.status != STATUS_CLOSED or ticket.delete_at is None or ticket.delete_at <= datetime.now(timezone.utc):
+            return await interaction.response.send_message(MSG["cannot_reopen"], ephemeral=True)
+        channel = self.bot.get_channel(ticket.channel_id)
+        if not isinstance(channel, discord.TextChannel) or channel.guild.get_member(ticket.owner_id) is None:
+            return await interaction.response.send_message(MSG["reopen_gone"], ephemeral=True)
+        limit = self.settings.ticket_max_open_per_user
+        if len(await get_open_tickets_by_owner(ticket.owner_id)) >= limit:
+            return await interaction.response.send_message(msg_limit(limit), ephemeral=True)
+
+        async def reopen() -> None:
+            if await self.reopen_ticket(channel, opener_id=ticket.owner_id) is None:
+                await unbusy(interaction)  # expired or re-opened meanwhile
+                return await interaction.followup.send(MSG["cannot_reopen"], ephemeral=True)
+            await interaction.edit_original_response(view=dm_reopened(ticket.ticket_id, channel))
+
+        await while_busy(interaction, self._working, reopen, failed=MSG["failed"])
+
     # ---- transcript + archive --------------------------------------------------------------------
 
     async def closed_spans_for(self, channel_id: int) -> list[Span]:
@@ -704,20 +810,27 @@ class TicketsCog(ReloadableCog):
         return await save_page(self.settings, html, reuse=await get_page_for_channel(channel.id))
 
     async def archive(
-        self, channel: discord.TextChannel, ticket: Ticket, *, closed_by_id: int | None, card: discord.Message | None = None
+        self,
+        channel: discord.TextChannel,
+        ticket: Ticket,
+        *,
+        closed_by_id: int | None,
+        card: discord.Message | None = None,
+        resolved: bool | None = None,
+        dm: bool = True,
     ) -> StoredPage | None:
         """The one archive entry point (every close, and the closed card's Retry/Transcript button): transcript +
         summary into the DB and the hosted page, the closed card's transcript button becomes the link (or Retry),
-        and the owner gets the link by DM. Returns the page, None if archiving failed."""
+        and the owner gets the link by DM (unless dm=False). Returns the page, None if archiving failed."""
         page = None
-        if await self._archive(channel, ticket, closed_by_id):
+        if await self._archive(channel, ticket, closed_by_id, resolved):
             try:
                 page = await get_page_for_channel(channel.id)
             except Exception:
                 log.exception("Could not look up hosted transcript", extra={"channel_id": channel.id})
         if card is not None:
             await self._set_row(card, closed_row(page_url(self.settings, page.token) if page else None))
-        if page is not None and self.settings.ticket_dm_transcript:
+        if dm and page is not None and self.settings.ticket_dm_transcript:
             await self._dm_transcript_link(channel, ticket, page)
         return page
 
@@ -746,7 +859,9 @@ class TicketsCog(ReloadableCog):
         finally:
             self._deleting.discard(channel.id)
 
-    async def _archive(self, channel: discord.TextChannel, ticket: Ticket, closed_by_id: int | None) -> bool:
+    async def _archive(
+        self, channel: discord.TextChannel, ticket: Ticket, closed_by_id: int | None, resolved: bool | None = None
+    ) -> bool:
         ai_cog = self.bot.get_cog(AI_COG)
         if ai_cog is not None:
             # Every call here is a deliberate (re-)archive, so lift the AI cog's once-per-close dedupe first.
@@ -757,7 +872,7 @@ class TicketsCog(ReloadableCog):
                     channel,
                     closed_by_id=closed_by_id,
                     requester_id=ticket.owner_id,
-                    resolved=None,
+                    resolved=resolved,
                     delete_channel=False,
                     announce=False,
                 )

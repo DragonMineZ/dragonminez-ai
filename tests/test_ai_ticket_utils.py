@@ -23,7 +23,6 @@ from bulmaai.cogs.ai_tickets import (
     _chunk_discord_message,
     _has_user_visible_tool_result,
     _is_ack_message,
-    _is_solved_message,
     _is_pinging_bot,
     _is_reply_to_bot,
     _relative_age,
@@ -31,6 +30,7 @@ from bulmaai.cogs.ai_tickets import (
     _is_staff_ticket_message,
     _support_debounce_seconds,
 )
+from bulmaai.services.ticket_intake import owner_says_solved
 from bulmaai.services.ticket_pages import StoredPage
 from bulmaai.services.ticket_transcripts import TicketSummary, TranscriptLine
 from bulmaai.services.support_intent import (
@@ -78,14 +78,14 @@ class DiscordMessageChunkTests(unittest.TestCase):
         for follow_up in ("still broken", "1.20.1", "ok but it crashes again", "no funciona"):
             self.assertFalse(_is_ack_message(follow_up), follow_up)
 
-    def test_solved_messages_close_but_hedged_ones_do_not(self) -> None:
-        for solved in ("thank you, works a treat", "it works now!", "solved, ty", "fixed it thanks", "ya funciona, gracias"):
-            self.assertTrue(_is_solved_message(solved), solved)
-        for not_solved in (
-            "thanks", "still not working", "doesn't work", "it works but crashes on join", "does it work on 1.20.1?",
-            "no funciona", "will it be fixed in 2.2", "nothing works", "",
-        ):
-            self.assertFalse(_is_solved_message(not_solved), not_solved)
+    def test_owner_says_solved_reads_the_models_yes_no(self) -> None:
+        for output_text, expected in (('{"solved": true}', True), ('{"solved": false}', False), ("{}", False)):
+            client = types.SimpleNamespace(
+                responses=types.SimpleNamespace(create=AsyncMock(return_value=types.SimpleNamespace(output_text=output_text)))
+            )
+            solved = asyncio.run(owner_says_solved("Owner: thank you, works a treat", model="gpt-5-mini", openai_client=client))
+            self.assertIs(solved, expected)
+            self.assertIn("works a treat", client.responses.create.await_args.kwargs["input"][0]["content"])
 
     def test_relative_age_renders_compact_units(self) -> None:
         now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)

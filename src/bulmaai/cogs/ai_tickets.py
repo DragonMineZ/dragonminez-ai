@@ -33,6 +33,7 @@ from bulmaai.services.ticket_ai_state import (
     get_ai_disabled_ticket_channels,
     set_ticket_ai_disabled,
 )
+from bulmaai.services.ticket_intake import owner_says_solved
 from bulmaai.services.ticket_pages import StoredPage, page_url
 from bulmaai.services.ticket_transcripts import (
     TicketSummary,
@@ -80,17 +81,8 @@ ACK_MESSAGE_RE = re.compile(
     r"(?i)^\W*((thanks?|thank (you|u)|thx|ty)( (so|very) much| a lot| bro| man)?|tysm|tyvm|ok|okay|k|kk|cool|nice|"
     r"great|perfect|got it|(muchas )?gracias|vale|listo|perfecto|dale|obrigad[oa]|valeu|beleza)\W*$"
 )
-# ponytail: keyword heuristic for "it's solved" once the AI is off; a hedge word or "?" blocks it.
-# Ceiling: an odd phrasing can slip either way; swap for a cheap model check if false closes show up.
-SOLVED_MESSAGE_RE = re.compile(
-    r"(?i)\b(works?|worked|working|solved|fixed|resolved|sorted|figured it out|"
-    r"funciona|funcion[oó]|resuelto|solucionado|arreglado)\b"
-)
-SOLVED_HEDGE_RE = re.compile(
-    r"(?i)(n't|\?|\b(not|no|dont|doesnt|didnt|isnt|wont|cant|nothing|still|but|if|when|will|should|why|how|"
-    r"anymore|aun|a[uú]n|todav[ií]a|sigue|pero|nada)\b)"
-)
-SOLVED_MESSAGE_MAX_CHARS = 120
+# Messages of context (owner's last one included) the "is it solved?" check sees.
+SOLVED_CHECK_CONTEXT_MESSAGES = 6
 SOLVED_CLOSE_TEXT = "Glad it's sorted! 🎉 Thanks for reaching out, this ticket will be closed now."
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
@@ -229,16 +221,6 @@ def _message_support_intent(
 def _is_ack_message(text: str) -> bool:
     """Pure thanks/ok replies need no AI answer, even inside tickets."""
     return bool(ACK_MESSAGE_RE.fullmatch(text.strip()))
-
-
-def _is_solved_message(text: str) -> bool:
-    """Short "thanks, works a treat" style replies from the owner once staff took over."""
-    text = text.strip()
-    return (
-        0 < len(text) <= SOLVED_MESSAGE_MAX_CHARS
-        and bool(SOLVED_MESSAGE_RE.search(text))
-        and not SOLVED_HEDGE_RE.search(text)
-    )
 
 
 def _relative_age(created_at: datetime | None, now: datetime | None = None) -> str | None:
@@ -1213,9 +1195,29 @@ class AITicketsCog(ReloadableCog):
 
     async def _maybe_close_solved(self, channel: discord.TextChannel, message: discord.Message) -> None:
         """The AI is off here; the owner saying it's solved closes the ticket like the "Yes" button."""
-        if channel.id in self._closing_channels or not _is_solved_message(message.content):
+        settings = self.bot.settings
+        if channel.id in self._closing_channels or not message.content.strip() or ai_budget.is_paused(settings):
             return
         if not await self._is_ticket_owner(channel, message.author.id):
+            return
+        bot_id = getattr(self.bot.user, "id", None)
+        recent = [entry async for entry in channel.history(limit=SOLVED_CHECK_CONTEXT_MESSAGES, before=message)]
+        conversation = "\n".join(
+            f"{'Owner' if entry.author.id == message.author.id else 'Bot' if entry.author.id == bot_id else 'Staff'}: "
+            f"{entry.content[:500]}"
+            for entry in [*reversed(recent), message]
+            if entry.content
+        )
+        try:
+            solved = await owner_says_solved(
+                conversation,
+                model=settings.openai_ticket_summary_model,
+                timeout_seconds=settings.ai_support_timeout_seconds,
+            )
+        except Exception:
+            log.exception("Ticket solved check failed", extra={"channel_id": channel.id})
+            return
+        if not solved or channel.id in self._closing_channels:
             return
         log.info("Ticket owner said it's solved, closing", extra={"channel_id": channel.id})
         try:

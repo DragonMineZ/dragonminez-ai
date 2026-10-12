@@ -329,12 +329,28 @@ def _is_staff_ticket_message(
     )
 
 
+def _card_text(message: discord.Message) -> str:
+    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer."""
+    lines: list[str] = []
+
+    def walk(items) -> None:
+        for item in items or ():
+            if item.get("type") == 10 and item.get("content"):
+                lines.append(item["content"].replace(AI_FOOTER, ""))
+            walk(item.get("components"))
+
+    walk([component.to_dict() for component in getattr(message, "components", None) or ()])
+    return "\n".join(line.strip() for line in lines if line.strip())
+
+
 def _message_content(
     message: discord.Message,
     image_analyses: dict[int, str] | None = None,
 ) -> str:
     """Text plus attachment markers. Images only show as text when analyzed before; never re-processed."""
-    content = "\n".join(p for p in (message.clean_content.strip(), forwarded_content(message)) if p)
+    content = "\n".join(
+        p for p in (message.clean_content.strip(), _card_text(message), forwarded_content(message)) if p
+    )
     attachment_lines: list[str] = []
     for attachment in full_attachments(message):
         analysis = (image_analyses or {}).get(getattr(attachment, "id", None))

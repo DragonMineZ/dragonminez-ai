@@ -7,7 +7,13 @@ from collections.abc import Sequence
 import discord
 from discord.ext import commands
 
-from bulmaai.cogs.ai_tickets import _chunk_discord_message, remember_ask_question
+from bulmaai.cogs.ai_tickets import (
+    AI_FOOTER,
+    CARD_TEXT_LIMIT,
+    _card,
+    _chunk_discord_message,
+    remember_ask_question,
+)
 from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, can_post_publicly, safe_name, screen_question
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
@@ -170,8 +176,12 @@ class AskCog(commands.Cog):
         if public and private:
             # The first followup inherits the public defer, so it can't carry the answer itself.
             await ctx.followup.send("-# I sent this answer to you privately.", allowed_mentions=discord.AllowedMentions.none())
-        for index, chunk in enumerate(_chunk_discord_message(reply_text)):
-            sent = await ctx.followup.send(chunk, ephemeral=private, allowed_mentions=discord.AllowedMentions.none())
+        chunks = _chunk_discord_message(reply_text, CARD_TEXT_LIMIT)
+        chunks[-1] = f"{chunks[-1]}\n{AI_FOOTER}"
+        for index, chunk in enumerate(chunks):
+            sent = await ctx.followup.send(
+                view=_card(chunk), ephemeral=private, allowed_mentions=discord.AllowedMentions.none()
+            )
             if index == 0 and not private:
                 remember_ask_question(sent.id, ctx.author.id, messages[0]["speaker_name"], question)
 

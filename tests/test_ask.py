@@ -79,3 +79,20 @@ class AskQuestionMemoryTests(unittest.TestCase):
         self.assertEqual(len(ai_tickets._ASK_QUESTIONS), ai_tickets._ASK_QUESTIONS_SIZE)
         self.assertNotIn(0, ai_tickets._ASK_QUESTIONS)
         self.assertEqual(ai_tickets._ASK_QUESTIONS[ai_tickets._ASK_QUESTIONS_SIZE + 4][2], "how do you reach namek?")
+
+
+class CardTextTests(unittest.TestCase):
+    def test_reads_card_text_and_drops_footer(self) -> None:
+        from types import SimpleNamespace
+
+        from bulmaai.cogs import ai_tickets
+
+        card = {
+            "type": 17,
+            "components": [
+                {"type": 10, "content": f"Use Alt + F.\n{ai_tickets.AI_FOOTER}"},
+                {"type": 1, "components": []},
+            ],
+        }
+        message = SimpleNamespace(components=[SimpleNamespace(to_dict=lambda: card)])
+        self.assertEqual(ai_tickets._card_text(message), f"Use Alt + F.\n{ai_tickets.AI_FOOTER}".split("\n")[0])

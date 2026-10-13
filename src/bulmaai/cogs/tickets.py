@@ -673,9 +673,12 @@ class TicketsCog(ReloadableCog):
         await while_busy(interaction, self._working, reopen, failed=MSG["failed"])
 
     async def on_delete(self, interaction: discord.Interaction) -> None:
-        ticket = await self._gate(interaction, Rank.MOD, denied="mod_only", want_open=False)
+        """Mods delete any closed ticket; helpers only ones closed as Solved (skips the re-open wait)."""
+        ticket = await self._gate(interaction, Rank.HELPER, denied="mod_only", want_open=False)
         if ticket is None:
             return
+        if ticket.delete_at is None and member_rank(interaction.user, ticket.owner_id, self.settings) < Rank.MOD:
+            return await interaction.response.send_message(MSG["mod_only"], ephemeral=True)
 
         async def delete() -> bool:
             await interaction.followup.send(MSG["deleting"])

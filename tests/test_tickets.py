@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -778,6 +778,16 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             delete.assert_awaited_once()
         self.assertEqual(self.busy_row(interaction)[views.DELETE_BUTTON_ID], (v2.WORKING, True))
         interaction.followup.send.assert_awaited_once_with(views.MSG["deleting"])
+
+    async def test_helper_can_delete_a_solved_ticket_early(self):
+        cog = make_cog()
+        solved = make_ticket(status="closed", delete_at=datetime.now(timezone.utc) + timedelta(hours=12))
+        with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=solved)), \
+                patch.object(cog, "delete_ticket", AsyncMock(return_value=True)) as delete:
+            interaction = self.interaction(member(STAFF_ID, HELPER_ROLE), views.DELETE_BUTTON_ID)
+            interaction.channel = make_channel()
+            await cog.on_delete(interaction)
+            delete.assert_awaited_once()
 
     async def test_open_ticket_cannot_be_reopened_or_deleted_via_stale_buttons(self):
         cog = make_cog()

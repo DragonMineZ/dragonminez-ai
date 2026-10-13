@@ -80,6 +80,12 @@ class DiscordMessageChunkTests(unittest.TestCase):
         for follow_up in ("still broken", "1.20.1", "ok but it crashes again", "no funciona"):
             self.assertFalse(_is_ack_message(follow_up), follow_up)
 
+    def test_requests_for_a_human_are_detected(self) -> None:
+        for text in ("Might need an actual person's help for this unfort", "can I talk to a human", "quiero hablar con un humano"):
+            self.assertTrue(ai_tickets._asks_for_human(text), text)
+        for text in ("my human race texture is broken", "the person model is invisible", "still broken"):
+            self.assertFalse(ai_tickets._asks_for_human(text), text)
+
     def test_owner_says_solved_reads_the_models_yes_no(self) -> None:
         for output_text, expected in (('{"solved": true}', True), ('{"solved": false}', False), ("{}", False)):
             client = types.SimpleNamespace(

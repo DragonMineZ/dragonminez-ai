@@ -299,6 +299,17 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(ai_budget.used(ai_budget.BILLED), 100)
 
+    async def test_handoff_survives_an_escalation_reply_without_a_kind_marker(self) -> None:
+        result, create_response, _ = await self._run(
+            [
+                _response("I'll pass this to staff.\n[kind: handoff]\n[confidence: 0.2]"),
+                _response("Alright, I'll pass this to staff.", response_id="r2"),
+            ]
+        )
+
+        self.assertEqual(create_response.await_count, 2)
+        self.assertEqual((result["kind"], result["escalated"]), ("handoff", True))
+
     async def test_confident_clarify_and_missing_markers_do_not_escalate(self) -> None:
         for text in ("Which Minecraft version?\n[kind: clarify]\n[confidence: 0.4]", "Plain answer without markers."):
             _, create_response, _ = await self._run([_response(text)])

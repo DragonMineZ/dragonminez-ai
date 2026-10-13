@@ -91,6 +91,11 @@ def remember_ask_question(answer_id: int, user_id: int, name: str, question: str
 TRANSCRIPT_MESSAGE_LIMIT = 1000
 RESOLVE_BUTTON_PREFIX = "ticket_resolved:"
 USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
+# ponytail: EN|ES phrase list; misses odd phrasings, the model's [kind: handoff] still covers those.
+HUMAN_REQUEST_RE = re.compile(
+    r"(?i)\b((actual|real|human)\s+(person|human|staff|mod|helper|people)|talk\s+to\s+(a\s+)?(human|staff|mod|someone)|"
+    r"need\s+(a\s+)?(human|staff)|persona\s+real|un\s+humano|hablar\s+con\s+(un\s+)?(humano|staff|moderador|alguien))\b"
+)
 ACK_MESSAGE_RE = re.compile(
     r"(?i)^\W*((thanks?|thank (you|u)|thx|ty)( (so|very) much| a lot| bro| man)?|tysm|tyvm|ok|okay|k|kk|cool|nice|"
     r"great|perfect|got it|(muchas )?gracias|vale|listo|perfecto|dale|obrigad[oa]|valeu|beleza)\W*$"
@@ -231,6 +236,11 @@ def _message_support_intent(
         text,
         has_image=any(_is_image_attachment(attachment) for attachment in full_attachments(message)),
     )
+
+
+def _asks_for_human(text: str) -> bool:
+    """The requester wants a person: hand off in code instead of trusting the model's marker."""
+    return bool(HUMAN_REQUEST_RE.search(text))
 
 
 def _is_ack_message(text: str) -> bool:
@@ -1047,6 +1057,8 @@ class AITicketsCog(ReloadableCog):
             outgoing_messages: list[str] = []
             should_mark_escalated = False
             kind = result.get("kind")
+            if in_ticket and _asks_for_human(full_content(message)):
+                kind = "handoff"
 
             if in_ticket and not _is_ticket_channel(channel, settings=settings):
                 return  # closed while the model was thinking

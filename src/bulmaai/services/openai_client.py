@@ -665,6 +665,9 @@ async def run_support_agent(
         return result
     second["escalated"] = True
     second["paused"] = False
+    if second.get("kind") is None:
+        # The big model sometimes drops the marker; a handoff must not silently become a plain reply.
+        second["kind"] = result.get("kind")
     if _is_repeat(second["reply"], previous_replies) or _is_clarify_loop(second, previous_replies):
         second["kind"] = "handoff"
     await _record_traces(second_trace, drafts=[trace])

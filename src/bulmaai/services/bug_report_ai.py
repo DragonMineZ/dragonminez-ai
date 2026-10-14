@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 
 from bulmaai.services import ai_budget
 from bulmaai.services.ai_guard import defuse_mentions, strip_links
+from bulmaai.utils.log_parser import LogReport
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +23,15 @@ player gave, and judge whether this is plausibly a real bug.
 
 Be conservative with `is_bug`: questions, feature requests, suggestions, or empty/unclear
 posts are NOT bugs. Only mark `is_bug` true when the report describes broken or unexpected
-behaviour. Keep every field short.
+behaviour.
+
+Set `game_breaking` true only when the player can't keep playing: the game or server crashes
+(on load or in play), a world or save is corrupted, or they can't join or load a world at all.
+Visual glitches, balance issues and minor bugs are not game-breaking.
+
+A "LOG DIGEST" section, when present, is parsed from the player's attached log files: use its
+versions and errors in the summary and affected area. Never invent errors, versions or steps
+that neither the report nor the digest contains. Keep every field short.
 """.strip()
 
 TRIAGE_SCHEMA = {
@@ -30,13 +39,14 @@ TRIAGE_SCHEMA = {
     "additionalProperties": False,
     "properties": {
         "is_bug": {"type": "boolean"},
+        "game_breaking": {"type": "boolean"},
         "title": {"type": "string"},
         "summary": {"type": "string"},
         "severity": {"type": "string", "enum": list(VALID_SEVERITIES)},
         "affected_area": {"type": "string"},
         "steps": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["is_bug", "title", "summary", "severity", "affected_area", "steps"],
+    "required": ["is_bug", "game_breaking", "title", "summary", "severity", "affected_area", "steps"],
 }
 
 
@@ -48,6 +58,7 @@ class BugTriage:
     severity: str
     affected_area: str
     steps: list[str] = field(default_factory=list)
+    game_breaking: bool = False
 
 
 DUPLICATE_INSTRUCTIONS = """
@@ -113,7 +124,25 @@ def _coerce_triage(data: dict, *, fallback_title: str) -> BugTriage:
         severity=severity,
         affected_area=_clean(data.get("affected_area") or "Unknown")[:100],
         steps=steps,
+        game_breaking=bool(data.get("game_breaking", False)),
     )
+
+
+def log_digest(filename: str, report: LogReport) -> str:
+    """The parts of a parsed log that say what broke, for the triage prompt."""
+    known = (
+        ("Minecraft", report.mc_version),
+        ("Forge", report.forge_version),
+        ("DragonMineZ", report.dragonminez_version),
+        ("Java", report.java_version),
+    )
+    versions = ", ".join(f"{name} {value}" for name, value in known if value) or "versions not found"
+    lines = [f"{filename}: {versions}, {len(report.mods)} mods"]
+    if report.errors:
+        lines += ["Errors:", *report.errors[:8]]
+    if report.stacktrace:
+        lines += ["Stack trace:", report.stacktrace]
+    return "\n".join(lines)
 
 
 async def analyze_bug_report(
@@ -123,12 +152,15 @@ async def analyze_bug_report(
     report_text: str,
     attachments: list[str] | None = None,
     fallback_title: str = "Bug report",
+    log_digest: str = "",
 ) -> BugTriage:
     """Run a lightweight model to turn a raw forum post into structured triage."""
-    parts = [report_text.strip() or "(no text provided)"]
+    parts = [report_text.strip()[:5000] or "(no text provided)"]
     if attachments:
         parts.append("Attachments: " + ", ".join(attachments[:10]))
-    user_input = "\n\n".join(parts)[:6000]
+    if log_digest:
+        parts.append("LOG DIGEST:\n" + log_digest[:4000])
+    user_input = "\n\n".join(parts)
 
     request_kwargs: dict = {
         "model": model,

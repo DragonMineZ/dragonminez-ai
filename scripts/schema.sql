@@ -226,8 +226,13 @@ CREATE TABLE IF NOT EXISTS bug_reports (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT bug_reports_status_check
-        CHECK (status IN ('triaged', 'tracked', 'resolved', 'dismissed'))
+        CHECK (status IN ('triaged', 'tracked', 'resolved', 'dismissed', 'ticket'))
 );
+
+-- 'ticket': the reporter moved the post into a private ticket (the thread is deleted).
+ALTER TABLE bug_reports DROP CONSTRAINT IF EXISTS bug_reports_status_check;
+ALTER TABLE bug_reports ADD CONSTRAINT bug_reports_status_check
+    CHECK (status IN ('triaged', 'tracked', 'resolved', 'dismissed', 'ticket'));
 
 CREATE INDEX IF NOT EXISTS idx_bug_reports_status
     ON bug_reports (status);

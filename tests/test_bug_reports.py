@@ -1,7 +1,9 @@
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import discord
 
 from discord.components import _component_factory
 
@@ -11,8 +13,11 @@ os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.config import load_settings
-from bulmaai.services.bug_report_ai import DuplicateAssessment, _coerce_triage
+from bulmaai.cogs import bug_reports as bug_cog
+from bulmaai.cogs.bug_reports import BugReportsCog
+from bulmaai.services.bug_report_ai import DuplicateAssessment, _coerce_triage, log_digest
 from bulmaai.ui import bug_report_views as views
+from bulmaai.utils.log_parser import LogReport
 
 
 class BugReportConfigTests(unittest.TestCase):
@@ -146,6 +151,97 @@ class BugTriageCardTests(unittest.IsolatedAsyncioTestCase):
         text = views.message_text(self._card(duplicate=no_match))
         self.assertNotIn(views.DUPLICATE_TITLE, text)
         self.assertNotIn(views.FIXED_TITLE, text)
+
+    async def test_game_breaking_report_suggests_a_ticket_with_a_button(self) -> None:
+        triage = self._sample_triage()
+        triage.game_breaking = True
+        view = views.triage_view(triage, thread_id=9, reporter_id=42)
+        self.assertIn("game-breaking", views.message_text(self._posted(view)))
+        self.assertIn("bug_ticket:9", [b.custom_id for b in view.get_item(views.ACTIONS_ID).children])
+
+        plain = views.triage_view(self._sample_triage(), thread_id=9, reporter_id=42)
+        self.assertNotIn("game-breaking", views.message_text(self._posted(plain)))
+        self.assertNotIn("bug_ticket:9", [b.custom_id for b in plain.get_item(views.ACTIONS_ID).children])
+
+
+class LogDigestTests(unittest.TestCase):
+    def test_digest_names_versions_and_the_error(self) -> None:
+        report = LogReport(
+            mc_version="1.20.1",
+            dragonminez_version="2.1.3",
+            errors=["[main/ERROR]: java.lang.NullPointerException at MovementSkillsHandler"],
+            stacktrace="java.lang.NullPointerException\nat MovementSkillsHandler.tick",
+        )
+        digest = log_digest("latest.log", report)
+        self.assertIn("Minecraft 1.20.1, DragonMineZ 2.1.3", digest)
+        self.assertIn("MovementSkillsHandler", digest)
+
+
+def _not_found() -> discord.NotFound:
+    return discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Unknown Message")
+
+
+class BugReportCogTests(unittest.IsolatedAsyncioTestCase):
+    def _cog(self, tickets=None):
+        cog = BugReportsCog.__new__(BugReportsCog)
+        cog.bot = SimpleNamespace(get_cog=lambda name: tickets)
+        cog.settings = SimpleNamespace()
+        cog._opening_tickets = set()
+        return cog
+
+    async def test_starter_fetch_retries_until_the_post_exists(self) -> None:
+        starter = object()
+        thread = SimpleNamespace(id=9, starting_message=None, fetch_message=AsyncMock(side_effect=[_not_found(), _not_found(), starter]))
+        with patch.object(bug_cog, "STARTER_FETCH_DELAY_SECONDS", 0):
+            self.assertIs(await self._cog()._fetch_starter_message(thread), starter)
+        self.assertEqual(thread.fetch_message.await_count, 3)
+
+    def _interaction(self, user_id: int, thread):
+        return SimpleNamespace(
+            user=SimpleNamespace(id=user_id),
+            guild=SimpleNamespace(filesize_limit=10_000_000, get_member=lambda _id: None),
+            channel=thread,
+            message=None,
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+        )
+
+    async def test_only_the_reporter_or_staff_can_open_the_ticket(self) -> None:
+        tickets = SimpleNamespace(create_ticket=AsyncMock())
+        report = SimpleNamespace(reporter_id=42, ai_title="Crash", ai_summary="")
+        interaction = self._interaction(7, SimpleNamespace())
+        with patch.object(bug_cog, "get_bug_report", AsyncMock(return_value=report)), \
+                patch.object(bug_cog, "is_staff", return_value=False):
+            await self._cog(tickets)._handle_open_ticket(interaction, 9)
+        tickets.create_ticket.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once()
+
+    async def test_reporter_gets_a_ticket_and_the_post_is_deleted(self) -> None:
+        tickets = SimpleNamespace(create_ticket=AsyncMock(return_value=SimpleNamespace(name="bug-0007")))
+        report = SimpleNamespace(reporter_id=42, ai_title="Crash on load", ai_summary="NPE")
+        starter = SimpleNamespace(content="I attached my latest.log", attachments=[])
+        thread = MagicMock(spec=discord.Thread)
+        thread.name, thread.starting_message, thread.delete = "Crash on load", starter, AsyncMock()
+        interaction = self._interaction(42, thread)
+        with patch.object(bug_cog, "get_bug_report", AsyncMock(return_value=report)), \
+                patch.object(bug_cog, "set_status", AsyncMock()) as set_status:
+            await self._cog(tickets)._handle_open_ticket(interaction, 9)
+        args, kwargs = tickets.create_ticket.await_args
+        self.assertIs(kwargs["owner"], interaction.user)
+        self.assertIn(("What happened?", "I attached my latest.log"), args[2])
+        set_status.assert_awaited_once_with(9, "ticket")
+        thread.delete.assert_awaited_once()
+
+    async def test_post_stays_when_the_ticket_could_not_be_opened(self) -> None:
+        tickets = SimpleNamespace(create_ticket=AsyncMock(return_value=None))
+        report = SimpleNamespace(reporter_id=42, ai_title="Crash", ai_summary="")
+        thread = MagicMock(spec=discord.Thread)
+        thread.name, thread.starting_message, thread.delete = "Crash", None, AsyncMock()
+        thread.fetch_message = AsyncMock(side_effect=discord.Forbidden(SimpleNamespace(status=403, reason="x"), "no"))
+        with patch.object(bug_cog, "get_bug_report", AsyncMock(return_value=report)), \
+                patch.object(bug_cog, "set_status", AsyncMock()) as set_status:
+            await self._cog(tickets)._handle_open_ticket(self._interaction(42, thread), 9)
+        set_status.assert_not_awaited()
+        thread.delete.assert_not_awaited()
 
 
 if __name__ == "__main__":

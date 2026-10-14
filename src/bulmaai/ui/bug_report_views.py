@@ -60,14 +60,24 @@ def status_line(status: str, reporter_id: int | None) -> str:
     return line + (f"　**Reporter** <@{reporter_id}>" if reporter_id else "")
 
 
-def triage_buttons(thread_id: int) -> discord.ui.ActionRow:
-    return discord.ui.ActionRow(
+TICKET_SUGGESTION = (
+    "💬 **This looks game-breaking.** The reporter can open a private ticket with **Open a ticket** below so "
+    "staff can help directly; this post is then moved into the ticket."
+)
+
+
+def triage_buttons(thread_id: int, *, ticket: bool = False) -> discord.ui.ActionRow:
+    buttons = [
         discord.ui.Button(label="Create issue", style=discord.ButtonStyle.success, custom_id=f"bug_issue:{thread_id}", emoji="🛠️"),
         discord.ui.Button(label="Close as Duplicate", custom_id=f"bug_dup:{thread_id}", emoji="🔁"),
         discord.ui.Button(label="Close as Already Fixed", custom_id=f"bug_fixed:{thread_id}", emoji="✅"),
         discord.ui.Button(label="Not a bug", custom_id=f"bug_notbug:{thread_id}", emoji="🚫"),
-        id=ACTIONS_ID,
-    )
+    ]
+    if ticket:
+        buttons.insert(0, discord.ui.Button(
+            label="Open a ticket", style=discord.ButtonStyle.primary, custom_id=f"bug_ticket:{thread_id}", emoji="🎫"
+        ))
+    return discord.ui.ActionRow(*buttons, id=ACTIONS_ID)
 
 
 def triage_view(
@@ -91,11 +101,14 @@ def triage_view(
         items.append(discord.ui.TextDisplay(f"**Steps to reproduce**\n{steps}"[:1000]))
     if duplicate is not None and (line := _duplicate_line(duplicate)) is not None:
         items += [discord.ui.Separator(), discord.ui.TextDisplay(f"**{line[0]}** {line[1]}")]
+    suggest_ticket = triage.game_breaking and status == "triaged"
+    if suggest_ticket:
+        items += [discord.ui.Separator(), discord.ui.TextDisplay(TICKET_SUGGESTION)]
     items += [
         discord.ui.TextDisplay(status_line(status, reporter_id), id=STATUS_ID),
         discord.ui.TextDisplay("-# AI-generated triage · staff actions below"),
     ]
-    actions = [triage_buttons(thread_id)] if status == "triaged" else []
+    actions = [triage_buttons(thread_id, ticket=suggest_ticket)] if status == "triaged" else []
     return discord.ui.DesignerView(discord.ui.Container(*items, color=color), *actions, timeout=None)
 
 

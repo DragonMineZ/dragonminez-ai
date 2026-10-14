@@ -14,6 +14,7 @@ from bulmaai.services.bug_report_ai import (
     DuplicateAssessment,
     analyze_bug_report,
     assess_duplicate,
+    log_digest,
 )
 from bulmaai.services.bug_reports import (
     get_bug_report,
@@ -24,10 +25,21 @@ from bulmaai.services.bug_reports import (
 )
 from bulmaai.ui.bug_report_views import DUPLICATE_TITLE, FIXED_TITLE, message_text, restatus, triage_view
 from bulmaai.ui.v2 import while_busy
+from bulmaai.ui.ticket_views import CATEGORIES
 from bulmaai.utils.lifecycle import ReloadableCog
+from bulmaai.utils.log_parser import parse_log
 from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
+
+TICKETS_COG = "TicketsCog"
+# A forum post's starter message often isn't fetchable yet when on_thread_create fires; without it the
+# triage only sees the title (the "no information" cards).
+STARTER_FETCH_ATTEMPTS = 5
+STARTER_FETCH_DELAY_SECONDS = 1.0
+LOG_EXTENSIONS = (".log", ".txt")
+MAX_LOG_BYTES = 10 * 1024 * 1024
+MAX_LOGS_READ = 2
 
 
 def _get_github_service(settings, repo: str) -> GitHubService:
@@ -83,6 +95,7 @@ class BugReportsCog(ReloadableCog):
         self._poll_lock = asyncio.Lock()
         self._creating_issues: set[int] = set()
         self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
+        self._opening_tickets: set[int] = set()
 
     @property
     def settings(self):
@@ -93,8 +106,7 @@ class BugReportsCog(ReloadableCog):
         # Tests build the cog without a bot and pin settings directly.
         self.__dict__["_settings_override"] = value
 
-    # ==================== lifecycle ====================
-
+    # ==================== lifecycle =============
     async def on_startup(self) -> None:
         self._start_polling_if_configured()
 
@@ -120,8 +132,7 @@ class BugReportsCog(ReloadableCog):
             self.settings.bug_report_poll_minutes,
         )
 
-    # ==================== ingestion ====================
-
+    # ==================== ingestion =============
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread) -> None:
         if not getattr(self.settings, "bug_reports_enabled", False):
@@ -142,6 +153,7 @@ class BugReportsCog(ReloadableCog):
             if starter is not None
             else []
         )
+        digest = await self._log_digest(starter.attachments) if starter is not None else ""
         # Forum posts carry the title separately from the body.
         full_text = f"{thread.name}\n\n{report_text}".strip()
 
@@ -152,6 +164,7 @@ class BugReportsCog(ReloadableCog):
                 report_text=full_text,
                 attachments=attachments,
                 fallback_title=thread.name[:240] or "Bug report",
+                log_digest=digest,
             )
         except Exception:
             log.exception("Bug-report triage failed for thread %s", thread.id)
@@ -181,11 +194,34 @@ class BugReportsCog(ReloadableCog):
     async def _fetch_starter_message(self, thread: discord.Thread) -> discord.Message | None:
         if thread.starting_message is not None:
             return thread.starting_message
-        try:
-            return await thread.fetch_message(thread.id)
-        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
-            log.warning("Could not fetch starter message for thread %s", thread.id)
-            return None
+        for attempt in range(STARTER_FETCH_ATTEMPTS):
+            try:
+                return await thread.fetch_message(thread.id)
+            except discord.NotFound:
+                if attempt + 1 < STARTER_FETCH_ATTEMPTS:
+                    await asyncio.sleep(STARTER_FETCH_DELAY_SECONDS)
+            except (discord.HTTPException, discord.Forbidden):
+                break
+        log.warning("Could not fetch starter message for thread %s", thread.id)
+        return None
+
+    async def _log_digest(self, attachments: list[discord.Attachment]) -> str:
+        """Versions, errors and the stack trace from attached Minecraft logs. Zips aren't opened."""
+        digests: list[str] = []
+        for attachment in attachments:
+            if len(digests) >= MAX_LOGS_READ:
+                break
+            if not attachment.filename.lower().endswith(LOG_EXTENSIONS) or attachment.size > MAX_LOG_BYTES:
+                continue
+            try:
+                text = (await attachment.read()).decode("utf-8", errors="replace")
+            except discord.HTTPException:
+                log.warning("Could not read bug report attachment %s", attachment.filename)
+                continue
+            report = await asyncio.to_thread(parse_log, text)
+            if report.is_forge or report.mc_version or report.errors:
+                digests.append(log_digest(attachment.filename, report))
+        return "\n\n".join(digests)
 
     async def _assess_duplicate(self, triage: BugTriage) -> DuplicateAssessment | None:
         """Search existing GitHub issues and ask the AI whether this report duplicates,
@@ -215,8 +251,7 @@ class BugReportsCog(ReloadableCog):
         )
         return assessment if assessment.has_match else None
 
-    # ==================== button interactions ====================
-
+    # ==================== button interactions =============
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type != discord.InteractionType.component:
@@ -230,6 +265,8 @@ class BugReportsCog(ReloadableCog):
             await self._handle_close_duplicate(interaction, int(custom_id.split(":")[1]))
         elif custom_id.startswith("bug_fixed:"):
             await self._handle_close_fixed(interaction, int(custom_id.split(":")[1]))
+        elif custom_id.startswith("bug_ticket:"):
+            await self._handle_open_ticket(interaction, int(custom_id.split(":")[1]))
 
     async def _handle_create_issue(self, interaction: discord.Interaction, thread_id: int) -> None:
         # Two quick clicks would both pass the "already tracked" check and file duplicate GitHub issues.
@@ -353,6 +390,77 @@ class BugReportsCog(ReloadableCog):
             ack="Closed as already fixed.",
         )
 
+    async def _handle_open_ticket(self, interaction: discord.Interaction, thread_id: int) -> None:
+        """Moves a game-breaking report into a private bug ticket owned by the reporter, then deletes the post.
+        Only the reporter or staff (opening it on the reporter's behalf) can use it."""
+        report = await get_bug_report(thread_id)
+        if report is None:
+            return await interaction.response.send_message("No triage data found for this report.", ephemeral=True)
+        is_reporter = interaction.user.id == report.reporter_id
+        if not is_reporter and not is_staff(interaction.user, settings=self.settings):
+            return await interaction.response.send_message(
+                "Only the person who posted this report can open a ticket from it.", ephemeral=True
+            )
+        tickets = self.bot.get_cog(TICKETS_COG)
+        thread = interaction.channel
+        if tickets is None or interaction.guild is None or not isinstance(thread, discord.Thread):
+            return await interaction.response.send_message("Tickets aren't available right now.", ephemeral=True)
+        if thread_id in self._opening_tickets:
+            return await interaction.response.send_message("That ticket is already being opened.", ephemeral=True)
+
+        owner = interaction.user if is_reporter else interaction.guild.get_member(report.reporter_id or 0)
+        if owner is None and report.reporter_id:
+            try:
+                owner = await interaction.guild.fetch_member(report.reporter_id)
+            except discord.HTTPException:
+                owner = None
+        if owner is None:
+            return await interaction.response.send_message("The reporter isn't in the server anymore.", ephemeral=True)
+
+        self._opening_tickets.add(thread_id)
+        try:
+            # Downloading the attachments can outlast the 3-second interaction window.
+            await interaction.response.defer(ephemeral=True, invisible=False)
+            starter = await self._fetch_starter_message(thread)
+            triage = self._triage_from_card(interaction, report)
+            answers = [
+                ("Summary", triage.title[:100]),
+                ("What happened?", ((starter.content if starter else "") or triage.summary)[:1000]),
+                ("Steps to reproduce", "\n".join(f"{i}. {step}" for i, step in enumerate(triage.steps, 1))[:800]),
+                ("Bug report post", thread.name[:100]),
+            ]
+            files = await self._carried_files(starter, interaction.guild.filesize_limit)
+            channel = await tickets.create_ticket(
+                interaction, CATEGORIES["bug"], [(label, value) for label, value in answers if value],
+                owner=owner, files=files,
+            )
+            if channel is None:
+                return  # create_ticket already told the clicker why (ticket limit, failure)
+            await set_status(thread_id, "ticket")
+            try:
+                await thread.delete(reason=f"Moved into ticket #{channel.name} by {interaction.user}")
+            except discord.HTTPException:
+                log.exception("Failed to delete bug thread %s after opening its ticket", thread_id)
+        finally:
+            self._opening_tickets.discard(thread_id)
+
+    @staticmethod
+    async def _carried_files(starter: discord.Message | None, size_limit: int) -> list[discord.File]:
+        """The post's attachments (logs, zips, screenshots), re-uploaded since the post gets deleted."""
+        if starter is None:
+            return []
+        files: list[discord.File] = []
+        budget = size_limit  # one message carries them all, so the limit is for the total
+        for attachment in starter.attachments[:10]:
+            if attachment.size > budget:
+                continue
+            budget -= attachment.size
+            try:
+                files.append(await attachment.to_file())
+            except discord.HTTPException:
+                log.warning("Could not copy bug report attachment %s", attachment.filename)
+        return files
+
     async def _close_report(
         self,
         interaction: discord.Interaction,
@@ -438,8 +546,7 @@ class BugReportsCog(ReloadableCog):
                 return [label["name"]]
         return []
 
-    # ==================== resolution polling ====================
-
+    # ==================== resolution polling =============
     @tasks.loop(minutes=10)
     async def poll_tracked_issues(self) -> None:
         async with self._poll_lock:

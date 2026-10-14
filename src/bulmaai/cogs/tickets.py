@@ -391,12 +391,18 @@ class TicketsCog(ReloadableCog):
         interaction: discord.Interaction,
         category: TicketCategory,
         answers: list[tuple[str, str]],
-    ) -> None:
-        guild, member, settings = interaction.guild, interaction.user, self.settings
+        *,
+        owner: discord.Member | None = None,
+        files: list[discord.File] | None = None,
+    ) -> discord.TextChannel | None:
+        """owner: open it for someone else (staff acting for a bug reporter). files go in right after the welcome,
+        before the AI reads the ticket. Returns the channel, or None after telling the clicker why not."""
+        guild, member, settings = interaction.guild, owner or interaction.user, self.settings
         # invisible=False: a modal submit's default ("invisible") defer would edit the public panel message instead.
-        await interaction.response.defer(ephemeral=True, invisible=False)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, invisible=False)
         if guild is None or not isinstance(member, discord.Member):
-            return
+            return None
         await interaction.edit_original_response(content=MSG["creating"])
 
         form_text = "\n".join(f"{label}: {value}" for label, value in answers)
@@ -407,7 +413,8 @@ class TicketsCog(ReloadableCog):
             language=detect_language_from_text(form_text),
         )
         if ticket is None:
-            return await interaction.edit_original_response(content=await self._already_open(member.id))
+            await interaction.edit_original_response(content=await self._already_open(member.id))
+            return None
 
         channel: discord.TextChannel | None = None
         try:
@@ -442,8 +449,14 @@ class TicketsCog(ReloadableCog):
                 except discord.HTTPException:
                     pass
             await abandon_ticket(ticket.ticket_id)
-            return await interaction.edit_original_response(content=MSG["failed"])
+            await interaction.edit_original_response(content=MSG["failed"])
+            return None
 
+        if files:
+            try:
+                await channel.send(files=files)
+            except discord.HTTPException:
+                log.warning("Could not post carried-over files", extra={"ticket_id": ticket.ticket_id})
         await interaction.edit_original_response(content=msg_created(channel.mention))
         try:
             await member.send(view=dm_created(ticket.ticket_id, category, channel))
@@ -455,6 +468,7 @@ class TicketsCog(ReloadableCog):
             await ai_cog.answer_new_ticket(
                 channel, member, category_label=category.name, form_text=form_text, language=intake.language
             )
+        return channel
 
     async def _triage(self, category: TicketCategory, answers: list[tuple[str, str]], ticket: Ticket) -> TicketIntake:
         """AI picks the channel name and language; any failure just falls back to the category defaults."""

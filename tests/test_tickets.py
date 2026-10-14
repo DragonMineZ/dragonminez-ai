@@ -804,7 +804,7 @@ class CreateTicketTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(
             guild=guild,
             user=MagicMock(spec=discord.Member),
-            response=SimpleNamespace(defer=AsyncMock()),
+            response=SimpleNamespace(defer=AsyncMock(), is_done=lambda: False),
             edit_original_response=AsyncMock(),
         )
         for open_tickets, text in (([make_ticket()], f"<#{make_ticket().channel_id}>"), ([], "still being created")):
@@ -823,7 +823,7 @@ class CreateTicketTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(
             guild=guild,
             user=MagicMock(spec=discord.Member),
-            response=SimpleNamespace(defer=AsyncMock()),
+            response=SimpleNamespace(defer=AsyncMock(), is_done=lambda: False),
             edit_original_response=AsyncMock(),
         )
         with (

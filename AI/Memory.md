@@ -67,6 +67,9 @@ Console actions are private to Bruno:
   - The closed card's transcript button shows "Saving transcript…", then links to the page (or "Retry transcript" if archiving failed). No separate "transcript saved" message in the channel.
   - Messages sent while the ticket was closed (except the bot's own) never reach any transcript, summary or knowledge file; one "N messages were sent while this ticket was closed." notice stands in per closed stretch (`services/tickets.hide_closed_messages`, stretches from `tickets.closed_periods` + `closed_at`).
 - Modal-submit `defer()` defaults to `invisible=True`, which edits the panel message publicly.
+- Game-breaking bug reports (crash, corrupted world, can't load or join) get an "Open a ticket" button on the triage card.
+  - Only the reporter can click it, or staff opening the ticket for the reporter.
+  - The post's text and files move into a bug ticket owned by the reporter, and the forum thread is deleted (status `ticket`).
 
 ## Patreon beta whitelist
 

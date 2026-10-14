@@ -29,7 +29,6 @@ SETTINGS = SimpleNamespace(
     panel_moderator_role_ids=(MOD_ROLE,),
     panel_helper_role_ids=(HELPER_ROLE,),
     ticket_dm_transcript=True,
-    ticket_max_open_per_user=2,
     ticket_transcript_public_url="https://tickets.example",
     ai_ticket_category_id=1,
     ticket_closed_category_id=2,
@@ -230,15 +229,15 @@ class NumberingTests(unittest.IsolatedAsyncioTestCase):
     async def test_reserve_takes_next_number(self):
         conn = FakeConn(last=41, active=0)
         ticket = await db.reserve_ticket(
-            guild_id=1, owner_id=OWNER_ID, category="bug", language="es", max_open=2, pool=FakePool(conn)
+            guild_id=1, owner_id=OWNER_ID, category="bug", language="es", pool=FakePool(conn)
         )
         self.assertEqual(ticket.ticket_id, 42)
         self.assertEqual(conn.executed[0][1], (42,))
 
     async def test_reserve_refuses_at_the_limit_without_burning_a_number(self):
-        conn = FakeConn(last=41, active=2)
+        conn = FakeConn(last=41, active=1)
         ticket = await db.reserve_ticket(
-            guild_id=1, owner_id=OWNER_ID, category="bug", language="en", max_open=2, pool=FakePool(conn)
+            guild_id=1, owner_id=OWNER_ID, category="bug", language="en", pool=FakePool(conn)
         )
         self.assertIsNone(ticket)
         self.assertEqual(conn.executed, [])
@@ -808,10 +807,14 @@ class CreateTicketTests(unittest.IsolatedAsyncioTestCase):
             response=SimpleNamespace(defer=AsyncMock()),
             edit_original_response=AsyncMock(),
         )
-        with patch.object(cog_module, "reserve_ticket", AsyncMock(return_value=None)):
-            await cog.create_ticket(interaction, views.CATEGORIES["bug"], [("Summary", "boom")])
-        guild.create_text_channel.assert_not_called()
-        self.assertEqual(interaction.edit_original_response.await_args.kwargs["content"], views.msg_limit(2))
+        for open_tickets, text in (([make_ticket()], f"<#{make_ticket().channel_id}>"), ([], "still being created")):
+            with (
+                patch.object(cog_module, "reserve_ticket", AsyncMock(return_value=None)),
+                patch.object(cog_module, "get_open_tickets_by_owner", AsyncMock(return_value=open_tickets)),
+            ):
+                await cog.create_ticket(interaction, views.CATEGORIES["bug"], [("Summary", "boom")])
+            guild.create_text_channel.assert_not_called()
+            self.assertIn(text, interaction.edit_original_response.await_args.kwargs["content"])
 
     async def test_failed_creation_frees_the_slot(self):
         cog = make_cog()
@@ -1074,8 +1077,9 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
             self.refused_with(*await self.reopen_click(OWNER_ID, ticket, channel), views.MSG["cannot_reopen"])
         self.refused_with(*await self.reopen_click(OWNER_ID, solved, None), views.MSG["reopen_gone"])
         self.refused_with(*await self.reopen_click(OWNER_ID, solved, make_channel(None)), views.MSG["reopen_gone"])
-        at_limit = await self.reopen_click(OWNER_ID, solved, channel, open_tickets=[make_ticket(), make_ticket()])
-        self.refused_with(*at_limit, views.msg_limit(2))
+        other = make_ticket(channel_id=777)
+        at_limit = await self.reopen_click(OWNER_ID, solved, channel, open_tickets=[other])
+        self.refused_with(*at_limit, views.msg_already_open(777))
 
     async def test_dm_reopen_reopens_and_swaps_the_dm_for_a_channel_link(self):
         channel = make_channel(Snow(OWNER_ID))

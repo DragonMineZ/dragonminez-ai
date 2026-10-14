@@ -125,11 +125,10 @@ async def reserve_ticket(
     owner_id: int,
     category: str,
     language: str,
-    max_open: int,
     pool: Any | None = None,
 ) -> Ticket | None:
     """Atomically take the next number. The counter row lock serializes the open-ticket limit check too.
-    Returns None when the owner is at their limit."""
+    Returns None when the owner already has an open (or still creating) ticket."""
     resolved_pool = pool or await get_pool()
     async with resolved_pool.acquire() as conn:
         async with conn.transaction():
@@ -143,7 +142,7 @@ async def reserve_ticket(
                 """,
                 owner_id,
             )
-            if active >= max_open:
+            if active:
                 return None
             ticket_id = last + 1
             await conn.execute("UPDATE ticket_counter SET last_number = $1 WHERE id = 1", ticket_id)

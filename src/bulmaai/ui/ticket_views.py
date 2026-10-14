@@ -170,11 +170,18 @@ MSG = {
 }
 
 
-def msg_limit(count: int) -> str:
+def msg_already_open(channel_id: int | None) -> str:
+    """channel_id is None while their other ticket is still being created."""
+    if channel_id is None:
+        return tri(
+            "Your ticket is still being created. Please wait a moment.",
+            "Tu ticket todavía se está creando. Espera un momento.",
+            "Seu ticket ainda está sendo criado. Aguarde um momento.",
+        )
     return tri(
-        f"You already have {count} open tickets. Please use one of them.",
-        f"Ya tienes {count} tickets abiertos. Usa uno de ellos.",
-        f"Você já tem {count} tickets abertos. Use um deles.",
+        f"You already have an open ticket: <#{channel_id}>. Please continue there.",
+        f"Ya tienes un ticket abierto: <#{channel_id}>. Continúa allí.",
+        f"Você já tem um ticket aberto: <#{channel_id}>. Continue nele.",
     )
 
 

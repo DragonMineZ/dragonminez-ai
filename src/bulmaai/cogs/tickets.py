@@ -71,7 +71,7 @@ from bulmaai.ui.ticket_views import (
     dm_solved,
     dm_transcript,
     msg_created,
-    msg_limit,
+    msg_already_open,
     notice,
     panel_view,
     reopened_view,
@@ -381,6 +381,11 @@ class TicketsCog(ReloadableCog):
 
     # ---- ticket creation -------------------------------------------------------------------------
 
+    async def _already_open(self, owner_id: int) -> str:
+        """One open ticket per member: point them at it (it has no channel yet while still being created)."""
+        open_tickets = await get_open_tickets_by_owner(owner_id)
+        return msg_already_open(open_tickets[0].channel_id if open_tickets else None)
+
     async def create_ticket(
         self,
         interaction: discord.Interaction,
@@ -400,10 +405,9 @@ class TicketsCog(ReloadableCog):
             owner_id=member.id,
             category=category.key,
             language=detect_language_from_text(form_text),
-            max_open=settings.ticket_max_open_per_user,
         )
         if ticket is None:
-            return await interaction.edit_original_response(content=msg_limit(settings.ticket_max_open_per_user))
+            return await interaction.edit_original_response(content=await self._already_open(member.id))
 
         channel: discord.TextChannel | None = None
         try:
@@ -740,9 +744,8 @@ class TicketsCog(ReloadableCog):
         channel = self.bot.get_channel(ticket.channel_id)
         if not isinstance(channel, discord.TextChannel) or channel.guild.get_member(ticket.owner_id) is None:
             return await interaction.response.send_message(MSG["reopen_gone"], ephemeral=True)
-        limit = self.settings.ticket_max_open_per_user
-        if len(await get_open_tickets_by_owner(ticket.owner_id)) >= limit:
-            return await interaction.response.send_message(msg_limit(limit), ephemeral=True)
+        if open_tickets := await get_open_tickets_by_owner(ticket.owner_id):
+            return await interaction.response.send_message(msg_already_open(open_tickets[0].channel_id), ephemeral=True)
 
         async def reopen() -> None:
             if await self.reopen_ticket(channel, opener_id=ticket.owner_id) is None:

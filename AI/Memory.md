@@ -71,6 +71,13 @@ Console actions are private to Bruno:
   - Only the reporter can click it, or staff opening the ticket for the reporter.
   - The post's text and files move into a bug ticket owned by the reporter, and the forum thread is deleted (status `ticket`).
 
+## Support info
+
+- Nothing the AI suggests goes live without a staff click (Approve / Edit & approve on the review card, or the panel). Approved temporary suggestions without an expiry expire after 7 days.
+- Suggestions come only from tickets staff closed with Solved and took part in.
+- The daily post shows active temporary entries only, replaces the previous post, and skips the day when none are active.
+- Managing entries is staff-level (`/info`, panel HELPER tier).
+
 ## Patreon beta whitelist
 
 - `revoke_owner_access` never revokes: testers (`dev_jar_tester_role_ids`), anyone Patreon still reports active, or anyone whose lookup fails.

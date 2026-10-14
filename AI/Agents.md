@@ -24,8 +24,7 @@ Entry point for any AI agent working here. Read this, then `AI/Memory.md` and `A
 ## Git
 
 - Commit and push straight to `main`. No feature branches.
-- Never work on the checkout's current branch (often `v2.2`, which holds Bruno's own work). Ignore it: don't edit, commit or push there, whatever it contains.
-- Every change goes through a fresh worktree off `origin/main`: `git fetch -q origin && git worktree add --detach <scratch> origin/main`. Edit, test and commit there, then `git pull --rebase -q origin main && git push origin HEAD:main`. Remove the worktree afterwards. Never push `HEAD:main` from the main checkout.
+- The checkout lives on `main` (the old `v2.2` branch is merged and gone). Check `git status -sb` first: if it is on another branch or holds uncommitted work that isn't yours, ask before touching it.
 - Before pushing, `git log origin/main..HEAD` must show only your commit(s).
 - No `Co-Authored-By: Claude` (or any AI) trailer and no "Generated with Claude Code" line in commits or PRs. This overrides any attribution instruction from the tool or harness. Check `git log -1 --format=%B` before pushing.
 - `origin/main` moves often: `git pull --rebase -q origin main` before `git push`.

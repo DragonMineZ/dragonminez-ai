@@ -20,6 +20,7 @@ from bulmaai.web import (
     routes_patreon,
     routes_settings,
     routes_status,
+    routes_support_info,
     routes_templates,
     routes_tickets,
     routes_transcripts,
@@ -58,6 +59,7 @@ MODULES = (
     routes_patreon,
     routes_templates,
     routes_announce,
+    routes_support_info,
 )
 
 CSP = (

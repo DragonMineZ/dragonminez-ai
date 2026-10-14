@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from bulmaai.database.db import get_pool
-from bulmaai.services import ai_budget
+from bulmaai.services import ai_budget, support_info
 from bulmaai.services.ai_guard import defuse_mentions, strip_links
 from bulmaai.services.support_faq import _extract_response_json
 
@@ -39,6 +39,12 @@ Use only the provided transcript; never invent details not present in it. Produc
 - knowledge_worthy: true only if there is a concrete, reusable DragonMineZ support problem AND a
   confirmed working resolution useful for future users. False for spam, greetings, whitelist-only
   requests, account/payment specifics, or chats that end unresolved.
+- support_info: null unless the ticket reveals something future support should know. Then an object with:
+  - kind: "temporary" for a current problem with a workaround (e.g. a broken release, an outage), or
+    "permanent" for a reusable answer to a question likely to come up again.
+  - title: at most 80 characters.
+  - body: at most 600 characters, written as guidance for a support agent (what to tell users, what to check).
+  Null for one-off problems, account/payment specifics, or anything already obvious.
 
 Never include personal data (usernames, ids, real names) anywhere in the summary.
 """
@@ -56,8 +62,23 @@ TICKET_SUMMARY_SCHEMA: dict[str, Any] = {
             "items": {"type": "string"},
         },
         "knowledge_worthy": {"type": "boolean"},
+        "support_info": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "kind": {"type": "string", "enum": list(support_info.KINDS)},
+                        "title": {"type": "string"},
+                        "body": {"type": "string"},
+                    },
+                    "required": ["kind", "title", "body"],
+                },
+                {"type": "null"},
+            ]
+        },
     },
-    "required": ["title", "problem", "resolution", "resolved", "tags", "knowledge_worthy"],
+    "required": ["title", "problem", "resolution", "resolved", "tags", "knowledge_worthy", "support_info"],
 }
 
 
@@ -70,6 +91,15 @@ class TranscriptLine:
 
 
 @dataclass(frozen=True, slots=True)
+class SupportInfoSuggestion:
+    """Support info the summary model proposes; staff approve it before the AI uses it (cogs/support_info.py)."""
+
+    kind: str
+    title: str
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
 class TicketSummary:
     title: str
     problem: str
@@ -77,6 +107,7 @@ class TicketSummary:
     resolved: bool
     tags: tuple[str, ...]
     knowledge_worthy: bool
+    support_info: SupportInfoSuggestion | None = None
 
 
 async def get_image_analyses(
@@ -196,7 +227,22 @@ def _normalize_ticket_summary(payload: Any) -> TicketSummary:
         resolved=bool(payload.get("resolved")),
         tags=_normalize_summary_tags(payload.get("tags")),
         knowledge_worthy=bool(payload.get("knowledge_worthy")),
+        support_info=_normalize_suggestion(payload.get("support_info")),
     )
+
+
+def _normalize_suggestion(value: Any) -> SupportInfoSuggestion | None:
+    """Model output from member text, so links and mentions are defused; None when it doesn't pass validate()."""
+    if not isinstance(value, dict):
+        return None
+    kind = str(value.get("kind") or "").strip().lower()
+    title = strip_links(defuse_mentions(str(value.get("title") or "")))
+    body = strip_links(defuse_mentions(str(value.get("body") or "")))
+    try:
+        title, body = support_info.validate(kind, title, body)
+    except ValueError:
+        return None
+    return SupportInfoSuggestion(kind, title, body)
 
 
 async def summarize_ticket(

@@ -895,6 +895,9 @@ class TicketsCog(ReloadableCog):
                     resolved=resolved,
                     delete_channel=False,
                     announce=False,
+                    # resolved=True only comes from the staff Solved button (on_solved).
+                    staff_solved=resolved is True,
+                    ticket_id=ticket.ticket_id,
                 )
             except Exception:
                 # e.g. the closed-stretch lookup failed; no transcript beats one that shows hidden messages.

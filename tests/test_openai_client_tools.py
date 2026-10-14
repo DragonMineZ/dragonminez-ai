@@ -220,6 +220,7 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
                 new_callable=AsyncMock,
                 return_value=knowledge or [],
             ),
+            patch("bulmaai.services.openai_client._support_info_text", new_callable=AsyncMock, return_value=""),
             patch("bulmaai.services.openai_client.record_support_ai_trace", new_callable=AsyncMock) as record_trace,
         ):
             result = await run_support_agent(

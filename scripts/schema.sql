@@ -564,3 +564,32 @@ CREATE TABLE IF NOT EXISTS bot_updates (
 
 CREATE INDEX IF NOT EXISTS idx_bot_updates_applied_at
     ON bot_updates (applied_at DESC);
+
+-- Staff-curated support info: temporary known issues (posted daily) and permanent answers, both fed to the support AI.
+CREATE TABLE IF NOT EXISTS support_info (
+    id                 BIGSERIAL PRIMARY KEY,
+    kind               TEXT NOT NULL CHECK (kind IN ('temporary', 'permanent')),
+    title              TEXT NOT NULL,
+    body               TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('suggested', 'active', 'discarded', 'removed')),
+    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
+    ticket_id          BIGINT,
+    expires_at         TIMESTAMPTZ,
+    created_by         BIGINT,
+    updated_by         BIGINT,
+    review_channel_id  BIGINT,
+    review_message_id  BIGINT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_support_info_status
+    ON support_info (status, created_at DESC);
+
+-- Single row (id = 1): the daily public post of active temporary support info.
+CREATE TABLE IF NOT EXISTS support_info_post (
+    id          INT PRIMARY KEY CHECK (id = 1),
+    channel_id  BIGINT,
+    message_id  BIGINT,
+    posted_at   TIMESTAMPTZ
+);

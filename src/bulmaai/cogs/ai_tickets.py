@@ -1356,6 +1356,18 @@ class AITicketsCog(ReloadableCog):
             log.exception("Failed to build hosted ticket transcript", extra={"channel_id": channel.id})
             return None
 
+    async def _suggest_support_info(
+        self, channel_id: int, summary: TicketSummary, *, ticket_id: int | None, page_link: str | None
+    ) -> None:
+        """Hands the summary's support info suggestion to SupportInfoCog for staff review; never breaks the close."""
+        support_cog = self.bot.get_cog("SupportInfoCog")
+        if support_cog is None:
+            return
+        try:
+            await support_cog.suggest_from_ticket(summary.support_info, ticket_id=ticket_id, page_link=page_link)
+        except Exception:
+            log.exception("Failed to suggest support info", extra={"channel_id": channel_id})
+
     async def _close_ticket(
         self,
         channel: discord.TextChannel,
@@ -1365,9 +1377,12 @@ class AITicketsCog(ReloadableCog):
         resolved: bool | None,
         delete_channel: bool,
         announce: bool = True,
+        staff_solved: bool = False,
+        ticket_id: int | None = None,
     ) -> bool:
         """Transcript → hosted HTML page → summarize → learn (vector store) → embed → record → optionally delete.
-        resolved=None lets the summary decide.
+        resolved=None lets the summary decide. staff_solved: closed with the staff Solved button; then a support info
+        suggestion from the summary goes to staff review (if staff took part).
         Returns whether the transcript was saved for the panel."""
         archived = False
         if channel.id in self._closing_channels or channel.id in self._archived_channels:
@@ -1424,6 +1439,10 @@ class AITicketsCog(ReloadableCog):
                         )
                 except Exception:
                     log.exception("Failed to upload ticket knowledge", extra={"channel_id": channel.id})
+            if staff_solved and staff_reviewed and summary is not None and summary.support_info is not None:
+                await self._suggest_support_info(
+                    channel.id, summary, ticket_id=ticket_id, page_link=page_url(settings, page.token) if page else None
+                )
 
             confidence = self._last_confidence.pop(channel.id, None)
             card_args = dict(

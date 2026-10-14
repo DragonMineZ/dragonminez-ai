@@ -21,7 +21,7 @@ from openai import (
 )
 
 from bulmaai.config import Settings, load_settings
-from bulmaai.services import ai_budget, ai_guard, ai_tools
+from bulmaai.services import ai_budget, ai_guard, ai_tools, support_info
 from bulmaai.services.support_traces import SupportAITrace, record_support_ai_trace
 from bulmaai.services.wiki_knowledge import (
     DEFAULT_WIKI_BASE_URL,
@@ -152,8 +152,27 @@ def _build_response_input(
     return response_input
 
 
-def _build_data_input(knowledge: list[dict[str, str]], prefetch_lines: list[str]) -> list[dict[str, str]]:
+SUPPORT_INFO_HEADER = (
+    "Support info from DragonMineZ staff (current and authoritative; when it matches the question, answer from it "
+    "and prefer it over knowledge search; temporary entries describe current issues):\n\n"
+)
+
+
+async def _support_info_text() -> str:
+    """Staff support info for the developer message; a DB failure only drops the section."""
+    try:
+        return support_info.render_for_ai(await support_info.cached_active())
+    except Exception:
+        log.exception("Support info lookup failed; answering without it")
+        return ""
+
+
+def _build_data_input(
+    knowledge: list[dict[str, str]], prefetch_lines: list[str], support_info_text: str = ""
+) -> list[dict[str, str]]:
     parts: list[str] = []
+    if support_info_text:
+        parts.append(SUPPORT_INFO_HEADER + support_info_text)
     if prefetch_lines:
         parts.append(
             "Looked-up data (live and authoritative; requester_* entries describe the requester only):\n"
@@ -607,14 +626,15 @@ async def run_support_agent(
         )
 
     query = _knowledge_query(messages, user_id)
-    knowledge, prefetch_lines = await asyncio.gather(
+    knowledge, prefetch_lines, support_info_text = await asyncio.gather(
         _search_knowledge(query, runtime_settings),
         _prefetch(bot, user_id, query, (channel_id, user_id) if ticket_conversation else None),
+        _support_info_text(),
     )
     run = functools.partial(
         _run_once,
         base_input=_build_response_input(messages, context_lines=context_lines),
-        data_input=_build_data_input(knowledge, prefetch_lines),
+        data_input=_build_data_input(knowledge, prefetch_lines, support_info_text),
         knowledge_filenames={hit["filename"] for hit in knowledge},
         enabled_tools=enabled_tools,
         language=language,

@@ -46,6 +46,7 @@ PERMISSIONS: dict[str, Tier] = {
     "mod.cases.edit": Tier.HELPER,
     "mod.timeout": Tier.HELPER,
     "mod.kick": Tier.HELPER,
+    "support_info.edit": Tier.HELPER,  # the /info command is staff-level too
     "mod.tools": Tier.HELPER,  # nick, scam images, automod false positives
     "mod.ban": Tier.MODERATOR,
     "mod.channels": Tier.MODERATOR,  # purge, lock, slowmode, lockdown, /role

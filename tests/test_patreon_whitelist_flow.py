@@ -8,7 +8,9 @@ def sent_text(call) -> str:
     args, kwargs = call
     return args[0] if args else text(kwargs["view"])
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import discord
 from urllib.parse import parse_qs, urlparse
 
 from requests import HTTPError
@@ -1456,6 +1458,56 @@ class PatreonWhitelistFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(update_link.await_args.kwargs["entitlement_active"])
         self.assertEqual(cog.gh.put_calls[0]["new_text"], "KeepMe\n")
         deactivate.assert_awaited_once_with(456)
+
+    def _unlink_ctx(self):
+        author = MagicMock(spec=discord.Member)
+        author.mention = "<@1>"
+        return FakeCommandContext(author=author, channel=FakeChannel())
+
+    async def test_staff_unlink_removes_link_self_and_gift_even_for_active_patron(self) -> None:
+        cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        cog._log_staff_info = AsyncMock()
+        ctx = self._unlink_ctx()
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.is_staff", return_value=True),
+            patch("bulmaai.cogs.patreon_whitelist_flow.in_main_guild", return_value=True),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.get_patreon_link", AsyncMock(return_value=self._link())),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
+            patch("bulmaai.cogs.patreon_whitelist_flow.delete_patreon_link", AsyncMock(return_value=True)) as delete,
+        ):
+            await cog._handle_unlink_command(ctx, SimpleNamespace(id=456))
+        self.assertEqual(cog.gh.put_calls[0]["new_text"], "KeepMe\n")
+        deactivate.assert_awaited_once_with(456)
+        delete.assert_awaited_once_with(456)
+        self.assertIn("`GiftedMC`, `OwnerMC`", sent_text(ctx.followup.sent[0]))
+
+    async def test_unlink_keeps_everything_when_github_fails(self) -> None:
+        cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        cog.gh.put_whitelist_file = AsyncMock(side_effect=RuntimeError("github down"))
+        ctx = self._unlink_ctx()
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.is_staff", return_value=True),
+            patch("bulmaai.cogs.patreon_whitelist_flow.in_main_guild", return_value=True),
+            patch("bulmaai.cogs.patreon_whitelist_flow.list_active_grants_for_owner", AsyncMock(return_value=grants)),
+            patch("bulmaai.cogs.patreon_whitelist_flow.deactivate_grants_for_owner", AsyncMock()) as deactivate,
+            patch("bulmaai.cogs.patreon_whitelist_flow.delete_patreon_link", AsyncMock()) as delete,
+        ):
+            await cog._handle_unlink_command(ctx, SimpleNamespace(id=456))
+        deactivate.assert_not_called()
+        delete.assert_not_called()
+
+    async def test_unlink_refuses_non_staff(self) -> None:
+        cog, _grants = self._revoke_cog(FakeGitHubWithGrantNames())
+        ctx = self._unlink_ctx()
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.is_staff", return_value=False),
+            patch("bulmaai.cogs.patreon_whitelist_flow.in_main_guild", return_value=True),
+            patch("bulmaai.cogs.patreon_whitelist_flow.delete_patreon_link", AsyncMock()) as delete,
+        ):
+            await cog._handle_unlink_command(ctx, SimpleNamespace(id=456))
+        delete.assert_not_called()
+        self.assertIn("Only staff", sent_text(ctx.followup.sent[0]))
 
     async def test_revoke_keeps_grants_active_when_github_fails(self) -> None:
         cog, grants = self._revoke_cog(FakeGitHubWithGrantNames())

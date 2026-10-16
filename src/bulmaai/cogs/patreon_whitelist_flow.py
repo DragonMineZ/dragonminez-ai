@@ -40,6 +40,7 @@ from bulmaai.services.patreon_grants import (
     count_active_gifts_for_owner,
     deactivate_gift_grant,
     deactivate_grants_for_owner,
+    delete_patreon_link,
     get_patreon_link,
     get_patreon_link_by_member_id,
     list_active_grants_for_owner,
@@ -63,7 +64,7 @@ from bulmaai.ui.patreon_views import (
     UsernameUpdateConfirmView,
 )
 from bulmaai.utils.lifecycle import ReloadableCog
-from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role
+from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role, in_main_guild, is_staff
 
 log = logging.getLogger(__name__)
 
@@ -352,6 +353,11 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         username: str | None = None,
     ) -> None:
         await self._handle_edit_gift_command(ctx, recipient, new_recipient, username)
+
+    @patreon.command(name="unlink", description="Staff: unlink a member's Patreon and remove the beta access it gave")
+    @discord.option("member", discord.User, description="The member to unlink (works even if they left)", required=True)
+    async def unlink_patreon(self, ctx: discord.ApplicationContext, member: discord.User) -> None:
+        await self._handle_unlink_command(ctx, member)
 
     async def on_startup(self) -> None:
         self._register_patreon_routes()
@@ -766,6 +772,37 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 ephemeral=True,
             )
         await self._send_patreon_oauth_prompt(ctx.author, ctx.followup, ephemeral=True)
+
+    async def _handle_unlink_command(self, ctx: discord.ApplicationContext, user: discord.abc.User) -> None:
+        """Staff unlink: drops the Patreon link plus the owner's self grant and every gift they handed out.
+        Unlike revoke_owner_access it skips the tester/Patreon-still-active guards, since staff asked for it."""
+        await ctx.defer(ephemeral=True)
+        settings = self.bot.settings
+        author = ctx.author
+        if not isinstance(author, discord.Member) or not in_main_guild(author, settings) or not is_staff(author, settings=settings):
+            await ctx.followup.send("Only staff can unlink Patreon accounts.", ephemeral=True)
+            return
+        async with self._beta_access_lock(user.id):
+            grants = await list_active_grants_for_owner(user.id)
+            if grants:
+                try:
+                    await self._remove_whitelist_grants(user.id, grants, f"unlinked by {author}")
+                except Exception:
+                    log.exception("Patreon unlink whitelist removal failed for %s", user.id)
+                    await ctx.followup.send(
+                        "The GitHub whitelist update failed, so nothing was changed. Try again in a bit.", ephemeral=True
+                    )
+                    return
+                await deactivate_grants_for_owner(user.id)
+            unlinked = await delete_patreon_link(user.id)
+        if not grants and not unlinked:
+            await ctx.followup.send(f"<@{user.id}> has no Patreon link or beta access to remove.", ephemeral=True)
+            return
+        names = ", ".join(f"`{name}`" for name in sorted({g.minecraft_username for g in grants if g.minecraft_username}))
+        summary = f"Unlinked <@{user.id}>'s Patreon." if unlinked else f"<@{user.id}> had no Patreon link."
+        summary += f" Removed beta access: {names}." if names else " No beta access to remove."
+        await self._log_staff_info(f"Patreon unlinked for <@{user.id}> by {author.mention}. {summary}")
+        await ctx.followup.send(summary, ephemeral=True)
 
     def _build_patreon_oauth_url(
         self,

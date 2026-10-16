@@ -337,3 +337,10 @@ async def deactivate_grants_for_owner(owner_discord_user_id: int) -> list[Patreo
             int(owner_discord_user_id),
         )
     return grants
+
+
+async def delete_patreon_link(discord_user_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        status = await conn.execute("DELETE FROM patreon_links WHERE discord_user_id = $1", int(discord_user_id))
+    return status != "DELETE 0"

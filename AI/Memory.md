@@ -64,8 +64,8 @@ Console actions are private to Bruno:
 - The AI's "Have I solved your problem?" prompt pings the owner. Escalation pings Helpers only, never Moderators.
 - Owner reminder: 12h after someone else (staff, or an AI answer that isn't a handoff) spoke and the owner didn't reply, the owner gets one DM per silence (`tickets.awaiting_owner_since` / `owner_reminded_at`, swept by `_remind_owners`).
 - Testers can't see tickets.
-- Re-Open and Delete are mod/admin only. Exceptions: the owner's DM button after a "Solved" close (below), and helpers may Delete a ticket closed as Solved (skips the 12h wait).
-- Staff "Solved" button: closes the ticket (archived as resolved) and DMs the owner the transcript plus a Re-open button; if the DM fails, a notice goes in the ticket channel. The ticket auto-deletes 12h later (`tickets.delete_at`, swept by `_delete_solved`) unless the owner re-opens it from that DM, the only way an owner can re-open. Any re-open clears the deadline.
+- Re-Open and Delete are mod/admin only. Exceptions: the owner's DM button after a "Solved" close (below), and helpers may Delete a ticket closed as Solved (skips the 6h wait).
+- Staff "Solved" button: closes the ticket (archived as resolved) and DMs the owner the transcript plus a Re-open button; if the DM fails, a notice goes in the ticket channel. The ticket auto-deletes 6h later (`tickets.delete_at`, swept by `_delete_solved`) unless the owner re-opens it from that DM, the only way an owner can re-open. Any re-open clears the deadline.
 - One open ticket per user. A second attempt (panel or solved-DM re-open) is refused with a link to the open one.
 - Every close (button, `/ticket close`, owner left) makes a transcript; there is no "close without transcript". They're hosted at `tickets.dragonminez.com/t/<token>` by the panel's aiohttp app.
   - One address per ticket: re-open and re-close overwrite the same file and DB row (same token). A page staff made permanent stays permanent.

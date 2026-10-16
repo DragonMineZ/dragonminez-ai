@@ -108,7 +108,7 @@ INLINE_TOTAL_LIMIT = 5_000_000
 RENAME_TIMEOUT_SECONDS = 10
 REASON_LEFT = "User left the server."
 # A ticket closed as solved is deleted this long after, unless its owner re-opens it from the DM.
-SOLVED_DELETE_HOURS = 12
+SOLVED_DELETE_HOURS = 6
 # The owner gets one DM after this long without replying to someone else's answer in their ticket.
 OWNER_REMINDER_HOURS = 12
 # chat_exporter's <head> puts raw HTML (emoji <img>) into the link-preview meta tags; ours replaces it.

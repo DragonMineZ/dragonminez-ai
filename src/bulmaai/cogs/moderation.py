@@ -41,7 +41,7 @@ from bulmaai.ui.mod_cards import ALERT_HANDLED_ID, ALERT_SUMMARY_ID, alert_card,
 from bulmaai.ui.mod_views import quick_action_buttons
 from bulmaai.utils.forwards import full_attachments, full_content
 from bulmaai.utils.lifecycle import ReloadableCog
-from bulmaai.utils.permissions import is_admin, is_staff
+from bulmaai.utils.permissions import has_staff_rank, is_admin, is_staff, pings_staff
 
 
 log = logging.getLogger(__name__)
@@ -54,6 +54,11 @@ REPEAT_OFFENSE_TIMEOUT_HITS = 3
 # ponytail: in-memory window like the other rate filters, a restart resets the count.
 EVERYONE_PING_WARN_TRIES = 3
 EVERYONE_PING_WARN_WINDOW_SECONDS = 600
+# Verbal warnings (staff_ping's default, or any filter's "verbal" rule) are mod_cases rows; this many active
+# ones in the window become one automod warn strike, and those verbals are ended so the next needs fresh ones.
+VERBAL_WARNS_PER_WARN = 3
+VERBAL_WARN_WINDOW_SECONDS = 3600
+STAFF_PING_REASON = "staff_ping"
 LOG_UPDATE_DEBOUNCE_SECONDS = 5
 # ponytail: fixed settle delay; move to Settings if mods want to tune it.
 IMAGE_BURST_CONFIRM_SECONDS = 8
@@ -79,6 +84,7 @@ _READABLE_REASONS = {
     "everyone_ping": "repeated `@everyone`/`@here` pings",
     "blocked_domain": "a blocked link",
     "discord_invite": "a Discord invite link",
+    "staff_ping": "pinging staff",
 }
 _NOTICE_TEXT = {
     "excessive_emoji": "please use fewer emoji.",
@@ -88,13 +94,23 @@ _NOTICE_TEXT = {
     "banned_word": "that word isn't allowed here.",
     "mass_mention": "please avoid mass-mentioning members.",
     "everyone_ping": "you can't ping `@everyone`/`@here` here.",
+    "staff_ping": (
+        "please don't ping staff, they'll get to you.\n"
+        "*No menciones al staff, te atenderán pronto.*\n"
+        "*Não marque a staff, eles vão te atender.*"
+    ),
 }
 
 
 def scam_check_applies(decision: ModerationDecision, *, enforcing: bool) -> bool:
     """A known scam image outranks an ALLOW and, once enforcing, shouldn't wait out the image-burst settle
-    delay. In shadow mode a match only alerts, so it must never replace a burst's timeout."""
-    return decision.action is ModerationAction.ALLOW or (enforcing and decision.reason == IMAGE_BURST_REASON)
+    delay. In shadow mode a match only alerts, so it must never replace a burst's timeout. A staff ping is
+    the lowest-priority filter, so a scam image outranks it too."""
+    return (
+        decision.action is ModerationAction.ALLOW
+        or decision.reason == STAFF_PING_REASON
+        or (enforcing and decision.reason == IMAGE_BURST_REASON)
+    )
 
 
 @dataclass
@@ -177,6 +193,7 @@ class ModerationCog(ReloadableCog):
             banned_words=tuple(settings.moderation_banned_words),
             mass_mention_limit=settings.moderation_mass_mention_limit,
             block_everyone_ping=settings.moderation_block_everyone_ping,
+            block_staff_ping=settings.moderation_block_staff_ping,
             duplicate_count=settings.moderation_duplicate_count,
             duplicate_window_seconds=settings.moderation_duplicate_window_seconds,
             fast_message_count=settings.moderation_fast_message_count,
@@ -203,7 +220,10 @@ class ModerationCog(ReloadableCog):
         return any(role.id in exempt_roles for role in getattr(member, "roles", []))
 
     @staticmethod
-    def _message_signal(message: discord.Message) -> MessageSignal | None:
+    def _message_signal(
+        message: discord.Message, settings: Settings | None = None, *, is_edit: bool = False
+    ) -> MessageSignal | None:
+        """settings=None skips the staff-ping lookup."""
         if not message.guild or not isinstance(message.author, discord.Member):
             return None
         # A forward's text and files live in snapshots, not content/attachments; check them like the member's own.
@@ -215,6 +235,14 @@ class ModerationCog(ReloadableCog):
             author_id=message.author.id,
             content=content,
             mention_count=len(set(message.raw_mentions)) + len(set(message.raw_role_mentions)),
+            # Edits skip it: fixing a typo in a message that pinged staff isn't a second ping.
+            pings_staff=bool(
+                settings is not None
+                and not is_edit
+                and (message.raw_mentions or message.raw_role_mentions)
+                and not has_staff_rank(message.author, settings)
+                and pings_staff(message, settings)
+            ),
             can_mention_everyone=bool(
                 getattr(message.author.guild_permissions, "mention_everyone", False)
             ),
@@ -548,6 +576,9 @@ class ModerationCog(ReloadableCog):
         """Returns whether the author was timed out by this call."""
         if decision.action is ModerationAction.ALLOW:
             return False
+        if decision.verbal:
+            await self._apply_verbal(message, decision)
+            return False
 
         incident, is_new = self._open_incident(message, decision)
         # is_new/run_timeout must be decided and timeout_attempted flipped before the first await
@@ -597,6 +628,96 @@ class ModerationCog(ReloadableCog):
         if is_new or run_timeout:
             await self._record_case(message, incident.decision, timed_out=timed_out)
         return timed_out
+
+    async def _apply_verbal(self, message: discord.Message, decision: ModerationDecision) -> None:
+        """A verbal warning: no incident or alert card, just a case, a notice and, at 3 in an hour, a warn strike."""
+        deleted = decision.action is ModerationAction.DELETE and await self._delete_message(message, decision)
+        readable = _READABLE_REASONS.get(decision.reason, decision.reason.replace("_", " "))
+        guild_id, user_id = message.guild.id, message.author.id
+        since = discord.utils.utcnow() - timedelta(seconds=VERBAL_WARN_WINDOW_SECONDS)
+        count: int | None = None
+        converted = False
+        try:
+            await mod_cases.record_case(
+                guild_id=guild_id, user_id=user_id, action="verbal", reason=f"Automod: {readable}"[:500], source="automod"
+            )
+            count = await mod_cases.count_active_since(guild_id, user_id, "verbal", since)
+            if count >= VERBAL_WARNS_PER_WARN:
+                # Only the caller whose UPDATE actually ended them warns, so two racing messages can't double-warn.
+                ended = await mod_cases.deactivate_cases_since(
+                    guild_id, user_id, "verbal", since, note="converted to a warn"
+                )
+                converted = ended >= VERBAL_WARNS_PER_WARN
+        except Exception:
+            log.exception(
+                "Failed to record a verbal warning",
+                extra={"event": "moderation_verbal_record_failed", "user_id": user_id, "reason": decision.reason},
+            )
+        if converted:
+            await self._verbal_warn_strike(message, readable)
+        try:
+            await automod_hits.record_hit(
+                guild_id=guild_id,
+                user_id=user_id,
+                reason=decision.reason,
+                action="verbal",
+                details=decision.details or None,
+                domains=decision.domains,
+                scam_hash_id=decision.scam_hash_id,
+            )
+        except Exception:
+            log.exception(
+                "Failed to record automod hit",
+                extra={"event": "automod_hit_record_failed", "user_id": user_id, "reason": decision.reason},
+            )
+        await self._send_verbal_notice(message, decision, count=count, converted=converted, deleted=deleted)
+
+    async def _verbal_warn_strike(self, message: discord.Message, readable: str) -> None:
+        try:
+            await mod_actions.perform(
+                self.bot,
+                message.guild,
+                action="warn",
+                target_id=message.author.id,
+                moderator=None,
+                reason=f"Automod: {VERBAL_WARNS_PER_WARN} verbal warnings in an hour ({readable})",
+                source="automod",
+            )
+        except ModActionError as error:
+            log.warning(
+                "Automod verbal warn skipped: %s",
+                error,
+                extra={"event": "moderation_verbal_warn_skipped", "user_id": message.author.id},
+            )
+        except Exception:
+            log.exception(
+                "Automod verbal warn failed",
+                extra={"event": "moderation_verbal_warn_failed", "user_id": message.author.id},
+            )
+
+    async def _send_verbal_notice(
+        self, message: discord.Message, decision: ModerationDecision, *, count: int | None, converted: bool, deleted: bool
+    ) -> None:
+        text = _NOTICE_TEXT.get(decision.reason, "please follow the server rules.")
+        if converted:
+            line = f"That's {VERBAL_WARNS_PER_WARN} verbal warnings in an hour, so you've been warned."
+        elif count is None:
+            line = "This is a verbal warning."
+        else:
+            line = (
+                f"This is a verbal warning ({min(count, VERBAL_WARNS_PER_WARN)}/{VERBAL_WARNS_PER_WARN} this hour); "
+                f"{VERBAL_WARNS_PER_WARN} in an hour is a warn."
+            )
+        content = f"{message.author.mention}, {text}\n-# {line}"
+        # Only ever the author: the notice may name @everyone (in code spans) and must never ping roles.
+        mentions = discord.AllowedMentions(everyone=False, roles=False, users=[message.author], replied_user=False)
+        try:
+            if deleted:
+                await message.channel.send(content, delete_after=6, allowed_mentions=mentions)
+            else:
+                await message.reply(content, allowed_mentions=mentions)
+        except discord.HTTPException:
+            pass
 
     def _everyone_ping_strike_due(self, message: discord.Message) -> bool:
         key = (message.guild.id, message.author.id)
@@ -940,7 +1061,7 @@ class ModerationCog(ReloadableCog):
         if self._is_exempt(message.author, message.channel.id):
             return
 
-        signal = self._message_signal(message)
+        signal = self._message_signal(message, settings, is_edit=is_edit)
         if signal is None:
             return
 
@@ -956,7 +1077,7 @@ class ModerationCog(ReloadableCog):
             ModerationState() if is_edit else self._state,
             now=time.monotonic(),
         )
-        if decision.action is ModerationAction.ALLOW:
+        if decision.action is ModerationAction.ALLOW or decision.reason == STAFF_PING_REASON:
             phishdestroy_decision = await self._evaluate_phishdestroy(signal, off)
             if phishdestroy_decision is not None:
                 decision = phishdestroy_decision

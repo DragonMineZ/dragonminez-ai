@@ -18,7 +18,7 @@ import discord
 from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget, mod_actions
+from bulmaai.services import ai_budget
 from bulmaai.services.ai_guard import defuse_mentions
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
 from bulmaai.services.ticket_pages import StoredPage, get_page_for_channel, page_url, purge, save_page
@@ -106,7 +106,6 @@ INLINE_IMAGE_LIMIT = 1_500_000
 INLINE_TOTAL_LIMIT = 5_000_000
 RENAME_TIMEOUT_SECONDS = 10
 REASON_LEFT = "User left the server."
-PING_WARN_REASON = "Pinged staff in a ticket"
 # A ticket closed as solved is deleted this long after, unless its owner re-opens it from the DM.
 SOLVED_DELETE_HOURS = 12
 # The owner gets one DM after this long without replying to someone else's answer in their ticket.
@@ -176,26 +175,6 @@ def build_overwrites(
             if (role := guild.get_role(role_id)) is not None:
                 overwrites[role] = overwrite
     return overwrites
-
-
-def staff_role_ids(settings) -> set[int]:
-    return _ids(
-        settings.panel_owner_role_ids,
-        settings.panel_admin_role_ids,
-        settings.panel_moderator_role_ids,
-        settings.panel_helper_role_ids,
-    )
-
-
-def pings_staff(message: discord.Message, settings) -> bool:
-    """Typed <@user>/<@&role> mentions of staff only; reply pings aren't in the content, so they don't count."""
-    if set(message.raw_role_mentions) & staff_role_ids(settings):
-        return True
-    guild = message.guild
-    return any(
-        (target := guild.get_member(user_id)) is not None and member_rank(target, None, settings) >= Rank.HELPER
-        for user_id in message.raw_mentions
-    )
 
 
 def polish_transcript(html: str, *, title: str, description: str, image: str | None) -> str:
@@ -368,7 +347,7 @@ class TicketsCog(ReloadableCog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Every human message in an open ticket feeds the owner's reply countdown; staff pings get a warn."""
+        """Every human message in an open ticket feeds the owner's reply countdown (staff pings are automod's staff_ping)."""
         settings = self.settings
         if (
             message.author.bot
@@ -380,34 +359,6 @@ class TicketsCog(ReloadableCog):
             await note_ticket_message(message.channel.id, message.author.id)
         except Exception:
             log.exception("Could not track ticket reply", extra={"channel_id": message.channel.id})
-        if (
-            not (message.raw_mentions or message.raw_role_mentions)
-            or member_rank(message.author, None, settings) >= Rank.HELPER
-            or not pings_staff(message, settings)
-        ):
-            return
-        try:
-            if await get_ticket_by_channel(message.channel.id) is None:
-                return
-            await mod_actions.perform(
-                self.bot,
-                message.guild,
-                action="warn",
-                target_id=message.author.id,
-                moderator=None,
-                reason=PING_WARN_REASON,
-                source="automod",
-            )
-        except Exception:
-            log.exception("Staff-ping warn failed", extra={"user_id": message.author.id})
-            return
-        await self._safely(
-            message.reply(
-                f"{message.author.mention}, {MSG['no_staff_pings']}",
-                allowed_mentions=discord.AllowedMentions(users=[message.author], replied_user=False),
-            ),
-            message.channel,
-        )
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:

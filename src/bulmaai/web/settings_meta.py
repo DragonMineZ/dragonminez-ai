@@ -77,6 +77,7 @@ META: dict[str, tuple[str, str, str]] = {
     "moderation_banned_words": ("automod", "Banned words", "Messages with these words are deleted and AI replies with them are blocked; * is a wildcard (comma-separated)."),
     "moderation_mass_mention_limit": ("automod", "Mass mention limit", "Messages with this many user or role mentions are deleted; 0 turns it off."),
     "moderation_block_everyone_ping": ("automod", "Block @everyone / @here", "Deletes @everyone and @here from members who aren't allowed to use them."),
+    "moderation_block_staff_ping": ("automod", "Verbal warning for staff pings", "Members who ping staff get a verbal warning; 3 in an hour is a warn."),
     "moderation_duplicate_count": ("automod", "Duplicates: copies", "The same message sent this many times inside the window is deleted (timeout if spread over channels); 0 turns it off."),
     "moderation_duplicate_window_seconds": ("automod", "Duplicates: window", "Length in seconds of the window used to count duplicate messages."),
     "moderation_fast_message_count": ("automod", "Fast messages: count", "Messages from one member inside the window that count as too fast; 0 turns it off."),

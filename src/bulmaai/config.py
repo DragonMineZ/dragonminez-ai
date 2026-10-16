@@ -507,6 +507,7 @@ class Settings:
     moderation_banned_words: Sequence[str] = ()
     moderation_mass_mention_limit: int = 5
     moderation_block_everyone_ping: bool = True
+    moderation_block_staff_ping: bool = True
     moderation_duplicate_count: int = 4
     moderation_duplicate_window_seconds: int = 30
     moderation_fast_message_count: int = 8

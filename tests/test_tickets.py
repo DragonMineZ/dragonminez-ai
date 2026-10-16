@@ -641,7 +641,7 @@ class ClosedStretchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("6 messages", html.split("<style>")[0])  # the link preview counts only what's shown
 
 
-class StaffPingTests(unittest.IsolatedAsyncioTestCase):
+class TicketReplyTrackingTests(unittest.IsolatedAsyncioTestCase):
     def message(self, author, *, users=(), roles=()):
         staff = member(STAFF_ID, HELPER_ROLE)
         guild = SimpleNamespace(get_member=lambda _id: staff if _id == STAFF_ID else member(_id))
@@ -657,29 +657,24 @@ class StaffPingTests(unittest.IsolatedAsyncioTestCase):
 
     async def run_listener(self, message):
         cog = make_cog()
-        with (
-            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
-            patch.object(cog_module.mod_actions, "perform", AsyncMock()) as perform,
-            patch.object(cog_module, "note_ticket_message", AsyncMock()) as self.noted,
-        ):
+        with patch.object(cog_module, "note_ticket_message", AsyncMock()) as self.noted:
             await cog.on_message(message)
-        return perform
 
-    async def test_member_pinging_staff_is_warned(self):
+    def test_pings_staff_counts_typed_staff_mentions_only(self):
+        # Moved to utils.permissions for automod's server-wide staff_ping filter.
+        from bulmaai.utils.permissions import has_staff_rank, pings_staff
+
         for kwargs in ({"users": [STAFF_ID]}, {"roles": [MOD_ROLE]}):
-            message = self.message(member(OWNER_ID), **kwargs)
-            perform = await self.run_listener(message)
-            self.assertEqual(perform.await_args.kwargs["action"], "warn")
-            self.assertEqual(perform.await_args.kwargs["target_id"], OWNER_ID)
-            message.reply.assert_awaited_once()
+            self.assertTrue(pings_staff(self.message(member(OWNER_ID), **kwargs), SETTINGS))
+        for kwargs in ({"users": [555]}, {"roles": [TESTER_ROLE]}, {}):
+            self.assertFalse(pings_staff(self.message(member(OWNER_ID), **kwargs), SETTINGS))
+        self.assertTrue(has_staff_rank(member(STAFF_ID, HELPER_ROLE), SETTINGS))
+        self.assertFalse(has_staff_rank(member(OWNER_ID), SETTINGS))
 
-    async def test_no_warn_for_non_staff_pings_or_staff_authors(self):
-        for message in (
-            self.message(member(OWNER_ID), users=[555]),
-            self.message(member(STAFF_ID, HELPER_ROLE), users=[STAFF_ID]),
-            self.message(member(OWNER_ID)),
-        ):
-            (await self.run_listener(message)).assert_not_called()
+    async def test_staff_pings_in_a_ticket_no_longer_warn_from_here(self):
+        message = self.message(member(OWNER_ID), users=[STAFF_ID])
+        await self.run_listener(message)
+        message.reply.assert_not_called()  # automod's staff_ping filter owns this now
 
     async def test_every_human_message_in_a_ticket_feeds_the_reply_countdown(self):
         for author in (member(OWNER_ID), member(STAFF_ID, HELPER_ROLE)):

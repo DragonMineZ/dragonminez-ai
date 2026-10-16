@@ -215,6 +215,26 @@ async def count_active_since(guild_id: int, user_id: int, action: str, since: da
     )
 
 
+async def deactivate_cases_since(
+    guild_id: int, user_id: int, action: str, since: datetime, *, note: str | None = None
+) -> int:
+    """Ends the user's active `action` cases created since `since`; returns how many this call ended.
+    One UPDATE, so two concurrent callers can't both end the same cases."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        UPDATE mod_cases SET active = FALSE, ended_at = now(), end_note = $5
+        WHERE guild_id = $1 AND user_id = $2 AND action = $3 AND active AND created_at >= $4 RETURNING id
+        """,
+        guild_id,
+        user_id,
+        action,
+        since,
+        note,
+    )
+    return len(rows)
+
+
 async def due_expirations(now: datetime) -> list[ModCase]:
     pool = await get_pool()
     rows = await pool.fetch(

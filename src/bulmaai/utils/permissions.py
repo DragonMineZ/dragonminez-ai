@@ -52,6 +52,36 @@ def is_bruno(member: discord.Member) -> bool:
     return member.id == BRUNO_ID
 
 
+def staff_role_ids(settings) -> set[int]:
+    """The panel's owner/admin/moderator/helper roles."""
+    return {
+        int(role_id)
+        for group in (
+            settings.panel_owner_role_ids,
+            settings.panel_admin_role_ids,
+            settings.panel_moderator_role_ids,
+            settings.panel_helper_role_ids,
+        )
+        for role_id in group
+    }
+
+
+def has_staff_rank(member, settings) -> bool:
+    """Helper or above (Bruno, or any panel staff role)."""
+    return is_bruno(member) or bool({role.id for role in getattr(member, "roles", [])} & staff_role_ids(settings))
+
+
+def pings_staff(message: discord.Message, settings) -> bool:
+    """Typed <@user>/<@&role> mentions of staff only; reply pings aren't in the content, so they don't count."""
+    if set(message.raw_role_mentions) & staff_role_ids(settings):
+        return True
+    guild = message.guild
+    return any(
+        (target := guild.get_member(user_id)) is not None and has_staff_rank(target, settings)
+        for user_id in message.raw_mentions
+    )
+
+
 def can_use_ai_support(
     member: discord.Member,
     *,

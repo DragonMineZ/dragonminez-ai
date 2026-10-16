@@ -240,11 +240,6 @@ MSG = {
     ),
     "protected_target": "You can't remove the ticket owner or staff.",
     "done": "Done.",
-    "no_staff_pings": (
-        "please don't ping staff in tickets, they'll get to you. You have been warned.\n"
-        "*No menciones al staff en los tickets, te atenderán pronto. Has recibido una advertencia.*\n"
-        "*Não marque a staff nos tickets, eles vão te atender. Você recebeu uma advertência.*"
-    ),
 }
 
 

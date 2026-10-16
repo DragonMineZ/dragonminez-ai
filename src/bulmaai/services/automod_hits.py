@@ -29,6 +29,7 @@ _KNOBS: dict[str, tuple[str, object]] = {
     "scam_image": ("moderation_scam_image_distance", lambda value: max(value - 2, 0)),
     "zalgo": ("moderation_zalgo_enabled", lambda value: False),
     "everyone_ping": ("moderation_block_everyone_ping", lambda value: False),
+    "staff_ping": ("moderation_block_staff_ping", lambda value: False),
 }
 _NOTES = {
     "banned_word": "Review moderation_banned_words; a wildcard may be matching normal words.",

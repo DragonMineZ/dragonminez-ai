@@ -35,6 +35,8 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
   - Capped by the warner: helpers escalate to timeout at most; moderators and up can kick or ban; automod has the full ladder.
   - Skipped steps are noted on the case.
 - everyone_ping: delete-only on the first tries; the 3rd try within 10 min is a warn strike.
+- Verbal warnings: an automod severity (any filter's "verbal" rule) stored as `mod_cases` action `verbal`. They never count toward the ladder; 3 active verbals within 1h become one automod warn strike, and those verbals are ended when they convert.
+- staff_ping: server-wide filter (typed mentions of HELPER+ members or staff roles), default severity verbal, lowest priority. It replaced the ticket-only staff-ping warn.
 - Code blocks are exempt from the emoji and newline filters (users paste crash logs).
 - The excessive-caps filter was removed on 2026-10-11 at Bruno's request. Don't re-add it.
 - Scam images stay in shadow mode (`moderation_scam_images_enforce=False`) until the user says otherwise. Learning happens only on an explicit staff click.

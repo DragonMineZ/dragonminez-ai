@@ -110,7 +110,7 @@
     "Quick actions": "Acciones rápidas",
   });
 
-  const ACTION_KIND = { warn: "warn", note: "", timeout: "warn", kick: "danger", ban: "danger", softban: "danger", delete: "danger", alert: "warn", unban: "ok", untimeout: "ok", appeal: "" };
+  const ACTION_KIND = { warn: "warn", note: "", timeout: "warn", kick: "danger", ban: "danger", softban: "danger", delete: "danger", alert: "warn", unban: "ok", untimeout: "ok", appeal: "", verbal: "" };
   const MEMBERS_LIMIT = 60;
 
   function duration(seconds) {

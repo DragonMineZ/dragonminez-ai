@@ -29,6 +29,7 @@ DEFAULT_AVATAR = "https://cdn.discordapp.com/embed/avatars/0.png"
 CASE_STYLE: dict[str, tuple[str, str, discord.Color]] = {
     "warn": ("⚠️", "Warn", discord.Color.gold()),
     "note": ("📝", "Note", discord.Color.blurple()),
+    "verbal": ("🗣️", "Verbal warning", discord.Color.gold()),
     "timeout": ("🔇", "Mute", discord.Color.orange()),
     "untimeout": ("🔊", "Unmute", discord.Color.green()),
     "kick": ("👢", "Kick", discord.Color.dark_orange()),
@@ -38,7 +39,7 @@ CASE_STYLE: dict[str, tuple[str, str, discord.Color]] = {
 }
 # What "Undo" does per action, and how an ended case reads.
 UNDO_LABELS = {"warn": ("Remove warn", "🗑️"), "timeout": ("Remove timeout", "🔊"), "ban": ("Unban", "🕊️")}
-ENDED_VERBS = {"warn": "Removed", "note": "Removed", "timeout": "Lifted", "ban": "Unbanned"}
+ENDED_VERBS = {"warn": "Removed", "note": "Removed", "verbal": "Ended", "timeout": "Lifted", "ban": "Unbanned"}
 
 
 def _ts(when: datetime, style: str = "R") -> str:

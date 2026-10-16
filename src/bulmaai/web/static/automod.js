@@ -56,6 +56,10 @@
     "Default: {action}": "Predeterminado: {action}",
     "Delete + warn strike": "Borrar y sumar advertencia",
     "Time out for 10 minutes": "Aislar 10 minutos",
+    "Verbal warning (3 in an hour = warn)": "Advertencia verbal (3 en una hora = advertencia)",
+    "Verbal warning": "Advertencia verbal",
+    "Staff pings": "Menciones al staff",
+    "Members who ping staff get a verbal warning; 3 in an hour is a warn.": "Quien mencione al staff recibe una advertencia verbal; 3 en una hora son una advertencia.",
     "Only for this filter. Picking a category covers all its channels.": "Solo para este filtro. Elegir una categoría cubre todos sus canales.",
     "Members with any of these roles skip this filter.": "Los miembros con cualquiera de estos roles se saltan este filtro.",
     "Ignored in {places}": "Ignorado en {places}",
@@ -150,13 +154,15 @@
   const DISABLED = "moderation_disabled_filters";
   const RULES = "moderation_filter_rules";
   // services/moderation.py RULE_ACTIONS; "" = the filter's built-in behaviour.
-  const RULE_ACTIONS = [["alert", "Alert staff only"], ["delete", "Delete the message"], ["warn", "Delete + warn strike"], ["timeout", "Time out for 10 minutes"]];
+  const RULE_ACTIONS = [["alert", "Alert staff only"], ["delete", "Delete the message"], ["warn", "Delete + warn strike"], ["timeout", "Time out for 10 minutes"], ["verbal", "Verbal warning (3 in an hour = warn)"]];
   const RULE_BADGE = { alert: "Alerts staff", delete: "Deletes", warn: "Deletes + warns", timeout: "Times out" };
   const DAYS_KEY = "panel.automod.days";
   const DELETES = "Deletes";
+  const VERBAL = "Verbal warning";
 
   // id: entry in moderation_disabled_filters; stat: automod_hits.reason when it differs from id.
   // flag: the filter's own bool setting, switched on together with the card. warns: _WARN_REASONS.
+  // verbal: gives a verbal warning by default. keeps: only alerts by default, so a "verbal" rule leaves the message up.
   // params: [setting, label, {hint, off: "0 turns it off", choices}]. ownAction: has its own action setting,
   // so its Edit dialog offers no rule action (exemptions still apply).
   const FILTERS = [
@@ -170,7 +176,7 @@
       action: (s) => (s.moderation_scam_images_enforce.value ? DELETES : "Alerts staff"),
       params: [["moderation_scam_images_enforce", "Delete matches (off = alert only)"], ["moderation_scam_image_distance", "Match distance (lower = stricter)"]] },
     { id: "discord_invite", name: "Invite links", desc: "Deletes Discord server invites.", action: DELETES, flag: "moderation_block_discord_invites", warns: true, params: [] },
-    { id: "suspicious_shortener", name: "Link shorteners", desc: "Alerts staff about shortened links (bit.ly and similar).", action: "Alerts staff", params: [] },
+    { id: "suspicious_shortener", name: "Link shorteners", desc: "Alerts staff about shortened links (bit.ly and similar).", action: "Alerts staff", keeps: true, params: [] },
     { id: "link_burst", stat: "link burst", name: "Link spam", desc: "Times out users posting many links quickly.", action: "Times out",
       params: [["moderation_link_burst_count", "Links", { off: true }], ["moderation_link_burst_window_seconds", "Window (seconds)"]] },
     { id: "banned_word", name: "Banned words", desc: "Deletes messages with banned words. * works as a wildcard.", action: DELETES, warns: true,
@@ -179,6 +185,8 @@
       params: [["moderation_mass_mention_limit", "Mention limit", { off: true }]] },
     { id: "everyone_ping", name: "@everyone / @here", desc: "Deletes @everyone and @here from members who can't use them; the 3rd try in 10 minutes is a warn.", action: DELETES,
       flag: "moderation_block_everyone_ping", params: [] },
+    { id: "staff_ping", name: "Staff pings", desc: "Members who ping staff get a verbal warning; 3 in an hour is a warn.", action: VERBAL,
+      verbal: true, keeps: true, flag: "moderation_block_staff_ping", params: [] },
     { id: "excessive_emoji", name: "Excessive emoji", desc: "Deletes messages with too many emoji.", action: DELETES,
       params: [["moderation_emoji_limit", "Emoji limit", { off: true }]] },
     { id: "wall_of_text", name: "Wall of text", desc: "Deletes messages with too many line breaks (code blocks don't count).", action: DELETES,
@@ -344,8 +352,11 @@
     const allRules = s ? rulesOf(s) : {};
     const rule = (!filter.ownAction && allRules[filter.id]) || {};
     const exempt = allRules[filter.id] || {};
-    const action = rule.action ? RULE_BADGE[rule.action] : s || typeof filter.action !== "function" ? defaultAction(filter, s) : null;
+    // A "verbal" rule keeps the filter's own fate for the message (deleted unless it only alerts), never a timeout.
+    const verbalFate = filter.keeps ? (filter.verbal ? VERBAL : null) : DELETES;
+    const action = rule.action === "verbal" ? verbalFate : rule.action ? RULE_BADGE[rule.action] : s || typeof filter.action !== "function" ? defaultAction(filter, s) : null;
     const warns = rule.action ? rule.action === "warn" : filter.warns;
+    const verbal = (rule.action ? rule.action === "verbal" : filter.verbal) && action !== VERBAL;
     const g = ctx.g;
 
     const sw = s ? switchInput(on, t(filter.name), locked, (input) => flip(input, async () => {
@@ -364,7 +375,7 @@
       h("div", { class: "row spread nowrap" }, h("h3", {}, t(filter.name)), sw),
       h("p", { class: "muted small" }, t(filter.desc)),
       h("div", { class: "row" }, action ? badge(t(action), action === DELETES ? "" : "accent") : null,
-        warns ? badge(t("Adds a warn strike"), "warn") : null,
+        warns ? badge(t("Adds a warn strike"), "warn") : verbal ? badge(t(VERBAL), "warn") : null,
         rule.action ? badge(t("custom")) : null),
       s && filter.params.length ? summary(filter, s) : null,
       g && (exempt.channels || []).length

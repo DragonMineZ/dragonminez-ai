@@ -100,6 +100,8 @@ class MessageSignal:
     # Unique user + role mentions (cog fills from raw_mentions/raw_role_mentions).
     mention_count: int = 0
     can_mention_everyone: bool = False
+    # Typed mention of a staff member/role by a non-staff author (cog fills it; never on edits).
+    pings_staff: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,7 @@ class ModerationConfig:
     banned_words: tuple[str, ...] = ()
     mass_mention_limit: int = 0
     block_everyone_ping: bool = False
+    block_staff_ping: bool = False
     duplicate_count: int = 0
     duplicate_window_seconds: int = 30
     fast_message_count: int = 0
@@ -136,6 +139,7 @@ FILTER_OFF: dict[str, dict[str, Any]] = {
     "banned_word": {"banned_words": ()},
     "mass_mention": {"mass_mention_limit": 0},
     "everyone_ping": {"block_everyone_ping": False},
+    "staff_ping": {"block_staff_ping": False},
     "excessive_emoji": {"emoji_limit": 0},
     "wall_of_text": {"newline_limit": 0},
     "zalgo": {"zalgo_enabled": False},
@@ -156,7 +160,8 @@ def without_filters(config: "ModerationConfig", disabled: "tuple[str, ...] | lis
 # Per-filter rules from moderation_filter_rules (JSON written by the panel's Automod page):
 # {"discord_invite": {"action": "alert", "channels": ["123"], "roles": ["456"]}}.
 # channels/roles exempt that one filter; action replaces what the filter does on a hit.
-RULE_ACTIONS = ("alert", "delete", "warn", "timeout")
+# "verbal": the message keeps the filter's own fate (never a timeout) and the author gets a verbal warning.
+RULE_ACTIONS = ("alert", "delete", "warn", "timeout", "verbal")
 # Decision reasons that differ from their filter id.
 _REASON_FILTER = {"link burst": "link_burst", "image burst": "image_burst"}
 
@@ -212,11 +217,16 @@ def apply_rule_action(
     rule = rules.get(filter_id_for(decision.reason))
     if rule is None or not rule.action:
         return decision
+    if rule.action == "verbal":
+        action = ModerationAction.ALERT if decision.action is ModerationAction.ALERT else ModerationAction.DELETE
+        return replace(decision, action=action, verbal=True, warn=False, purge=False)
     if rule.action == "alert":
-        return replace(decision, action=ModerationAction.ALERT, warn=False)
+        return replace(decision, action=ModerationAction.ALERT, warn=False, verbal=False)
     if rule.action == "timeout":
-        return replace(decision, action=ModerationAction.TIMEOUT, warn=False, timeout_seconds=timeout_seconds, purge=False)
-    return replace(decision, action=ModerationAction.DELETE, warn=rule.action == "warn", purge=False)
+        return replace(
+            decision, action=ModerationAction.TIMEOUT, warn=False, timeout_seconds=timeout_seconds, purge=False, verbal=False
+        )
+    return replace(decision, action=ModerationAction.DELETE, warn=rule.action == "warn", purge=False, verbal=False)
 
 
 @dataclass(frozen=True)
@@ -237,6 +247,8 @@ class ModerationDecision:
     warn: bool | None = None
     # False: a timeout doesn't purge the author's recent messages (rule timeouts aren't spam-bot shaped).
     purge: bool = True
+    # A verbal warning instead of an alert card: ALERT keeps the message, DELETE removes it (cogs/moderation.py).
+    verbal: bool = False
 
     @classmethod
     def allow(cls, reason: str = "allowed") -> "ModerationDecision":
@@ -727,5 +739,9 @@ def evaluate_message(
                 ),
                 image_count=len(images),
             )
+
+    # Lowest priority: any real spam/link hit on the same message wins.
+    if config.block_staff_ping and signal.pings_staff:
+        return ModerationDecision(action=ModerationAction.ALERT, reason="staff_ping", verbal=True)
 
     return ModerationDecision.allow()

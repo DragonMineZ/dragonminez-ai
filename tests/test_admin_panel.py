@@ -191,6 +191,8 @@ class PanelApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_security_headers(self):
         response = await self.client.get("/")
         self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+        # The login form redirects to Discord; Chrome blocks that hop unless form-action allows it.
+        self.assertIn("form-action 'self' https://discord.com", response.headers["Content-Security-Policy"])
 
 
 if __name__ == "__main__":

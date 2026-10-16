@@ -19,6 +19,7 @@ from bulmaai.services.openai_client import (
     _is_repeat,
     _select_reasoning_effort,
     _split_confidence,
+    _split_close,
     _split_kind,
     _split_sources,
     get_schemas,
@@ -146,6 +147,10 @@ class MarkerAndRepeatTests(unittest.TestCase):
         self.assertEqual(_split_kind("Hi\n[kind: Clarify]"), ("Hi", "clarify"))
         self.assertEqual(_split_kind("Hi"), ("Hi", None))
         self.assertEqual(_split_kind("[kind: offtopic]"), ("(no reply)", "offtopic"))
+
+    def test_split_close_marker(self):
+        self.assertEqual(_split_close("Done, the ticket can be closed.\n[close: Yes]"), ("Done, the ticket can be closed.", True))
+        self.assertEqual(_split_close("Try reinstalling."), ("Try reinstalling.", False))
         self.assertEqual(
             _split_sources("Hi\n[sources: wiki--A.md, `wiki--B.md`]"),
             ("Hi", ["wiki--A.md", "wiki--B.md"]),

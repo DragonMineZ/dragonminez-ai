@@ -286,6 +286,7 @@ MAX_WIKI_SOURCE_LINKS = 3
 CONFIDENCE_MARKER_RE = re.compile(r"\[\s*confidence\s*[:=]\s*([0-9]*\.?[0-9]+)\s*\]", re.IGNORECASE)
 KIND_MARKER_RE = re.compile(r"\[\s*kind\s*[:=]\s*(answer|clarify|handoff|offtopic)\s*\]", re.IGNORECASE)
 SOURCES_MARKER_RE = re.compile(r"\[\s*sources\s*[:=]\s*([^\]]*)\]", re.IGNORECASE)
+CLOSE_MARKER_RE = re.compile(r"\[\s*close\s*[:=]\s*yes\s*\]", re.IGNORECASE)
 
 
 def _split_confidence(reply_text: str) -> tuple[str, float | None]:
@@ -304,6 +305,13 @@ def _split_kind(reply_text: str) -> tuple[str, str | None]:
         return reply_text, None
     stripped = KIND_MARKER_RE.sub("", reply_text).strip() or "(no reply)"
     return stripped, matches[-1].lower()
+
+
+def _split_close(reply_text: str) -> tuple[str, bool]:
+    """Strip every `[close: yes]` marker: the model thinks the requester is done with the ticket."""
+    if not CLOSE_MARKER_RE.search(reply_text):
+        return reply_text, False
+    return CLOSE_MARKER_RE.sub("", reply_text).strip() or "(no reply)", True
 
 
 def _split_sources(reply_text: str) -> tuple[str, list[str]]:
@@ -820,6 +828,7 @@ async def _run_once(
     reply_text, confidence = _split_confidence(raw_text)
     reply_text, kind = _split_kind(reply_text)
     reply_text, sources = _split_sources(reply_text)
+    reply_text, suggested_close = _split_close(reply_text)
     # Before the wiki links are appended: those are ours, everything above them is model output.
     reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings)
     if guard_flags - {"unknown_link"}:
@@ -835,15 +844,6 @@ async def _run_once(
         reply_text,
         list(dict.fromkeys(cited)),
         base_url=getattr(settings, "wiki_base_url", DEFAULT_WIKI_BASE_URL),
-    )
-    lowered = reply_text.lower()
-    suggested_close = any(
-        phrase in lowered
-        for phrase in [
-            "ticket can be closed",
-            "puede cerrarse el ticket",
-            "pode ser fechado",
-        ]
     )
 
     response_id = getattr(response, "id", None)

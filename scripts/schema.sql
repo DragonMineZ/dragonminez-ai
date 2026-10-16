@@ -544,6 +544,10 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_periods TSTZRANGE[] NOT NULL
 -- Closed as solved: the sweep deletes the channel at delete_at unless the owner re-opens it first.
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS delete_at TIMESTAMPTZ;
 
+-- Someone other than the owner answered and the owner hasn't replied since; the sweep DMs them once per silence.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS awaiting_owner_since TIMESTAMPTZ;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS owner_reminded_at TIMESTAMPTZ;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_channel_id
     ON tickets (channel_id) WHERE channel_id IS NOT NULL;
 

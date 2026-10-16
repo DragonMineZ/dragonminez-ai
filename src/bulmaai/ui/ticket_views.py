@@ -1,7 +1,7 @@
 """Ticket panel, intake modals and the in-ticket Components V2 cards (cogs/tickets.py does the work).
 
-Member-facing text is English | Spanish (the panel dropdown and forms still carry some Portuguese). Staff-only
-buttons and notices are English. Buttons are stateless: TicketsCog.on_interaction routes them by custom id and
+The panel, forms and ephemeral replies are English | Spanish (with some Portuguese). Member-facing messages inside a
+ticket and its DMs are in the ticket's support language only (TEXT). Staff-only buttons and notices are English. Buttons are stateless: TicketsCog.on_interaction routes them by custom id and
 looks the ticket up by channel, so they survive bot restarts.
 """
 
@@ -22,7 +22,85 @@ SOLVED_BUTTON_ID = "ticket_btn_solved"
 # + ticket id; on the owner's "solved" DM, routed by prefix (there's no channel to look the ticket up by).
 SOLVED_REOPEN_PREFIX = "ticket_solved_reopen:"
 ACTIONS_ID = 800  # the button row on the welcome / closed cards
+LANG_SELECT_ID = "ticket_lang_select"
+# + language code; the language picker posted in a new ticket whose owner has several language roles.
+LANG_BUTTON_PREFIX = "ticket_lang:"
+LANG_ROW_ID = 801  # the support-language select on the welcome card
 COG_NAME = "TicketsCog"
+
+LANGUAGES = {"en": ("🇬🇧", "English"), "es": ("🇪🇸", "Español"), "pt": ("🇧🇷", "Português")}
+
+# Member-facing ticket messages, each in the ticket's support language.
+TEXT: dict[str, dict[str, str]] = {
+    "en": {
+        "greeting": "Hey {mention}! Staff will be with you soon. Add screenshots or extra details while you wait.",
+        "no_pings": "⚠️ **Don't ping staff, it gets you a warn.**",
+        "open_ticket": "Open ticket",
+        "view_transcript": "View transcript",
+        "created": "Your ticket has been created. Staff will answer you there, no need to ping them.",
+        "transcript": "Here is the transcript of your ticket.",
+        "expires": "It expires {when}.",
+        "kept": "It is kept permanently.",
+        "solved": "Ticket #{number} was marked as solved by staff and closed.",
+        "solved_until": "Your answer is in the transcript; it's available until {until}.",
+        "solved_kept": "Your answer is in the transcript; it's kept permanently.",
+        "solved_reopen": "Still not solved? Re-open it before {deadline}; after that the ticket is deleted.",
+        "reopen": "Re-open ticket",
+        "reopened": "Your ticket was re-opened. Staff will answer you there.",
+        "reminder_title": "your ticket is waiting for your reply",
+        "reminder": "Your ticket got an answer and is waiting for yours. Reply there so we can keep helping you.",
+        "pick_language": "Which language do you want support in?",
+        "language_set": "Support language: {name}.",
+        "language_changed": "Support language changed to {name} by {mention}.",
+    },
+    "es": {
+        "greeting": "¡Hola {mention}! El staff te atenderá pronto. Puedes añadir capturas o más detalles mientras esperas.",
+        "no_pings": "⚠️ **No menciones al staff, te dará una advertencia.**",
+        "open_ticket": "Abrir ticket",
+        "view_transcript": "Ver transcripción",
+        "created": "Tu ticket ha sido creado. El staff te responderá allí, no hace falta mencionarlos.",
+        "transcript": "Aquí tienes la transcripción de tu ticket.",
+        "expires": "Expira {when}.",
+        "kept": "Se guarda para siempre.",
+        "solved": "El staff marcó el ticket #{number} como resuelto y lo cerró.",
+        "solved_until": "Tu respuesta está en la transcripción; disponible hasta {until}.",
+        "solved_kept": "Tu respuesta está en la transcripción; se guarda para siempre.",
+        "solved_reopen": "¿Sigue sin resolverse? Reábrelo antes de {deadline}; después el ticket se eliminará.",
+        "reopen": "Reabrir ticket",
+        "reopened": "Tu ticket fue reabierto. El staff te responderá allí.",
+        "reminder_title": "tu ticket espera tu respuesta",
+        "reminder": "Tu ticket recibió una respuesta y espera la tuya. Responde allí para que podamos seguir ayudándote.",
+        "pick_language": "¿En qué idioma quieres recibir soporte?",
+        "language_set": "Idioma de soporte: {name}.",
+        "language_changed": "Idioma de soporte cambiado a {name} por {mention}.",
+    },
+    "pt": {
+        "greeting": "Olá {mention}! A staff vai te atender em breve. Adicione capturas ou mais detalhes enquanto espera.",
+        "no_pings": "⚠️ **Não marque a staff, isso te dá uma advertência.**",
+        "open_ticket": "Abrir ticket",
+        "view_transcript": "Ver transcrição",
+        "created": "Seu ticket foi criado. A staff vai te responder lá, não precisa marcá-los.",
+        "transcript": "Aqui está a transcrição do seu ticket.",
+        "expires": "Ela expira {when}.",
+        "kept": "Ela é guardada para sempre.",
+        "solved": "A staff marcou o ticket #{number} como resolvido e o fechou.",
+        "solved_until": "Sua resposta está na transcrição; disponível até {until}.",
+        "solved_kept": "Sua resposta está na transcrição; ela é guardada para sempre.",
+        "solved_reopen": "Ainda não foi resolvido? Reabra antes de {deadline}; depois disso o ticket será excluído.",
+        "reopen": "Reabrir ticket",
+        "reopened": "Seu ticket foi reaberto. A staff vai te responder lá.",
+        "reminder_title": "seu ticket está esperando sua resposta",
+        "reminder": "Seu ticket recebeu uma resposta e está esperando a sua. Responda lá para continuarmos te ajudando.",
+        "pick_language": "Em qual idioma você quer receber suporte?",
+        "language_set": "Idioma do suporte: {name}.",
+        "language_changed": "Idioma do suporte alterado para {name} por {mention}.",
+    },
+}
+
+
+def t(language: str, key: str, **values) -> str:
+    """TEXT in the ticket's language (English for an unknown one)."""
+    return TEXT.get(language, TEXT["en"])[key].format(**values)
 
 BLURPLE = discord.Color.from_rgb(88, 101, 242)
 CLOSED_RED = discord.Color.from_rgb(237, 66, 69)
@@ -202,87 +280,128 @@ def _link_row(label: str, emoji: str, url: str) -> discord.ui.ActionRow:
     return discord.ui.ActionRow(discord.ui.Button(label=label, emoji=emoji, url=url))
 
 
-def _dm_card(title: str, en: str, es: str, guild: discord.Guild, row: discord.ui.ActionRow) -> discord.ui.DesignerView:
-    """English paragraph, Spanish underneath as subtext."""
-    head = discord.ui.TextDisplay(f"### {title}\n{en}\n-# {es}")
+def _dm_card(title: str, body: str, guild: discord.Guild, row: discord.ui.ActionRow) -> discord.ui.DesignerView:
+    head = discord.ui.TextDisplay(f"### {title}\n{body}")
     if guild.icon:
         head = discord.ui.Section(head, accessory=discord.ui.Thumbnail(guild.icon.url))
     return _card(head, row, color=BLURPLE)
 
 
-def dm_created(number: int, category: TicketCategory, channel: discord.TextChannel) -> discord.ui.DesignerView:
+def dm_created(
+    number: int, category: TicketCategory, channel: discord.TextChannel, language: str
+) -> discord.ui.DesignerView:
     return _dm_card(
         f"🎫 Ticket #{number:04d} · {category.emoji} {category.name}",
-        "Your ticket has been created. Staff will answer you there, no need to ping them.",
-        "Tu ticket ha sido creado. El staff te responderá allí, no hace falta mencionarlos.",
+        t(language, "created"),
         channel.guild,
-        _link_row(tri("Open ticket", "Abrir ticket"), "🎫", channel.jump_url),
+        _link_row(t(language, "open_ticket"), "🎫", channel.jump_url),
     )
 
 
 def dm_assigned(number: int, channel: discord.TextChannel, by: discord.abc.User) -> discord.ui.DesignerView:
+    """Goes to a staff member, so English."""
     return _dm_card(
         f"📌 Ticket #{number:04d}",
         f"{by.display_name} assigned this ticket to you. Please take care of it.",
-        f"{by.display_name} te asignó este ticket. Por favor, encárgate de él.",
         channel.guild,
-        _link_row(tri("Open ticket", "Abrir ticket"), "🎫", channel.jump_url),
+        _link_row("Open ticket", "🎫", channel.jump_url),
     )
 
 
-def dm_transcript(number: int, guild: discord.Guild, url: str, expires_at: datetime | None) -> discord.ui.DesignerView:
-    if expires_at:
-        when = f"<t:{int(expires_at.timestamp())}:R>"
-        keep = (f"It expires {when}.", f"Expira {when}.")
-    else:
-        keep = ("It is kept permanently.", "Se guarda para siempre.")
+def dm_transcript(
+    number: int, guild: discord.Guild, url: str, expires_at: datetime | None, language: str
+) -> discord.ui.DesignerView:
+    keep = t(language, "expires", when=f"<t:{int(expires_at.timestamp())}:R>") if expires_at else t(language, "kept")
     return _dm_card(
         f"📄 Ticket #{number:04d}",
-        f"Here is the transcript of your ticket. {keep[0]}",
-        f"Aquí tienes la transcripción de tu ticket. {keep[1]}",
+        f"{t(language, 'transcript')} {keep}",
         guild,
-        _link_row(tri("View transcript", "Ver transcripción"), "📄", url),
+        _link_row(t(language, "view_transcript"), "📄", url),
     )
 
 
 def dm_solved(
-    number: int, guild: discord.Guild, url: str | None, expires_at: datetime | None, delete_at: datetime, ticket_id: int
+    number: int,
+    guild: discord.Guild,
+    url: str | None,
+    expires_at: datetime | None,
+    delete_at: datetime,
+    ticket_id: int,
+    language: str,
 ) -> discord.ui.DesignerView:
     """Replaces dm_transcript when staff close a ticket as solved; its Re-open button is the owner's only way back.
     url None: the transcript failed, so only the re-open part."""
-    en = [f"Ticket #{number:04d} was marked as solved by staff and closed."]
-    es = [f"El staff marcó el ticket #{number:04d} como resuelto y lo cerró."]
+    body = [t(language, "solved", number=f"{number:04d}")]
     if url and expires_at:
         until = f"<t:{int(expires_at.timestamp())}:f> (<t:{int(expires_at.timestamp())}:R>)"
-        en.append(f"Your answer is in the transcript; it's available until {until}.")
-        es.append(f"Tu respuesta está en la transcripción; disponible hasta {until}.")
+        body.append(t(language, "solved_until", until=until))
     elif url:
-        en.append("Your answer is in the transcript; it's kept permanently.")
-        es.append("Tu respuesta está en la transcripción; se guarda para siempre.")
-    deadline = f"<t:{int(delete_at.timestamp())}:R>"
-    en.append(f"Still not solved? Re-open it before {deadline}; after that the ticket is deleted.")
-    es.append(f"¿Sigue sin resolverse? Reábrelo antes de {deadline}; después el ticket se eliminará.")
-    buttons = [discord.ui.Button(label=tri("View transcript", "Ver transcripción"), emoji="📄", url=url)] if url else []
+        body.append(t(language, "solved_kept"))
+    body.append(t(language, "solved_reopen", deadline=f"<t:{int(delete_at.timestamp())}:R>"))
+    buttons = [discord.ui.Button(label=t(language, "view_transcript"), emoji="📄", url=url)] if url else []
     buttons.append(
         discord.ui.Button(
-            label=tri("Re-open ticket", "Reabrir ticket"),
+            label=t(language, "reopen"),
             emoji="🔓",
             style=discord.ButtonStyle.success,
             custom_id=f"{SOLVED_REOPEN_PREFIX}{ticket_id}",
         )
     )
-    return _dm_card(f"✅ Ticket #{number:04d}", " ".join(en), " ".join(es), guild, discord.ui.ActionRow(*buttons))
+    return _dm_card(f"✅ Ticket #{number:04d}", " ".join(body), guild, discord.ui.ActionRow(*buttons))
 
 
-def dm_reopened(number: int, channel: discord.TextChannel) -> discord.ui.DesignerView:
+def dm_reopened(number: int, channel: discord.TextChannel, language: str) -> discord.ui.DesignerView:
     """What the solved DM turns into once its Re-open button worked."""
     return _dm_card(
         f"🔓 Ticket #{number:04d}",
-        "Your ticket was re-opened. Staff will answer you there.",
-        "Tu ticket fue reabierto. El staff te responderá allí.",
+        t(language, "reopened"),
         channel.guild,
-        _link_row(tri("Open ticket", "Abrir ticket"), "🎫", channel.jump_url),
+        _link_row(t(language, "open_ticket"), "🎫", channel.jump_url),
     )
+
+
+def dm_reminder(number: int, channel: discord.TextChannel, language: str) -> discord.ui.DesignerView:
+    """The owner hasn't answered their ticket for a while (TicketsCog._remind_owners)."""
+    return _dm_card(
+        f"⏰ Ticket #{number:04d}: {t(language, 'reminder_title')}",
+        t(language, "reminder"),
+        channel.guild,
+        _link_row(t(language, "open_ticket"), "🎫", channel.jump_url),
+    )
+
+
+def language_row(language: str) -> discord.ui.ActionRow:
+    """The welcome card's support-language select; owner and staff can change it."""
+    return discord.ui.ActionRow(
+        discord.ui.Select(
+            custom_id=LANG_SELECT_ID,
+            placeholder="🌐 Support language",
+            options=[
+                discord.SelectOption(label=name, value=code, emoji=flag, default=code == language)
+                for code, (flag, name) in LANGUAGES.items()
+            ],
+        ),
+        id=LANG_ROW_ID,
+    )
+
+
+def language_picker(mention: str, languages: list[str]) -> discord.ui.DesignerView:
+    """Asks an owner with several language roles, in each of them, which one they want support in."""
+    questions = "\n".join(f"🌐 **{t(code, 'pick_language')}**" for code in languages)
+    buttons = [
+        discord.ui.Button(label=LANGUAGES[code][1], emoji=LANGUAGES[code][0], custom_id=f"{LANG_BUTTON_PREFIX}{code}")
+        for code in languages
+    ]
+    return _card(discord.ui.TextDisplay(f"{mention}\n{questions}"), discord.ui.ActionRow(*buttons), color=BLURPLE)
+
+
+def language_set(language: str) -> discord.ui.DesignerView:
+    """What the picker turns into once someone chose."""
+    return notice(f"🌐 {t(language, 'language_set', name=LANGUAGES[language][1])}")
+
+
+def language_changed(language: str, mention: str) -> discord.ui.DesignerView:
+    return notice(f"🌐 {t(language, 'language_changed', name=LANGUAGES[language][1], mention=mention)}")
 
 
 def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
@@ -328,21 +447,38 @@ def request_text(answers: list[tuple[str, str]]) -> str:
     return "\n".join(parts)
 
 
+def greeting_text(number: int, category: TicketCategory, mention: str, language: str) -> str:
+    return (
+        f"## 🎫 #{number:04d} · {category.emoji} {category.name}\n"
+        f"{t(language, 'greeting', mention=mention)}\n{t(language, 'no_pings')}"
+    )
+
+
 def welcome_view(
-    *, number: int, category: TicketCategory, answers: list[tuple[str, str]], mention: str, ai_enabled: bool = True
+    *,
+    number: int,
+    category: TicketCategory,
+    answers: list[tuple[str, str]],
+    mention: str,
+    language: str,
+    ai_enabled: bool = True,
 ) -> discord.ui.DesignerView:
-    """Greeting card, then the request in its own card, then the button row."""
+    """Greeting card, then the request in its own card, then the language select and the button row."""
     greeting = discord.ui.Container(
-        discord.ui.TextDisplay(
-            f"## 🎫 #{number:04d} · {category.emoji} {category.name}\n"
-            f"Hey {mention}! Staff will be with you soon. Add screenshots or extra details while you wait.\n"
-            "-# ¡Hola! El staff te atenderá pronto. Puedes añadir capturas o más detalles mientras esperas.\n"
-            "⚠️ **Don't ping staff, it gets you a warn.** · *No menciones al staff, te dará una advertencia.*"
-        ),
-        color=BLURPLE,
+        discord.ui.TextDisplay(greeting_text(number, category, mention, language)), color=BLURPLE
     )
     request = discord.ui.Container(discord.ui.TextDisplay(request_text(answers)[:3000]), color=REQUEST_GREY)
-    return discord.ui.DesignerView(greeting, request, control_row(ai_enabled), timeout=None)
+    return discord.ui.DesignerView(greeting, request, language_row(language), control_row(ai_enabled), timeout=None)
+
+
+def relanguage_welcome(
+    view: discord.ui.DesignerView, *, number: int, category: TicketCategory, mention: str, language: str
+) -> discord.ui.DesignerView:
+    """The posted welcome card (read back with DesignerView.from_message) with its greeting and select in language."""
+    view.children[0].items[0].content = greeting_text(number, category, mention, language)
+    if (row := view.get_item(LANG_ROW_ID)) is not None:
+        row.children[0].options = language_row(language).children[0].options
+    return view
 
 
 def closed_view(mention: str | None, reason: str | None) -> discord.ui.DesignerView:

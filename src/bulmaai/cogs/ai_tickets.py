@@ -49,7 +49,7 @@ from bulmaai.services.ticket_transcripts import (
     ticket_knowledge_filename,
     upload_ticket_knowledge,
 )
-from bulmaai.services.tickets import ClosedGap, hide_closed_messages
+from bulmaai.services.tickets import ClosedGap, get_ticket_by_channel, hide_closed_messages, note_ticket_message
 from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -102,7 +102,13 @@ ACK_MESSAGE_RE = re.compile(
 )
 # Messages of context (owner's last one included) the "is it solved?" check sees.
 SOLVED_CHECK_CONTEXT_MESSAGES = 6
-SOLVED_CLOSE_TEXT = "Glad it's sorted! 🎉 Thanks for reaching out, this ticket will be closed now."
+SOLVED_CLOSE_TEXT = {
+    "en": "Glad it's sorted! 🎉 Thanks for reaching out, this ticket will be closed now.",
+    "es": "¡Me alegra que esté resuelto! 🎉 Gracias por escribirnos, este ticket se cerrará ahora.",
+    "pt": "Que bom que foi resolvido! 🎉 Obrigado pelo contato, este ticket será fechado agora.",
+}
+# A ticket's support language, as the model is told to answer in it.
+LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "pt": "Portuguese"}
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
 # ponytail: in-memory per-user window (a restart resets it); stops one member draining the shared daily AI budget.
@@ -408,6 +414,11 @@ def _member_roles(member: discord.Member | None, settings: Any) -> str:
     return f"{', '.join(flags) or 'member'}; Discord roles: {', '.join(names) or 'none'}"
 
 
+def _language_line(language: str) -> str:
+    name = LANGUAGE_NAMES.get(language, "English")
+    return f"support language: {name}. Always reply in {name}, even if the requester writes in another language."
+
+
 def _resolve_text(language: str) -> dict[str, str]:
     return RESOLVE_PROMPT_TEXT.get(language, RESOLVE_PROMPT_TEXT["en"])
 
@@ -429,7 +440,7 @@ def _build_resolve_view(requester_id: int, language: str) -> discord.ui.Designer
             custom_id=f"{RESOLVE_BUTTON_PREFIX}no:{requester_id}:{language}",
         ),
     )
-    return _card(f"**{text['question']}**", AI_CARD_COLOR, row)
+    return _card(f"<@{requester_id}> **{text['question']}**", AI_CARD_COLOR, row)
 
 
 def _parse_resolve_custom_id(custom_id: str) -> tuple[bool, int, str] | None:
@@ -508,6 +519,8 @@ class AITicketsCog(ReloadableCog):
         self._support_events: dict[tuple[int, int], list[float]] = defaultdict(list)
         # ponytail: one entry per ticket channel answered; tiny, cleared on restart.
         self._ticket_owners: dict[int, int | None] = {}
+        # Ticket channel → its support language (None: no tickets row); TicketsCog drops an entry when it changes.
+        self._ticket_languages: dict[int, str | None] = {}
 
     async def on_startup(self) -> None:
         try:
@@ -633,12 +646,34 @@ class AITicketsCog(ReloadableCog):
     async def ticket_closed(self, channel_id: int) -> None:
         """TicketsCog closed it: an answer still being written, and any "solved?" prompt, would land after the close."""
         self._cancel_pending_task((channel_id, 0))
+        self.forget_ticket_language(channel_id)
         prompt = self._resolve_prompts.pop(channel_id, None)
         if prompt is not None:
             try:
                 await prompt.delete()
             except discord.HTTPException:
                 pass
+
+    async def _ticket_language(self, channel_id: int) -> str | None:
+        """The ticket's support language; None without a tickets row, or when the lookup fails (that isn't cached)."""
+        if channel_id not in self._ticket_languages:
+            try:
+                ticket = await get_ticket_by_channel(channel_id)
+            except Exception:
+                log.exception("Could not look up ticket language", extra={"channel_id": channel_id})
+                return None
+            self._ticket_languages[channel_id] = ticket.language if ticket else None
+        return self._ticket_languages[channel_id]
+
+    def forget_ticket_language(self, channel_id: int) -> None:
+        self._ticket_languages.pop(channel_id, None)
+
+    async def _awaiting_owner(self, channel_id: int) -> None:
+        """Our answer in a ticket starts the owner's reply countdown (TicketsCog._remind_owners)."""
+        try:
+            await note_ticket_message(channel_id, self.bot.user.id)
+        except Exception:
+            log.exception("Could not track ticket reply", extra={"channel_id": channel_id})
 
     async def _send_messages_with_typing(
         self,
@@ -993,11 +1028,14 @@ class AITicketsCog(ReloadableCog):
                 context_lines = self._support_context_lines(
                     message, member=member, in_ticket=in_ticket, in_dm=in_dm
                 )
+                language = await self._ticket_language(channel.id) if in_ticket else None
+                if language:
+                    context_lines.append(_language_line(language))
                 async with channel.typing():
                     result = await asyncio.shield(run_support_agent(
                         messages=history,
                         enabled_tools=SUPPORT_TOOL_NAMES,
-                        language_hint=None,
+                        language_hint=language,
                         user_id=message.author.id,
                         channel_id=channel.id,
                         ticket_conversation=in_ticket,
@@ -1081,6 +1119,8 @@ class AITicketsCog(ReloadableCog):
                     )
 
             sent = await self._send_messages_with_typing(channel, outgoing_messages, ai_answer=True)
+            if sent and in_ticket and not should_mark_escalated:
+                await self._awaiting_owner(channel.id)
             if sent and should_mark_escalated:
                 await self._mark_ticket_escalated(channel.id)
                 if kind == "handoff":
@@ -1091,7 +1131,7 @@ class AITicketsCog(ReloadableCog):
                     requester_id=message.author.id,
                     confidence=result.get("confidence"),
                     force=result["suggested_close"],
-                    language=result.get("language", "en"),
+                    language=language or result.get("language", "en"),
                 )
 
     async def answer_new_ticket(
@@ -1108,6 +1148,7 @@ class AITicketsCog(ReloadableCog):
         if not settings.ai_support_enabled or ai_budget.is_paused(settings):
             return
         self._ticket_owners[channel.id] = member.id
+        self._ticket_languages[channel.id] = language
         name = safe_name(member.display_name)
         try:
             async with channel.typing():
@@ -1133,6 +1174,7 @@ class AITicketsCog(ReloadableCog):
                         f"requester: {name} (roles: {_member_roles(member, settings)})",
                         f"ticket category: {category_label}",
                         "ticket opened: just now (the requester's intake form is the message below)",
+                        _language_line(language),
                     ],
                     requester_is_staff=False,
                     channel_kind="ticket",
@@ -1146,9 +1188,13 @@ class AITicketsCog(ReloadableCog):
             return
         if not _is_ticket_channel(channel, settings=settings):
             return  # closed before the first answer was ready
-        if await self._send_messages_with_typing(channel, [reply], ai_answer=True) and result.get("kind") == "handoff":
+        if not await self._send_messages_with_typing(channel, [reply], ai_answer=True):
+            return
+        if result.get("kind") == "handoff":
             await self._mark_ticket_escalated(channel.id)
             await self._ping_escalation_roles(channel, member.id)
+        else:
+            await self._awaiting_owner(channel.id)
 
     async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
         """The tickets cog's welcome message mentions the owner; only they may get the "solved?" buttons."""
@@ -1202,7 +1248,10 @@ class AITicketsCog(ReloadableCog):
                 pass
 
         try:
-            self._resolve_prompts[channel.id] = await channel.send(view=_build_resolve_view(requester_id, language))
+            self._resolve_prompts[channel.id] = await channel.send(
+                view=_build_resolve_view(requester_id, language),
+                allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=requester_id)]),
+            )
         except discord.HTTPException:
             log.exception("Failed to send ticket resolve prompt", extra={"channel_id": channel.id})
 
@@ -1228,7 +1277,8 @@ class AITicketsCog(ReloadableCog):
         if channel.id in self._closing_channels:
             return await interaction.response.send_message("This ticket is already closing.", ephemeral=True)
 
-        text = _resolve_text(language)
+        # The ticket's current language, in case it changed after the prompt was posted.
+        text = _resolve_text(await self._ticket_language(channel.id) or language)
 
         async def answer() -> None:
             if solved:
@@ -1276,7 +1326,8 @@ class AITicketsCog(ReloadableCog):
             return
         log.info("Ticket owner said it's solved, closing", extra={"channel_id": channel.id})
         try:
-            await channel.send(view=_card(SOLVED_CLOSE_TEXT, discord.Color.green()))
+            language = await self._ticket_language(channel.id) or "en"
+            await channel.send(view=_card(SOLVED_CLOSE_TEXT.get(language, SOLVED_CLOSE_TEXT["en"]), discord.Color.green()))
         except discord.HTTPException:
             log.info("Could not post solved note in ticket", extra={"channel_id": channel.id})
         await self._close_ticket(

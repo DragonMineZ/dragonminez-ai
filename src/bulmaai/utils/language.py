@@ -63,3 +63,13 @@ def detect_language_from_text(text: str) -> LangCode:
     if es_score > en_score and es_score > pt_score:
         return "es"
     return "en"
+
+
+def role_languages(member, settings) -> list[LangCode]:
+    """The languages whose "<language> lang" role (announcement_role_*_id) the member has, in en, es, pt order."""
+    role_ids = {role.id for role in getattr(member, "roles", None) or ()}
+    return [
+        code
+        for code in ("en", "es", "pt")
+        if (role_id := getattr(settings, f"announcement_role_{code}_id")) is not None and role_id in role_ids
+    ]

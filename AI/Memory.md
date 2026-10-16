@@ -57,7 +57,10 @@ Console actions are private to Bruno:
 ## Tickets
 
 - In-house tickets (`cogs/tickets.py`). Ticket Tool is gone and its compat code is deleted. Don't re-add it.
-- Strings are EN | ES only (no PT). Inside tickets everything is English.
+- The ticket panel, forms and ephemeral replies stay EN | ES. Everything member-facing inside a ticket and its DMs (welcome, solved prompt, transcript/solved/reminder DMs) uses the ticket's support language (en/es/pt) only; staff-only buttons and notices stay English.
+  - Support language: the owner's single language role (`announcement_role_{en,es,pt}_id`). No role: detected from the form. Several: a picker card asks them. Owner or staff can switch it from the welcome card's select. The AI always answers in it.
+- The AI's "Have I solved your problem?" prompt pings the owner. Escalation pings Helpers only, never Moderators.
+- Owner reminder: 12h after someone else (staff, or an AI answer that isn't a handoff) spoke and the owner didn't reply, the owner gets one DM per silence (`tickets.awaiting_owner_since` / `owner_reminded_at`, swept by `_remind_owners`).
 - Testers can't see tickets.
 - Re-Open and Delete are mod/admin only. Exceptions: the owner's DM button after a "Solved" close (below), and helpers may Delete a ticket closed as Solved (skips the 12h wait).
 - Staff "Solved" button: closes the ticket (archived as resolved) and DMs the owner the transcript plus a Re-open button; if the DM fails, a notice goes in the ticket channel. The ticket auto-deletes 12h later (`tickets.delete_at`, swept by `_delete_solved`) unless the owner re-opens it from that DM, the only way an owner can re-open. Any re-open clears the deadline.

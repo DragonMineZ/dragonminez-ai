@@ -1,6 +1,6 @@
 # dragonminez-ai Context
 
-Architecture facts. Keep them true: update this file when a structure below changes. Last checked 2026-10-13.
+Architecture facts. Keep them true: update this file when a structure below changes. Last checked 2026-10-16.
 
 ## What it is
 
@@ -24,7 +24,7 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
   - `mod_actions` (all moderation actions)
   - `openai_client` + `ai_tools` + `ai_guard` (AI calls, tools, output screening)
   - `ai_budget` (daily token budget, seeded from `support_traces`)
-  - `tickets`, `ticket_transcripts`
+  - `tickets`, `ticket_transcripts`. `tickets.language` is the ticket's support language (member-facing text via `ui/ticket_views.TEXT`, AI via `ai_tickets._ticket_language`); `note_ticket_message` tracks the owner-reply countdown with one conditional UPDATE per ticket message
   - `support_info`: staff-curated entries (`support_info` table). Temporary ones (current issues, optional expiry) and permanent ones (custom answers); every active entry goes into the support AI's developer message (`openai_client._build_data_input`, 60s cache). `cogs/support_info.py` posts active temporary entries to `support_info_channel_id` every 24h (replacing the previous post; `support_info_post` row), runs `/info`, and owns the staff review card for AI suggestions (`finish_suggestion`). The ticket summary may carry a `support_info` suggestion; it is stored as `suggested` only on a staff Solved close. Panel page: `web/routes_support_info.py`.
   - `log_pages` (redact + render + 24h storage for uploaded logs). The `log_parser`/`dmzdebug` cogs post the cards; their `summary_for_ai` text is what the support AI sees for a log attachment (`ai_tickets._log_analyses`), never the raw file.
   - `/dmzdebug` dumps: the mod (v2.2+, `DebugCommand`) writes `<player>.json` (`schemaVersion` 1, camelCase `party`/`quests` blocks, typed NBT under `sections`); v2.1 and older wrote the `<player>.log` text dump. `utils/dmzdebug_parser.py` reads both into one `DebugReport` (JSON `party`/`quests` are mapped to the text parser's snake_case shapes so `dmzdebug_diagnostics` handles both the same way).

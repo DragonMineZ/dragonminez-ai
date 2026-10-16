@@ -30,6 +30,7 @@ from bulmaai.services.tickets import (
     Ticket,
     abandon_ticket,
     attach_channel,
+    claim_owner_reminders,
     closed_channel_name,
     closed_span_index,
     closed_spans,
@@ -42,8 +43,10 @@ from bulmaai.services.tickets import (
     mark_closed,
     mark_deleted,
     mark_reopened,
+    note_ticket_message,
     open_channel_name,
     reserve_ticket,
+    set_language,
 )
 from bulmaai.services.patron_page import PATREON_URL
 from bulmaai.ui.ticket_views import (
@@ -52,6 +55,9 @@ from bulmaai.ui.ticket_views import (
     CATEGORIES,
     CLOSE_BUTTON_ID,
     DELETE_BUTTON_ID,
+    LANG_BUTTON_PREFIX,
+    LANG_SELECT_ID,
+    LANGUAGES,
     MSG,
     PANEL_SELECT_ID,
     REOPEN_BUTTON_ID,
@@ -67,19 +73,24 @@ from bulmaai.ui.ticket_views import (
     control_row,
     dm_assigned,
     dm_created,
+    dm_reminder,
     dm_reopened,
     dm_solved,
     dm_transcript,
+    language_changed,
+    language_picker,
+    language_set,
     msg_created,
     msg_already_open,
     notice,
     panel_view,
+    relanguage_welcome,
     reopened_view,
     transcript_link_view,
     welcome_view,
 )
 from bulmaai.ui.v2 import unbusy, while_busy
-from bulmaai.utils.language import detect_language_from_text
+from bulmaai.utils.language import detect_language_from_text, role_languages
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_bruno
 
@@ -98,6 +109,8 @@ REASON_LEFT = "User left the server."
 PING_WARN_REASON = "Pinged staff in a ticket"
 # A ticket closed as solved is deleted this long after, unless its owner re-opens it from the DM.
 SOLVED_DELETE_HOURS = 12
+# The owner gets one DM after this long without replying to someone else's answer in their ticket.
+OWNER_REMINDER_HOURS = 12
 # chat_exporter's <head> puts raw HTML (emoji <img>) into the link-preview meta tags; ours replaces it.
 _HEAD_META = re.compile(r"<title>.*?(?=<style>)", re.S)
 _DONATE = re.compile(r'<a href="https://ko-fi\.com/mahtoid">DONATE</a>')
@@ -257,7 +270,7 @@ class TicketsCog(ReloadableCog):
         return self.bot.settings
 
     async def on_startup(self) -> None:
-        for loop in (self._purge_pages, self._delete_solved):
+        for loop in (self._purge_pages, self._delete_solved, self._remind_owners):
             if not loop.is_running():
                 loop.start()
         try:
@@ -271,6 +284,7 @@ class TicketsCog(ReloadableCog):
     async def on_shutdown(self) -> None:
         self._purge_pages.cancel()
         self._delete_solved.cancel()
+        self._remind_owners.cancel()
 
     @tasks.loop(hours=1)
     async def _purge_pages(self) -> None:
@@ -299,20 +313,43 @@ class TicketsCog(ReloadableCog):
             except Exception:
                 log.exception("Failed to delete solved ticket", extra={"ticket_id": ticket.ticket_id})
 
+    @tasks.loop(minutes=10)
+    async def _remind_owners(self) -> None:
+        """DMs owners who left an answer in their ticket unreplied for OWNER_REMINDER_HOURS (once per silence)."""
+        try:
+            due = await claim_owner_reminders(OWNER_REMINDER_HOURS)
+        except Exception:
+            return log.exception("Could not claim ticket owner reminders")
+        for ticket in due:
+            channel = self.bot.get_channel(ticket.channel_id)
+            owner = channel.guild.get_member(ticket.owner_id) if isinstance(channel, discord.TextChannel) else None
+            if owner is None:
+                continue
+            try:
+                await owner.send(view=dm_reminder(ticket.ticket_id, channel, ticket.language))
+            except discord.HTTPException:
+                log.info("Could not DM ticket reminder", extra={"user_id": ticket.owner_id})
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type != discord.InteractionType.component:
             return
         custom_id = (interaction.data or {}).get("custom_id") or ""
-        handler = self.on_solved_reopen if custom_id.startswith(SOLVED_REOPEN_PREFIX) else {
-            PANEL_SELECT_ID: self.on_panel_select,
-            CLOSE_BUTTON_ID: self.on_close,
-            AI_BUTTON_ID: self.on_toggle_ai,
-            TRANSCRIPT_BUTTON_ID: self.on_transcript,
-            REOPEN_BUTTON_ID: self.on_reopen,
-            DELETE_BUTTON_ID: self.on_delete,
-            SOLVED_BUTTON_ID: self.on_solved,
-        }.get(custom_id)
+        if custom_id.startswith(SOLVED_REOPEN_PREFIX):
+            handler = self.on_solved_reopen
+        elif custom_id.startswith(LANG_BUTTON_PREFIX):
+            handler = self.on_language
+        else:
+            handler = {
+                PANEL_SELECT_ID: self.on_panel_select,
+                LANG_SELECT_ID: self.on_language,
+                CLOSE_BUTTON_ID: self.on_close,
+                AI_BUTTON_ID: self.on_toggle_ai,
+                TRANSCRIPT_BUTTON_ID: self.on_transcript,
+                REOPEN_BUTTON_ID: self.on_reopen,
+                DELETE_BUTTON_ID: self.on_delete,
+                SOLVED_BUTTON_ID: self.on_solved,
+            }.get(custom_id)
         if handler is None:
             return
         try:
@@ -331,12 +368,20 @@ class TicketsCog(ReloadableCog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
+        """Every human message in an open ticket feeds the owner's reply countdown; staff pings get a warn."""
         settings = self.settings
         if (
             message.author.bot
             or not isinstance(message.author, discord.Member)
-            or not (message.raw_mentions or message.raw_role_mentions)
             or getattr(message.channel, "category_id", None) != settings.ai_ticket_category_id
+        ):
+            return
+        try:
+            await note_ticket_message(message.channel.id, message.author.id)
+        except Exception:
+            log.exception("Could not track ticket reply", extra={"channel_id": message.channel.id})
+        if (
+            not (message.raw_mentions or message.raw_role_mentions)
             or member_rank(message.author, None, settings) >= Rank.HELPER
             or not pings_staff(message, settings)
         ):
@@ -406,11 +451,14 @@ class TicketsCog(ReloadableCog):
         await interaction.edit_original_response(content=MSG["creating"])
 
         form_text = "\n".join(f"{label}: {value}" for label, value in answers)
+        # One language role decides the support language; with none or several the form's language does (several
+        # also get a picker below).
+        role_langs = role_languages(member, settings)
         ticket = await reserve_ticket(
             guild_id=guild.id,
             owner_id=member.id,
             category=category.key,
-            language=detect_language_from_text(form_text),
+            language=role_langs[0] if len(role_langs) == 1 else detect_language_from_text(form_text),
         )
         if ticket is None:
             await interaction.edit_original_response(content=await self._already_open(member.id))
@@ -419,6 +467,7 @@ class TicketsCog(ReloadableCog):
         channel: discord.TextChannel | None = None
         try:
             intake = await self._triage(category, answers, ticket)
+            language = role_langs[0] if len(role_langs) == 1 else intake.language
             parent = guild.get_channel(settings.ai_ticket_category_id) if settings.ai_ticket_category_id else None
             if not isinstance(parent, discord.CategoryChannel):
                 raise RuntimeError("ai_ticket_category_id is not a category channel")
@@ -431,14 +480,16 @@ class TicketsCog(ReloadableCog):
                 reason=f"Ticket #{ticket.ticket_id:04d} opened",
             )
             welcome = await channel.send(
-                view=welcome_view(number=ticket.ticket_id, category=category, answers=answers, mention=member.mention),
+                view=welcome_view(
+                    number=ticket.ticket_id, category=category, answers=answers, mention=member.mention, language=language
+                ),
                 allowed_mentions=discord.AllowedMentions(users=[member]),
             )
             await attach_channel(
                 ticket.ticket_id,
                 channel_id=channel.id,
                 channel_name=name,
-                language=intake.language,
+                language=language,
                 control_message_id=welcome.id,
             )
         except Exception:
@@ -457,16 +508,24 @@ class TicketsCog(ReloadableCog):
                 await channel.send(files=files)
             except discord.HTTPException:
                 log.warning("Could not post carried-over files", extra={"ticket_id": ticket.ticket_id})
+        if len(role_langs) > 1:
+            await self._safely(
+                channel.send(
+                    view=language_picker(member.mention, role_langs),
+                    allowed_mentions=discord.AllowedMentions(users=[member]),
+                ),
+                channel,
+            )
         await interaction.edit_original_response(content=msg_created(channel.mention))
         try:
-            await member.send(view=dm_created(ticket.ticket_id, category, channel))
+            await member.send(view=dm_created(ticket.ticket_id, category, channel, language))
         except discord.HTTPException:
             pass  # DMs closed; the ephemeral message above already has the link
 
         ai_cog = self.bot.get_cog(AI_COG)
         if ai_cog is not None and category.ai_reply:
             await ai_cog.answer_new_ticket(
-                channel, member, category_label=category.name, form_text=form_text, language=intake.language
+                channel, member, category_label=category.name, form_text=form_text, language=language
             )
         return channel
 
@@ -661,6 +720,57 @@ class TicketsCog(ReloadableCog):
         if ticket is not None and ticket.status == STATUS_OPEN and isinstance(channel, discord.TextChannel):
             await self._set_buttons(channel, ticket, control_row(enabled))
 
+    async def on_language(self, interaction: discord.Interaction) -> None:
+        """The welcome card's language select or the new-ticket picker: owner or staff set the support language."""
+        data = interaction.data or {}
+        picker = data.get("custom_id") != LANG_SELECT_ID
+        language = data["custom_id"].removeprefix(LANG_BUTTON_PREFIX) if picker else (data.get("values") or [""])[0]
+        if language not in LANGUAGES:
+            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
+        ticket = await self._gate(interaction, Rank.OWNER)
+        if ticket is None:
+            return
+        await interaction.response.defer()
+        if not picker and language == ticket.language:
+            return
+        ticket = await set_language(interaction.channel_id, language)
+        if ticket is None:  # closed meanwhile
+            return await interaction.followup.send(MSG["already_closed"], ephemeral=True)
+        if (ai_cog := self.bot.get_cog(AI_COG)) is not None:
+            ai_cog.forget_ticket_language(interaction.channel_id)
+        channel = interaction.channel
+        await self._relanguage_welcome(channel, ticket, None if picker else interaction.message)
+        if picker:  # the picker itself becomes the public confirmation
+            return await interaction.edit_original_response(view=language_set(language))
+        await self._safely(
+            channel.send(
+                view=language_changed(language, interaction.user.mention), allowed_mentions=discord.AllowedMentions.none()
+            ),
+            channel,
+        )
+
+    async def _relanguage_welcome(
+        self, channel: discord.TextChannel, ticket: Ticket, message: discord.Message | None = None
+    ) -> None:
+        """The welcome card's greeting and language select follow the ticket's language. message: the welcome card,
+        when the caller has it already."""
+        category = CATEGORIES.get(ticket.category)
+        if category is None or ticket.control_message_id is None:
+            return
+        if message is None:
+            try:
+                message = await channel.fetch_message(ticket.control_message_id)
+            except discord.HTTPException:
+                return log.warning("Ticket welcome message is gone", extra={"channel_id": channel.id})
+        view = relanguage_welcome(
+            discord.ui.DesignerView.from_message(message, timeout=None),
+            number=ticket.ticket_id,
+            category=category,
+            mention=f"<@{ticket.owner_id}>",
+            language=ticket.language,
+        )
+        await self._safely(message.edit(view=view, allowed_mentions=discord.AllowedMentions.none()), channel)
+
     async def on_transcript(self, interaction: discord.Interaction) -> None:
         """Retry on a closed card whose archive failed, and the Transcript button old closed cards still carry:
         re-archives into the channel's same address, then the card shows the link."""
@@ -733,7 +843,9 @@ class TicketsCog(ReloadableCog):
         owner = channel.guild.get_member(ticket.owner_id)
         if owner is not None:
             url = page_url(self.settings, page.token) if page else None
-            view = dm_solved(ticket.ticket_id, channel.guild, url, page and page.expires_at, delete_at, ticket.ticket_id)
+            view = dm_solved(
+                ticket.ticket_id, channel.guild, url, page and page.expires_at, delete_at, ticket.ticket_id, ticket.language
+            )
             try:
                 await owner.send(view=view)
                 return
@@ -765,7 +877,7 @@ class TicketsCog(ReloadableCog):
             if await self.reopen_ticket(channel, opener_id=ticket.owner_id) is None:
                 await unbusy(interaction)  # expired or re-opened meanwhile
                 return await interaction.followup.send(MSG["cannot_reopen"], ephemeral=True)
-            await interaction.edit_original_response(view=dm_reopened(ticket.ticket_id, channel))
+            await interaction.edit_original_response(view=dm_reopened(ticket.ticket_id, channel, ticket.language))
 
         await while_busy(interaction, self._working, reopen, failed=MSG["failed"])
 
@@ -860,7 +972,7 @@ class TicketsCog(ReloadableCog):
             return
         try:
             url = page_url(self.settings, page.token)
-            await owner.send(view=dm_transcript(ticket.ticket_id, channel.guild, url, page.expires_at))
+            await owner.send(view=dm_transcript(ticket.ticket_id, channel.guild, url, page.expires_at, ticket.language))
         except discord.HTTPException:
             log.info("Could not DM ticket transcript", extra={"user_id": ticket.owner_id})
 

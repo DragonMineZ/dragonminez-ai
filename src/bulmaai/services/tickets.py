@@ -264,6 +264,7 @@ async def mark_reopened(channel_id: int, *, pool: Any | None = None) -> Ticket |
     row = await resolved_pool.fetchrow(
         f"""
         UPDATE tickets SET status = 'open', closed_by = NULL, close_reason = NULL, closed_at = NULL, delete_at = NULL,
+            awaiting_owner_since = NULL, owner_reminded_at = NULL,
             closed_periods = closed_periods || tstzrange(closed_at, now())
         WHERE channel_id = $1 AND status = 'closed' AND (delete_at IS NULL OR delete_at > now())
         RETURNING {_COLUMNS}
@@ -271,6 +272,48 @@ async def mark_reopened(channel_id: int, *, pool: Any | None = None) -> Ticket |
         channel_id,
     )
     return _ticket(row)
+
+
+async def set_language(channel_id: int, language: str, *, pool: Any | None = None) -> Ticket | None:
+    """An open ticket's support language; None when it isn't open."""
+    resolved_pool = pool or await get_pool()
+    row = await resolved_pool.fetchrow(
+        f"UPDATE tickets SET language = $2 WHERE channel_id = $1 AND status = 'open' RETURNING {_COLUMNS}",
+        channel_id,
+        language,
+    )
+    return _ticket(row)
+
+
+async def note_ticket_message(channel_id: int, author_id: int, *, pool: Any | None = None) -> None:
+    """A message in a ticket channel (an AI answer passes the bot's id). Someone other than the owner starts the
+    owner's reply countdown if it isn't running; the owner clears it. Writes only when that state flips."""
+    resolved_pool = pool or await get_pool()
+    await resolved_pool.execute(
+        """
+        UPDATE tickets
+        SET awaiting_owner_since = CASE WHEN owner_id = $2 THEN NULL ELSE now() END, owner_reminded_at = NULL
+        WHERE channel_id = $1 AND status = 'open'
+          AND ((owner_id = $2 AND awaiting_owner_since IS NOT NULL) OR (owner_id <> $2 AND awaiting_owner_since IS NULL))
+        """,
+        channel_id,
+        author_id,
+    )
+
+
+async def claim_owner_reminders(hours: int, *, pool: Any | None = None) -> list[Ticket]:
+    """Open tickets whose owner hasn't replied for `hours`, each claimed once per silence (owner_reminded_at)."""
+    resolved_pool = pool or await get_pool()
+    rows = await resolved_pool.fetch(
+        f"""
+        UPDATE tickets SET owner_reminded_at = now()
+        WHERE status = 'open' AND channel_id IS NOT NULL AND owner_reminded_at IS NULL
+          AND awaiting_owner_since <= now() - make_interval(hours => $1)
+        RETURNING {_COLUMNS}
+        """,
+        hours,
+    )
+    return [_ticket(row) for row in rows]
 
 
 async def mark_deleted(channel_id: int, *, pool: Any | None = None) -> None:

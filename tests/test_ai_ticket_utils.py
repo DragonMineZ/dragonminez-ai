@@ -335,6 +335,39 @@ class ResolvePromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(_parse_resolve_custom_id("bug_issue:1"))
         self.assertIsNone(_parse_resolve_custom_id("ticket_resolved:yes:notanid:en"))
 
+    async def test_resolve_prompt_pings_only_the_owner_in_the_ticket_language(self) -> None:
+        settings = types.SimpleNamespace(
+            ai_ticket_category_id=77, ai_ticket_resolve_min_confidence=0.6, ai_ticket_resolve_prompt_exponent=3.0
+        )
+        cog = AITicketsCog(types.SimpleNamespace(settings=settings))
+        channel = types.SimpleNamespace(id=13, send=AsyncMock())
+        with patch("bulmaai.cogs.ai_tickets._is_ticket_channel", return_value=True):
+            await cog._maybe_prompt_resolution(channel, requester_id=42, confidence=None, force=True, language="pt")
+        kwargs = channel.send.await_args.kwargs
+        self.assertIn("<@42> **Resolvi o seu problema?**", str(kwargs["view"].to_components()))
+        self.assertEqual([user.id for user in kwargs["allowed_mentions"].users], [42])
+        safe = discord.AllowedMentions(everyone=False, roles=False, users=False)  # the client default (bot.SAFE_MENTIONS)
+        self.assertEqual(safe.merge(kwargs["allowed_mentions"]).to_dict()["parse"], [])  # no roles or everyone
+        self.assertIs(cog._resolve_prompts[13], channel.send.return_value)
+
+    async def test_ticket_language_is_cached_until_forgotten_or_closed(self) -> None:
+        cog = AITicketsCog(types.SimpleNamespace(settings=types.SimpleNamespace()))
+        ticket = types.SimpleNamespace(language="es")
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=ticket)) as lookup:
+            self.assertEqual([await cog._ticket_language(13), await cog._ticket_language(13)], ["es", "es"])
+            self.assertEqual(lookup.await_count, 1)
+            cog.forget_ticket_language(13)
+            await cog._ticket_language(13)
+            await cog.ticket_closed(13)
+            await cog._ticket_language(13)
+        self.assertEqual(lookup.await_count, 3)
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=None)):
+            self.assertIsNone(await cog._ticket_language(14))
+        self.assertIn(14, cog._ticket_languages)  # no tickets row: not looked up again
+
+    def test_solved_close_text_has_every_language(self) -> None:
+        self.assertEqual(set(ai_tickets.SOLVED_CLOSE_TEXT), set(ai_tickets.RESOLVE_PROMPT_TEXT))
+
     def test_ticket_vector_store_falls_back_to_support_store(self) -> None:
         settings = types.SimpleNamespace(openai_ticket_vector_store_id=None, openai_support_vector_store_ids=("vs_a", "vs_b"))
         self.assertEqual(_ticket_vector_store_id(settings), "vs_a")
@@ -595,7 +628,10 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
             followup=types.SimpleNamespace(send=AsyncMock()),
         )
 
-        with patch("bulmaai.cogs.ai_tickets.set_ticket_ai_disabled", AsyncMock()):
+        with (
+            patch("bulmaai.cogs.ai_tickets.set_ticket_ai_disabled", AsyncMock()),
+            patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=None)),
+        ):
             await cog._handle_resolve_answer(interaction, solved=False, requester_id=42, language="en")
 
         busy = interaction.response.edit_message.await_args.kwargs["view"]

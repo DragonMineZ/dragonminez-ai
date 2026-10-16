@@ -29,7 +29,7 @@ META: dict[str, tuple[str, str, str]] = {
     "ai_support_escalation_confidence": ("ai", "Escalation confidence", "A first-pass answer below this confidence (0 to 1) gets a second opinion from the bigger model."),
     "ai_ticket_resolve_min_confidence": ("ai", "\"Solved?\" prompt: minimum confidence", "Below this AI confidence (0 to 1) a ticket never gets the \"Have I solved your problem?\" buttons."),
     "ai_ticket_resolve_prompt_exponent": ("ai", "\"Solved?\" prompt: curve", "Chance of the \"solved?\" buttons is confidence to this power; higher asks less often (3: 0.8 confidence → 51%)."),
-    "ai_ticket_escalation_role_ids": ("ai", "Escalation roles", "Roles pinged in a ticket when the member says the AI didn't solve it."),
+    "ai_ticket_escalation_role_ids": ("ai", "Escalation roles", "Roles pinged in a ticket when the member says the AI didn't solve it (Helpers only by default)."),
     "ask_allowed_channel_ids": ("ai", "/ask channels", "Channels where /ask can be used; empty = nowhere."),
     "ask_rate_limit_window_seconds": ("ai", "/ask rate limit: window", "Length in seconds of the window for the per-person /ask limit."),
     "ask_rate_limit_max_calls": ("ai", "/ask rate limit: calls", "How many /ask uses one person gets per window."),

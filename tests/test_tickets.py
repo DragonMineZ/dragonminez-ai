@@ -15,12 +15,14 @@ from bulmaai.cogs import tickets as cog_module
 from bulmaai.cogs.tickets import InlineImageHandler, Rank, TicketsCog, build_overwrites, member_rank
 from bulmaai.services import tickets as db
 from bulmaai.services.ticket_pages import StoredPage
-from bulmaai.services.ticket_intake import triage_intake
+from bulmaai.services.ticket_intake import TicketIntake, triage_intake
+from bulmaai.utils.language import role_languages
 from bulmaai.ui import ticket_views as views
 from bulmaai.ui import v2
 from v2_helpers import sent_message
 
 OWNER_ROLE, ADMIN_ROLE, MOD_ROLE, HELPER_ROLE, TESTER_ROLE = 11, 12, 13, 14, 15
+EN_ROLE, ES_ROLE, PT_ROLE = 21, 22, 23
 OWNER_ID, STAFF_ID = 100, 200
 
 SETTINGS = SimpleNamespace(
@@ -33,6 +35,9 @@ SETTINGS = SimpleNamespace(
     ai_ticket_category_id=1,
     ticket_closed_category_id=2,
     openai_ticket_summary_model="gpt-5-mini",
+    announcement_role_en_id=EN_ROLE,
+    announcement_role_es_id=ES_ROLE,
+    announcement_role_pt_id=PT_ROLE,
 )
 
 
@@ -168,15 +173,67 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_welcome_card_shows_the_request_apart_and_warns_about_pings(self):
         view = views.welcome_view(
-            number=7, category=views.CATEGORIES["bug"], answers=[("Summary", "boom"), ("Version", "2.2")], mention="<@1>"
+            number=7,
+            category=views.CATEGORIES["bug"],
+            answers=[("Summary", "boom"), ("Version", "2.2")],
+            mention="<@1>",
+            language="en",
         )
-        greeting, request, row = view.children
+        greeting, request, lang_row, row = view.children
         self.assertIn("## 🎫 #0007 · ⚙️ Game-Breaking Bug", texts(greeting))
         self.assertIn("ping staff", texts(greeting))
+        self.assertNotIn("¡Hola", texts(greeting))  # one language only
         self.assertIn("<@1>", texts(greeting))
         self.assertEqual(texts(request), "-# Summary\n### boom\n**Version**\n2.2")
+        self.assertEqual((lang_row.id, custom_ids(lang_row)), (views.LANG_ROW_ID, [views.LANG_SELECT_ID]))
         self.assertEqual(custom_ids(row), [views.AI_BUTTON_ID, "ticket_btn_close", views.SOLVED_BUTTON_ID])
         self.assertIsNone(view.timeout)
+
+    async def test_welcome_card_greets_in_the_ticket_language_and_selects_it(self):
+        view = views.welcome_view(number=7, category=views.CATEGORIES["bug"], answers=[], mention="<@1>", language="pt")
+        self.assertIn("Olá <@1>!", texts(view.children[0]))
+        self.assertIn("Não marque a staff", texts(view.children[0]))
+        select = view.get_item(views.LANG_ROW_ID).children[0]
+        self.assertEqual([(o.value, o.default) for o in select.options], [("en", False), ("es", False), ("pt", True)])
+
+    async def test_relanguage_welcome_rewrites_the_greeting_and_select_default(self):
+        posted = views.welcome_view(
+            number=7, category=views.CATEGORIES["bug"], answers=[("Summary", "boom")], mention="<@1>", language="en"
+        )
+        view = views.relanguage_welcome(
+            discord.ui.DesignerView.from_message(sent_message(posted), timeout=None),
+            number=7,
+            category=views.CATEGORIES["bug"],
+            mention="<@1>",
+            language="es",
+        )
+        self.assertIn("¡Hola <@1>!", texts(view.children[0]))
+        self.assertEqual(texts(view.children[1]), "-# Summary\n### boom")
+        select = view.get_item(views.LANG_ROW_ID).children[0]
+        self.assertEqual([o.value for o in select.options if o.default], ["es"])
+        self.assertEqual(custom_ids(view.get_item(views.ACTIONS_ID)), [views.AI_BUTTON_ID, "ticket_btn_close", views.SOLVED_BUTTON_ID])
+
+    async def test_member_dms_are_in_the_ticket_language(self):
+        channel = SimpleNamespace(guild=SimpleNamespace(icon=None), jump_url="https://discord.com/channels/1/900")
+        later = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        cases = (
+            (views.dm_created(42, views.CATEGORIES["bug"], channel, "es"), "Tu ticket ha sido creado", "Abrir ticket"),
+            (views.dm_transcript(42, channel.guild, "https://t/x", None, "pt"), "Aqui está a transcrição", "Ver transcrição"),
+            (views.dm_solved(42, channel.guild, None, None, later, 42, "es"), "como resuelto", "Reabrir ticket"),
+            (views.dm_reopened(42, channel, "pt"), "Seu ticket foi reaberto", "Abrir ticket"),
+            (views.dm_reminder(42, channel, "es"), "⏰ Ticket #0042: tu ticket espera tu respuesta", "Abrir ticket"),
+        )
+        for view, text, label in cases:
+            self.assertIn(text, texts(view))
+            self.assertNotIn(" | ", texts(view))
+            self.assertIn(label, [item.label for item in walk(view) if isinstance(item, discord.ui.Button)])
+
+    async def test_language_picker_asks_in_each_of_the_owners_languages(self):
+        view = views.language_picker("<@1>", ["es", "pt"])
+        self.assertIn("<@1>", texts(view))
+        self.assertIn("¿En qué idioma", texts(view))
+        self.assertIn("Em qual idioma", texts(view))
+        self.assertEqual(custom_ids(view), ["ticket_lang:es", "ticket_lang:pt"])
 
 
 class FakeConn:
@@ -603,6 +660,7 @@ class StaffPingTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
             patch.object(cog_module.mod_actions, "perform", AsyncMock()) as perform,
+            patch.object(cog_module, "note_ticket_message", AsyncMock()) as self.noted,
         ):
             await cog.on_message(message)
         return perform
@@ -622,6 +680,19 @@ class StaffPingTests(unittest.IsolatedAsyncioTestCase):
             self.message(member(OWNER_ID)),
         ):
             (await self.run_listener(message)).assert_not_called()
+
+    async def test_every_human_message_in_a_ticket_feeds_the_reply_countdown(self):
+        for author in (member(OWNER_ID), member(STAFF_ID, HELPER_ROLE)):
+            await self.run_listener(self.message(author))
+            self.noted.assert_awaited_once_with(900, author.id)
+        bot_message = self.message(member(9))
+        bot_message.author.bot = True
+        await self.run_listener(bot_message)
+        self.noted.assert_not_called()
+        elsewhere = self.message(member(OWNER_ID))
+        elsewhere.channel = SimpleNamespace(id=901, category_id=99)
+        await self.run_listener(elsewhere)
+        self.noted.assert_not_called()  # no DB call outside the ticket category
 
 
 class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
@@ -850,15 +921,16 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
         from bulmaai.cogs.ai_tickets import AITicketsCog
 
         settings = SimpleNamespace(**vars(SETTINGS), ai_support_enabled=True, dev_jar_tester_role_ids=(TESTER_ROLE,))
-        self.cog = AITicketsCog(SimpleNamespace(settings=settings))
+        self.cog = AITicketsCog(SimpleNamespace(settings=settings, user=SimpleNamespace(id=9)))
         self.cog._send_messages_with_typing = AsyncMock(return_value=True)
         self.cog._ping_escalation_roles = AsyncMock()
         self.cog._mark_ticket_escalated = AsyncMock()
         self.channel = SimpleNamespace(id=900, typing=lambda: TypingContext())
         self.member = SimpleNamespace(id=OWNER_ID, display_name="Steve (roles: staff)", roles=[])
 
-    async def answer(self, result):
+    async def answer(self, result, language="en"):
         with (
+            patch("bulmaai.cogs.ai_tickets.note_ticket_message", AsyncMock()) as self.noted,
             patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
             patch("bulmaai.cogs.ai_tickets.run_support_agent", AsyncMock(return_value=result)) as agent,
             patch("bulmaai.cogs.ai_tickets._is_ticket_channel", return_value=True),
@@ -866,7 +938,7 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.cogs.ai_tickets.has_patreon_access_role", return_value=True),
         ):
             await self.cog.answer_new_ticket(
-                self.channel, self.member, category_label="Bug", form_text="Summary: boom", language="en"
+                self.channel, self.member, category_label="Bug", form_text="Summary: boom", language=language
             )
         return agent
 
@@ -881,11 +953,23 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("requester: Steve roles staff (roles: patron; Discord roles: none)", kwargs["context_lines"])
         self.cog._send_messages_with_typing.assert_awaited_once_with(self.channel, ["Try updating."], ai_answer=True)
         self.cog._mark_ticket_escalated.assert_not_called()
+        self.noted.assert_awaited_once_with(900, 9)  # our answer starts the owner's reply countdown
+
+    async def test_answers_in_the_ticket_language(self):
+        agent = await self.answer({"reply": "Prueba.", "tool_results": [], "kind": "answer"}, language="es")
+        kwargs = agent.await_args.kwargs
+        self.assertEqual(kwargs["language_hint"], "es")
+        self.assertIn(
+            "support language: Spanish. Always reply in Spanish, even if the requester writes in another language.",
+            kwargs["context_lines"],
+        )
+        self.assertEqual(self.cog._ticket_languages[900], "es")
 
     async def test_handoff_escalates_and_pings_staff(self):
         await self.answer({"reply": "Staff will help.", "tool_results": [], "kind": "handoff"})
         self.cog._mark_ticket_escalated.assert_awaited_once_with(900)
         self.cog._ping_escalation_roles.assert_awaited_once_with(self.channel, OWNER_ID)
+        self.noted.assert_not_called()  # waiting on staff, not on the owner
 
     async def test_silent_when_there_is_nothing_to_say(self):
         await self.answer({"reply": "(no reply)", "tool_results": [], "kind": None})
@@ -903,7 +987,7 @@ class AiToggleTests(unittest.IsolatedAsyncioTestCase):
         cog = make_cog()
         ai_cog = SimpleNamespace(is_ticket_ai_enabled=lambda _id: True, set_ticket_ai_enabled=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
-        welcome = views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@1>")
+        welcome = views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@1>", language="en")
         interaction = SimpleNamespace(
             channel_id=900,
             user=SimpleNamespace(id=STAFF_ID, roles=[SimpleNamespace(id=HELPER_ROLE)], mention=f"<@{STAFF_ID}>"),
@@ -979,10 +1063,10 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
     REOPEN_ID = f"{views.SOLVED_REOPEN_PREFIX}42"
 
     def welcome(self):
-        return views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@1>")
+        return views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@1>", language="en")
 
     def solved_dm(self):
-        return views.dm_solved(42, SimpleNamespace(icon=None), self.URL, None, self.LATER, 42)
+        return views.dm_solved(42, SimpleNamespace(icon=None), self.URL, None, self.LATER, 42, "en")
 
     def test_control_row_has_the_solved_button(self):
         solved = views.control_row().children[-1]
@@ -990,7 +1074,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_solved_dm_links_the_transcript_and_reopens_by_ticket_id(self):
         guild, expires = SimpleNamespace(icon=None), datetime(2026, 11, 2, tzinfo=timezone.utc)
-        view = views.dm_solved(42, guild, self.URL, expires, self.LATER, 42)
+        view = views.dm_solved(42, guild, self.URL, expires, self.LATER, 42, "en")
         text = texts(view)
         self.assertIn(f"<t:{int(expires.timestamp())}:f> (<t:{int(expires.timestamp())}:R>)", text)
         self.assertIn(f"Re-open it before <t:{int(self.LATER.timestamp())}:R>", text)
@@ -998,7 +1082,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((link.url, reopen.custom_id), (self.URL, self.REOPEN_ID))
         self.assertIn("kept permanently", texts(self.solved_dm()))
 
-        no_page = views.dm_solved(42, guild, None, None, self.LATER, 42)
+        no_page = views.dm_solved(42, guild, None, None, self.LATER, 42, "en")
         self.assertNotIn("transcript", texts(no_page))
         self.assertEqual(custom_ids(no_page), [self.REOPEN_ID])
         self.assertEqual(len([item for item in walk(no_page) if isinstance(item, discord.ui.Button)]), 1)
@@ -1121,3 +1205,193 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("(delete_at IS NULL OR delete_at > now())", query)
         await db.mark_closed(900, closed_by=STAFF_ID, reason=None, delete_at=self.LATER, pool=pool)
         self.assertEqual(pool.fetchrow.await_args.args[-1], self.LATER)
+
+
+class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
+    """Per-ticket support language: language roles at creation, the welcome select and the picker."""
+
+    def test_role_languages_in_en_es_pt_order(self):
+        self.assertEqual(role_languages(member(1, PT_ROLE, HELPER_ROLE, EN_ROLE), SETTINGS), ["en", "pt"])
+        self.assertEqual(role_languages(member(1, HELPER_ROLE), SETTINGS), [])
+        unset = SimpleNamespace(announcement_role_en_id=None, announcement_role_es_id=ES_ROLE, announcement_role_pt_id=None)
+        self.assertEqual(role_languages(member(1, EN_ROLE, ES_ROLE), unset), ["es"])
+
+    async def create(self, *role_ids):
+        cog = make_cog()
+        owner = MagicMock(spec=discord.Member)
+        owner.id, owner.mention = OWNER_ID, f"<@{OWNER_ID}>"
+        owner.roles = [SimpleNamespace(id=role_id) for role_id in role_ids]
+        owner.send = AsyncMock()
+        channel = make_channel()
+        channel.mention, channel.jump_url = "<#900>", "https://discord.com/channels/1/900"
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=77))
+        guild = MagicMock()
+        guild.get_channel.return_value = MagicMock(spec=discord.CategoryChannel)
+        guild.create_text_channel = AsyncMock(return_value=channel)
+        interaction = SimpleNamespace(
+            guild=guild,
+            user=owner,
+            response=SimpleNamespace(defer=AsyncMock(), is_done=lambda: False),
+            edit_original_response=AsyncMock(),
+        )
+        ai_cog = SimpleNamespace(answer_new_ticket=AsyncMock())
+        cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
+        intake = TicketIntake(channel_slug="crash", language="pt", summary="")
+        with (
+            patch.object(cog_module, "reserve_ticket", AsyncMock(return_value=make_ticket(channel_id=None, status="creating"))) as reserve,
+            patch.object(cog_module, "attach_channel", AsyncMock()) as attach,
+            patch.object(cog_module, "build_overwrites", return_value={}),
+            patch.object(cog, "_triage", AsyncMock(return_value=intake)),
+        ):
+            await cog.create_ticket(interaction, views.CATEGORIES["bug"], [("Summary", "boom")])
+        return SimpleNamespace(
+            reserve=reserve.await_args.kwargs["language"],
+            attach=attach.await_args.kwargs["language"],
+            answer=ai_cog.answer_new_ticket.await_args.kwargs["language"],
+            sends=channel.send.await_args_list,
+            dm=texts(owner.send.await_args.kwargs["view"]),
+            owner=owner,
+        )
+
+    async def test_one_language_role_sets_the_ticket_language(self):
+        made = await self.create(ES_ROLE)
+        self.assertEqual((made.reserve, made.attach, made.answer), ("es", "es", "es"))
+        self.assertIn("¡Hola <@100>!", texts(made.sends[0].kwargs["view"]))
+        self.assertIn("Tu ticket ha sido creado", made.dm)
+        self.assertEqual(len(made.sends), 1)  # no picker
+
+    async def test_without_language_roles_the_form_language_decides(self):
+        made = await self.create()
+        self.assertEqual((made.attach, made.answer), ("pt", "pt"))
+        self.assertEqual(len(made.sends), 1)
+
+    async def test_several_language_roles_get_a_picker_that_pings_the_owner(self):
+        made = await self.create(PT_ROLE, EN_ROLE)
+        self.assertEqual((made.attach, made.answer), ("pt", "pt"))  # the form's language until they pick
+        picker = made.sends[1].kwargs
+        self.assertEqual(custom_ids(picker["view"]), ["ticket_lang:en", "ticket_lang:pt"])
+        self.assertIn("<@100>", texts(picker["view"]))
+        self.assertEqual(picker["allowed_mentions"].users, [made.owner])
+
+    def welcome_message(self):
+        welcome = views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@100>", language="en")
+        return sent_message(welcome, message_id=77)
+
+    async def change(self, user, custom_id, values=None, *, updated=None):
+        cog, channel = make_cog(), make_channel()
+        welcome = self.welcome_message()
+        channel.fetch_message = AsyncMock(return_value=welcome)
+        ai_cog = SimpleNamespace(forget_ticket_language=MagicMock())
+        cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
+        card = views.language_picker("<@100>", ["en", "es"]) if custom_id != views.LANG_SELECT_ID else None
+        interaction = click(user, custom_id, card) if card else SimpleNamespace(
+            user=user,
+            channel_id=900,
+            data={"custom_id": custom_id},
+            message=welcome,
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            edit_original_response=AsyncMock(),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        if values is not None:
+            interaction.data["values"] = values
+        interaction.user.mention = f"<@{user.id}>"
+        interaction.channel = channel
+        with (
+            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
+            patch.object(cog_module, "set_language", AsyncMock(return_value=updated)) as set_language,
+        ):
+            await cog.on_language(interaction)
+        return SimpleNamespace(
+            interaction=interaction, channel=channel, welcome=welcome, set_language=set_language, ai_cog=ai_cog
+        )
+
+    async def test_owner_changes_the_language_from_the_welcome_select(self):
+        done = await self.change(member(OWNER_ID), views.LANG_SELECT_ID, ["es"], updated=make_ticket(language="es"))
+        done.set_language.assert_awaited_once_with(900, "es")
+        done.ai_cog.forget_ticket_language.assert_called_once_with(900)
+        edited = done.welcome.edit.await_args.kwargs["view"]
+        self.assertIn("¡Hola <@100>!", texts(edited))
+        self.assertEqual([o.value for o in edited.get_item(views.LANG_ROW_ID).children[0].options if o.default], ["es"])
+        notice = done.channel.send.await_args.kwargs
+        self.assertIn("🌐 Idioma de soporte cambiado a Español por <@100>.", texts(notice["view"]))
+        self.assertEqual(notice["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+
+    async def test_staff_picks_from_the_picker_and_it_turns_into_a_confirmation(self):
+        staff = SimpleNamespace(id=STAFF_ID, roles=[SimpleNamespace(id=HELPER_ROLE)])
+        done = await self.change(staff, "ticket_lang:pt", updated=make_ticket(language="pt"))
+        done.set_language.assert_awaited_once_with(900, "pt")
+        confirmation = done.interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertEqual(texts(confirmation), "🌐 Idioma do suporte: Português.")
+        self.assertIn("Olá <@100>!", texts(done.welcome.edit.await_args.kwargs["view"]))  # fetched and rewritten
+        done.channel.send.assert_not_awaited()  # the confirmation is the only notice
+
+    async def test_others_cannot_change_the_language(self):
+        done = await self.change(member(555), views.LANG_SELECT_ID, ["es"])
+        done.interaction.response.send_message.assert_awaited_once_with(views.MSG["no_permission"], ephemeral=True)
+        done.set_language.assert_not_called()
+
+    async def test_on_interaction_routes_the_language_controls(self):
+        cog = make_cog()
+        for custom_id in (views.LANG_SELECT_ID, "ticket_lang:es"):
+            interaction = click(member(OWNER_ID), custom_id, views.language_picker("<@100>", ["es"]))
+            with patch.object(cog, "on_language", AsyncMock()) as handler:
+                await cog.on_interaction(interaction)
+            handler.assert_awaited_once_with(interaction)
+
+    async def test_set_language_sql_only_touches_open_tickets(self):
+        pool = SimpleNamespace(fetchrow=AsyncMock(return_value=None))
+        self.assertIsNone(await db.set_language(900, "es", pool=pool))
+        self.assertIn("status = 'open'", pool.fetchrow.await_args.args[0])
+        self.assertEqual(pool.fetchrow.await_args.args[1:], (900, "es"))
+
+
+class OwnerReminderTests(unittest.IsolatedAsyncioTestCase):
+    """A ticket waiting on its owner for OWNER_REMINDER_HOURS DMs them once."""
+
+    async def test_reply_tracking_sql_writes_only_when_the_state_flips(self):
+        pool = SimpleNamespace(execute=AsyncMock())
+        await db.note_ticket_message(900, OWNER_ID, pool=pool)
+        query, *args = pool.execute.await_args.args
+        self.assertEqual(args, [900, OWNER_ID])
+        self.assertIn("CASE WHEN owner_id = $2 THEN NULL ELSE now() END", query)
+        self.assertIn("(owner_id = $2 AND awaiting_owner_since IS NOT NULL)", query)
+        self.assertIn("(owner_id <> $2 AND awaiting_owner_since IS NULL)", query)
+        self.assertIn("status = 'open'", query)
+
+    async def test_claim_sql_takes_each_silence_once(self):
+        pool = SimpleNamespace(fetch=AsyncMock(return_value=[]))
+        self.assertEqual(await db.claim_owner_reminders(12, pool=pool), [])
+        query, hours = pool.fetch.await_args.args
+        self.assertEqual(hours, 12)
+        self.assertIn("SET owner_reminded_at = now()", query)
+        self.assertIn("owner_reminded_at IS NULL", query)
+        self.assertIn("awaiting_owner_since <= now() - make_interval(hours => $1)", query)
+
+    async def test_reopen_restarts_the_countdown(self):
+        pool = SimpleNamespace(fetchrow=AsyncMock(return_value=None))
+        await db.mark_reopened(900, pool=pool)
+        self.assertIn("awaiting_owner_since = NULL, owner_reminded_at = NULL", pool.fetchrow.await_args.args[0])
+
+    async def sweep(self, owner, tickets):
+        cog, channel = make_cog(), make_channel(owner)
+        channel.jump_url = "https://discord.com/channels/1/900"
+        cog.bot.get_channel = lambda _id: channel if _id == 900 else None
+        with patch.object(cog_module, "claim_owner_reminders", AsyncMock(return_value=tickets)) as claim:
+            await cog._remind_owners()
+        claim.assert_awaited_once_with(cog_module.OWNER_REMINDER_HOURS)
+
+    async def test_sweep_dms_the_owner_in_the_ticket_language(self):
+        owner = SimpleNamespace(id=OWNER_ID, send=AsyncMock())
+        await self.sweep(owner, [make_ticket(language="es"), make_ticket(channel_id=901)])
+        owner.send.assert_awaited_once()  # the ticket whose channel is gone is skipped
+        dm = owner.send.await_args.kwargs["view"]
+        self.assertIn("⏰ Ticket #0042: tu ticket espera tu respuesta", texts(dm))
+        self.assertIn("https://discord.com/channels/1/900", [item.url for item in walk(dm) if isinstance(item, discord.ui.Button)])
+
+    async def test_closed_dms_are_only_logged_at_info(self):
+        response = SimpleNamespace(status=403, reason="Forbidden")
+        owner = SimpleNamespace(id=OWNER_ID, send=AsyncMock(side_effect=discord.HTTPException(response, "DMs closed")))
+        with self.assertLogs(cog_module.log, "INFO") as logs:
+            await self.sweep(owner, [make_ticket()])
+        self.assertEqual([record.levelname for record in logs.records], ["INFO"])

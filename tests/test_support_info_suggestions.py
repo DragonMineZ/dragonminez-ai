@@ -205,9 +205,10 @@ class ReviewCardTests(unittest.IsolatedAsyncioTestCase):
         for bad in ("supinfo:approve:x", "supinfo:nope:1", "other:approve:1", "supinfo", ""):
             self.assertIsNone(views.parse_review_custom_id(bad))
 
-    async def test_handled_card_keeps_the_title_and_drops_the_buttons(self) -> None:
+    async def test_handled_card_keeps_the_suggestion_and_drops_the_buttons(self) -> None:
         approved = views.review_handled_card(entry(status="active", updated_by=300))
         self.assertIn("2.2.1 crashes with Iris", text(approved))
+        self.assertIn(entry().body, text(approved))
         self.assertIn("✅ Approved by <@300> · support info #5", text(approved))
         self.assertEqual(buttons(approved), [])
         self.assertIn("🗑️ Discarded by <@300>", text(views.review_handled_card(entry(status="discarded", updated_by=300))))

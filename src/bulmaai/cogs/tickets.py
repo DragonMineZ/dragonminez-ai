@@ -90,6 +90,7 @@ from bulmaai.ui.ticket_views import (
     welcome_view,
 )
 from bulmaai.ui.v2 import unbusy, while_busy
+from bulmaai.utils.forwards import inline_forwards
 from bulmaai.utils.language import detect_language_from_text, role_languages
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import is_admin, is_bruno
@@ -852,6 +853,7 @@ class TicketsCog(ReloadableCog):
                 reply_to = getattr(message.reference, "message_id", None)
                 if reply_to and closed_span_index(discord.utils.snowflake_time(reply_to), spans) is not None:
                     message.reference = None
+                inline_forwards(message)  # chat_exporter ignores message.snapshots
             # An empty list would make chat_exporter fetch the whole history itself.
             html = await chat_exporter.raw_export(
                 channel,

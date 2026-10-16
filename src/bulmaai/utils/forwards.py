@@ -21,3 +21,15 @@ def full_content(message: Any) -> str:
 def full_attachments(message: Any) -> list[Any]:
     """The message's own files plus the files of anything it forwards."""
     return [*(getattr(message, "attachments", None) or ()), *(a for item in _snapshots(message) for a in item.attachments or ())]
+
+
+def inline_forwards(message: Any) -> None:
+    """For renderers that only read `content` / `attachments` (chat_exporter): folds the forwarded text in as a quote
+    and the forwarded files in as the message's own. Mutates the message; use it on throwaway history copies."""
+    forwarded = forwarded_content(message)
+    files = full_attachments(message)
+    if not forwarded and len(files) == len(getattr(message, "attachments", None) or ()):
+        return
+    quote = "\n".join(f"> {line}" for line in forwarded.splitlines())
+    message.content = "\n".join(p for p in (getattr(message, "content", "") or "", "*Forwarded message:*", quote) if p)
+    message.attachments = files

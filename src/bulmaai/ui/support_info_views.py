@@ -1,5 +1,5 @@
 """Cards for staff support info (cogs/support_info.py): the daily public known-issues post, the /info list, and the
-staff review card for AI suggestions (with its collapsed handled form)."""
+staff review card for AI suggestions (and its handled form)."""
 
 from collections.abc import Sequence
 
@@ -90,8 +90,12 @@ def handled_line(entry: SupportInfo) -> str:
 
 
 def review_handled_card(entry: SupportInfo) -> discord.ui.DesignerView:
-    """The review card once someone approved or discarded it: the title stays, the buttons go."""
-    return card(f"💡 **{trim(entry.title, 200)}**", f"-# {handled_line(entry)}", color=discord.Color.dark_grey())
+    """The review card once someone approved or discarded it: the suggestion stays (as approved, if edited), the
+    buttons go and the outcome is added."""
+    meta = facts(("Kind", entry.kind), ("From ticket", _ticket_ref(entry.ticket_id, None)))
+    outcome = f"-# {handled_line(entry)}"
+    title, body = fit([f"**{entry.title}**", entry.body], TEXT_LIMIT - len(REVIEW_HEAD) - len(meta) - len(outcome))
+    return card(head(REVIEW_HEAD), meta, title, body, outcome, color=discord.Color.dark_grey())
 
 
 def info_list_card(entries: Sequence[SupportInfo], pending: int = 0) -> discord.ui.DesignerView:

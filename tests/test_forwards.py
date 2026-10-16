@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content
+from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content, inline_forwards
 
 
 def _forward(content="", attachments=()):
@@ -25,3 +25,16 @@ def test_plain_message_without_snapshots():
     message = SimpleNamespace(content="hi", attachments=[])
     assert full_content(message) == "hi"
     assert full_attachments(message) == []
+
+
+def test_inline_forwards_folds_the_forward_into_the_message():
+    message = _forward("look", ["mine.log"])
+    inline_forwards(message)
+    assert message.content == "look\n*Forwarded message:*\n> inner text"
+    assert message.attachments == ["mine.log", "inner.png"]
+
+
+def test_inline_forwards_leaves_plain_messages_alone():
+    message = SimpleNamespace(content="hi", attachments=[])
+    inline_forwards(message)
+    assert message.content == "hi"

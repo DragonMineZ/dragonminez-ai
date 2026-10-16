@@ -319,7 +319,8 @@ class SelfUpdateCog(ReloadableCog):
         """Update news, prompts and failures all go to Bruno's DMs as a card; the panel keeps a copy of the text.
         ping: the card mentions Bruno (a DM still notifies without it; this marks the ones that need him)."""
         await panel_logs.record("update", title[:200], body)
-        text = (f"<@{BRUNO_ID}> " if ping else "") + f"### {title}" + (f"\n{body}" if body else "")
+        # The mention sits on its own line: `###` only renders as a heading at the start of a line.
+        text = (f"<@{BRUNO_ID}>\n" if ping else "") + f"### {title}" + (f"\n{body}" if body else "")
         try:
             owner = self.bot.get_user(BRUNO_ID) or await self.bot.fetch_user(BRUNO_ID)
             view = card(trim(text, 3800), color=color, buttons=buttons)

@@ -83,7 +83,8 @@ class SummarySchemaTests(unittest.TestCase):
         suggestion = summary.support_info
         self.assertEqual(suggestion.kind, "temporary")
         self.assertEqual(suggestion.title, "Iris crash @​everyone")
-        self.assertNotIn("evil.tld", suggestion.body)
+        # Staff see the link on the review card before approving; the answer is often the link itself.
+        self.assertIn("https://evil.tld/x", suggestion.body)
 
     def test_null_or_invalid_suggestion_is_dropped(self) -> None:
         for value in (
@@ -148,15 +149,14 @@ class CloseSuggestionTests(unittest.IsolatedAsyncioTestCase):
     def lines(self, *kinds):
         return [TranscriptLine(NOW, kind, kind.title(), "text") for kind in kinds]
 
-    async def test_staff_solved_close_with_staff_lines_suggests(self) -> None:
-        await self.close(self.lines("requester", "staff"), staff_solved=True)
+    async def test_staff_solved_close_suggests_even_without_staff_lines(self) -> None:
+        await self.close(self.lines("requester", "assistant"), staff_solved=True)
         self.support_cog.suggest_from_ticket.assert_awaited_once_with(
             self.suggestion, ticket_id=42, page_link=f"https://tickets.example/t/{'p' * 32}"
         )
 
     async def test_no_suggestion_otherwise(self) -> None:
         await self.close(self.lines("requester", "staff"), staff_solved=False)
-        await self.close(self.lines("requester", "assistant"), staff_solved=True)
         await self.close(self.lines("requester", "staff"), staff_solved=True, suggestion=None)
         self.support_cog.suggest_from_ticket.assert_not_awaited()
 

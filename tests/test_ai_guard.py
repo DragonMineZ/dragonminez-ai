@@ -8,7 +8,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs.ai_ann_translation import translated_role_mentions
 from bulmaai.cogs.ask import can_post_publicly
-from bulmaai.services.ai_guard import NO_REPLY, screen_question, screen_reply
+from bulmaai.services.ai_guard import NO_REPLY, link_targets, screen_question, screen_reply
 
 SETTINGS = SimpleNamespace(
     moderation_banned_words=("slur*",),
@@ -71,6 +71,12 @@ class ScreenReplyTests(unittest.TestCase):
         text, flags = screen_reply("grab Java at https://adoptium.net", SETTINGS)
         self.assertEqual((text, flags), ("grab Java at https://adoptium.net", {"unknown_link"}))
         self.assertIn("invite", screen_reply("join discord.gg/abc", SETTINGS)[1])
+
+    def test_links_from_approved_support_info_are_ours(self) -> None:
+        staff = link_targets("Converter: https://cdn.discordapp.com/attachments/1/2/Converter.html?ex=abc.")
+        reply = "Get it here: https://cdn.discordapp.com/attachments/1/2/Converter.html?ex=zzz"
+        self.assertEqual(screen_reply(reply, SETTINGS, staff), (reply, frozenset()))
+        self.assertEqual(screen_reply("[it](https://cdn.discordapp.com/attachments/1/3/x.jar)", SETTINGS, staff)[1], {"unknown_link"})
 
     def test_wiki_source_links_keep_their_label(self) -> None:
         link = "[Beginner's Guide](<https://wiki.dragonminez.com/wiki/Special:MyLanguage/Beginner%27s_Guide>)"

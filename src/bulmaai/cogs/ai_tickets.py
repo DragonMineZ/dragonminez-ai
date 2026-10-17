@@ -1433,7 +1433,7 @@ class AITicketsCog(ReloadableCog):
     ) -> bool:
         """Transcript → hosted HTML page → summarize → learn (vector store) → embed → record → optionally delete.
         resolved=None lets the summary decide. staff_solved: closed with the staff Solved button; then a support info
-        suggestion from the summary goes to staff review (if staff took part).
+        suggestion from the summary goes to staff review.
         Returns whether the transcript was saved for the panel."""
         archived = False
         if channel.id in self._closing_channels or channel.id in self._archived_channels:
@@ -1490,7 +1490,8 @@ class AITicketsCog(ReloadableCog):
                         )
                 except Exception:
                     log.exception("Failed to upload ticket knowledge", extra={"channel_id": channel.id})
-            if staff_solved and staff_reviewed and summary is not None and summary.support_info is not None:
+            # The Solved click is staff vouching for the ticket, and staff approve the suggestion before it is used.
+            if staff_solved and summary is not None and summary.support_info is not None:
                 await self._suggest_support_info(
                     channel.id, summary, ticket_id=ticket_id, page_link=page_url(settings, page.token) if page else None
                 )

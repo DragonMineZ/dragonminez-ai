@@ -643,6 +643,7 @@ async def run_support_agent(
         _run_once,
         base_input=_build_response_input(messages, context_lines=context_lines),
         data_input=_build_data_input(knowledge, prefetch_lines, support_info_text),
+        staff_links=ai_guard.link_targets(support_info_text),
         knowledge_filenames={hit["filename"] for hit in knowledge},
         enabled_tools=enabled_tools,
         language=language,
@@ -735,6 +736,7 @@ async def _run_once(
     requester_is_staff: bool,
     channel_kind: str | None,
     notes: list[str] | None = None,
+    staff_links: frozenset[str] = frozenset(),
 ) -> tuple[AgentResult, SupportAITrace]:
     store = bool(getattr(settings, "openai_support_store_responses", True))
     tools: list[dict[str, Any]] = []
@@ -830,7 +832,7 @@ async def _run_once(
     reply_text, sources = _split_sources(reply_text)
     reply_text, suggested_close = _split_close(reply_text)
     # Before the wiki links are appended: those are ours, everything above them is model output.
-    reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings)
+    reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings, staff_links)
     if guard_flags - {"unknown_link"}:
         log.warning(
             "AI reply tripped guardrails (%s)%s",

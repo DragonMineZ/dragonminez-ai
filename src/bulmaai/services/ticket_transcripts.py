@@ -41,10 +41,13 @@ Use only the provided transcript; never invent details not present in it. Produc
   requests, account/payment specifics, or chats that end unresolved.
 - support_info: null unless the ticket reveals something future support should know. Then an object with:
   - kind: "temporary" for a current problem with a workaround (e.g. a broken release, an outage), or
-    "permanent" for a reusable answer to a question likely to come up again.
+    "permanent" for a reusable answer to a question likely to come up again (a common how-to, a tool or
+    file users keep asking for, a frequent misconfiguration).
   - title: at most 80 characters.
   - body: at most 600 characters, written as guidance for a support agent (what to tell users, what to check).
-  Null for one-off problems, account/payment specifics, or anything already obvious.
+    Copy the specifics staff gave verbatim: download links, file names, commands, version numbers, settings.
+    An entry that says a tool or file exists without saying where to get it is useless.
+  Null for one-off problems or account/payment specifics.
 
 Never include personal data (usernames, ids, real names) anywhere in the summary.
 """
@@ -232,12 +235,13 @@ def _normalize_ticket_summary(payload: Any) -> TicketSummary:
 
 
 def _normalize_suggestion(value: Any) -> SupportInfoSuggestion | None:
-    """Model output from member text, so links and mentions are defused; None when it doesn't pass validate()."""
+    """Model output from member text, so mentions are defused; None when it doesn't pass validate(). Links stay in
+    the body: staff see them on the review card before approving, and the answer is often the link itself."""
     if not isinstance(value, dict):
         return None
     kind = str(value.get("kind") or "").strip().lower()
     title = strip_links(defuse_mentions(str(value.get("title") or "")))
-    body = strip_links(defuse_mentions(str(value.get("body") or "")))
+    body = defuse_mentions(str(value.get("body") or ""))
     try:
         title, body = support_info.validate(kind, title, body)
     except ValueError:

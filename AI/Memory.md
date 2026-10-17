@@ -79,7 +79,7 @@ Console actions are private to Bruno:
 ## Support info
 
 - Nothing the AI suggests goes live without a staff click (Approve / Edit & approve on the review card, or the panel). Approved temporary suggestions without an expiry expire after 7 days.
-- Suggestions come only from tickets staff closed with Solved and took part in.
+- Suggestions come only from tickets staff closed with Solved (the click is enough; staff needn't have typed). They keep the links/file names staff gave, and the AI may repeat links that appear in approved entries (`ai_guard.link_targets`).
 - The daily post shows active temporary entries only, replaces the previous post, and skips the day when none are active.
 - Managing entries is staff-level (`/info`, panel HELPER tier).
 

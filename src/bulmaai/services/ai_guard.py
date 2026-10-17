@@ -80,12 +80,26 @@ def defang(text: str) -> str:
     return defuse_mentions(text).replace("](", "]​(").replace("://", ":​//")
 
 
-def _link_is_ours(url: str, wiki_host: str | None) -> bool:
+def _link_target(url: str) -> str:
+    """host+path, lowercased, without www., query or trailing punctuation: what two links are compared on."""
+    parts = urlsplit(url if "://" in url else f"//{url}")
+    host = (parts.hostname or "").removeprefix("www.")
+    return f"{host}{parts.path}".rstrip(".,;:!?").rstrip("/").lower()
+
+
+def link_targets(text: str) -> frozenset[str]:
+    """Links in staff-written text (approved support info), which the AI may then repeat."""
+    return frozenset(_link_target(match.group(0)) for match in _SCHEME_URL_RE.finditer(text))
+
+
+def _link_is_ours(url: str, wiki_host: str | None, staff_links: frozenset[str] = frozenset()) -> bool:
     parts = urlsplit(url if "://" in url else f"//{url}")
     host = (parts.hostname or "").removeprefix("www.")
     if wiki_host and host == wiki_host.removeprefix("www."):
         return True
-    target = f"{host}{parts.path}".rstrip("/").lower()
+    target = _link_target(url)
+    if target in staff_links:
+        return True
     return any(target == prefix or target.startswith(prefix + "/") for prefix in AI_LINK_PREFIXES)
 
 
@@ -105,8 +119,11 @@ def screen_question(text: str) -> str | None:
     return None
 
 
-def screen_reply(text: str, settings: object) -> tuple[str, frozenset[str]]:
-    """Defused reply plus what was found; a blocking flag replaces the reply with NO_REPLY."""
+def screen_reply(
+    text: str, settings: object, staff_links: frozenset[str] = frozenset()
+) -> tuple[str, frozenset[str]]:
+    """Defused reply plus what was found; a blocking flag replaces the reply with NO_REPLY. staff_links
+    (link_targets of approved support info) count as our own pages."""
     flags: set[str] = set()
     if _MASS_MENTION_RE.search(text) or _RAW_MENTION_RE.search(text):
         flags.add("mention")
@@ -118,7 +135,9 @@ def screen_reply(text: str, settings: object) -> tuple[str, frozenset[str]]:
 
     def unmask(match: re.Match) -> str:
         # Masked links hide where they go; only our own pages keep their label.
-        return match.group(0) if _link_is_ours(match.group(2), wiki_host) else f"{match.group(1)} (<{match.group(2)}>)"
+        if _link_is_ours(match.group(2), wiki_host, staff_links):
+            return match.group(0)
+        return f"{match.group(1)} (<{match.group(2)}>)"
 
     text = _MASKED_LINK_RE.sub(unmask, text)
     urls = {match.group(0) for match in _SCHEME_URL_RE.finditer(text)} | {url.normalized for url in extract_urls(text)}
@@ -126,7 +145,7 @@ def screen_reply(text: str, settings: object) -> tuple[str, frozenset[str]]:
         host = (urlsplit(url if "://" in url else f"//{url}").hostname or "").lower()
         if classify_domain(host, blocked_domains=blocked) is DomainClassification.BLOCKED:
             flags.add("blocked_domain")
-        elif not _link_is_ours(url, wiki_host):
+        elif not _link_is_ours(url, wiki_host, staff_links):
             flags.add("unknown_link")
     if detect_discord_invites(text):
         flags.add("invite")

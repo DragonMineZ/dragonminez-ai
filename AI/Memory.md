@@ -66,14 +66,18 @@ Console actions are private to Bruno:
 ## Tickets
 
 - In-house tickets (`cogs/tickets.py`). Ticket Tool is gone and its compat code is deleted. Don't re-add it.
-- The ticket panel, forms and ephemeral replies stay EN | ES. Everything member-facing inside a ticket and its DMs (welcome, solved prompt, transcript/solved/reminder DMs) uses the ticket's support language (en/es/pt) only; staff-only buttons and notices stay English.
+- The ticket panel, forms and ephemeral replies stay EN | ES. Everything member-facing inside a ticket and its DMs (welcome, solved prompt, deletion notice, transcript/solved/reminder DMs) uses the ticket's support language (en/es/pt) only; staff-only buttons and notices stay English.
   - Support language: the owner's single language role (`announcement_role_{en,es,pt}_id`). No role: detected from the form. Several: a picker card asks them. Owner or staff can switch it from the welcome card's select. The AI always answers in it.
 - The AI's "Have I solved your problem?" prompt pings the owner. Escalation pings Helpers only, never Moderators.
 - Owner reminder: 12h after someone else (staff, or an AI answer that isn't a handoff) spoke and the owner didn't reply, the owner gets one DM per silence (`tickets.awaiting_owner_since` / `owner_reminded_at`, swept by `_remind_owners`).
 - Testers can't see tickets.
-- Re-Open and Delete are mod/admin only. Exceptions: the owner's DM button after a "Solved" close (below), and helpers may Delete a ticket closed as Solved (skips the 6h wait).
-- Staff "Solved" button: closes the ticket (archived as resolved) and DMs the owner the transcript plus a Re-open button; if the DM fails, a notice goes in the ticket channel. The ticket auto-deletes 6h later (`tickets.delete_at`, swept by `_delete_solved`) unless the owner re-opens it from that DM, the only way an owner can re-open. Any re-open clears the deadline.
-- One open ticket per user. A second attempt (panel or solved-DM re-open) is refused with a link to the open one.
+- Re-Open and Delete are mod/admin only, from the closed card in the channel. Owners can never re-open. Exception: helpers may Delete a ticket closed as Solved (skips the 1h wait).
+- Solved closes: the staff "Solved" button, the owner's Yes on the AI's prompt, and the owner saying it's solved (AI off) all go through `TicketsCog.solve_ticket`. Only the staff click may produce a support info suggestion.
+  - The ticket is closed (archived as resolved, same closed card) and the owner gets the solved DM: transcript link and when it gets deleted, no button. If the DM fails, a notice goes in the ticket channel.
+  - It auto-deletes 1h later (`tickets.delete_at`, swept every minute by `_delete_solved`) unless staff re-open it in that hour. Any re-open clears the deadline.
+  - Solved DMs sent before this still have a Re-open button; it only answers, in the owner's language, that staff re-open tickets and they can open a new one.
+- Every deletion (Delete button, the solved sweep, owner left) goes through `delete_ticket`: a "🗑️ This ticket will be deleted <t:…:R>" notice in the channel, `delete_at` = now + 10s stored first (a restart mid-wait is finished by the sweep), 10s wait, then delete. A staff re-open during those 10s wins.
+- One open ticket per user. A second attempt from the panel is refused with a link to the open one.
 - Every close (button, `/ticket close`, owner left) makes a transcript; there is no "close without transcript". They're hosted at `tickets.dragonminez.com/t/<token>` by the panel's aiohttp app.
   - One address per ticket: re-open and re-close overwrite the same file and DB row (same token). A page staff made permanent stays permanent.
   - The closed card's transcript button shows "Saving transcript…", then links to the page (or "Retry transcript" if archiving failed). No separate "transcript saved" message in the channel.

@@ -452,44 +452,6 @@ def _parse_resolve_custom_id(custom_id: str) -> tuple[bool, int, str] | None:
         return None
 
 
-def _build_close_card(
-    *,
-    channel_name: str,
-    requester_id: int | None,
-    closed_by_id: int | None,
-    resolved: bool,
-    summary: TicketSummary | None,
-    confidence: float | None,
-    message_count: int,
-    open_for: timedelta,
-    added_to_knowledge: bool,
-    closed_at: datetime,
-    note: str,
-    page_link: str | None = None,
-    page_expires_at: datetime | None = None,
-) -> discord.ui.DesignerView:
-    who = lambda user_id: f"<@{user_id}>" if user_id else "Unknown"
-    lines = [
-        f"### 🎫 {summary.title if summary else channel_name}"[:260],
-        note,
-        f"**Requester** {who(requester_id)}　**Closed by** {who(closed_by_id)}　"
-        f"**Outcome** {'✅ Solved' if resolved else '🟠 Unresolved'}",
-        f"**Messages** {message_count}　**AI confidence** {f'{confidence:.0%}' if confidence is not None else 'n/a'}　"
-        f"**Open for** {str(open_for).split('.')[0]}",
-    ]
-    if page_link:
-        keep = f"expires <t:{int(page_expires_at.timestamp())}:R>" if page_expires_at else "kept permanently"
-        lines.append(f"**Web transcript** [Open the HTML transcript]({page_link}) · {keep}")
-    if summary is not None:
-        lines.append(f"**Problem** {(summary.problem or '-')[:900]}")
-        lines.append(f"**Resolution** {(summary.resolution or '-')[:900]}")
-        if summary.tags:
-            lines.append("**Tags** " + " ".join(f"`{tag}`" for tag in summary.tags))
-    knowledge = "📚 Added to AI knowledge" if added_to_knowledge else "Not added to AI knowledge"
-    lines.append(f"-# #{channel_name} · {knowledge} · <t:{int(closed_at.timestamp())}:f>")
-    return _card("\n".join(lines), discord.Color.green() if resolved else discord.Color.orange())
-
-
 class AITicketsCog(ReloadableCog):
     """AI triage / support for ticket channels and role-authorized support requests."""
 
@@ -1272,17 +1234,17 @@ class AITicketsCog(ReloadableCog):
         # The ticket's current language, in case it changed after the prompt was posted.
         text = _resolve_text(await self._ticket_language(channel.id) or language)
 
-        async def answer() -> None:
+        async def answer() -> bool | None:
             if solved:
+                tickets = self.bot.get_cog("TicketsCog")
+                if tickets is None:
+                    log.warning("Tickets cog isn't loaded; can't close the solved ticket", extra={"channel_id": channel.id})
+                    return False
+                # Popped first, so the close (ticket_closed) doesn't delete the prompt that now says thanks.
+                self._resolve_prompts.pop(channel.id, None)
                 await interaction.edit_original_response(view=_card(text["thanks"], discord.Color.green()))
-                await self._close_ticket(
-                    channel,
-                    closed_by_id=user.id,
-                    requester_id=requester_id,
-                    resolved=True,
-                    delete_channel=True,
-                )
-                return
+                await tickets.solve_ticket(channel, closer_id=user.id)
+                return None
             await self._mark_ticket_escalated(channel.id)
             await self._ping_escalation_roles(channel, requester_id)
             self._resolve_prompts.pop(channel.id, None)
@@ -1291,7 +1253,8 @@ class AITicketsCog(ReloadableCog):
         await while_busy(interaction, self._working, answer, failed=RESOLVE_FAILED_TEXT)
 
     async def _maybe_close_solved(self, channel: discord.TextChannel, message: discord.Message) -> None:
-        """The AI is off here; the owner saying it's solved closes the ticket like the "Yes" button."""
+        """The AI is off here; the owner saying it's solved closes the ticket like the "Yes" button
+        (TicketsCog.solve_ticket)."""
         settings = self.bot.settings
         if channel.id in self._closing_channels or not message.content.strip() or ai_budget.is_paused(settings):
             return
@@ -1316,19 +1279,16 @@ class AITicketsCog(ReloadableCog):
             return
         if not solved or channel.id in self._closing_channels:
             return
+        tickets = self.bot.get_cog("TicketsCog")
+        if tickets is None:
+            return log.warning("Tickets cog isn't loaded; can't close the solved ticket", extra={"channel_id": channel.id})
         log.info("Ticket owner said it's solved, closing", extra={"channel_id": channel.id})
         try:
             language = await self._ticket_language(channel.id) or "en"
             await channel.send(view=_card(SOLVED_CLOSE_TEXT.get(language, SOLVED_CLOSE_TEXT["en"]), discord.Color.green()))
         except discord.HTTPException:
             log.info("Could not post solved note in ticket", extra={"channel_id": channel.id})
-        await self._close_ticket(
-            channel,
-            closed_by_id=message.author.id,
-            requester_id=message.author.id,
-            resolved=True,
-            delete_channel=True,
-        )
+        await tickets.solve_ticket(channel, closer_id=message.author.id)
 
     async def _collect_transcript(
         self,
@@ -1418,12 +1378,10 @@ class AITicketsCog(ReloadableCog):
         closed_by_id: int | None,
         requester_id: int | None,
         resolved: bool | None,
-        delete_channel: bool,
-        announce: bool = True,
         staff_solved: bool = False,
         ticket_id: int | None = None,
     ) -> bool:
-        """Transcript → hosted HTML page → summarize → learn (knowledge_docs) → embed → record → optionally delete.
+        """TicketsCog's archive step: transcript → hosted HTML page → summarize → learn (knowledge_docs) → record.
         resolved=None lets the summary decide. staff_solved: closed with the staff Solved button; then a support info
         suggestion from the summary goes to staff review.
         Returns whether the transcript was saved for the panel."""
@@ -1485,20 +1443,6 @@ class AITicketsCog(ReloadableCog):
                 )
 
             confidence = self._last_confidence.pop(channel.id, None)
-            card_args = dict(
-                channel_name=channel.name,
-                requester_id=requester_id,
-                closed_by_id=closed_by_id,
-                resolved=resolved,
-                summary=summary,
-                confidence=confidence,
-                message_count=message_count,
-                open_for=closed_at - channel.created_at,
-                added_to_knowledge=knowledge_filename is not None,
-                closed_at=closed_at,
-                page_link=page_url(settings, page.token) if page else None,
-                page_expires_at=page.expires_at if page else None,
-            )
             try:
                 await record_ticket_transcript(
                     channel_id=channel.id,
@@ -1522,28 +1466,6 @@ class AITicketsCog(ReloadableCog):
 
             self._archived_channels.add(channel.id)
             self._resolve_prompts.pop(channel.id, None)
-            delay = max(int(settings.ai_ticket_close_delay_seconds or 0), 0)
-            note = (
-                f"🔒 This ticket is closed and will be deleted in {delay}s."
-                if delete_channel
-                else "📋 Ticket summary and transcript saved."
-            )
-            try:
-                # announce=False: TicketsCog's closed card shows the transcript link itself.
-                if announce:
-                    await channel.send(view=_build_close_card(**card_args, note=note))
-            except discord.HTTPException:
-                # Expected when the channel was already deleted.
-                log.info("Could not post close embed in ticket", extra={"channel_id": channel.id})
-            if delete_channel:
-                await asyncio.sleep(delay)
-                await channel.delete(reason="Requester confirmed the AI solved the ticket")
-        except discord.HTTPException:
-            log.exception("Failed to close ticket channel", extra={"channel_id": channel.id})
-            try:
-                await channel.send("I couldn't delete this channel (missing Manage Channels?). A staff member can delete it manually.")
-            except discord.HTTPException:
-                pass
         finally:
             self._closing_channels.discard(channel.id)
         return archived

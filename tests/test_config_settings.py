@@ -375,7 +375,6 @@ class ConfigSettingsTests(unittest.TestCase):
             {
                 "AI_TICKET_RESOLVE_MIN_CONFIDENCE": "0.7",
                 "AI_TICKET_RESOLVE_PROMPT_EXPONENT": "2.5",
-                "AI_TICKET_CLOSE_DELAY_SECONDS": "0",
                 "AI_TICKET_SUMMARY_MODEL": "claude-test",
             },
             clear=False,
@@ -384,7 +383,8 @@ class ConfigSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.ai_ticket_resolve_min_confidence, 0.7)
         self.assertEqual(settings.ai_ticket_resolve_prompt_exponent, 2.5)
-        self.assertEqual(settings.ai_ticket_close_delay_seconds, 0)
+        # The delete notice is a fixed 10s (tickets.DELETE_NOTICE_SECONDS), no longer a setting.
+        self.assertFalse(hasattr(settings, "ai_ticket_close_delay_seconds"))
         self.assertEqual(settings.ai_ticket_summary_model, "claude-test")
 
 if __name__ == "__main__":

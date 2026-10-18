@@ -44,7 +44,7 @@ class Ticket:
     closed_at: datetime | None
     # Finished stretches only; the current one is closed_at while the status is closed (see closed_spans).
     closed_periods: tuple[tuple[datetime, datetime], ...] = ()
-    # Closed as solved: the sweep deletes the channel then, unless the owner re-opens it first.
+    # Closed as solved, or a deletion under way: the sweep deletes the channel then, unless staff re-open it first.
     delete_at: datetime | None = None
 
 
@@ -225,7 +225,8 @@ async def list_active_tickets(*, pool: Any | None = None) -> list[Ticket]:
 
 
 async def list_due_solved(*, pool: Any | None = None) -> list[Ticket]:
-    """Solved tickets whose re-open window is over."""
+    """Closed tickets past their delete_at: solved ones whose re-open window is over, and deletions a restart cut
+    short."""
     resolved_pool = pool or await get_pool()
     rows = await resolved_pool.fetch(
         f"SELECT {_COLUMNS} FROM tickets WHERE status = 'closed' AND delete_at <= now() AND channel_id IS NOT NULL"
@@ -252,6 +253,18 @@ async def mark_closed(
         channel_id,
         closed_by,
         reason,
+        delete_at,
+    )
+    return _ticket(row)
+
+
+async def schedule_delete(channel_id: int, delete_at: datetime, *, pool: Any | None = None) -> Ticket | None:
+    """A closed ticket is about to be deleted: the deadline is stored first, so the sweep finishes it after a restart.
+    None when it isn't closed."""
+    resolved_pool = pool or await get_pool()
+    row = await resolved_pool.fetchrow(
+        f"UPDATE tickets SET delete_at = $2 WHERE channel_id = $1 AND status = 'closed' RETURNING {_COLUMNS}",
+        channel_id,
         delete_at,
     )
     return _ticket(row)

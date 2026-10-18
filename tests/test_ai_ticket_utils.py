@@ -440,7 +440,6 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         settings = types.SimpleNamespace(
             ai_ticket_summary_model="gpt-test",
             ai_support_timeout_seconds=5,
-            ai_ticket_close_delay_seconds=0,
             ai_ticket_escalation_role_ids=(111, 222),
             ai_ticket_category_id=77,
             ticket_transcript_public_url="https://tickets.example",
@@ -471,7 +470,7 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
             patch("bulmaai.cogs.ai_tickets.delete_image_analyses", AsyncMock()),
         )
 
-    async def test_solved_button_close_learns_records_and_deletes_channel(self) -> None:
+    async def test_solved_close_learns_and_records_without_posting_or_deleting(self) -> None:
         cog = self._cog()
         cog._last_confidence[10] = 0.9
         channel = self._channel(10)
@@ -484,7 +483,7 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, summary)
 
         with collect, summarize, upload_p as upload, record_p as record, delete_p:
-            await cog._close_ticket(channel, closed_by_id=42, requester_id=42, resolved=True, delete_channel=True)
+            await cog._close_ticket(channel, closed_by_id=42, requester_id=42, resolved=True)
 
         knowledge = upload.await_args.args[0]
         self.assertIn("Update GeckoLib", knowledge)
@@ -495,8 +494,9 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upload.await_args.kwargs["title"], "Crash on launch")
         self.assertEqual(record.await_args.kwargs["knowledge_filename"], filename)
         self.assertEqual(record.await_args.kwargs["ai_confidence"], 0.9)
-        self.assertIn("Crash on launch", channel.send.await_args.kwargs["view"].children[0].items[0].content)
-        channel.delete.assert_awaited_once()
+        # TicketsCog's closed card shows the outcome; the delete is its sweep's job.
+        channel.send.assert_not_called()
+        channel.delete.assert_not_called()
         self.assertNotIn(10, cog._closing_channels)
 
     async def test_reclose_overwrites_the_first_knowledge_doc_instead_of_adding_a_twin(self) -> None:
@@ -509,7 +509,7 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
 
         with collect, summarize, upload_p as upload, record_p as record, delete_p:
             await cog._close_ticket(
-                self._channel(16), closed_by_id=5, requester_id=42, resolved=True, delete_channel=False, announce=False
+                self._channel(16), closed_by_id=5, requester_id=42, resolved=True
             )
 
         self.assertEqual(upload.await_args.kwargs["filename"], "ticket-20260901-16.md")
@@ -525,23 +525,12 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
 
         with collect, summarize, upload_p, record_p as record, delete_p:
-            await cog._close_ticket(
-                channel, closed_by_id=5, requester_id=42, resolved=False, delete_channel=False, announce=False
-            )
+            await cog._close_ticket(channel, closed_by_id=5, requester_id=42, resolved=False)
 
         self.assertEqual(record.await_args.kwargs["html_token"], "p" * 32)
         self.assertEqual(record.await_args.kwargs["html_expires_at"], expires)
-        # announce=False posts nothing: TicketsCog's closed card carries the transcript link
+        # Nothing is posted: TicketsCog's closed card carries the transcript link
         channel.send.assert_not_called()
-
-        collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
-        cog._archived_channels.clear()
-        with collect, summarize, upload_p, record_p, delete_p:
-            await cog._close_ticket(channel, closed_by_id=5, requester_id=42, resolved=False, delete_channel=False)
-        text = channel.send.await_args.kwargs["view"].children[0].items[0].content
-        line = next(line for line in text.splitlines() if line.startswith("**Web transcript**"))
-        self.assertIn(f"https://tickets.example/t/{'p' * 32}", line)
-        self.assertIn("<t:", line)
 
     async def test_a_failed_page_build_still_archives_the_text(self) -> None:
         cog = self._cog()
@@ -549,7 +538,7 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         lines = [TranscriptLine(datetime.now(timezone.utc), "requester", "Goku", "crash")]
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, None)
         with collect, summarize, upload_p, record_p as record, delete_p:
-            await cog._close_ticket(self._channel(15), closed_by_id=5, requester_id=42, resolved=False, delete_channel=False)
+            await cog._close_ticket(self._channel(15), closed_by_id=5, requester_id=42, resolved=False)
         self.assertIsNone(record.await_args.kwargs["html_token"])
 
     def test_reopened_tickets_can_be_archived_again(self) -> None:
@@ -581,7 +570,7 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, summary)
 
         with collect, summarize, upload_p as upload, record_p, delete_p:
-            await cog._close_ticket(self._channel(11), closed_by_id=42, requester_id=42, resolved=True, delete_channel=True)
+            await cog._close_ticket(self._channel(11), closed_by_id=42, requester_id=42, resolved=True)
 
         upload.assert_not_awaited()
 
@@ -594,8 +583,8 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         collect, summarize, upload_p, record_p, delete_p = self._patches(cog, lines, 42, summary)
 
         with collect, summarize, upload_p as upload, record_p as record, delete_p:
-            await cog._close_ticket(channel, closed_by_id=5, requester_id=None, resolved=None, delete_channel=False)
-            await cog._close_ticket(channel, closed_by_id=5, requester_id=None, resolved=None, delete_channel=False)
+            await cog._close_ticket(channel, closed_by_id=5, requester_id=None, resolved=None)
+            await cog._close_ticket(channel, closed_by_id=5, requester_id=None, resolved=None)
 
         self.assertEqual(record.await_count, 1)
         self.assertTrue(record.await_args.kwargs["resolved"])
@@ -603,15 +592,100 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         upload.assert_not_awaited()
         channel.delete.assert_not_awaited()
 
-    async def test_close_ticket_still_deletes_when_summary_fails(self) -> None:
+    async def test_close_ticket_still_records_when_summary_fails(self) -> None:
         cog = self._cog()
         channel = self._channel(11)
         collect, _, upload_p, record_p, delete_p = self._patches(cog, [], None, None)
-        with collect, patch("bulmaai.cogs.ai_tickets.summarize_ticket", AsyncMock(side_effect=RuntimeError("boom"))), upload_p as upload, record_p, delete_p:
-            await cog._close_ticket(channel, closed_by_id=5, requester_id=None, resolved=False, delete_channel=True)
+        with collect, patch("bulmaai.cogs.ai_tickets.summarize_ticket", AsyncMock(side_effect=RuntimeError("boom"))), upload_p as upload, record_p as record, delete_p:
+            self.assertTrue(await cog._close_ticket(channel, closed_by_id=5, requester_id=None, resolved=False))
 
         upload.assert_not_awaited()
-        channel.delete.assert_awaited_once()
+        record.assert_awaited_once()
+        channel.delete.assert_not_called()
+
+    def _open_ticket_channel(self, channel_id: int) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = channel_id
+        channel.category = types.SimpleNamespace(id=77)
+        channel.send = AsyncMock()
+        channel.delete = AsyncMock()
+        return channel
+
+    async def test_solved_button_closes_through_the_tickets_cog_and_never_deletes(self) -> None:
+        cog = self._cog()
+        tickets = types.SimpleNamespace(solve_ticket=AsyncMock(return_value=object()))
+        cog.bot.get_cog = lambda name: tickets if name == "TicketsCog" else None
+        channel = self._open_ticket_channel(13)
+        prompt = ai_tickets._build_resolve_view(42, "es")
+        cog._resolve_prompts[13] = types.SimpleNamespace(delete=AsyncMock())
+        interaction = types.SimpleNamespace(
+            channel=channel,
+            user=types.SimpleNamespace(id=42),
+            data={"custom_id": f"{ai_tickets.RESOLVE_BUTTON_PREFIX}yes:42:es"},
+            message=sent_message(prompt, channel_id=13),
+            response=types.SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()),
+            edit_original_response=AsyncMock(),
+            followup=types.SimpleNamespace(send=AsyncMock()),
+        )
+
+        with (
+            patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=None)),
+            patch.object(cog, "_close_ticket", AsyncMock()) as archive,
+        ):
+            await cog._handle_resolve_answer(interaction, solved=True, requester_id=42, language="es")
+
+        tickets.solve_ticket.assert_awaited_once_with(channel, closer_id=42)
+        archive.assert_not_called()  # only through TicketsCog's close (which archives)
+        final = interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertIn("Me alegra haber ayudado", str(final.to_components()))
+        # Popped before the close, so ticket_closed doesn't delete the prompt that now says thanks.
+        self.assertNotIn(13, cog._resolve_prompts)
+        channel.delete.assert_not_called()
+        interaction.followup.send.assert_not_called()
+        self.assertEqual(cog._working, set())
+
+    async def test_solved_button_without_the_tickets_cog_fails_visibly(self) -> None:
+        cog = self._cog()
+        channel = self._open_ticket_channel(13)
+        interaction = types.SimpleNamespace(
+            channel=channel,
+            user=types.SimpleNamespace(id=42),
+            data={"custom_id": f"{ai_tickets.RESOLVE_BUTTON_PREFIX}yes:42:en"},
+            message=sent_message(ai_tickets._build_resolve_view(42, "en"), channel_id=13),
+            response=types.SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()),
+            edit_original_response=AsyncMock(),
+            followup=types.SimpleNamespace(send=AsyncMock()),
+        )
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=None)):
+            await cog._handle_resolve_answer(interaction, solved=True, requester_id=42, language="en")
+        interaction.followup.send.assert_awaited_once_with(ai_tickets.RESOLVE_FAILED_TEXT, ephemeral=True)
+        channel.delete.assert_not_called()
+
+    async def test_owner_saying_it_is_solved_closes_through_the_tickets_cog(self) -> None:
+        cog = self._cog()
+        tickets = types.SimpleNamespace(solve_ticket=AsyncMock(return_value=object()))
+        cog.bot.get_cog = lambda name: tickets if name == "TicketsCog" else None
+        channel = self._open_ticket_channel(14)
+
+        async def history(**_kwargs):
+            if False:
+                yield
+
+        channel.history = history
+        message = types.SimpleNamespace(content="works now, thanks!", author=types.SimpleNamespace(id=42))
+        with (
+            patch.object(cog, "_is_ticket_owner", AsyncMock(return_value=True)),
+            patch("bulmaai.cogs.ai_tickets.owner_says_solved", AsyncMock(return_value=True)),
+            patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
+            patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=None)),
+            patch.object(cog, "_close_ticket", AsyncMock()) as archive,
+        ):
+            await cog._maybe_close_solved(channel, message)
+
+        self.assertIn("Glad it's sorted", str(channel.send.await_args.kwargs["view"].to_components()))
+        tickets.solve_ticket.assert_awaited_once_with(channel, closer_id=42)
+        archive.assert_not_called()
+        channel.delete.assert_not_called()
 
     async def test_not_solved_button_escalates_and_pings_staff_roles(self) -> None:
         cog = self._cog()

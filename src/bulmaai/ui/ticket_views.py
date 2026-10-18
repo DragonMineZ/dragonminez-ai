@@ -19,7 +19,7 @@ REOPEN_BUTTON_ID = "ticket_btn_reopen"
 DELETE_BUTTON_ID = "ticket_btn_delete"
 AI_BUTTON_ID = "ticket_btn_ai"
 SOLVED_BUTTON_ID = "ticket_btn_solved"
-# + ticket id; on the owner's "solved" DM, routed by prefix (there's no channel to look the ticket up by).
+# + ticket id; the Re-open button older "solved" DMs still carry. It now only answers that staff re-open tickets.
 SOLVED_REOPEN_PREFIX = "ticket_solved_reopen:"
 ACTIONS_ID = 800  # the button row on the welcome / closed cards
 LANG_SELECT_ID = "ticket_lang_select"
@@ -41,12 +41,12 @@ TEXT: dict[str, dict[str, str]] = {
         "transcript": "Here is the transcript of your ticket.",
         "expires": "It expires {when}.",
         "kept": "It is kept permanently.",
-        "solved": "Ticket #{number} was marked as solved by staff and closed.",
+        "solved": "Ticket #{number} was marked as solved and closed.",
         "solved_until": "Your answer is in the transcript; it's available until {until}.",
         "solved_kept": "Your answer is in the transcript; it's kept permanently.",
-        "solved_reopen": "Still not solved? Re-open it before {deadline}; after that the ticket is deleted.",
-        "reopen": "Re-open ticket",
-        "reopened": "Your ticket was re-opened. Staff will answer you there.",
+        "solved_deletes": "The ticket will be deleted {deadline}.",
+        "reopen_staff": "Only staff can re-open a ticket. If you still need help, please open a new ticket.",
+        "deleting": "This ticket will be deleted {when}.",
         "reminder_title": "your ticket is waiting for your reply",
         "reminder": "Your ticket got an answer and is waiting for yours. Reply there so we can keep helping you.",
         "pick_language": "Which language do you want support in?",
@@ -62,12 +62,12 @@ TEXT: dict[str, dict[str, str]] = {
         "transcript": "Aquí tienes la transcripción de tu ticket.",
         "expires": "Expira {when}.",
         "kept": "Se guarda para siempre.",
-        "solved": "El staff marcó el ticket #{number} como resuelto y lo cerró.",
+        "solved": "El ticket #{number} se marcó como resuelto y se cerró.",
         "solved_until": "Tu respuesta está en la transcripción; disponible hasta {until}.",
         "solved_kept": "Tu respuesta está en la transcripción; se guarda para siempre.",
-        "solved_reopen": "¿Sigue sin resolverse? Reábrelo antes de {deadline}; después el ticket se eliminará.",
-        "reopen": "Reabrir ticket",
-        "reopened": "Tu ticket fue reabierto. El staff te responderá allí.",
+        "solved_deletes": "El ticket se eliminará {deadline}.",
+        "reopen_staff": "Solo el staff puede reabrir un ticket. Si aún necesitas ayuda, abre un ticket nuevo.",
+        "deleting": "Este ticket se eliminará {when}.",
         "reminder_title": "tu ticket espera tu respuesta",
         "reminder": "Tu ticket recibió una respuesta y espera la tuya. Responde allí para que podamos seguir ayudándote.",
         "pick_language": "¿En qué idioma quieres recibir soporte?",
@@ -83,12 +83,12 @@ TEXT: dict[str, dict[str, str]] = {
         "transcript": "Aqui está a transcrição do seu ticket.",
         "expires": "Ela expira {when}.",
         "kept": "Ela é guardada para sempre.",
-        "solved": "A staff marcou o ticket #{number} como resolvido e o fechou.",
+        "solved": "O ticket #{number} foi marcado como resolvido e fechado.",
         "solved_until": "Sua resposta está na transcrição; disponível até {until}.",
         "solved_kept": "Sua resposta está na transcrição; ela é guardada para sempre.",
-        "solved_reopen": "Ainda não foi resolvido? Reabra antes de {deadline}; depois disso o ticket será excluído.",
-        "reopen": "Reabrir ticket",
-        "reopened": "Seu ticket foi reaberto. A staff vai te responder lá.",
+        "solved_deletes": "O ticket será excluído {deadline}.",
+        "reopen_staff": "Só a staff pode reabrir um ticket. Se ainda precisar de ajuda, abra um novo ticket.",
+        "deleting": "Este ticket será excluído {when}.",
         "reminder_title": "seu ticket está esperando sua resposta",
         "reminder": "Seu ticket recebeu uma resposta e está esperando a sua. Responda lá para continuarmos te ajudando.",
         "pick_language": "Em qual idioma você quer receber suporte?",
@@ -229,15 +229,8 @@ MSG = {
     "already_closed": "This ticket is already closed.",
     "not_closed": "This ticket isn't closed.",
     "owner_left": "The ticket owner left the server, so it can't be re-opened.",
-    "deleting": "🗑️ Deleting this ticket…",
     "delete_failed": "❌ I couldn't delete this channel. Check my Manage Channels permission.",
     "transcript_failed": "❌ I couldn't generate the transcript.",
-    "cannot_reopen": tri("This ticket can no longer be re-opened.", "Este ticket ya no se puede reabrir."),
-    "not_your_ticket": tri("This isn't your ticket.", "Este ticket no es tuyo."),
-    "reopen_gone": tri(
-        "This ticket can't be re-opened: its channel is gone or you left the server.",
-        "Este ticket no se puede reabrir: su canal ya no existe o saliste del servidor.",
-    ),
     "protected_target": "You can't remove the ticket owner or staff.",
     "done": "Done.",
 }
@@ -275,11 +268,13 @@ def _link_row(label: str, emoji: str, url: str) -> discord.ui.ActionRow:
     return discord.ui.ActionRow(discord.ui.Button(label=label, emoji=emoji, url=url))
 
 
-def _dm_card(title: str, body: str, guild: discord.Guild, row: discord.ui.ActionRow) -> discord.ui.DesignerView:
+def _dm_card(
+    title: str, body: str, guild: discord.Guild, row: discord.ui.ActionRow | None
+) -> discord.ui.DesignerView:
     head = discord.ui.TextDisplay(f"### {title}\n{body}")
     if guild.icon:
         head = discord.ui.Section(head, accessory=discord.ui.Thumbnail(guild.icon.url))
-    return _card(head, row, color=BLURPLE)
+    return _card(head, *([row] if row else []), color=BLURPLE)
 
 
 def dm_created(
@@ -321,38 +316,24 @@ def dm_solved(
     url: str | None,
     expires_at: datetime | None,
     delete_at: datetime,
-    ticket_id: int,
     language: str,
 ) -> discord.ui.DesignerView:
-    """Replaces dm_transcript when staff close a ticket as solved; its Re-open button is the owner's only way back.
-    url None: the transcript failed, so only the re-open part."""
+    """Replaces dm_transcript when a ticket is closed as solved (TicketsCog.solve_ticket). Only staff can re-open it,
+    in the channel. url None: the transcript failed, so no link."""
     body = [t(language, "solved", number=f"{number:04d}")]
     if url and expires_at:
         until = f"<t:{int(expires_at.timestamp())}:f> (<t:{int(expires_at.timestamp())}:R>)"
         body.append(t(language, "solved_until", until=until))
     elif url:
         body.append(t(language, "solved_kept"))
-    body.append(t(language, "solved_reopen", deadline=f"<t:{int(delete_at.timestamp())}:R>"))
-    buttons = [discord.ui.Button(label=t(language, "view_transcript"), emoji="📄", url=url)] if url else []
-    buttons.append(
-        discord.ui.Button(
-            label=t(language, "reopen"),
-            emoji="🔓",
-            style=discord.ButtonStyle.success,
-            custom_id=f"{SOLVED_REOPEN_PREFIX}{ticket_id}",
-        )
-    )
-    return _dm_card(f"✅ Ticket #{number:04d}", " ".join(body), guild, discord.ui.ActionRow(*buttons))
+    body.append(t(language, "solved_deletes", deadline=f"<t:{int(delete_at.timestamp())}:R>"))
+    row = _link_row(t(language, "view_transcript"), "📄", url) if url else None
+    return _dm_card(f"✅ Ticket #{number:04d}", " ".join(body), guild, row)
 
 
-def dm_reopened(number: int, channel: discord.TextChannel, language: str) -> discord.ui.DesignerView:
-    """What the solved DM turns into once its Re-open button worked."""
-    return _dm_card(
-        f"🔓 Ticket #{number:04d}",
-        t(language, "reopened"),
-        channel.guild,
-        _link_row(t(language, "open_ticket"), "🎫", channel.jump_url),
-    )
+def deleting_notice(delete_at: datetime, language: str) -> discord.ui.DesignerView:
+    """Posted in the channel right before TicketsCog.delete_ticket deletes it."""
+    return notice(f"🗑️ {t(language, 'deleting', when=f'<t:{int(delete_at.timestamp())}:R>')}")
 
 
 def dm_reminder(number: int, channel: discord.TextChannel, language: str) -> discord.ui.DesignerView:

@@ -219,8 +219,7 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         cases = (
             (views.dm_created(42, views.CATEGORIES["bug"], channel, "es"), "Tu ticket ha sido creado", "Abrir ticket"),
             (views.dm_transcript(42, channel.guild, "https://t/x", None, "pt"), "Aqui está a transcrição", "Ver transcrição"),
-            (views.dm_solved(42, channel.guild, None, None, later, 42, "es"), "como resuelto", "Reabrir ticket"),
-            (views.dm_reopened(42, channel, "pt"), "Seu ticket foi reaberto", "Abrir ticket"),
+            (views.dm_solved(42, channel.guild, "https://t/x", None, later, "es"), "se eliminará", "Ver transcripción"),
             (views.dm_reminder(42, channel, "es"), "⏰ Ticket #0042: tu ticket espera tu respuesta", "Abrir ticket"),
         )
         for view, text, label in cases:
@@ -394,7 +393,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((saving.label, saving.disabled), ("Saving transcript…", True))
         # every close archives, and the archive updates the card it just posted
         archive.assert_awaited_once_with(
-            channel, ticket, closed_by_id=STAFF_ID, card=channel.send.return_value, resolved=None, dm=True
+            channel, ticket, closed_by_id=STAFF_ID, card=channel.send.return_value, resolved=None, dm=True, staff_solved=False
         )
 
     async def test_close_always_archives_swaps_in_the_link_and_dms_the_owner(self):
@@ -521,24 +520,107 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(cog, "export_html", AsyncMock(return_value=None)):
             self.assertIsNone(await cog.build_page(channel))
 
-    async def test_delete_just_deletes(self):
+    def delete_patches(self, current, scheduled=None):
+        """delete_ticket's DB calls; current: the ticket as re-read after the notice."""
+        scheduled = scheduled or make_ticket(status="closed", language="es")
+        return (
+            patch.object(cog_module, "schedule_delete", AsyncMock(return_value=scheduled)),
+            patch.object(cog_module.asyncio, "sleep", AsyncMock()),
+            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=current)),
+            patch.object(cog_module, "mark_deleted", AsyncMock()),
+        )
+
+    async def test_delete_posts_a_notice_persists_the_deadline_waits_then_deletes(self):
         cog, channel = make_cog(), make_channel()
+        due = make_ticket(status="closed", delete_at=datetime.now(timezone.utc))
+        schedule_p, sleep_p, current_p, deleted_p = self.delete_patches(due)
+        events = []
+        channel.send = AsyncMock(side_effect=lambda **_: events.append("notice"))
+        on_notice = AsyncMock(side_effect=lambda: events.append("on_notice"))
+        before = datetime.now(timezone.utc)
         with (
             patch.object(cog, "archive", AsyncMock()) as archive,
+            schedule_p as schedule,
+            sleep_p as sleep,
+            current_p,
+            deleted_p as deleted,
+        ):
+            sleep.side_effect = lambda _s: events.append("wait")
+            channel.delete.side_effect = lambda **_: events.append("delete")
+            self.assertTrue(await cog.delete_ticket(channel, make_ticket(status="closed"), on_notice=on_notice))
+        self.assertEqual(events, ["notice", "on_notice", "wait", "delete"])
+        channel_id, delete_at = schedule.await_args.args
+        self.assertEqual(channel_id, 900)
+        self.assertAlmostEqual((delete_at - before).total_seconds(), cog_module.DELETE_NOTICE_SECONDS, delta=5)
+        sleep.assert_awaited_once_with(cog_module.DELETE_NOTICE_SECONDS)
+        # The notice is in the ticket's support language, with the deadline as a Discord timestamp.
+        self.assertEqual(
+            texts(channel.send.call_args.kwargs["view"]), f"🗑️ Este ticket se eliminará <t:{int(delete_at.timestamp())}:R>."
+        )
+        self.assertEqual(
+            channel.send.call_args.kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict()
+        )
+        archive.assert_not_called()
+        deleted.assert_awaited_once_with(900)
+        self.assertEqual(cog._deleting, set())
+
+    async def test_a_reopen_during_the_notice_wins(self):
+        cog, channel = make_cog(), make_channel()
+        for current in (make_ticket(status="open"), make_ticket(status="closed", delete_at=None), None):
+            schedule_p, sleep_p, current_p, deleted_p = self.delete_patches(current)
+            with schedule_p, sleep_p, current_p, deleted_p as deleted:
+                self.assertTrue(await cog.delete_ticket(channel, make_ticket(status="closed")))
+            deleted.assert_not_called()
+        channel.delete.assert_not_called()
+        self.assertEqual(cog._deleting, set())
+
+    async def test_a_ticket_no_longer_closed_gets_no_notice(self):
+        cog, channel = make_cog(), make_channel()
+        with (
+            patch.object(cog_module, "schedule_delete", AsyncMock(return_value=None)),
+            patch.object(cog_module.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            self.assertTrue(await cog.delete_ticket(channel, make_ticket(status="closed")))
+        channel.send.assert_not_called()
+        sleep.assert_not_called()
+        channel.delete.assert_not_called()
+
+    async def test_deleting_a_gone_channel_is_quiet_but_a_refusal_is_a_failure(self):
+        cog, channel = make_cog(), make_channel()
+        response = SimpleNamespace(status=404, reason="gone")
+        channel.delete = AsyncMock(side_effect=discord.NotFound(response, "Unknown Channel"))
+        due = make_ticket(status="closed", delete_at=datetime.now(timezone.utc))
+        with self.assertNoLogs(cog_module.log, "ERROR"):
+            schedule_p, sleep_p, current_p, deleted_p = self.delete_patches(due)
+            with schedule_p, sleep_p, current_p, deleted_p:
+                self.assertTrue(await cog.delete_ticket(channel, make_ticket(status="closed")))
+        channel.delete = AsyncMock(side_effect=discord.Forbidden(SimpleNamespace(status=403, reason="no"), "Missing Permissions"))
+        with self.assertLogs(cog_module.log, "ERROR"):
+            schedule_p, sleep_p, current_p, deleted_p = self.delete_patches(due)
+            with schedule_p, sleep_p, current_p, deleted_p:
+                self.assertFalse(await cog.delete_ticket(channel, make_ticket(status="closed")))
+        self.assertEqual(cog._deleting, set())
+
+    async def test_second_delete_is_ignored(self):
+        cog, channel = make_cog(), make_channel()
+        cog._deleting.add(900)
+        with (
+            patch.object(cog_module, "schedule_delete", AsyncMock()) as schedule,
             patch.object(cog_module, "mark_deleted", AsyncMock()) as deleted,
         ):
             self.assertTrue(await cog.delete_ticket(channel, make_ticket()))
-        archive.assert_not_called()
-        deleted.assert_awaited_once_with(900)
-        channel.delete.assert_awaited_once()
-        self.assertEqual(cog._deleting, set())
-
-    async def test_second_delete_click_is_ignored(self):
-        cog, channel = make_cog(), make_channel()
-        cog._deleting.add(900)
-        with patch.object(cog_module, "mark_deleted", AsyncMock()) as deleted:
-            self.assertFalse(await cog.delete_ticket(channel, make_ticket()))
+        schedule.assert_not_called()
         deleted.assert_not_called()
+        channel.send.assert_not_called()
+
+    async def test_schedule_delete_sql_only_touches_closed_tickets(self):
+        pool = SimpleNamespace(fetchrow=AsyncMock(return_value=None))
+        when = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        self.assertIsNone(await db.schedule_delete(900, when, pool=pool))
+        query, *params = pool.fetchrow.await_args.args
+        self.assertIn("SET delete_at = $2", query)
+        self.assertIn("status = 'closed'", query)
+        self.assertEqual(params, [900, when])
 
 
 class TranscriptPolishTests(unittest.TestCase):
@@ -769,7 +851,7 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             await cog.on_transcript(interaction)
         ai_cog.forget_archived.assert_called_once_with(900)  # the close already archived it once
         self.assertEqual(ai_cog._close_ticket.await_args.kwargs["closed_by_id"], OWNER_ID)
-        self.assertFalse(ai_cog._close_ticket.await_args.kwargs["announce"])
+        self.assertFalse(ai_cog._close_ticket.await_args.kwargs["staff_solved"])
         # first the card shows the click is being handled, with its row disabled
         self.assertEqual(
             self.busy_row(interaction),
@@ -846,7 +928,29 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             await cog.on_delete(interaction)
             delete.assert_awaited_once()
         self.assertEqual(self.busy_row(interaction)[views.DELETE_BUTTON_ID], (v2.WORKING, True))
-        interaction.followup.send.assert_awaited_once_with(views.MSG["deleting"])
+        interaction.followup.send.assert_not_called()  # delete_ticket's notice in the channel is the only message
+
+    async def test_delete_click_frees_the_card_once_the_notice_is_up(self):
+        """So a Re-Open on the same closed card within the notice still goes through."""
+        cog = make_cog()
+        interaction = self.interaction(member(STAFF_ID, MOD_ROLE), views.DELETE_BUTTON_ID)
+        interaction.channel = make_channel()
+
+        async def delete_ticket(channel, ticket, *, on_notice):
+            self.assertIn(interaction.message.id, cog._working)
+            await on_notice()
+            self.assertNotIn(interaction.message.id, cog._working)
+            restored = interaction.edit_original_response.await_args.kwargs["view"]
+            buttons = {item.custom_id: item.disabled for item in walk(restored) if getattr(item, "custom_id", None)}
+            self.assertEqual(buttons[views.REOPEN_BUTTON_ID], False)
+            return True
+
+        with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="closed"))), \
+                patch.object(cog, "delete_ticket", AsyncMock(side_effect=delete_ticket)) as delete:
+            await cog.on_delete(interaction)
+        delete.assert_awaited_once()
+        interaction.followup.send.assert_not_called()
+        self.assertEqual(cog._working, set())
 
     async def test_helper_can_delete_a_solved_ticket_early(self):
         cog = make_cog()
@@ -1055,7 +1159,8 @@ def click(user, custom_id, card, channel_id=900):
 
 
 class SolvedTests(unittest.IsolatedAsyncioTestCase):
-    """Staff "Solved": close + DM the owner a re-open button; the sweep deletes it SOLVED_DELETE_HOURS later."""
+    """Every solved close (staff Solved, or the owner confirming it to the AI): closed, the owner gets the solved DM,
+    and the sweep deletes it SOLVED_DELETE_AFTER later unless staff re-open it."""
 
     URL = "https://tickets.example/t/x"
     LATER = datetime(2099, 1, 1, tzinfo=timezone.utc)
@@ -1065,26 +1170,32 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
         return views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@1>", language="en")
 
     def solved_dm(self):
-        return views.dm_solved(42, SimpleNamespace(icon=None), self.URL, None, self.LATER, 42, "en")
+        return views.dm_solved(42, SimpleNamespace(icon=None), self.URL, None, self.LATER, "en")
 
     def test_control_row_has_the_solved_button(self):
         solved = views.control_row().children[-1]
         self.assertEqual((solved.custom_id, solved.label, solved.style), (views.SOLVED_BUTTON_ID, "Solved", discord.ButtonStyle.primary))
 
-    async def test_solved_dm_links_the_transcript_and_reopens_by_ticket_id(self):
+    def test_solved_window_is_one_hour_and_the_sweep_runs_every_minute(self):
+        self.assertEqual(cog_module.SOLVED_DELETE_AFTER, timedelta(hours=1))
+        self.assertEqual(cog_module.DELETE_NOTICE_SECONDS, 10)
+        self.assertEqual((TicketsCog._delete_solved.hours, TicketsCog._delete_solved.minutes), (0, 1))
+
+    async def test_solved_dm_links_the_transcript_and_says_when_it_is_deleted_without_a_reopen_button(self):
         guild, expires = SimpleNamespace(icon=None), datetime(2026, 11, 2, tzinfo=timezone.utc)
-        view = views.dm_solved(42, guild, self.URL, expires, self.LATER, 42, "en")
+        view = views.dm_solved(42, guild, self.URL, expires, self.LATER, "en")
         text = texts(view)
         self.assertIn(f"<t:{int(expires.timestamp())}:f> (<t:{int(expires.timestamp())}:R>)", text)
-        self.assertIn(f"Re-open it before <t:{int(self.LATER.timestamp())}:R>", text)
-        link, reopen = [item for item in walk(view) if isinstance(item, discord.ui.Button)]
-        self.assertEqual((link.url, reopen.custom_id), (self.URL, self.REOPEN_ID))
+        self.assertIn(f"The ticket will be deleted <t:{int(self.LATER.timestamp())}:R>.", text)
+        self.assertNotIn("re-open", text.lower())
+        self.assertEqual([item.url for item in walk(view) if isinstance(item, discord.ui.Button)], [self.URL])
+        self.assertEqual(custom_ids(view), [])
         self.assertIn("kept permanently", texts(self.solved_dm()))
 
-        no_page = views.dm_solved(42, guild, None, None, self.LATER, 42, "en")
+        no_page = views.dm_solved(42, guild, None, None, self.LATER, "en")
         self.assertNotIn("transcript", texts(no_page))
-        self.assertEqual(custom_ids(no_page), [self.REOPEN_ID])
-        self.assertEqual(len([item for item in walk(no_page) if isinstance(item, discord.ui.Button)]), 1)
+        self.assertIn("will be deleted", texts(no_page))
+        self.assertEqual([item for item in walk(no_page) if isinstance(item, discord.ui.Button)], [])
 
     async def test_owner_cannot_mark_solved(self):
         cog = make_cog()
@@ -1113,15 +1224,45 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog.on_solved(interaction)
         delete_at = closed.await_args.kwargs["delete_at"]
-        self.assertAlmostEqual((delete_at - before).total_seconds(), cog_module.SOLVED_DELETE_HOURS * 3600, delta=60)
-        self.assertIn(f"<t:{int(delete_at.timestamp())}:R>", closed.await_args.kwargs["reason"])
+        self.assertAlmostEqual((delete_at - before).total_seconds(), 3600, delta=60)
+        reason = closed.await_args.kwargs["reason"]
+        self.assertEqual(reason, f"✅ Solved. Deletes <t:{int(delete_at.timestamp())}:R> unless staff re-open it.")
         self.assertIs(archive.await_args.args[3], True)  # resolved
+        self.assertIs(archive.await_args.args[4], True)  # staff_solved: may suggest support info
         self.assertIn("Solved. Deletes", texts(channel.send.await_args_list[0].kwargs["view"]))
         owner.send.assert_awaited_once()  # the solved DM only, no generic transcript DM
         dm = owner.send.await_args.kwargs["view"]
         self.assertIn("marked as solved", texts(dm))
-        self.assertEqual(custom_ids(dm), [self.REOPEN_ID])
+        self.assertEqual(custom_ids(dm), [])
         interaction.followup.send.assert_not_called()
+
+    async def test_owner_solved_closes_the_same_way_but_suggests_nothing(self):
+        """AITicketsCog's owner paths (Yes on the prompt, or saying so) call solve_ticket without staff_solved."""
+        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
+        cog, channel = make_cog(), make_channel(owner)
+        before = datetime.now(timezone.utc)
+        with (
+            patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed,
+            patch.object(cog, "_archive", AsyncMock(return_value=True)) as archive,
+            patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=None)),
+            patch.object(cog, "_set_row", AsyncMock()),
+        ):
+            ticket = await cog.solve_ticket(channel, closer_id=OWNER_ID)
+        self.assertEqual(ticket.status, "closed")
+        kwargs = closed.await_args.kwargs
+        self.assertEqual(kwargs["closed_by"], OWNER_ID)
+        self.assertAlmostEqual((kwargs["delete_at"] - before).total_seconds(), 3600, delta=60)
+        self.assertEqual(archive.await_args.args[2:], (OWNER_ID, True, False))  # closer, resolved, not staff_solved
+        owner.send.assert_awaited_once()  # the solved DM, not the transcript one
+        self.assertIn("marked as solved", texts(owner.send.await_args.kwargs["view"]))
+        channel.delete.assert_not_called()
+
+    async def test_solving_a_ticket_that_is_not_open_does_nothing_else(self):
+        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
+        cog, channel = make_cog(), make_channel(owner)
+        with patch.object(cog_module, "mark_closed", AsyncMock(return_value=None)):
+            self.assertIsNone(await cog.solve_ticket(channel, closer_id=OWNER_ID))
+        owner.send.assert_not_called()
 
     async def test_undeliverable_dm_posts_a_notice_in_the_channel(self):
         response = SimpleNamespace(status=403, reason="Forbidden")
@@ -1134,46 +1275,26 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"couldn't DM <@{OWNER_ID}>", texts(kwargs["view"]))
             self.assertEqual(kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
 
-    async def reopen_click(self, user_id, ticket, channel=None, open_tickets=()):
-        cog = make_cog()
-        cog.bot.get_channel = lambda _id: channel
-        interaction = click(SimpleNamespace(id=user_id), self.REOPEN_ID, self.solved_dm(), channel_id=555)
-        with (
-            patch.object(cog_module, "get_ticket_by_id", AsyncMock(return_value=ticket)) as lookup,
-            patch.object(cog_module, "get_open_tickets_by_owner", AsyncMock(return_value=list(open_tickets))),
-            patch.object(cog, "reopen_ticket", AsyncMock(return_value=make_ticket())) as reopen,
-        ):
-            await cog.on_solved_reopen(interaction)
-        lookup.assert_awaited_once_with(42)
-        return interaction, reopen
-
-    def refused_with(self, interaction, reopen, text):
-        interaction.response.send_message.assert_awaited_once_with(text, ephemeral=True)
-        reopen.assert_not_called()
-
-    async def test_dm_reopen_refusals(self):
-        solved = make_ticket(status="closed", delete_at=self.LATER)
-        channel = make_channel(Snow(OWNER_ID))
-        self.refused_with(*await self.reopen_click(STAFF_ID, solved, channel), views.MSG["not_your_ticket"])
-        past = datetime(2020, 1, 1, tzinfo=timezone.utc)
-        for ticket in (make_ticket(status="closed", delete_at=past), make_ticket(status="closed"), make_ticket(delete_at=self.LATER)):
-            self.refused_with(*await self.reopen_click(OWNER_ID, ticket, channel), views.MSG["cannot_reopen"])
-        self.refused_with(*await self.reopen_click(OWNER_ID, solved, None), views.MSG["reopen_gone"])
-        self.refused_with(*await self.reopen_click(OWNER_ID, solved, make_channel(None)), views.MSG["reopen_gone"])
-        other = make_ticket(channel_id=777)
-        at_limit = await self.reopen_click(OWNER_ID, solved, channel, open_tickets=[other])
-        self.refused_with(*at_limit, views.msg_already_open(777))
-
-    async def test_dm_reopen_reopens_and_swaps_the_dm_for_a_channel_link(self):
-        channel = make_channel(Snow(OWNER_ID))
-        channel.jump_url = "https://discord.com/channels/1/900"
-        interaction, reopen = await self.reopen_click(OWNER_ID, make_ticket(status="closed", delete_at=self.LATER), channel)
-        reopen.assert_awaited_once_with(channel, opener_id=OWNER_ID)
-        busy = interaction.response.edit_message.await_args.kwargs["view"]
-        self.assertIn((v2.WORKING, True), [(item.label, item.disabled) for item in walk(busy) if isinstance(item, discord.ui.Button)])
-        final = interaction.edit_original_response.await_args.kwargs["view"]
-        self.assertEqual(custom_ids(final), [])
-        self.assertIn(channel.jump_url, [item.url for item in walk(final) if isinstance(item, discord.ui.Button)])
+    async def test_old_dm_reopen_button_says_only_staff_reopen_in_the_owners_language(self):
+        """Solved DMs sent before owners lost re-open still carry the button."""
+        for ticket, language in ((make_ticket(status="closed", delete_at=self.LATER, language="pt"), "pt"), (None, "en")):
+            cog = make_cog()
+            cog.bot.get_channel = lambda _id: make_channel(Snow(OWNER_ID))
+            interaction = click(SimpleNamespace(id=OWNER_ID), self.REOPEN_ID, self.solved_dm(), channel_id=555)
+            with (
+                patch.object(cog_module, "get_ticket_by_id", AsyncMock(return_value=ticket)) as lookup,
+                patch.object(cog, "reopen_ticket", AsyncMock()) as reopen,
+                patch.object(cog_module, "mark_reopened", AsyncMock()) as reopened,
+            ):
+                await cog.on_interaction(interaction)
+            lookup.assert_awaited_once_with(42)
+            interaction.response.send_message.assert_awaited_once_with(
+                views.t(language, "reopen_staff"), ephemeral=True
+            )
+            reopen.assert_not_called()
+            reopened.assert_not_called()
+            interaction.response.edit_message.assert_not_called()
+        self.assertIn("Só a staff pode reabrir", views.t("pt", "reopen_staff"))
 
     async def test_sweep_deletes_due_tickets_and_marks_missing_channels_deleted(self):
         cog, channel = make_cog(), make_channel()

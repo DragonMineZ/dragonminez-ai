@@ -110,7 +110,6 @@ class CloseSuggestionTests(unittest.IsolatedAsyncioTestCase):
         settings = types.SimpleNamespace(
             ai_ticket_summary_model="gpt-test",
             ai_support_timeout_seconds=5,
-            ai_ticket_close_delay_seconds=0,
             ai_ticket_escalation_role_ids=(),
             ai_ticket_category_id=77,
             ticket_transcript_public_url="https://tickets.example",
@@ -138,8 +137,6 @@ class CloseSuggestionTests(unittest.IsolatedAsyncioTestCase):
                 closed_by_id=5,
                 requester_id=42,
                 resolved=True,
-                delete_channel=False,
-                announce=False,
                 staff_solved=staff_solved,
                 ticket_id=42,
             )
@@ -164,15 +161,17 @@ class CloseSuggestionTests(unittest.IsolatedAsyncioTestCase):
             await self.close(self.lines("staff"), staff_solved=True)
         self.assertIn(10, self.cog._archived_channels)
 
-    async def test_tickets_archive_flags_only_the_solved_close(self) -> None:
+    async def test_tickets_archive_flags_only_the_staff_solved_close(self) -> None:
         tickets = make_tickets_cog()
         ai_cog = SimpleNamespace(forget_archived=MagicMock(), _close_ticket=AsyncMock(return_value=True))
         tickets.bot.get_cog = lambda name: ai_cog
-        await tickets._archive(make_channel(), make_ticket(), 5, True)
+        await tickets._archive(make_channel(), make_ticket(), 5, True, True)
         self.assertTrue(ai_cog._close_ticket.await_args.kwargs["staff_solved"])
         self.assertEqual(ai_cog._close_ticket.await_args.kwargs["ticket_id"], 42)
-        await tickets._archive(make_channel(), make_ticket(), 5, None)
-        self.assertFalse(ai_cog._close_ticket.await_args.kwargs["staff_solved"])
+        # The owner confirming it solved is resolved too, but isn't staff vouching for a suggestion.
+        for resolved in (True, None):
+            await tickets._archive(make_channel(), make_ticket(), 5, resolved)
+            self.assertFalse(ai_cog._close_ticket.await_args.kwargs["staff_solved"])
 
 
 class ReviewCardTests(unittest.IsolatedAsyncioTestCase):

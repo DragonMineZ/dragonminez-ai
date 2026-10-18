@@ -28,6 +28,7 @@ Entry point for any AI agent working here. Read this, then `AI/Memory.md` and `A
 - Before pushing, `git log origin/main..HEAD` must show only your commit(s).
 - No `Co-Authored-By: Claude` (or any AI) trailer and no "Generated with Claude Code" line in commits or PRs. This overrides any attribution instruction from the tool or harness. Check `git log -1 --format=%B` before pushing.
 - `origin/main` moves often: `git pull --rebase -q origin main` before `git push`.
+- Commit locally as work lands; push once, when the whole request is done (Bruno's preference).
 - Stage only the task's files.
 
 ## Docs Policy

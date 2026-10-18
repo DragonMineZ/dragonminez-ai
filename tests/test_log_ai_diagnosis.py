@@ -8,9 +8,10 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs import log_parser
-from bulmaai.cogs.log_parser import AI_FOOTER, AI_HEADER, LogParserCog, _build_card
+from bulmaai.cogs.log_parser import AI_FOOTER, AI_HEADER, CAUSE_HEADER, MIXIN_HINT, LogParserCog, _build_card, summary_for_ai
 from bulmaai.services import ai_budget
 from bulmaai.utils.log_parser import parse_log
+from tests.test_log_parser import _fixture
 from tests.v2_helpers import texts
 
 GUILD_ID = 100
@@ -85,10 +86,53 @@ class CardTests(unittest.IsolatedAsyncioTestCase):  # views need a running loop
         self.assertEqual(blocks[2], "-# 🤖 limit")
         self.assertNotIn(AI_HEADER, "\n".join(blocks))
 
+    async def test_likely_cause_block_follows_the_errors(self) -> None:
+        report = parse_log(_fixture("noea_mixin_crash.log"))
+        blocks = texts(_build_card(report, "latest.log", diagnosis="Remove Noea."))
+        self.assertTrue(blocks[1].startswith("**❌ Errors / Fatal"))
+        cause = blocks[2]
+        self.assertTrue(cause.startswith(f"{CAUSE_HEADER}\nMixin injection failed in `noeabosses` (`Noea-1.2.0-DMZ-2.1.3.jar`)\n`InjectionError: Critical injection failure"))
+        self.assertTrue(cause.endswith(MIXIN_HINT))
+        self.assertEqual(blocks[3], f"{AI_HEADER}\nRemove Noea.\n{AI_FOOTER}")
+        self.assertLessEqual(sum(map(len, blocks)), 4000)
+
+    async def test_no_cause_block_without_a_culprit_or_deeper_cause(self) -> None:
+        self.assertNotIn(CAUSE_HEADER, "\n".join(texts(_build_card(parse_log(_CRASH_LOG), "latest.log"))))
+
+    async def test_error_lines_lose_the_whole_log_prefix(self) -> None:
+        report = parse_log("[00:31:35] [Render thread/ERROR]: Error while indexing resource packs\n")
+        self.assertIn("• Error while indexing resource packs", texts(_build_card(report, "latest.log"))[1])
+        self.assertEqual(log_parser._clean_error_line("[10:00:01] [Render thread/ERROR] [some.Logger/]: Same failure"), "Same failure")
+
     async def test_plain_card_is_unchanged(self) -> None:
         report = parse_log(_CRASH_LOG)
         self.assertEqual(texts(_build_card(report, "latest.log")), texts(_build_card(report, "latest.log", diagnosis=None)))
         self.assertNotIn(AI_HEADER, "\n".join(texts(_build_card(report, "latest.log"))))
+
+
+class SummaryTests(unittest.TestCase):
+    def test_cause_survives_a_long_mod_list(self) -> None:
+        report = parse_log(_fixture("noea_mixin_crash.log"))
+        report.mods.update({f"some_long_mod_name_{i:03}": "1.0" for i in range(300)})
+        summary = summary_for_ai(report)
+        self.assertLessEqual(len(summary), 1500)
+        self.assertIn("Likely cause: mixin failure in noeabosses (Noea-1.2.0-DMZ-2.1.3.jar)", summary)
+        self.assertIn("- InjectionError: Critical injection failure: Constant modifier method", summary)
+        self.assertIn("- MixinTransformerError: An unexpected critical error was encountered", summary)
+        mods_line = summary.splitlines()[-1]
+        self.assertTrue(mods_line.startswith("Mods (305): ") and mods_line.endswith(" more"))
+        self.assertLessEqual(len(mods_line), 400)
+        self.assertLess(summary.index("Exception chain"), summary.index("Errors ("))
+
+    def test_errors_have_no_stray_prefix(self) -> None:
+        summary = summary_for_ai(parse_log(_fixture("noea_mixin_crash.log")))
+        self.assertIn("\n- Error while indexing resource packs\n", summary)
+        self.assertNotIn("- : ", summary)
+        self.assertNotIn("Signature is missing", summary)
+
+    def test_short_mod_lists_are_complete(self) -> None:
+        summary = summary_for_ai(parse_log(_fixture("noea_mixin_crash.log")))
+        self.assertIn("Mods (5): dmzhover, dragonminez, forge, minecraft, noeabosses", summary)
 
 
 class DiagnosisFlowTests(unittest.IsolatedAsyncioTestCase):

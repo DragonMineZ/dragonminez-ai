@@ -1,5 +1,6 @@
 import time
 import unittest
+from pathlib import Path
 
 from bulmaai.utils.dmzdebug_parser import _RE_MEMBER, _parse_pending_invite
 from bulmaai.utils.log_parser import is_noise, parse_log
@@ -152,3 +153,67 @@ class LogParserTests(unittest.TestCase):
         report = parse_log("".join(f"[10:00:00] [main/ERROR]: failure {i}\n" for i in range(40)))
         self.assertEqual(len(report.errors), 15)
         self.assertEqual(report.error_line_numbers, list(range(1, 16)))
+
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "logs"
+
+
+def _fixture(name: str) -> str:
+    return (_FIXTURES / name).read_text(encoding="utf-8")
+
+
+class RootCauseTests(unittest.TestCase):
+    def test_mixin_crash_names_the_mod_and_its_jar(self) -> None:
+        cause = parse_log(_fixture("noea_mixin_crash.log")).root_cause
+        self.assertEqual(cause.culprit_mod, "noeabosses")
+        self.assertEqual(cause.culprit_jar, "Noea-1.2.0-DMZ-2.1.3.jar")
+        self.assertEqual(cause.kind, "mixin")
+        self.assertTrue(cause.exception.startswith("InjectionError: Critical injection failure: Constant modifier method"))
+        self.assertLessEqual(len(cause.exception), 300)
+        self.assertEqual(cause.chain[0], "MixinTransformerError: An unexpected critical error was encountered")
+        self.assertTrue(cause.chain[-1].startswith("InjectionError:"))
+        self.assertEqual(len(cause.chain), 2)
+
+    def test_fixture_noise_is_dropped(self) -> None:
+        errors = "\n".join(parse_log(_fixture("noea_mixin_crash.log")).errors)
+        self.assertNotIn("Signature is missing from Property textures", errors)
+        self.assertNotIn("Embeddium internals", errors)
+        self.assertTrue(is_noise("[x] [Worker-Main-1/ERROR]: Signature is missing from Property textures"))
+
+    def test_platform_only_trace_has_no_culprit(self) -> None:
+        report = parse_log(
+            "[10:00:00] [Render thread/ERROR]: Failed to load something\n"
+            "java.lang.IllegalStateException: broken\n"
+            "\tat net.minecraft.client.Minecraft.tick(Minecraft.java:1) ~[client-1.20.1-srg.jar%23295!/:?]\n"
+            "\tat java.lang.Thread.run(Unknown Source) ~[?:?]\n"
+            "Caused by: java.lang.NullPointerException: null\n"
+            "\tat net.minecraftforge.eventbus.EventBus.post(EventBus.java:315) ~[eventbus-6.0.5.jar%2387!/:?]\n"
+            "\t... 2 more\n"
+            "\t\tforge-47.4.10.jar |Forge |forge |47.4.10 |DONE |Manifest: NOSIGNATURE\n"
+        )
+        cause = report.root_cause
+        self.assertEqual(cause.chain, ("IllegalStateException: broken", "NullPointerException: null"))
+        self.assertEqual(cause.exception, "NullPointerException: null")
+        self.assertIsNone(cause.culprit_mod)
+        self.assertIsNone(cause.culprit_jar)
+        self.assertEqual(cause.kind, "exception")
+
+    def test_first_mod_frame_of_the_deepest_cause_is_the_culprit(self) -> None:
+        report = parse_log(
+            "[10:00:00] [Server thread/ERROR]: Encountered an unexpected exception\n"
+            "net.minecraft.ReportedException: Ticking entity\n"
+            "\tat com.other.Thing.run(Thing.java:1) ~[other-1.0.jar%2310!/:1.0]\n"
+            "Caused by: java.lang.NullPointerException: boom\n"
+            "\tat java.util.Objects.requireNonNull(Unknown Source) ~[?:?]\n"
+            "\tat com.dragonminez.common.Foo.tick(Foo.java:4) ~[dragonminez-2.1.3.jar%23300!/:2.1.3]\n"
+            "\t... 3 more\n"
+            "\tMod List: \n"
+            "\t\tdragonminez-2.1.3.jar |DragonMineZ |dragonminez |2.1.3 |DONE |Manifest: NOSIGNATURE\n"
+            "\t\tother-1.0.jar |Other |other |1.0 |DONE |Manifest: NOSIGNATURE\n"
+        )
+        cause = report.root_cause
+        self.assertEqual((cause.culprit_mod, cause.culprit_jar), ("dragonminez", "dragonminez-2.1.3.jar"))
+        self.assertEqual(cause.kind, "exception")
+
+    def test_no_trace_means_no_root_cause(self) -> None:
+        self.assertIsNone(parse_log("[19:07:35] [main/ERROR]: Something failed\n").root_cause)

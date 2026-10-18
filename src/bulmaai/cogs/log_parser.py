@@ -15,7 +15,7 @@ from bulmaai.utils.dmz_addons import check_addons
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
 from bulmaai.utils.forwards import full_attachments
 from bulmaai.utils.language import detect_language_from_text
-from bulmaai.utils.log_parser import parse_log, LogReport
+from bulmaai.utils.log_parser import LogReport, RootCause, parse_log
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin, is_allowed_guild_id, is_staff
 from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, trim
 
@@ -44,11 +44,17 @@ _AI_CONTEXT_LINES = (
     "Never ask questions back. Mark the reply kind answer, also when the log isn't enough.",
 )
 
-# Strips "[24Jun2023 06:57:42.886] [Render thread/FATAL] [net.minecraftforge.ForgeMod/]:"
-# from the front of raw log lines so only the human-readable message is shown.
+# Strips "[24Jun2023 06:57:42.886] [Render thread/FATAL] [net.minecraftforge.ForgeMod/]:" (or the logger-less
+# "[12:00:00] [main/ERROR]:") from the front of raw log lines so only the human-readable message is shown.
 _RE_STRIP_LOG_PREFIX = re.compile(
-    r"^\[[^]]+]\s*\[[^]]+]\s*(?:\[[^]]*]:\s*)?"
+    r"^\[[^]]+][ \t]*\[[^]]+](?:[ \t]*\[[^]]*])?:?[ \t]*"
 )
+
+SUMMARY_LIMIT = 1500
+_SUMMARY_MODS_LIMIT = 400
+_SUMMARY_CHAIN_LIMIT = 700
+CAUSE_HEADER = "**🎯 Likely cause**"
+MIXIN_HINT = "-# Usually fixed by updating or removing that mod, or reporting it to its author."
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -103,8 +109,33 @@ def _is_high_confidence_name(filename: str) -> bool:
 
 # ── Card builder ──────────────────────────────────────────────────────────────
 
+def _culprit(cause: RootCause, code) -> str:
+    """'`noeabosses` (`Noea.jar`)', or whichever of the two is known; code wraps each name."""
+    if cause.culprit_mod and cause.culprit_jar:
+        return f"{code(cause.culprit_mod)} ({code(cause.culprit_jar)})"
+    return code(cause.culprit_mod or cause.culprit_jar or "")
+
+
+def _code(text: str) -> str:
+    return "`" + text.replace("`", "'") + "`"
+
+
+def _mod_names(mods: dict[str, str], limit: int) -> str:
+    """'Mods (N): a, b, c, +M more' within limit characters."""
+    names = sorted(mods)
+    text = f"Mods ({len(names)}): "
+    for i, name in enumerate(names):
+        piece = (", " if i else "") + name
+        # Room for the "+N more" tail is kept at every step, so cutting off here still fits.
+        if len(text) + len(piece) + len(f", +{len(names) - i - 1} more") > limit:
+            return text + (", " if i else "") + f"+{len(names) - i} more"
+        text += piece
+    return text
+
+
 def summary_for_ai(report: LogReport) -> str:
-    """The analysis as plain text for the support AI; the raw log never goes to the model."""
+    """The analysis as plain text for the support AI; the raw log never goes to the model. The likely cause and the
+    exception chain come first and are never cut for the error or mod lists."""
     env = ", ".join(
         f"{name} {value}"
         for name, value in (
@@ -113,24 +144,61 @@ def summary_for_ai(report: LogReport) -> str:
         )
         if value
     )
-    lines = [f"Environment: {env or 'not found in this file'}"]
-    if report.errors:
-        lines.append(f"Errors ({len(report.errors)}):")
-        lines += [f"- {_truncate(_clean_error_line(e), 200)}" for e in report.errors[:6]]
-    else:
-        lines.append("No errors after filtering known harmless noise.")
-    if report.stacktrace and (summary := _summarise_stacktrace(report.stacktrace)):
-        lines.append("Exception summary:\n" + _truncate(summary, 700))
+    head = [f"Environment: {env or 'not found in this file'}"]
+    cause = report.root_cause
+    if cause:
+        if cause.culprit_mod or cause.culprit_jar:
+            what = "mixin failure" if cause.kind == "mixin" else "crash"
+            head.append(f"Likely cause: {what} in {_culprit(cause, str)}")
+        # The deepest cause keeps its longer text: it's the line that usually names the problem.
+        chain = [*cause.chain[:-1], cause.exception]
+        head.append(trim("Exception chain (deepest last):\n" + "\n".join(f"- {c}" for c in chain), _SUMMARY_CHAIN_LIMIT))
+    elif report.stacktrace and (summary := _summarise_stacktrace(report.stacktrace)):
+        head.append("Exception summary:\n" + _truncate(summary, _SUMMARY_CHAIN_LIMIT))
+
+    tail = []
     bad_addons = [a for a in check_addons(report.mods, report.dragonminez_version) if a.compatible is False]
     if bad_addons:
-        lines.append("Incompatible DMZ addons: " + ", ".join(
+        tail.append(trim("Incompatible DMZ addons: " + ", ".join(
             f"{a.mod_id} {a.version} (needs DMZ >= {a.min_dmz_version})" for a in bad_addons
-        ))
-    if report.mods:
-        lines.append(f"Mods ({len(report.mods)}): " + ", ".join(sorted(report.mods)))
+        ), 300))
+    tail.append(_mod_names(report.mods, _SUMMARY_MODS_LIMIT) if report.mods else "Mod list: not in this file.")
+
+    # Errors get whatever room the cause and the mod list leave.
+    room = SUMMARY_LIMIT - sum(len(line) + 1 for line in head + tail)
+    errors: list[str] = []
+    if report.errors:
+        header = f"Errors ({len(report.errors)}):"
+        room -= len(header) + 1
+        for error in report.errors[:6]:
+            line = f"- {_truncate(_clean_error_line(error), 200)}"
+            if len(line) + 1 > room:
+                break
+            errors.append(line)
+            room -= len(line) + 1
+        if errors:
+            errors.insert(0, header)
     else:
-        lines.append("Mod list: not in this file.")
-    return trim("\n".join(lines), 1500)
+        errors.append("No errors after filtering known harmless noise.")
+    return trim("\n".join(head + errors + tail), SUMMARY_LIMIT)
+
+
+def _cause_block(cause: RootCause | None) -> str:
+    """The card's likely-cause block: shown when a mod was found or the deepest cause differs from the top
+    exception (which the Exception Summary already shows)."""
+    if cause is None:
+        return ""
+    culprit = cause.culprit_mod or cause.culprit_jar
+    if not culprit and len(cause.chain) < 2:
+        return ""
+    lines = [CAUSE_HEADER]
+    if culprit:
+        where = _culprit(cause, _code)
+        lines.append(f"Mixin injection failed in {where}" if cause.kind == "mixin" else f"The crash points to {where}")
+    lines.append(_code(cause.exception))
+    if culprit and cause.kind == "mixin":
+        lines.append(MIXIN_HINT)
+    return "\n".join(lines)
 
 
 def _limit_note(limit: int, patron_limit: int, *, patron: bool) -> str:
@@ -172,6 +240,7 @@ def _build_card(
         problems = "**✅ Status**\nNo errors or fatal messages found."
     if report.stacktrace and (summary := _summarise_stacktrace(report.stacktrace)):
         problems += f"\n**📋 Exception Summary**\n```\n{_truncate(summary, 800)}\n```"
+    likely_cause = _cause_block(report.root_cause)
 
     # ── Environment ───────────────────────────────────────────────────────────
     env_lines = [
@@ -211,13 +280,14 @@ def _build_card(
 
     footer = f"-# 📄 {discord.utils.escape_markdown(_truncate(filename, 100))}"
     budget = TEXT_LIMIT - len(title) - len(footer)
-    # Problems is never empty, so whatever goes second stays at index 1 after fit drops empty blocks.
+    # Problems is never empty, so after fit drops empty blocks the diagnosis sits right after it and the cause.
     second = diagnosis or limit_note
     if diagnosis:
         budget -= len(AI_HEADER) + len(AI_FOOTER) + 2
-    blocks = fit([defang(problems), second or "", defang(environment), defang(mods)], budget)
+    blocks = fit([defang(problems), defang(likely_cause), second or "", defang(environment), defang(mods)], budget)
     if diagnosis:
-        blocks[1] = f"{AI_HEADER}\n{blocks[1]}\n{AI_FOOTER}"
+        at = 2 if likely_cause else 1
+        blocks[at] = f"{AI_HEADER}\n{blocks[at]}\n{AI_FOOTER}"
     items: list = [title]
     for block in blocks:
         items += [discord.ui.Separator(), block]

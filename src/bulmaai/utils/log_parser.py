@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
 # ── Java version ─────────────────────────────────────────────────────────────
 # Matches: "ModLauncher 10.0.9 starting: java version 17.0.3 by Microsoft"
@@ -130,6 +131,8 @@ NOISE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"Using missing texture, unable to load"),
     # Optional-compat recipes for mods that aren't installed; the recipe is simply skipped.
     re.compile(r"Parsing error loading recipe"),
+    # A player skin without Mojang's signature (offline or modded skins); the skin still loads.
+    re.compile(r"Signature is missing from Property textures"),
 )
 
 
@@ -152,6 +155,38 @@ _RE_MODLOADER = re.compile(r"ModLauncher running: args", re.IGNORECASE)
 MAX_STACKTRACE_LEN = 800
 MAX_ERRORS = 15
 
+# ── Root cause ────────────────────────────────────────────────────────────────
+# Frames from these packages are the game, the loader or a library, never the culprit mod.
+_PLATFORM_PACKAGES = (
+    "java.", "jdk.", "sun.", "net.minecraft.", "com.mojang.", "net.minecraftforge.", "cpw.mods.",
+    "org.spongepowered.", "io.netty.", "com.google.", "org.apache.", "it.unimi.", "org.lwjgl.",
+    "kotlin.", "org.jetbrains.", "net.fabricmc.", "org.objectweb.",
+)
+MAX_CAUSE_LEN = 300
+MAX_CHAIN_ITEM_LEN = 200
+_MAX_CHAIN = 20
+_MAX_FRAMES = 200
+# Stored headers and frames are cut here so the regexes run over them stay cheap on hostile input.
+_MAX_LINE = 1000
+# "Caused by: org.x.FooError: msg" / 'Exception in thread "main" java.lang.Error: msg' -> "FooError: msg".
+_RE_HEADER_NAME = re.compile(r'^(?:Exception in thread "[^"]*" )?(?:[\w$]+\.)*([\w$]+)')
+# "in noeabosses.mixins.json:client.Foo" / "from mod noeabosses" in a mixin failure message.
+_RE_MIXIN_CONFIG = re.compile(r"([\w.\-]+?)\.mixins\.json\b")
+_RE_MIXIN_FROM_MOD = re.compile(r"\bfrom mod ([a-z0-9_\-]+)", re.IGNORECASE)
+# A frame's jar: "~[Noea-1.2.0-DMZ-2.1.3.jar%23275!/:1.1.0]" -> "Noea-1.2.0-DMZ-2.1.3.jar" ("%20" is a space).
+_RE_FRAME_JAR = re.compile(r"\[([^\[\]/:!]+?\.jar)(?:%23\d+)*[!:\]]")
+
+
+@dataclass(frozen=True)
+class RootCause:
+    """What the chosen crash block boils down to: its deepest cause and, when the log shows it, the mod behind it."""
+
+    exception: str  # deepest "Caused by:" (simple class name + message), trimmed
+    chain: tuple[str, ...]  # every exception header, top first, deepest last
+    culprit_mod: str | None = None
+    culprit_jar: str | None = None
+    kind: str = "exception"  # "mixin" when a mixin config or "from mod" names the culprit, else "exception"
+
 
 @dataclass
 class LogReport:
@@ -166,6 +201,7 @@ class LogReport:
     # Parallel to errors: 1-based line number of each error in the text (lines split on "\n").
     error_line_numbers: list[int] = field(default_factory=list)
     stacktrace: str | None = None
+    root_cause: RootCause | None = None
     is_forge: bool = False
 
 
@@ -181,16 +217,128 @@ class _Block:
     uncaught: bool = False  # "Exception in thread ..."
     mentions_dmz: bool = False
     size: int = 0
+    # Kept past the display budget: every exception header, and the non-platform frames as (header index, frame).
+    chain: list[str] = field(default_factory=list)
+    frames: list[tuple[int, str]] = field(default_factory=list)
+    suppressed: bool = False  # past a "Suppressed:" line; what follows isn't the crash's own cause
 
     def add(self, stripped: str) -> None:
         if stripped.startswith(("at ", "Caused by:", "Suppressed:")) or _RE_EXCEPTION_HEADER.match(stripped):
             self.has_trace = True
         if "dragonminez" in stripped.lower():
             self.mentions_dmz = True
+        self._note_cause(stripped)
         # Stop storing once past the card budget; the block still consumes its remaining lines.
         if self.size <= MAX_STACKTRACE_LEN:
             self.lines.append(stripped)
             self.size += len(stripped) + 1
+
+    def _note_cause(self, stripped: str) -> None:
+        if self.suppressed:
+            return
+        if stripped.startswith("Suppressed:"):
+            self.suppressed = True
+        elif stripped.startswith("Caused by:"):
+            if len(self.chain) < _MAX_CHAIN:
+                self.chain.append(stripped[len("Caused by:"):].strip()[:_MAX_LINE])
+        elif stripped.startswith("at "):
+            if self.chain and len(self.frames) < _MAX_FRAMES and not _is_platform_frame(stripped):
+                self.frames.append((len(self.chain) - 1, stripped[:_MAX_LINE]))
+        elif _RE_EXCEPTION_HEADER.match(stripped) and len(self.chain) < _MAX_CHAIN:
+            self.chain.append(stripped[:_MAX_LINE])
+
+
+def _frame_class(frame: str) -> str:
+    """'at TRANSFORMER/mod@1.0/com.x.Foo.bar(Foo.java:1) ~[...]' -> 'com.x.Foo.bar'."""
+    return frame[3:].split("(", 1)[0].rsplit("/", 1)[-1].strip()
+
+
+def _is_platform_frame(frame: str) -> bool:
+    return _frame_class(frame).startswith(_PLATFORM_PACKAGES)
+
+
+def _short_header(header: str, limit: int) -> str:
+    """'org.x.FooError: msg' -> 'FooError: msg', trimmed to limit."""
+    m = _RE_HEADER_NAME.match(header)
+    text = (m.group(1) + header[m.end():]) if m else header
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _squash(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _mod_for_name(name: str, mods: dict[str, str]) -> str | None:
+    """A mixin config prefix or jar name -> the mod id it belongs to: exact id, same id without '_'/'-', or the
+    longest mod id it starts with. Ids under 3 characters never match by prefix."""
+    lower = name.lower()
+    if lower in mods:
+        return lower
+    squashed = _squash(name)
+    best = None
+    for mod_id in mods:
+        key = _squash(mod_id)
+        if len(key) < 3 or not squashed.startswith(key):
+            continue
+        if best is None or len(key) > len(_squash(best)):
+            best = mod_id
+    return best
+
+
+def _frame_mod(frame: str, mods: dict[str, str]) -> str | None:
+    """The mod a non-platform frame belongs to: its module ('TRANSFORMER/<id>@ver/'), a package segment equal to a
+    mod id, or its jar name."""
+    body = frame[3:].split("(", 1)[0]
+    for segment in body.split("/")[:-1]:
+        mod_id = segment.split("@", 1)[0].lower()
+        if "@" in segment and mod_id in mods:
+            return mod_id
+    for segment in _frame_class(frame).lower().split(".")[:-1]:
+        if len(segment) >= 3 and segment in mods:
+            return segment
+    jar = _frame_jar(frame)
+    return _mod_for_name(jar.removesuffix(".jar"), mods) if jar else None
+
+
+def _frame_jar(frame: str) -> str | None:
+    m = _RE_FRAME_JAR.search(frame)
+    return unquote(m.group(1)) if m else None
+
+
+def _root_cause(block: _Block, mods: dict[str, str]) -> RootCause | None:
+    if not block.chain:
+        return None
+    chain = tuple(_short_header(h, MAX_CHAIN_ITEM_LEN) for h in block.chain)
+    exception = _short_header(block.chain[-1], MAX_CAUSE_LEN)
+    kind = "exception"
+    culprit_mod = culprit_jar = None
+
+    # (a) A mixin failure names its config ("noeabosses.mixins.json") or mod ("from mod noeabosses"); deepest first.
+    for header in reversed(block.chain):
+        m = _RE_MIXIN_FROM_MOD.search(header)
+        if m:
+            culprit_mod = m.group(1).lower()
+        else:
+            for config in _RE_MIXIN_CONFIG.finditer(header):
+                culprit_mod = _mod_for_name(config.group(1), mods)
+                if culprit_mod:
+                    break
+        if culprit_mod:
+            kind = "mixin"
+            culprit_jar = next(
+                (jar for _, f in block.frames if _frame_mod(f, mods) == culprit_mod and (jar := _frame_jar(f))), None
+            )
+            break
+
+    # (b) Otherwise the first mod frame of the deepest cause that has one (shared "... N more" frames sit above).
+    if culprit_mod is None:
+        for index in range(len(block.chain) - 1, -1, -1):
+            frame = next((f for i, f in block.frames if i == index), None)
+            if frame:
+                culprit_mod, culprit_jar = _frame_mod(frame, mods), _frame_jar(frame)
+                break
+    return RootCause(exception, chain, culprit_mod, culprit_jar, kind)
 
 
 def _continues_trace(line: str, stripped: str) -> bool:
@@ -375,5 +523,6 @@ def parse_log(text: str) -> LogReport:
         if len(full_trace) > MAX_STACKTRACE_LEN:
             full_trace = full_trace[:MAX_STACKTRACE_LEN] + "\n... (truncated)"
         report.stacktrace = full_trace
+        report.root_cause = _root_cause(block, report.mods)
 
     return report

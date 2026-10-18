@@ -298,12 +298,6 @@ class DevJarDownloadsCog(ReloadableCog):
             raise RuntimeError(f"Configured dev jar channel {channel_id} is not messageable")
         return channel
 
-    async def _resolve_channel(self) -> discord.abc.Messageable:
-        channel_id = self.settings.dev_jar_download_channel_id
-        if channel_id is None:
-            raise RuntimeError("dev_jar_download_channel_id is not configured")
-        return await self._resolve_messageable_channel(channel_id)
-
     async def _resolve_announcement_channels(self) -> list[discord.abc.Messageable]:
         return [
             await self._resolve_messageable_channel(channel_id)

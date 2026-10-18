@@ -33,12 +33,16 @@ META: dict[str, tuple[str, str, str]] = {
     "ask_allowed_channel_ids": ("ai", "/ask channels", "Channels where /ask can be used; empty = nowhere."),
     "ask_rate_limit_window_seconds": ("ai", "/ask rate limit: window", "Length in seconds of the window for the per-person /ask limit."),
     "ask_rate_limit_max_calls": ("ai", "/ask rate limit: calls", "How many /ask uses one person gets per window."),
+    "log_ai_enabled": ("ai", "Crash-log AI diagnosis", "Adds an AI diagnosis to crash-log cards with errors (main server only, never in tickets)."),
+    "log_ai_daily_limit": ("ai", "Crash-log AI: daily limit", "AI diagnoses one member gets per 24h; staff are unlimited and admin-approved (🔍) logs don't count."),
+    "log_ai_patron_daily_limit": ("ai", "Crash-log AI: patron limit", "AI diagnoses per 24h for patrons and testers."),
     # Tickets
     "ai_ticket_category_id": ("tickets", "Open tickets category", "Category that holds open tickets; the AI answers there and reopened tickets move back to it."),
     "ticket_closed_category_id": ("tickets", "Closed tickets category", "Category closed tickets are moved to."),
     "ticket_dm_transcript": ("tickets", "DM transcript link", "DM the ticket owner a link to the hosted transcript when their ticket is archived."),
     "support_info_channel_id": ("tickets", "Support info channel", "Where the active temporary support info is posted every 24h."),
     "support_info_review_channel_id": ("tickets", "Support info review channel", "Staff channel where AI-suggested support info waits for approval."),
+    "support_report_channel_id": ("tickets", "Support report channel", "Staff channel for the weekly support report (Mondays 09:00 UTC); empty disables it."),
     "ticket_transcript_retention_days": ("tickets", "Transcript retention", "Days a hosted ticket transcript stays online; 0 keeps them forever."),
     "ai_ticket_close_delay_seconds": ("tickets", "Delete delay", "Seconds between the close notice and the ticket channel being deleted."),
     # Moderation

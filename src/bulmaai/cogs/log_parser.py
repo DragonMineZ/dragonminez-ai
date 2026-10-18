@@ -7,14 +7,16 @@ from collections import defaultdict
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.services import log_pages
-from bulmaai.services.ai_guard import defang
+from bulmaai.services import ai_budget, log_ai_quota, log_pages
+from bulmaai.services.ai_client import ConversationMessage, run_support_agent
+from bulmaai.services.ai_guard import NO_REPLY, can_post_publicly, defang, safe_name
 from bulmaai.services.moderation import ModerationState
 from bulmaai.utils.dmz_addons import check_addons
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug
 from bulmaai.utils.forwards import full_attachments
+from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils.log_parser import parse_log, LogReport
-from bulmaai.utils.permissions import is_admin
+from bulmaai.utils.permissions import has_any_allowed_role, is_admin, is_allowed_guild_id, is_staff
 from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, trim
 
 log = logging.getLogger(__name__)
@@ -30,6 +32,17 @@ _AUTO_PARSE_NAMES = {"latest.log", "debug.log", "crash-report.txt"}
 
 # Reaction emoji used for admin approval of uncertain log files.
 _APPROVE_EMOJI = "🔍"
+
+AI_HEADER = "**🤖 AI diagnosis**"
+AI_FOOTER = "-# Bulma is AI and can make mistakes."
+# Below this many characters the uploader's message says too little to pick a language from.
+_MIN_LANGUAGE_TEXT = 15
+_AI_CONTEXT_LINES = (
+    "channel: public crash-log analysis card; your reply is added to the bot's log analysis under \"AI diagnosis\"",
+    "task: give the most likely cause and concrete fix steps in a few short lines. No greeting. If the analysis "
+    "doesn't show enough to tell, say so plainly and name what would help (e.g. the crash report or debug.log). "
+    "Never ask questions back. Mark the reply kind answer, also when the log isn't enough.",
+)
 
 # Strips "[24Jun2023 06:57:42.886] [Render thread/FATAL] [net.minecraftforge.ForgeMod/]:"
 # from the front of raw log lines so only the human-readable message is shown.
@@ -69,6 +82,12 @@ def _summarise_stacktrace(raw: str) -> str:
         if len(keep) >= 10:
             break
     return "\n".join(keep)
+
+
+def _in_ticket_channel(channel, settings) -> bool:
+    """The open-tickets category, as ai_tickets._is_ticket_channel checks it (importing that cog here would be circular)."""
+    category_id = getattr(channel, "category_id", None)
+    return category_id is not None and category_id == settings.ai_ticket_category_id
 
 
 def _is_high_confidence_name(filename: str) -> bool:
@@ -114,9 +133,23 @@ def summary_for_ai(report: LogReport) -> str:
     return trim("\n".join(lines), 1500)
 
 
-def _build_card(report: LogReport, filename: str, page_url: str | None = None) -> discord.ui.DesignerView:
-    """The analysis as a V2 card: what went wrong first, then the environment, then the mod lists.
-    Everything from the uploaded file is defanged (no live links or pings)."""
+def _limit_note(limit: int, patron_limit: int, *, patron: bool) -> str:
+    if patron:
+        return f"-# 🤖 Daily AI diagnosis limit reached ({limit}/day)."
+    return f"-# 🤖 Daily AI diagnosis limit reached ({limit}/day; patrons get {patron_limit})."
+
+
+def _build_card(
+    report: LogReport,
+    filename: str,
+    page_url: str | None = None,
+    *,
+    diagnosis: str | None = None,
+    limit_note: str | None = None,
+) -> discord.ui.DesignerView:
+    """The analysis as a V2 card: what went wrong first, then the AI diagnosis (or the limit note), then the
+    environment, then the mod lists. Everything from the uploaded file is defanged (no live links or pings); the
+    diagnosis is not, it was already screened by ai_guard and carries our wiki links."""
     has_errors = bool(report.errors)
     is_valid = report.is_forge or bool(report.mc_version)
     # Colour: red = errors present, orange = no Forge detected, green = clean
@@ -177,8 +210,16 @@ def _build_card(report: LogReport, filename: str, page_url: str | None = None) -
         )
 
     footer = f"-# 📄 {discord.utils.escape_markdown(_truncate(filename, 100))}"
+    budget = TEXT_LIMIT - len(title) - len(footer)
+    # Problems is never empty, so whatever goes second stays at index 1 after fit drops empty blocks.
+    second = diagnosis or limit_note
+    if diagnosis:
+        budget -= len(AI_HEADER) + len(AI_FOOTER) + 2
+    blocks = fit([defang(problems), second or "", defang(environment), defang(mods)], budget)
+    if diagnosis:
+        blocks[1] = f"{AI_HEADER}\n{blocks[1]}\n{AI_FOOTER}"
     items: list = [title]
-    for block in fit([defang(problems), defang(environment), defang(mods)], TEXT_LIMIT - len(title) - len(footer)):
+    for block in blocks:
         items += [discord.ui.Separator(), block]
     items.append(footer)
     buttons = [discord.ui.Button(label="Full log (24h)", emoji="📄", url=page_url)] if page_url else None
@@ -265,8 +306,9 @@ class LogParserCog(commands.Cog):
                 if not self._may_auto_parse(message.author.id):
                     continue
                 async with message.channel.typing():
-                    view = await self._analyze(text, attachment.filename)
-                await message.reply(view=view, mention_author=False)
+                    report, url = await self._analyze(text, attachment.filename)
+                sent = await message.reply(view=_build_card(report, attachment.filename, url), mention_author=False)
+                await self._add_diagnosis(sent, message, report, attachment.filename, url, approved=False)
             else:
                 # ── Uncertain name → queue for admin approval ─────────────
                 pending_urls.append(attachment.url)
@@ -328,10 +370,108 @@ class LogParserCog(commands.Cog):
             )
 
             async with message.channel.typing():
-                view = await self._analyze(text, attachment.filename)
-            await message.reply(view=view, mention_author=False)
+                report, url = await self._analyze(text, attachment.filename)
+            sent = await message.reply(view=_build_card(report, attachment.filename, url), mention_author=False)
+            await self._add_diagnosis(sent, message, report, attachment.filename, url, approved=True)
 
-    async def _analyze(self, text: str, filename: str) -> discord.ui.DesignerView:
+    async def _add_diagnosis(
+        self,
+        sent: discord.Message,
+        message: discord.Message,
+        report: LogReport,
+        filename: str,
+        url: str | None,
+        *,
+        approved: bool,
+    ) -> None:
+        """Edits the posted card to add the AI diagnosis, or the daily-limit note. Any skip or failure leaves the
+        card as posted; nothing is shown while the AI runs, so a restart mid-run can't leave a stuck card.
+        Admin-approved (🔍) parses always run and don't count against the uploader."""
+        settings = self.bot.settings
+        author = message.author
+        channel = message.channel
+        if not (report.errors or report.stacktrace) or not getattr(settings, "log_ai_enabled", False):
+            return
+        if not is_allowed_guild_id(getattr(message.guild, "id", None), settings):
+            return
+        if _in_ticket_channel(channel, settings):
+            return  # the ticket AI already reads logs posted in its channel
+        if ai_budget.is_paused(settings):
+            log.info("Skipping log AI diagnosis for %s: AI budget paused", filename)
+            return
+
+        counted = not approved and not is_staff(author, settings=settings)
+        if counted:
+            patron = has_any_allowed_role(author, settings.dev_jar_patreon_role_ids) or has_any_allowed_role(
+                author, settings.dev_jar_tester_role_ids
+            )
+            limit = settings.log_ai_patron_daily_limit if patron else settings.log_ai_daily_limit
+            try:
+                left = await log_ai_quota.remaining(author.id, limit)
+            except Exception:
+                log.exception("Log AI quota lookup failed for %s", author.id)
+                return
+            if left <= 0:
+                note = _limit_note(limit, settings.log_ai_patron_daily_limit, patron=patron)
+                await self._edit_card(sent, _build_card(report, filename, url, limit_note=note))
+                return
+
+        content = (message.content or "").strip()
+        language = detect_language_from_text(content) if len(content) >= _MIN_LANGUAGE_TEXT else "en"
+        name = safe_name(getattr(author, "display_name", None) or author.name)
+        try:
+            result = await run_support_agent(
+                messages=[
+                    ConversationMessage(
+                        role="user",
+                        content=f"Log file: {filename}\n{summary_for_ai(report)}",
+                        speaker_name=name,
+                        speaker_id=str(author.id),
+                        speaker_kind="requester",
+                    )
+                ],
+                enabled_tools=[],
+                language_hint=language,
+                user_id=author.id,
+                channel_id=channel.id,
+                ticket_conversation=False,
+                bot=self.bot,
+                settings=settings,
+                context_lines=[*_AI_CONTEXT_LINES, f"requester: {name}"],
+                requester_is_staff=is_staff(author, settings=settings),
+                channel_kind="public",
+                workflow_prefix="log_diagnosis",
+            )
+        except Exception:
+            log.exception("Log AI diagnosis failed for %s", filename)
+            return
+        if result.get("paused"):
+            log.info("Skipping log AI diagnosis for %s: AI budget paused", filename)
+            return
+        if counted:
+            try:
+                await log_ai_quota.record(author.id)
+            except Exception:
+                log.exception("Recording log AI use failed for %s", author.id)
+        reply = (result.get("reply") or "").strip()
+        if not reply or reply == NO_REPLY or not can_post_publicly(result):
+            log.info(
+                "Log AI diagnosis for %s not posted (kind=%s, flags=%s)",
+                filename,
+                result.get("kind"),
+                ",".join(sorted(result.get("guard_flags") or ())) or "-",
+            )
+            return
+        await self._edit_card(sent, _build_card(report, filename, url, diagnosis=reply))
+
+    @staticmethod
+    async def _edit_card(sent: discord.Message, view: discord.ui.DesignerView) -> None:
+        try:
+            await sent.edit(view=view)
+        except discord.HTTPException:
+            log.info("Could not edit log card %s (deleted?)", sent.id)
+
+    async def _analyze(self, text: str, filename: str) -> tuple[LogReport, str | None]:
         # Off the event loop: a multi-MB log still takes about a second to parse and render.
         report = await asyncio.to_thread(parse_log, text)
         url = None
@@ -347,13 +487,17 @@ class LogParserCog(commands.Cog):
             url = await log_pages.save(self.bot.settings, page)
         except Exception:
             log.exception("Failed to publish log page %s", filename)
-        return _build_card(report, filename, url)
+        return report, url
 
     @tasks.loop(hours=1)
     async def purge_log_pages(self) -> None:
         removed = await asyncio.to_thread(log_pages.purge, self.bot.settings)
         if removed:
             log.info("Purged %d expired log pages", removed)
+        try:
+            await log_ai_quota.purge()
+        except Exception:
+            log.exception("Purging old log AI uses failed")
 
     def cog_unload(self) -> None:
         self.purge_log_pages.cancel()

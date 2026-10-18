@@ -93,6 +93,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.mod_case_cards",
     "bulmaai.cogs.presence",
     "bulmaai.cogs.support_info",
+    "bulmaai.cogs.support_report",
     "bulmaai.cogs.knowledge_sync",
 )
 
@@ -464,6 +465,8 @@ class Settings:
     support_info_channel_id: int | None = 1349074976241745960
     # Staff channel for AI-suggested support info review cards; None falls back to moderation_log_channel_id.
     support_info_review_channel_id: int | None = 1349074976241745960
+    # Staff channel for the weekly support report (Mondays 09:00 UTC, cogs/support_report.py); None disables it.
+    support_report_channel_id: int | None = None
     ticket_dm_transcript: bool = True
     # HTML transcripts are files under ticket_transcript_dir, served at ticket_transcript_public_url/t/<token>
     # (a public hostname on the same cloudflared tunnel as the panel). 0 retention days keeps them forever.
@@ -474,6 +477,11 @@ class Settings:
     # (another public hostname on the same tunnel).
     log_page_public_url: str = "https://logs.dragonminez.com"
     log_page_dir: str = "data/log_pages"
+    # AI diagnosis on crash-log cards (cogs/log_parser.py): main guild only, never in tickets. Per uploader per
+    # rolling 24h; patrons/testers get the patron limit, staff are unlimited, admin-approved (🔍) parses don't count.
+    log_ai_enabled: bool = True
+    log_ai_daily_limit: int = 3
+    log_ai_patron_daily_limit: int = 10
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"
@@ -808,6 +816,7 @@ def _build_settings_from_env() -> Settings:
         ticket_closed_category_id=_get_env_int("TICKET_CLOSED_CATEGORY_ID", 1303543643377893466),
         support_info_channel_id=_get_env_int("SUPPORT_INFO_CHANNEL_ID", 1349074976241745960),
         support_info_review_channel_id=_get_env_int("SUPPORT_INFO_REVIEW_CHANNEL_ID", 1349074976241745960),
+        support_report_channel_id=_get_env_int("SUPPORT_REPORT_CHANNEL_ID"),
         welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID", DEFAULT_WELCOME_CHANNEL_ID),
         member_role_id=_get_env_int("MEMBER_ROLE_ID", DEFAULT_MEMBER_ROLE_ID),
         member_role_name=_get_env("MEMBER_ROLE_NAME", "Member") or "Member",
@@ -818,6 +827,9 @@ def _build_settings_from_env() -> Settings:
         ticket_transcript_retention_days=_get_env_int("TICKET_TRANSCRIPT_RETENTION_DAYS", 30) or 0,
         log_page_public_url=_get_env("LOG_PAGE_PUBLIC_URL", "https://logs.dragonminez.com") or "https://logs.dragonminez.com",
         log_page_dir=_get_env("LOG_PAGE_DIR", "data/log_pages") or "data/log_pages",
+        log_ai_enabled=_get_env_bool("LOG_AI_ENABLED", True),
+        log_ai_daily_limit=_get_env_int("LOG_AI_DAILY_LIMIT", 3) or 0,
+        log_ai_patron_daily_limit=_get_env_int("LOG_AI_PATRON_DAILY_LIMIT", 10) or 0,
         ai_ticket_summary_model=_get_env("AI_TICKET_SUMMARY_MODEL", DEFAULT_AI_TICKET_SUMMARY_MODEL) or DEFAULT_AI_TICKET_SUMMARY_MODEL,
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
         announcement_source_channel_id=_get_env_int(

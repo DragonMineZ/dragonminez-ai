@@ -269,7 +269,9 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "content": "How do I transform?", "speaker_id": "123", "speaker_kind": "requester"},
         ]
 
-    async def _run(self, responses, *, messages=None, knowledge=None, search_hits=None, **settings_overrides):
+    async def _run(
+        self, responses, *, messages=None, knowledge=None, search_hits=None, workflow_prefix=None, **settings_overrides
+    ):
         with (
             patch(
                 "bulmaai.services.ai_client._create_message",
@@ -298,6 +300,7 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
                 ticket_conversation=True,
                 settings=_settings(**settings_overrides),
                 context_lines=["channel: support ticket"],
+                workflow_prefix=workflow_prefix,
             )
         self.knowledge_search = knowledge_search
         return result, create_message, record_trace
@@ -389,6 +392,24 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             ["support_draft", "support_escalation"],
         )
         self.assertEqual((ai_budget.used(ai_budget.SMALL), ai_budget.used(ai_budget.BIG)), (100, 100))
+
+    async def test_workflow_prefix_renames_every_trace(self) -> None:
+        _, _, record_trace = await self._run(
+            [_message("Update GeckoLib.\n[kind: answer]\n[confidence: 0.95]")], workflow_prefix="log_diagnosis"
+        )
+        self.assertEqual([call.args[0].workflow for call in record_trace.await_args_list], ["log_diagnosis"])
+
+        _, _, record_trace = await self._run(
+            [
+                _message("Maybe reinstall.\n[kind: answer]\n[confidence: 0.3]"),
+                _message("Update GeckoLib.\n[kind: answer]\n[confidence: 0.9]", response_id="r2", model=SONNET),
+            ],
+            workflow_prefix="log_diagnosis",
+        )
+        self.assertEqual(
+            [call.args[0].workflow for call in record_trace.await_args_list],
+            ["log_diagnosis_draft", "log_diagnosis_escalation"],
+        )
 
     async def test_handoff_survives_an_escalation_reply_without_a_kind_marker(self) -> None:
         result, create_message, _ = await self._run(

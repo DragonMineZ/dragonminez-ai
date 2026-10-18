@@ -557,8 +557,16 @@ async def run_support_agent(
     context_lines: list[str] | None = None,
     requester_is_staff: bool = False,
     channel_kind: str | None = None,
+    workflow_prefix: str | None = None,
 ) -> AgentResult:
-    """Fast first pass on the support model, escalating when it is unsure, repeats itself or loops on questions."""
+    """Fast first pass on the support model, escalating when it is unsure, repeats itself or loops on questions.
+    workflow_prefix renames the traces (prefix, prefix_escalation, prefix_draft) so non-support callers stay out
+    of the support_* workflows the FAQ/eval exports read."""
+    first_workflow, escalation_workflow, draft_workflow = (
+        (workflow_prefix, f"{workflow_prefix}_escalation", f"{workflow_prefix}_draft")
+        if workflow_prefix
+        else ("support_question", "support_escalation", "support_draft")
+    )
     runtime_settings = settings or load_settings()
     last_user = _latest_user_message(messages, target_speaker_id=str(user_id))
     if language_hint:
@@ -608,7 +616,7 @@ async def run_support_agent(
         channel_kind=channel_kind,
     )
     fast_effort = _select_reasoning_effort(runtime_settings, high_confidence=True)
-    result, trace = await run(model=model, effort=fast_effort, use_tools=True, workflow="support_question")
+    result, trace = await run(model=model, effort=fast_effort, use_tools=True, workflow=first_workflow)
     result["escalated"] = False
     result["paused"] = False
 
@@ -622,7 +630,7 @@ async def run_support_agent(
         or route is None
         or route[:2] == (model, fast_effort)
     ):
-        await _record_traces(trace)
+        await _record_traces(trace, draft_workflow=draft_workflow)
         return result
 
     escalation_model, effort, use_tools = route
@@ -631,7 +639,7 @@ async def run_support_agent(
             model=escalation_model,
             effort=effort,
             use_tools=use_tools,
-            workflow="support_escalation",
+            workflow=escalation_workflow,
             notes=[*([REPEAT_NOTE] if repeat else []), *([CLARIFY_LOOP_NOTE] if clarify_loop else [])],
         )
     except asyncio.CancelledError:
@@ -639,12 +647,12 @@ async def run_support_agent(
     except Exception:
         # A failed second opinion should not lose the first answer.
         log.exception("Support escalation failed", extra={"event": "support_escalation_failed", "channel_id": channel_id})
-        await _record_traces(trace)
+        await _record_traces(trace, draft_workflow=draft_workflow)
         return result
     if second["reply"] == "(no reply)" and not any(
         call["name"] != SEARCH_KNOWLEDGE_TOOL for call in second["tool_results"]
     ):
-        await _record_traces(trace, drafts=[second_trace])
+        await _record_traces(trace, drafts=[second_trace], draft_workflow=draft_workflow)
         return result
     second["escalated"] = True
     second["paused"] = False
@@ -653,15 +661,17 @@ async def run_support_agent(
         second["kind"] = result.get("kind")
     if _is_repeat(second["reply"], previous_replies) or _is_clarify_loop(second, previous_replies):
         second["kind"] = "handoff"
-    await _record_traces(second_trace, drafts=[trace])
+    await _record_traces(second_trace, drafts=[trace], draft_workflow=draft_workflow)
     return second
 
 
-async def _record_traces(sent: SupportAITrace, *, drafts: list[SupportAITrace] = ()) -> None:
+async def _record_traces(
+    sent: SupportAITrace, *, drafts: list[SupportAITrace] = (), draft_workflow: str = "support_draft"
+) -> None:
     """The sent reply keeps its workflow; replaced drafts become `support_draft` so eval/FAQ
     exports (which read support_question/support_escalation) only see what users received.
     Drafts still count toward the token budget seeding."""
-    for trace in [*(replace(draft, workflow="support_draft") for draft in drafts), sent]:
+    for trace in [*(replace(draft, workflow=draft_workflow) for draft in drafts), sent]:
         try:
             await record_support_ai_trace(trace)
         except Exception:

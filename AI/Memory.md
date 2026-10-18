@@ -90,6 +90,10 @@ Console actions are private to Bruno:
 - The daily post shows active temporary entries only, replaces the previous post, and skips the day when none are active.
 - Managing entries is staff-level (`/info`, panel HELPER tier).
 
+## Crash-log AI
+
+- The AI diagnosis on log cards runs only in the main guild and never in tickets (the ticket AI already reads logs there). Per uploader per rolling 24h: members 3, patrons/testers 10, staff unlimited; admin-approved (🔍) logs don't count.
+
 ## Patreon beta whitelist
 
 - `revoke_owner_access` never revokes: testers (`dev_jar_tester_role_ids`), anyone Patreon still reports active, or anyone whose lookup fails.

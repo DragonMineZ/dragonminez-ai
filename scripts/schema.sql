@@ -621,3 +621,19 @@ CREATE TABLE IF NOT EXISTS support_info_post (
     message_id  BIGINT,
     posted_at   TIMESTAMPTZ
 );
+
+-- Single row (id = 1): when the weekly staff support report last went out (cogs/support_report.py).
+CREATE TABLE IF NOT EXISTS support_report_posts (
+    id          INT PRIMARY KEY CHECK (id = 1),
+    posted_at   TIMESTAMPTZ
+);
+
+-- One row per AI diagnosis on a crash-log card, for the per-uploader rolling 24h limit (services/log_ai_quota.py).
+-- Rows older than 2 days are deleted by the log_parser cog's hourly sweep.
+CREATE TABLE IF NOT EXISTS log_ai_uses (
+    user_id     BIGINT NOT NULL,
+    used_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_log_ai_uses_user_used_at
+    ON log_ai_uses (user_id, used_at);

@@ -42,7 +42,7 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.anthropic_api_key, os.environ["ANTHROPIC_API_KEY"])
         self.assertEqual(settings.ai_model, "claude-haiku-5-5")
         self.assertEqual(settings.ai_support_model, "claude-haiku-5-5")
-        self.assertEqual(settings.ai_support_escalation_model, "claude-opus-5-5")
+        self.assertEqual(settings.ai_support_escalation_model, "claude-sonnet-5-5")
         self.assertEqual(settings.ai_support_escalation_confidence, 0.7)
         self.assertEqual(settings.ai_daily_small_token_limit, 2_250_000)
         self.assertEqual(settings.ai_daily_big_token_limit, 5000)

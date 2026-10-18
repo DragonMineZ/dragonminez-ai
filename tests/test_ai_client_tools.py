@@ -33,7 +33,7 @@ from bulmaai.services.ai_client import (
 from bulmaai.utils import tools_registry
 
 HAIKU = "claude-haiku-5-5"
-OPUS = "claude-opus-5-5"
+SONNET = "claude-sonnet-5-5"
 
 
 class ConfidenceMarkerTests(unittest.TestCase):
@@ -150,12 +150,12 @@ class AIClientToolTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("bulmaai.services.ai_client.client", fake):
             self.assertEqual(await _create_message(timeout_seconds=1, model=HAIKU, max_tokens=10), "plain")
-            self.assertEqual(await _create_message(timeout_seconds=1, model=OPUS, max_tokens=10), "beta")
+            self.assertEqual(await _create_message(timeout_seconds=1, model=SONNET, max_tokens=10), "beta")
 
         self.assertEqual(fake.messages.create.await_args.kwargs, {"model": HAIKU, "max_tokens": 10})
         self.assertEqual(
             fake.beta.messages.create.await_args.kwargs,
-            {"model": OPUS, "max_tokens": 10, "betas": [FALLBACK_BETA], "fallbacks": "default"},
+            {"model": SONNET, "max_tokens": 10, "betas": [FALLBACK_BETA], "fallbacks": "default"},
         )
 
 
@@ -210,7 +210,7 @@ def _settings(**overrides):
     values = dict(
         ai_support_model=HAIKU,
         ai_model=HAIKU,
-        ai_support_escalation_model=OPUS,
+        ai_support_escalation_model=SONNET,
         ai_support_escalation_confidence=0.7,
         ai_support_max_output_tokens=8000,
         ai_support_timeout_seconds=1,
@@ -370,14 +370,14 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
                 _message(
                     "Delete config/dragonminez and restart.\n[kind: answer]\n[confidence: 0.9]",
                     response_id="r2",
-                    model=OPUS,
+                    model=SONNET,
                 ),
             ]
         )
 
         self.assertEqual(create_message.await_count, 2)
         second = create_message.await_args_list[1].kwargs
-        self.assertEqual((second["model"], second["output_config"]), (OPUS, {"effort": "medium"}))
+        self.assertEqual((second["model"], second["output_config"]), (SONNET, {"effort": "medium"}))
         tool_names = [tool["name"] for tool in second["tools"]]
         self.assertIn("search_knowledge", tool_names)
         self.assertIn("get_patreon_status", tool_names)
@@ -579,7 +579,7 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             result, create_message, record_trace = await self._run(
                 [
                     _message("partial", stop_reason="refusal", category="cyber"),
-                    _message("Here is how.\n[kind: answer]\n[confidence: 0.9]", response_id="r2", model=OPUS),
+                    _message("Here is how.\n[kind: answer]\n[confidence: 0.9]", response_id="r2", model=SONNET),
                 ]
             )
 
@@ -593,7 +593,7 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         result, _, _ = await self._run(
             [
                 _message("Maybe reinstall.\n[kind: answer]\n[confidence: 0.3]"),
-                _message("", stop_reason="refusal", model=OPUS),
+                _message("", stop_reason="refusal", model=SONNET),
             ]
         )
         self.assertEqual((result["reply"], result["escalated"]), ("Maybe reinstall.", False))

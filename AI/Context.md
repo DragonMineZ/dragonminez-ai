@@ -22,7 +22,7 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
 - `cogs/`: Discord commands, listeners and `tasks.loop` jobs. Keep them thin.
 - `services/`: logic and DB access (asyncpg). Highlights:
   - `mod_actions` (all moderation actions)
-  - `ai_client` (shared `AsyncAnthropic` client; the `anthropic` SDK is the only AI provider) + `ai_tools` + `ai_guard` (AI calls, tools, output screening). The support AI's fast pass is `claude-haiku-5-5`, escalation is `claude-opus-5-5`; both passes can use tools, including `search_knowledge`. `ai_oneshot` holds the single-shot helpers (summaries, translations, titles)
+  - `ai_client` (shared `AsyncAnthropic` client; the `anthropic` SDK is the only AI provider) + `ai_tools` + `ai_guard` (AI calls, tools, output screening). The support AI's fast pass is `claude-haiku-5-5`, escalation is `claude-sonnet-5-5`; both passes can use tools, including `search_knowledge`. `ai_oneshot` holds the single-shot helpers (summaries, translations, titles)
   - `ai_budget` (two daily token pools: small = haiku, big = all other models; seeded from `support_traces`)
   - `knowledge` (Postgres `knowledge_docs` table, full-text search; sources: mediawiki, ticket, faq, local `data/knowledge/*.md`)
   - `tickets`, `ticket_transcripts` (`knowledge_filename` links a transcript to its `knowledge_docs` row). `tickets.language` is the ticket's support language (member-facing text via `ui/ticket_views.TEXT`, AI via `ai_tickets._ticket_language`); `note_ticket_message` tracks the owner-reply countdown with one conditional UPDATE per ticket message

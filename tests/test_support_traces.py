@@ -69,12 +69,12 @@ class SupportTraceTests(unittest.IsolatedAsyncioTestCase):
         conn = FakeConnection()
         conn.fetchrow_result = [
             {"model": "claude-haiku-5-5", "tokens": 1200},
-            {"model": "claude-opus-5-5", "tokens": 300},
+            {"model": "claude-sonnet-5-5", "tokens": 300},
         ]
 
         rows = await sum_tokens_by_model_since("2026-09-26", pool=FakePool(conn))
 
-        self.assertEqual(rows, [("claude-haiku-5-5", 1200), ("claude-opus-5-5", 300)])
+        self.assertEqual(rows, [("claude-haiku-5-5", 1200), ("claude-sonnet-5-5", 300)])
         self.assertEqual(conn.fetchrow_calls[0][1], ("2026-09-26",))
 
     async def test_get_support_session_maps_row(self) -> None:

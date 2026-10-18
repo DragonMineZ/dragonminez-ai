@@ -99,7 +99,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
 DEFAULT_AI_MODEL = "claude-haiku-5-5"
 # First pass runs on the small model; unsure answers escalate to the big model.
 DEFAULT_AI_SUPPORT_MODEL = "claude-haiku-5-5"
-DEFAULT_AI_SUPPORT_ESCALATION_MODEL = "claude-opus-5-5"
+DEFAULT_AI_SUPPORT_ESCALATION_MODEL = "claude-sonnet-5-5"
 DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE = 0.7
 # Daily token caps per pool (UTC day): small = haiku models, big = everything else.
 DEFAULT_AI_DAILY_SMALL_TOKEN_LIMIT = 2_250_000

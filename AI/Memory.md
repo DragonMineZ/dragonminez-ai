@@ -15,6 +15,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 ## AI provider
 
 - Claude via an Anthropic Console API key (`ANTHROPIC_API_KEY`), never a consumer Claude subscription (Pro/Max) token: those plans' terms don't allow powering a third-party service.
+- Models: Claude Sonnet 5.5 and Haiku 5.5 only. No Opus (Bruno, 2026-10-17).
 - No OpenAI code paths are kept.
 - `support_ai_traces` / `support_sessions` / `ticket_transcripts.openai_file_id` keep their OpenAI-era names as history. Don't rename them.
 

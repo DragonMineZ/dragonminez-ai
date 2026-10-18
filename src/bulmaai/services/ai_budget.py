@@ -98,7 +98,7 @@ def pick_model(preferred: str, settings: Any) -> str | None:
 def escalation_route(settings: Any) -> tuple[str, str, bool] | None:
     """(model, effort, use_tools) for a second opinion, or None when nothing is left.
     Big model while the big pool has room, else the small model at high effort."""
-    big_model = getattr(settings, "ai_support_escalation_model", "claude-opus-5-5")
+    big_model = getattr(settings, "ai_support_escalation_model", "claude-sonnet-5-5")
     effort = getattr(settings, "ai_support_effort", "medium")
     if has_room(BIG, settings):
         return big_model, effort, True

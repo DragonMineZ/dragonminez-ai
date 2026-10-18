@@ -1,3 +1,4 @@
+import asyncio
 import time
 import jwt
 import logging
@@ -5,6 +6,11 @@ import logging
 from bulmaai.services.http import request
 
 log = logging.getLogger(__name__)
+
+# Shared across instances: most callers build a fresh GitHubAppAuth per command.
+# ponytail: one global lock, fine for a single installation; per-key locks if that changes.
+_tokens: dict[tuple[str, str], tuple[str, int]] = {}
+_token_lock = asyncio.Lock()
 
 
 class GitHubAppAuth:
@@ -20,11 +26,6 @@ class GitHubAppAuth:
         self.installation_id = installation_id.strip()
         self.private_key_pem = private_key_pem
 
-        self._token: str | None = None
-        self._expires_epoch: int = 0
-
-        log.info(f"GitHubAppAuth initialized with app_id={self.app_id}, installation_id={self.installation_id}")
-
     def _make_jwt(self) -> str:
         now = int(time.time())
         payload = {
@@ -35,10 +36,16 @@ class GitHubAppAuth:
         return jwt.encode(payload, self.private_key_pem, algorithm="RS256")
 
     async def get_installation_token(self) -> str:
-        now = int(time.time())
-        if self._token and now < (self._expires_epoch - 60):
-            return self._token
+        key = (self.app_id, self.installation_id)
+        async with _token_lock:
+            cached = _tokens.get(key)
+            if cached and time.time() < cached[1] - 60:
+                return cached[0]
+            token = await self._fetch_token()
+            _tokens[key] = (token, int(time.time()) + 45 * 60)
+            return token
 
+    async def _fetch_token(self) -> str:
         gh_jwt = self._make_jwt()
         url = f"https://api.github.com/app/installations/{self.installation_id}/access_tokens"
         headers = {
@@ -51,12 +58,9 @@ class GitHubAppAuth:
         try:
             r = await request("POST", url, headers=headers, json={})
             r.raise_for_status()
-            data = r.json()
-
-            self._token = data["token"]
-            self._expires_epoch = int(time.time()) + 45 * 60
+            token = r.json()["token"]
             log.info("Successfully obtained GitHub installation token")
-            return self._token
+            return token
         except Exception as e:
             # Provide specific error messages for common issues
             error_msg = f"Failed to get GitHub installation token"

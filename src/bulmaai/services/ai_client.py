@@ -719,6 +719,8 @@ async def _run_once(
         "messages": conversation,
         "output_config": {"effort": effort},
         "metadata": {"user_id": _build_safety_identifier(user_id)},
+        # Caches the conversation too, so each tool round re-reads the previous round's prefix at 0.1x.
+        "cache_control": {"type": "ephemeral"},
     }
     if tools:
         request_kwargs["tools"] = tools

@@ -323,6 +323,7 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         cached, dynamic = kwargs["system"]
         self.assertEqual(cached["cache_control"], {"type": "ephemeral"})
         self.assertNotIn("cache_control", dynamic)
+        self.assertEqual(kwargs["cache_control"], {"type": "ephemeral"})
         self.assertIn("channel: support ticket", dynamic["text"])
         self.assertIn("### wiki--Transformations.md\nPress G to transform.", dynamic["text"])
         self.assertEqual(kwargs["messages"], [{"role": "user", "content": "[requester unknown]\nHow do I transform?"}])

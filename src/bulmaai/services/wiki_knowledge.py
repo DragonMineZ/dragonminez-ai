@@ -1,9 +1,11 @@
 """Sync the DragonMineZ wiki (MediaWiki) into the support knowledge store (``knowledge_docs``).
 
 Each content page, read through the MediaWiki API, becomes one Markdown
-knowledge doc named ``wiki--<Page_Title>.md`` with a header that records
-the canonical wiki URL. Translation pages and the main page are skipped.
-The sync compares content hashes against the ``mediawiki`` rows and only
+knowledge doc per ``==`` section: the intro is ``wiki--<Page_Title>.md``, each
+section ``wiki--<Page_Title>--<section_slug>.md``, with a header that records the
+section URL. Sections too long for knowledge.search's excerpt are split again on
+``===`` headings, then on paragraphs. Translation pages and the main page are
+skipped. The sync compares content hashes against the ``mediawiki`` rows and only
 touches those; cogs/knowledge_sync.py runs it every 6 hours.
 """
 
@@ -28,6 +30,9 @@ DEFAULT_WIKI_BASE_URL = "https://wiki.dragonminez.com/wiki/Special:MyLanguage"
 MEDIAWIKI_USER_AGENT = "BulmaAI wiki knowledge sync (+https://github.com/DragonMineZ/dragonminez-ai)"
 MEDIAWIKI_TIMEOUT_SECONDS = 30
 MEDIAWIKI_TITLES_PER_REQUEST = 50
+# Whole rendered doc, header included: knowledge.search only shows the first SEARCH_TEXT_CHARS (1500) of a hit.
+WIKI_CHUNK_MAX_CHARS = 1400
+_MIN_CHUNK_BODY_CHARS = 200
 
 _TRANSLATION_PAGE_PROP = "translate-is-translation"
 _WIKI_PAGE_SUFFIXES = {".md", ".markdown"}
@@ -45,6 +50,12 @@ _BEHAVIOR_SWITCH_RE = re.compile(
 _MY_LANGUAGE_LINK_RE = re.compile(r"(\[\[\s*):?\s*Special:MyLanguage/", re.IGNORECASE)
 _TRAILING_SPACE_RE = re.compile(r"[ \t]+$", re.MULTILINE)
 _EXTRA_BLANK_LINES_RE = re.compile(r"\n{3,}")
+_H2_RE = re.compile(r"^==(?!=)[ \t]*(.+?)[ \t]*==[ \t]*$", re.MULTILINE)
+_H3_RE = re.compile(r"^===(?!=)[ \t]*(.+?)[ \t]*===[ \t]*$", re.MULTILINE)
+_HEADING_LINK_RE = re.compile(r"\[\[(?:[^|\]]*\|)?([^\]]*)\]\]")
+_HEADING_MARKUP_RE = re.compile(r"'{2,}|<[^>]+>")
+_SECTION_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_PAGE_DASH_RE = re.compile(r"-(?=-|$)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,21 +87,24 @@ def wiki_page_url(slug: str, *, base_url: str = DEFAULT_WIKI_BASE_URL) -> str:
     return f"{base_url.rstrip('/')}/{quote(slug)}"
 
 
-def wiki_knowledge_filename(slug: str) -> str:
+def wiki_knowledge_filename(slug: str, section: str = "") -> str:
     # Subpage titles contain "/"; encode it so the filename stays a plain file name (data/knowledge, logs).
-    return f"{WIKI_KNOWLEDGE_FILENAME_PREFIX}{slug.replace('/', '%2F')}.md"
+    # A doubled or trailing "-" is encoded too, so the first "--" always starts the section part.
+    page = _PAGE_DASH_RE.sub("%2D", slug.replace("/", "%2F"))
+    return f"{WIKI_KNOWLEDGE_FILENAME_PREFIX}{page}{f'--{section}' if section else ''}.md"
 
 
 def wiki_slug_from_filename(filename: str) -> str | None:
     name = (filename or "").strip()
     if not name.startswith(WIKI_KNOWLEDGE_FILENAME_PREFIX):
         return None
-    slug = name[len(WIKI_KNOWLEDGE_FILENAME_PREFIX):].replace("%2F", "/")
+    stem = name[len(WIKI_KNOWLEDGE_FILENAME_PREFIX):]
     for suffix in _WIKI_PAGE_SUFFIXES:
-        if slug.lower().endswith(suffix):
-            slug = slug[: -len(suffix)]
+        if stem.lower().endswith(suffix):
+            stem = stem[: -len(suffix)]
             break
-    return slug or None
+    # Section docs cite their page.
+    return stem.split("--", 1)[0].replace("%2D", "-").replace("%2F", "/") or None
 
 
 def wiki_url_for_citation_filename(
@@ -105,31 +119,118 @@ def wiki_url_for_citation_filename(
     return wiki_page_title(slug), wiki_page_url(slug, base_url=base_url)
 
 
-def render_wiki_knowledge_file(
-    *,
-    slug: str,
-    body: str,
-    base_url: str = DEFAULT_WIKI_BASE_URL,
-) -> RenderedWikiPage:
-    title = wiki_page_title(slug)
-    source_url = wiki_page_url(slug, base_url=base_url)
-    normalized_body = body.replace("\r\n", "\n").replace("\r", "\n").strip()
-    content = (
+def _chunk_content(title: str, source_url: str, body: str) -> str:
+    return (
         f"# {title}\n"
         "\n"
         f"Source: {source_url}\n"
         "Origin: DragonMineZ wiki at wiki.dragonminez.com (synced automatically; edit the wiki, not this file)\n"
         "\n"
-        f"{normalized_body}\n"
+        f"{body}\n"
     )
-    return RenderedWikiPage(
-        slug=slug,
-        title=title,
-        filename=wiki_knowledge_filename(slug),
-        content=content,
-        content_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        source_url=source_url,
-    )
+
+
+def _heading_text(raw: str) -> str:
+    text = _HEADING_MARKUP_RE.sub("", _HEADING_LINK_RE.sub(r"\1", raw))
+    return " ".join(text.split()) or raw.strip()
+
+
+def _section_slug(name: str) -> str:
+    return _SECTION_SLUG_RE.sub("_", name.lower()).strip("_") or "section"
+
+
+def _unique(name: str, used: set[str], sep: str) -> str:
+    """MediaWiki-style de-duplication: Foo, Foo_2, Foo_3."""
+    candidate, count = name, 1
+    while candidate in used:
+        count += 1
+        candidate = f"{name}{sep}{count}"
+    used.add(candidate)
+    return candidate
+
+
+def _split_headings(text: str, pattern: re.Pattern[str]) -> tuple[str, list[tuple[str, str]]]:
+    """(text before the first heading, [(heading, body)])."""
+    matches = list(pattern.finditer(text))
+    ends = [match.start() for match in matches[1:]] + [len(text)]
+    lead = text[: matches[0].start()] if matches else text
+    return lead.strip(), [(_heading_text(m.group(1)), text[m.end():end].strip()) for m, end in zip(matches, ends)]
+
+
+def _pack(text: str, budget: int) -> list[str]:
+    """Greedily pack paragraphs into parts of at most budget chars; oversized paragraphs split by line, then hard."""
+    pieces: list[tuple[str, str]] = []
+    for block in text.split("\n\n"):
+        if len(block) <= budget:
+            pieces.append(("\n\n", block))
+            continue
+        for line in block.split("\n"):
+            pieces.extend(("\n", line[i:i + budget]) for i in range(0, len(line), budget))
+    parts: list[str] = []
+    current = ""
+    for sep, piece in pieces:
+        if current and len(current) + len(sep) + len(piece) <= budget:
+            current += sep + piece
+            continue
+        if current:
+            parts.append(current)
+        current = piece
+    if current:
+        parts.append(current)
+    return parts
+
+
+def render_wiki_page_chunks(
+    *,
+    slug: str,
+    body: str,
+    base_url: str = DEFAULT_WIKI_BASE_URL,
+) -> list[RenderedWikiPage]:
+    """One doc for the intro and one per == section, each at most WIKI_CHUNK_MAX_CHARS."""
+    page_title = wiki_page_title(slug)
+    page_url = wiki_page_url(slug, base_url=base_url)
+    normalized_body = body.replace("\r\n", "\n").replace("\r", "\n").strip()
+    intro, sections = _split_headings(normalized_body, _H2_RE)
+
+    pieces: list[tuple[str, str, str, str]] = [(page_title, page_url, "", intro)]  # (title, url, file key, text)
+    anchors: set[str] = set()
+    for name, text in sections:
+        title = f"{page_title}: {name}"
+        url = f"{page_url}#{quote(_unique(name.replace(' ', '_'), anchors, '_'))}"
+        key = _section_slug(name)
+        lead, subsections = _split_headings(text, _H3_RE)
+        sub_anchors = [_unique(sub_name.replace(" ", "_"), anchors, "_") for sub_name, _ in subsections]
+        if not subsections or len(_chunk_content(title, url, text)) <= WIKI_CHUNK_MAX_CHARS:
+            pieces.append((title, url, key, text))
+            continue
+        pieces.append((title, url, key, lead))
+        for (sub_name, sub_text), sub_anchor in zip(subsections, sub_anchors):
+            pieces.append(
+                (f"{title} / {sub_name}", f"{page_url}#{quote(sub_anchor)}", f"{key}_{_section_slug(sub_name)}", sub_text)
+            )
+
+    chunks: list[RenderedWikiPage] = []
+    stems: set[str] = set()
+    for title, url, key, text in pieces:
+        if not text:
+            continue
+        budget = max(WIKI_CHUNK_MAX_CHARS - len(_chunk_content(f"{title} (99/99)", url, "")), _MIN_CHUNK_BODY_CHARS)
+        parts = _pack(text, budget)
+        for index, part in enumerate(parts):
+            part_title = title if len(parts) == 1 else f"{title} ({index + 1}/{len(parts)})"
+            stem = key if index == 0 else f"{key or 'intro'}-{index + 1}"
+            content = _chunk_content(part_title, url, part)
+            chunks.append(
+                RenderedWikiPage(
+                    slug=slug,
+                    title=part_title,
+                    filename=wiki_knowledge_filename(slug, _unique(stem, stems, "-")),
+                    content=content,
+                    content_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    source_url=url,
+                )
+            )
+    return chunks
 
 
 def clean_wikitext(text: str) -> str:
@@ -193,7 +294,7 @@ def load_mediawiki_pages(
     base_url: str = DEFAULT_WIKI_BASE_URL,
     session: requests.Session | None = None,
 ) -> list[RenderedWikiPage]:
-    """Render every main-namespace content page of the wiki as a knowledge file.
+    """Render every main-namespace content page of the wiki as section-sized knowledge docs.
 
     Skips redirects, the main page, Translate translation pages (including the
     source-language copy) and pages that are empty once cleaned.
@@ -242,14 +343,12 @@ def load_mediawiki_pages(
                 body = clean_wikitext(_page_wikitext(page))
                 if not body:
                     continue
-                pages.append(
-                    render_wiki_knowledge_file(slug=wiki_page_slug(title), body=body, base_url=base_url)
-                )
+                pages.extend(render_wiki_page_chunks(slug=wiki_page_slug(title), body=body, base_url=base_url))
     finally:
         if session is None:
             http.close()
 
-    log.info("Loaded %d wiki pages from %s (%d candidate titles)", len(pages), api_url, len(titles))
+    log.info("Loaded %d wiki section docs from %s (%d candidate titles)", len(pages), api_url, len(titles))
     return pages
 
 

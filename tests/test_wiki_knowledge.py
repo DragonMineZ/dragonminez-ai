@@ -10,11 +10,13 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 from bulmaai.services.wiki_knowledge import (
     MEDIAWIKI_TITLES_PER_REQUEST,
     MEDIAWIKI_USER_AGENT,
+    WIKI_CHUNK_MAX_CHARS,
+    RenderedWikiPage,
     apply_wiki_sync,
     clean_wikitext,
     load_mediawiki_pages,
     plan_wiki_sync,
-    render_wiki_knowledge_file,
+    render_wiki_page_chunks,
     sync_wiki_knowledge,
     wiki_knowledge_filename,
     wiki_page_slug,
@@ -26,6 +28,11 @@ from bulmaai.services.wiki_knowledge import (
 
 WIKI_BASE_URL = "https://wiki.dragonminez.com/wiki/Special:MyLanguage"
 API_URL = "https://wiki.dragonminez.com/api.php"
+
+
+def _single_doc(*, slug: str, body: str) -> RenderedWikiPage:
+    [doc] = render_wiki_page_chunks(slug=slug, body=body)
+    return doc
 
 
 class _FakeResponse:
@@ -273,7 +280,7 @@ class LoadMediaWikiPagesTests(unittest.TestCase):
 
 class WikiKnowledgeRenderTests(unittest.TestCase):
     def test_render_includes_title_source_and_body(self) -> None:
-        page = render_wiki_knowledge_file(slug="Custom_Forms", body="Use JSON.\r\nReload after.")
+        page = _single_doc(slug="Custom_Forms", body="Use JSON.\r\nReload after.")
 
         self.assertEqual(page.filename, "wiki--Custom_Forms.md")
         self.assertIn("# Custom Forms", page.content)
@@ -283,17 +290,146 @@ class WikiKnowledgeRenderTests(unittest.TestCase):
         self.assertEqual(len(page.content_sha256), 64)
 
     def test_render_hash_changes_with_body(self) -> None:
-        first = render_wiki_knowledge_file(slug="Raids", body="v1")
-        second = render_wiki_knowledge_file(slug="Raids", body="v2")
+        first = _single_doc(slug="Raids", body="v1")
+        second = _single_doc(slug="Raids", body="v2")
 
         self.assertNotEqual(first.content_sha256, second.content_sha256)
 
 
+class WikiChunkingTests(unittest.TestCase):
+    def test_intro_and_each_level_two_section_get_their_own_doc(self) -> None:
+        body = (
+            "Ki attacks cost energy.\n"
+            "\n"
+            "== Charging Ki ==\n"
+            "Hold C.\n"
+            "=== While flying ===\n"
+            "Slower.\n"
+            "\n"
+            "== [[Stats|Stat]] '''Scaling''' ==\n"
+            "Uses PWR.\n"
+            "\n"
+            "== Charging Ki ==\n"
+            "Duplicate heading.\n"
+        )
+
+        docs = render_wiki_page_chunks(slug="Ki_Attacks", body=body)
+
+        self.assertEqual(
+            [(doc.filename, doc.title, doc.source_url) for doc in docs],
+            [
+                ("wiki--Ki_Attacks.md", "Ki Attacks", f"{WIKI_BASE_URL}/Ki_Attacks"),
+                ("wiki--Ki_Attacks--charging_ki.md", "Ki Attacks: Charging Ki", f"{WIKI_BASE_URL}/Ki_Attacks#Charging_Ki"),
+                ("wiki--Ki_Attacks--stat_scaling.md", "Ki Attacks: Stat Scaling", f"{WIKI_BASE_URL}/Ki_Attacks#Stat_Scaling"),
+                (
+                    "wiki--Ki_Attacks--charging_ki-2.md",
+                    "Ki Attacks: Charging Ki",
+                    f"{WIKI_BASE_URL}/Ki_Attacks#Charging_Ki_2",
+                ),
+            ],
+        )
+        self.assertTrue(docs[0].content.endswith("Ki attacks cost energy.\n"))
+        self.assertIn("Hold C.\n=== While flying ===\nSlower.", docs[1].content)  # small sections stay whole
+        self.assertNotIn("== Charging Ki ==", docs[1].content)
+        self.assertTrue(all(doc.slug == "Ki_Attacks" for doc in docs))
+
+    def test_page_without_intro_has_no_intro_doc(self) -> None:
+        docs = render_wiki_page_chunks(slug="Raids", body="== Overview ==\nWaves of enemies.")
+
+        self.assertEqual([doc.filename for doc in docs], ["wiki--Raids--overview.md"])
+
+    def test_oversized_section_splits_on_level_three_headings(self) -> None:
+        filler = "word " * 150
+        body = (
+            "== Forms ==\nPick a form.\n"
+            f"=== Super Saiyan ===\n{filler}\n"
+            f"=== Super Saiyan 2 ===\n{filler}\n"
+            f"=== Super Saiyan 3 ===\n{filler}\n"
+        )
+
+        docs = render_wiki_page_chunks(slug="Saiyan", body=body)
+
+        self.assertEqual(
+            [(doc.filename, doc.title, doc.source_url) for doc in docs],
+            [
+                ("wiki--Saiyan--forms.md", "Saiyan: Forms", f"{WIKI_BASE_URL}/Saiyan#Forms"),
+                (
+                    "wiki--Saiyan--forms_super_saiyan.md",
+                    "Saiyan: Forms / Super Saiyan",
+                    f"{WIKI_BASE_URL}/Saiyan#Super_Saiyan",
+                ),
+                (
+                    "wiki--Saiyan--forms_super_saiyan_2.md",
+                    "Saiyan: Forms / Super Saiyan 2",
+                    f"{WIKI_BASE_URL}/Saiyan#Super_Saiyan_2",
+                ),
+                (
+                    "wiki--Saiyan--forms_super_saiyan_3.md",
+                    "Saiyan: Forms / Super Saiyan 3",
+                    f"{WIKI_BASE_URL}/Saiyan#Super_Saiyan_3",
+                ),
+            ],
+        )
+        self.assertTrue(all(len(doc.content) <= WIKI_CHUNK_MAX_CHARS for doc in docs))
+
+    def test_oversized_text_splits_on_paragraphs_then_lines_and_keeps_everything(self) -> None:
+        paragraphs = [f"Paragraph {index}: " + "x" * 300 for index in range(8)]
+        table = "{| class=\"wikitable\"\n" + "\n".join(f"|-\n| row {index} || " + "y" * 60 for index in range(40)) + "\n|}"
+        body = "\n\n".join(paragraphs) + "\n\n== Config ==\n" + table
+
+        docs = render_wiki_page_chunks(slug="General_Server_Config", body=body)
+
+        intro = [doc for doc in docs if doc.title.startswith("General Server Config (")]
+        config = [doc for doc in docs if doc.title.startswith("General Server Config: Config")]
+        self.assertGreater(len(intro), 1)
+        self.assertGreater(len(config), 1)
+        self.assertEqual(len(docs), len(intro) + len(config))
+        self.assertEqual(intro[0].filename, "wiki--General_Server_Config.md")
+        self.assertEqual(intro[1].filename, "wiki--General_Server_Config--intro-2.md")
+        self.assertEqual(intro[1].title, f"General Server Config (2/{len(intro)})")
+        self.assertEqual(config[1].filename, "wiki--General_Server_Config--config-2.md")
+        self.assertTrue(all(doc.source_url.endswith("#Config") for doc in config))
+        self.assertEqual(len({doc.filename for doc in docs}), len(docs))
+        self.assertTrue(all(len(doc.content) <= WIKI_CHUNK_MAX_CHARS for doc in docs))
+        text = "".join(doc.content for doc in docs)
+        for needle in [*paragraphs, "| row 0 ||", "| row 39 ||"]:
+            self.assertIn(needle, text)
+
+    def test_section_filename_cites_the_page(self) -> None:
+        self.assertEqual(
+            wiki_url_for_citation_filename("wiki--Forms%2FSuper_Saiyan--how_to_unlock-2.md"),
+            ("Forms/Super Saiyan", f"{WIKI_BASE_URL}/Forms/Super_Saiyan"),
+        )
+
+    def test_page_titles_with_dashes_roundtrip_through_section_filenames(self) -> None:
+        for slug in ("Bio-Android", "Kaio--ken", "Odd-", "-Lead", "A---B", "X/Y--Z"):
+            for section in ("", "overview", "intro-2"):
+                filename = wiki_knowledge_filename(slug, section)
+                self.assertEqual(wiki_slug_from_filename(filename), slug, filename)
+        self.assertEqual(wiki_knowledge_filename("Bio-Android"), "wiki--Bio-Android.md")
+        self.assertEqual(wiki_knowledge_filename("Kaio--ken", "forms"), "wiki--Kaio%2D-ken--forms.md")
+
+    def test_sync_deletes_rows_of_removed_sections_and_old_page_docs(self) -> None:
+        docs = render_wiki_page_chunks(slug="Combat", body="Intro.\n\n== Blocking ==\nHold block.")
+        stored = {
+            "wiki--Combat.md": docs[0].content_sha256,
+            "wiki--Combat--blocking.md": "old-hash",
+            "wiki--Combat--parrying.md": "section removed from the wiki",
+            "wiki--Removed_Page--overview.md": "page removed from the wiki",
+        }
+
+        plan = plan_wiki_sync(docs, stored)
+
+        self.assertEqual([doc.filename for doc in plan.uploads], ["wiki--Combat--blocking.md"])
+        self.assertEqual(plan.deletes, ("wiki--Combat--parrying.md", "wiki--Removed_Page--overview.md"))
+        self.assertEqual(plan.unchanged, 1)
+
+
 class PlanWikiSyncTests(unittest.TestCase):
     def test_plan_uploads_new_and_changed_and_deletes_stale(self) -> None:
-        unchanged = render_wiki_knowledge_file(slug="Raids", body="same")
-        changed = render_wiki_knowledge_file(slug="Sagas", body="new content")
-        new = render_wiki_knowledge_file(slug="Dragons_and_Wishes", body="fresh")
+        unchanged = _single_doc(slug="Raids", body="same")
+        changed = _single_doc(slug="Sagas", body="new content")
+        new = _single_doc(slug="Dragons_and_Wishes", body="fresh")
         stored = {
             "wiki--Raids.md": unchanged.content_sha256,
             "wiki--Sagas.md": "old-hash",
@@ -308,7 +444,7 @@ class PlanWikiSyncTests(unittest.TestCase):
         self.assertIn("wiki--Deleted_Page.md", stored)  # the caller's dict is left alone
 
     def test_plan_with_nothing_stored_uploads_everything(self) -> None:
-        pages = [render_wiki_knowledge_file(slug="Races", body="hub")]
+        pages = [_single_doc(slug="Races", body="hub")]
 
         plan = plan_wiki_sync(pages, {})
 
@@ -319,7 +455,7 @@ class PlanWikiSyncTests(unittest.TestCase):
 
 class ApplyWikiSyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_apply_upserts_pages_with_url_and_deletes_gone_ones(self) -> None:
-        page = render_wiki_knowledge_file(slug="Forms/Super_Saiyan", body="Transform.")
+        page = _single_doc(slug="Forms/Super_Saiyan", body="Transform.")
         plan = plan_wiki_sync([page], {"wiki--Gone.md": "x"})
         upsert, delete = AsyncMock(return_value=True), AsyncMock(return_value=True)
 
@@ -338,7 +474,7 @@ class ApplyWikiSyncTests(unittest.IsolatedAsyncioTestCase):
         delete.assert_awaited_once_with("wiki--Gone.md", pool="pool")
 
     async def test_sync_compares_against_stored_mediawiki_rows(self) -> None:
-        page = render_wiki_knowledge_file(slug="Raids", body="same")
+        page = _single_doc(slug="Raids", body="same")
         stored = {"wiki--Raids.md": page.content_sha256, "wiki--Old.md": "x"}
         list_by_source = AsyncMock(return_value=stored)
         upsert, delete = AsyncMock(), AsyncMock()

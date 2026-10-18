@@ -65,7 +65,7 @@ def safe_name(name: object) -> str:
 
 
 def neutralize_labels(text: str) -> str:
-    """Message text can't open a fake speaker label; the real labels are added by openai_client only."""
+    """Message text can't open a fake speaker label; the real labels are added by ai_client only."""
     return _FORGED_LABEL_RE.sub(r"\1(quoted) [", text)
 
 

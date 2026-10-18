@@ -9,13 +9,19 @@ from discord.components import _component_factory
 
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.config import load_settings
 from bulmaai.cogs import bug_reports as bug_cog
 from bulmaai.cogs.bug_reports import BugReportsCog
-from bulmaai.services.bug_report_ai import DuplicateAssessment, _coerce_triage, log_digest
+from bulmaai.services.bug_report_ai import (
+    DuplicateAssessment,
+    _coerce_triage,
+    analyze_bug_report,
+    assess_duplicate,
+    log_digest,
+)
 from bulmaai.ui import bug_report_views as views
 from bulmaai.utils.log_parser import LogReport
 
@@ -26,7 +32,7 @@ class BugReportConfigTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -37,7 +43,7 @@ class BugReportConfigTests(unittest.TestCase):
         self.assertEqual(settings.bug_report_forum_channel_id, 1526421736336265377)
         self.assertEqual(settings.bug_report_repo, "dragonminez")
         self.assertEqual(settings.bug_report_poll_minutes, 10)
-        self.assertEqual(settings.openai_bugreport_model, "gpt-5-mini")
+        self.assertEqual(settings.ai_bugreport_model, "claude-haiku-5-5")
 
     def test_bug_report_settings_are_environment_configurable(self) -> None:
         with patch.dict(
@@ -47,7 +53,7 @@ class BugReportConfigTests(unittest.TestCase):
                 "BUG_REPORT_FORUM_CHANNEL_ID": "999",
                 "BUG_REPORT_REPO": "dragonminez_ai",
                 "BUG_REPORT_POLL_MINUTES": "3",
-                "OPENAI_BUGREPORT_MODEL": "gpt-4.1-mini",
+                "AI_BUGREPORT_MODEL": "claude-test",
             },
             clear=False,
         ):
@@ -57,7 +63,7 @@ class BugReportConfigTests(unittest.TestCase):
         self.assertEqual(settings.bug_report_forum_channel_id, 999)
         self.assertEqual(settings.bug_report_repo, "dragonminez_ai")
         self.assertEqual(settings.bug_report_poll_minutes, 3)
-        self.assertEqual(settings.openai_bugreport_model, "gpt-4.1-mini")
+        self.assertEqual(settings.ai_bugreport_model, "claude-test")
 
 
 class BugTriageCoercionTests(unittest.TestCase):
@@ -242,6 +248,53 @@ class BugReportCogTests(unittest.IsolatedAsyncioTestCase):
             await self._cog(tickets)._handle_open_ticket(self._interaction(42, thread), 9)
         set_status.assert_not_awaited()
         thread.delete.assert_not_awaited()
+
+
+def _claude_json(text: str, stop_reason: str = "end_turn"):
+    return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)], stop_reason=stop_reason)
+
+
+class BugReportAICallTests(unittest.IsolatedAsyncioTestCase):
+    async def test_analyze_sends_claude_request_with_schema(self) -> None:
+        create = AsyncMock(return_value=_claude_json('{"is_bug": true, "title": "Crash on load"}'))
+        client = SimpleNamespace(messages=SimpleNamespace(create=create))
+
+        triage = await analyze_bug_report(client, model="claude-haiku-5-5", report_text="it crashes")
+
+        kwargs = create.await_args.kwargs
+        self.assertEqual(kwargs["messages"], [{"role": "user", "content": "it crashes"}])
+        self.assertIn("system", kwargs)
+        self.assertEqual(kwargs["output_config"]["format"]["type"], "json_schema")
+        self.assertGreaterEqual(kwargs["max_tokens"], 4000)
+        self.assertEqual(triage.title, "Crash on load")
+
+    async def test_refusal_falls_back_to_default_triage(self) -> None:
+        client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(return_value=_claude_json("", "refusal"))))
+
+        triage = await analyze_bug_report(client, model="claude-haiku-5-5", report_text="x", fallback_title="Fallback")
+
+        self.assertEqual(triage.title, "Fallback")
+
+    async def test_duplicate_assessment_reads_claude_json(self) -> None:
+        payload = '{"match_type": "duplicate", "issue_number": 5, "confidence": "high", "reason": "same"}'
+        create = AsyncMock(return_value=_claude_json(payload))
+        client = SimpleNamespace(messages=SimpleNamespace(create=create))
+
+        result = await assess_duplicate(
+            client, model="claude-haiku-5-5", report_text="boom", candidates=[{"number": 5, "title": "Boom"}]
+        )
+
+        self.assertEqual(result.issue_number, 5)
+        self.assertEqual(create.await_args.kwargs["output_config"]["format"]["type"], "json_schema")
+
+    async def test_duplicate_refusal_is_no_match(self) -> None:
+        client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(return_value=_claude_json("", "refusal"))))
+
+        result = await assess_duplicate(
+            client, model="claude-haiku-5-5", report_text="boom", candidates=[{"number": 5, "title": "Boom"}]
+        )
+
+        self.assertEqual(result.match_type, "none")
 
 
 if __name__ == "__main__":

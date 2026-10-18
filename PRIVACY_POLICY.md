@@ -1,6 +1,6 @@
 # Privacy Policy — BulmaAI (DragonMineZ Support Bot)
 
-**Last updated:** October 7, 2026
+**Last updated:** October 17, 2026
 
 This Privacy Policy explains what information the BulmaAI Discord bot ("the Bot",
 "we", "us") collects, how it is used, how long it is kept, and the choices you
@@ -107,22 +107,22 @@ We use the information we collect to:
 
 ---
 
-## 3. Third-Party Processing (OpenAI)
+## 3. Third-Party Processing (Anthropic)
 
-To generate AI support answers, translations, and log analysis, message content
-is transmitted to the OpenAI API for processing at the time of your request.
-This includes the recent conversation around your request (see Section 1).
+To generate AI support answers, bug report summaries, translations, and log
+analysis, message content is transmitted to the Anthropic API for processing at
+the time of your request. This covers support tickets, the /ask command, bug
+reports, announcements being translated, and any images you attach. It also
+includes the recent conversation around your request (see Section 1).
 When your question is about your own account, the Bot also sends the relevant
-account data to OpenAI: your Patreon link and role status, your beta whitelist
+account data to Anthropic: your Patreon link and role status, your beta whitelist
 entries (Minecraft usernames), your dev jar access, and your bug report status.
 It never sends your Patreon name, Patreon IDs, or billing details, and it only
 looks up the account of the person asking.
 
-We participate in OpenAI's data sharing program, so inputs and outputs sent to
-the OpenAI API **may be used by OpenAI to train and improve its models**. Do not
-share passwords, personal contact details, or other sensitive information with
-the Bot. OpenAI's handling of API data is governed by its own policies:
-https://openai.com/policies/
+Do not share passwords, personal contact details, or other sensitive
+information with the Bot. Anthropic's handling of API data is governed by its
+own policies: https://www.anthropic.com/legal/privacy
 
 We run internal quality evaluations on stored support questions and answers to
 measure the accuracy of the Bot's responses. This tests our prompts and does not
@@ -130,10 +130,10 @@ train any model.
 
 When a support ticket is closed, the text messages from the ticket (no images;
 only previously generated text descriptions of screenshots) are summarized by
-OpenAI and the transcript is stored in our database. Tickets with a reusable
-problem/solution are uploaded to an OpenAI vector store (file storage used for
-search, not model training) with the requester's name replaced by "Requester",
-so the Bot can answer similar questions later.
+Anthropic and the transcript is stored in our database. Tickets with a reusable
+problem/solution are also saved in our own database as searchable knowledge,
+with the requester's name replaced by "Requester", so the Bot can answer similar
+questions later.
 
 ---
 
@@ -203,7 +203,7 @@ access, loss, or misuse.
 
 We do not sell your data. We do not share your data with third parties except:
 
-- **OpenAI**, solely to process message content and return AI responses, as
+- **Anthropic**, solely to process message content and return AI responses, as
   described in Section 3.
 - **Patreon.** You authorize Patreon through OAuth, and we also receive
   updates from Patreon (webhooks and the creator API) about your pledge. This

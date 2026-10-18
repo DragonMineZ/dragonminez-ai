@@ -28,7 +28,7 @@ STAGING_NAME = ".update-staging"
 BUSY_WAIT_SECONDS = 60
 CHECK_TIMEOUT_SECONDS = 300
 # Same dummies as CI so tests never pick up the live token or keys.
-TEST_ENV = {"DISCORD_TOKEN": "dummy", "OPENAI_KEY": "dummy", "GH_APP_PRIVATE_KEY_PEM": "dummy"}
+TEST_ENV = {"DISCORD_TOKEN": "dummy", "ANTHROPIC_API_KEY": "dummy", "GH_APP_PRIVATE_KEY_PEM": "dummy"}
 
 
 async def run(*args: str, cwd: Path | None = None, env: dict | None = None, timeout: float = CHECK_TIMEOUT_SECONDS) -> tuple[int, str]:

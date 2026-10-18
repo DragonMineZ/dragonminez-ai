@@ -491,7 +491,7 @@ class TicketsCog(ReloadableCog):
             return await triage_intake(
                 category.name,
                 answers,
-                model=settings.openai_ticket_summary_model,
+                model=settings.ai_ticket_summary_model,
                 fallback_slug=category.fallback_slug,
             )
         except Exception:

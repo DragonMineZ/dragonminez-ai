@@ -13,7 +13,8 @@ if str(SRC_ROOT) not in sys.path:
 from bulmaai.config import load_settings
 from bulmaai.database.db import close_db_pool, init_db_pool
 from bulmaai.services.support_faq import (
-    publish_faq_markdown_to_vector_store,
+    FAQ_KNOWLEDGE_FILENAME,
+    publish_faq_markdown,
     suggest_faq_candidates,
     support_trace_to_faq_source,
     write_faq_markdown,
@@ -37,18 +38,17 @@ async def _run(
     min_confidence: float,
     publish: bool,
     publish_existing: bool,
-    vector_store_id: str | None,
-) -> tuple[int, Path, dict[str, str] | None]:
+) -> tuple[int, Path, bool | None]:
     load_dotenv()
     settings = load_settings()
-    output_path = _repo_relative_path(output or settings.openai_faq_generated_path)
-    suggestion_model = model or settings.openai_faq_suggestion_model
-    target_vector_store_id = vector_store_id or settings.openai_faq_vector_store_id
+    output_path = _repo_relative_path(output or settings.ai_faq_generated_path)
+    suggestion_model = model or settings.ai_faq_suggestion_model
 
     count = 0
-    if not publish_existing:
-        await init_db_pool()
-        try:
+    publish_result = None
+    await init_db_pool()
+    try:
+        if not publish_existing:
             rows = await list_support_eval_trace_rows(limit=limit)
             sources = [support_trace_to_faq_source(row) for row in rows]
             candidates = await suggest_faq_candidates(
@@ -59,20 +59,13 @@ async def _run(
             )
             write_faq_markdown(candidates, output_path)
             count = len(candidates)
-        finally:
-            await close_db_pool()
-
-    publish_result = None
-    if publish or publish_existing:
-        if not target_vector_store_id:
-            raise RuntimeError(
-                "Set OPENAI_FAQ_VECTOR_STORE_ID or pass --vector-store-id before using --publish."
-            )
-        publish_result = await publish_faq_markdown_to_vector_store(
-            output_path,
-            vector_store_id=target_vector_store_id,
-        )
-    return len(candidates), output_path, publish_result
+        if publish or publish_existing:
+            if not output_path.is_file():
+                raise RuntimeError(f"No FAQ Markdown at {output_path}; generate it first.")
+            publish_result = await publish_faq_markdown(output_path.read_text(encoding="utf-8"))
+    finally:
+        await close_db_pool()
+    return count, output_path, publish_result
 
 
 def main() -> None:
@@ -83,7 +76,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Markdown path to write. Defaults to OPENAI_FAQ_GENERATED_PATH.",
+        help="Markdown path to write. Defaults to AI_FAQ_GENERATED_PATH.",
     )
     parser.add_argument(
         "--limit",
@@ -94,7 +87,7 @@ def main() -> None:
     parser.add_argument(
         "--model",
         default=None,
-        help="OpenAI model for candidate generation. Defaults to OPENAI_FAQ_SUGGESTION_MODEL.",
+        help="Claude model for candidate generation. Defaults to AI_FAQ_SUGGESTION_MODEL.",
     )
     parser.add_argument(
         "--max-candidates",
@@ -111,17 +104,12 @@ def main() -> None:
     parser.add_argument(
         "--publish",
         action="store_true",
-        help="Generate Markdown, then upload it to the configured FAQ vector store.",
+        help=f"Generate Markdown, then publish it to the support AI knowledge ({FAQ_KNOWLEDGE_FILENAME}).",
     )
     parser.add_argument(
         "--publish-existing",
         action="store_true",
-        help="Upload the existing Markdown file without regenerating it.",
-    )
-    parser.add_argument(
-        "--vector-store-id",
-        default=None,
-        help="Override OPENAI_FAQ_VECTOR_STORE_ID for --publish.",
+        help="Publish the existing Markdown file without regenerating it.",
     )
     args = parser.parse_args()
 
@@ -135,7 +123,6 @@ def main() -> None:
                 min_confidence=args.min_confidence,
                 publish=args.publish,
                 publish_existing=args.publish_existing,
-                vector_store_id=args.vector_store_id,
             )
         )
     except RuntimeError as exc:
@@ -146,11 +133,8 @@ def main() -> None:
     else:
         print(f"Wrote {count} FAQ candidates to {output_path}")
     if publish_result is not None:
-        print(
-            "Uploaded FAQ file "
-            f"{publish_result['file_id']} as vector store file "
-            f"{publish_result['vector_store_file_id']}"
-        )
+        state = "updated" if publish_result else "unchanged"
+        print(f"Published FAQ knowledge doc {FAQ_KNOWLEDGE_FILENAME} ({state})")
 
 
 if __name__ == "__main__":

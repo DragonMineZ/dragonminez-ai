@@ -1,13 +1,13 @@
-"""Sync the DragonMineZ wiki (MediaWiki) into the OpenAI support vector store.
+"""Sync the DragonMineZ wiki (MediaWiki) into the support knowledge store (``knowledge_docs``).
 
 Each content page, read through the MediaWiki API, becomes one Markdown
-knowledge file named ``wiki--<Page_Title>.md`` with a header that records
+knowledge doc named ``wiki--<Page_Title>.md`` with a header that records
 the canonical wiki URL. Translation pages and the main page are skipped.
-Sync state lives in vector store file attributes (``source``,
-``wiki_slug``, ``content_sha256``), so the sync is stateless and only
-touches files it uploaded itself, including the legacy GitHub wiki ones.
+The sync compares content hashes against the ``mediawiki`` rows and only
+touches those; cogs/knowledge_sync.py runs it every 6 hours.
 """
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -18,17 +18,17 @@ from urllib.parse import quote
 
 import requests
 
+from bulmaai.services import knowledge
+
 log = logging.getLogger(__name__)
 
 WIKI_KNOWLEDGE_FILENAME_PREFIX = "wiki--"
 WIKI_KNOWLEDGE_SOURCE = "mediawiki"
-LEGACY_WIKI_KNOWLEDGE_SOURCE = "github-wiki"
 DEFAULT_WIKI_BASE_URL = "https://wiki.dragonminez.com/wiki/Special:MyLanguage"
 MEDIAWIKI_USER_AGENT = "BulmaAI wiki knowledge sync (+https://github.com/DragonMineZ/dragonminez-ai)"
 MEDIAWIKI_TIMEOUT_SECONDS = 30
 MEDIAWIKI_TITLES_PER_REQUEST = 50
 
-_MANAGED_WIKI_KNOWLEDGE_SOURCES = frozenset({WIKI_KNOWLEDGE_SOURCE, LEGACY_WIKI_KNOWLEDGE_SOURCE})
 _TRANSLATION_PAGE_PROP = "translate-is-translation"
 _WIKI_PAGE_SUFFIXES = {".md", ".markdown"}
 
@@ -58,16 +58,9 @@ class RenderedWikiPage:
 
 
 @dataclass(frozen=True, slots=True)
-class RemoteWikiFile:
-    file_id: str
-    wiki_slug: str
-    content_sha256: str
-
-
-@dataclass(frozen=True, slots=True)
 class WikiSyncPlan:
     uploads: tuple[RenderedWikiPage, ...]
-    deletes: tuple[RemoteWikiFile, ...]
+    deletes: tuple[str, ...]  # knowledge_docs filenames
     unchanged: int
 
 
@@ -84,7 +77,7 @@ def wiki_page_url(slug: str, *, base_url: str = DEFAULT_WIKI_BASE_URL) -> str:
 
 
 def wiki_knowledge_filename(slug: str) -> str:
-    # Subpage titles contain "/", which upload filenames may lose (basename), so encode it.
+    # Subpage titles contain "/"; encode it so the filename stays a plain file name (data/knowledge, logs).
     return f"{WIKI_KNOWLEDGE_FILENAME_PREFIX}{slug.replace('/', '%2F')}.md"
 
 
@@ -260,113 +253,44 @@ def load_mediawiki_pages(
     return pages
 
 
-def plan_wiki_sync(
-    pages: list[RenderedWikiPage],
-    remote_files: list[RemoteWikiFile],
-) -> WikiSyncPlan:
-    remote_by_slug: dict[str, list[RemoteWikiFile]] = {}
-    for entry in remote_files:
-        remote_by_slug.setdefault(entry.wiki_slug, []).append(entry)
-
+def plan_wiki_sync(pages: list[RenderedWikiPage], stored: dict[str, str]) -> WikiSyncPlan:
+    """stored: {filename: content_sha256} of the mediawiki rows in knowledge_docs."""
+    remaining = dict(stored)
     uploads: list[RenderedWikiPage] = []
-    deletes: list[RemoteWikiFile] = []
     unchanged = 0
-
     for page in pages:
-        remotes = remote_by_slug.pop(page.slug, [])
-        current = next((remote for remote in remotes if remote.content_sha256 == page.content_sha256), None)
-        if current is None:
-            uploads.append(page)
-        else:
+        if remaining.pop(page.filename, None) == page.content_sha256:
             unchanged += 1
-        deletes.extend(remote for remote in remotes if remote is not current)
-
-    for remotes in remote_by_slug.values():
-        deletes.extend(remotes)
-
-    return WikiSyncPlan(uploads=tuple(uploads), deletes=tuple(deletes), unchanged=unchanged)
+        else:
+            uploads.append(page)
+    return WikiSyncPlan(uploads=tuple(uploads), deletes=tuple(sorted(remaining)), unchanged=unchanged)
 
 
-def _remote_file_from_attributes(file_id: str, attributes: Any) -> RemoteWikiFile | None:
-    if not isinstance(attributes, dict):
-        return None
-    if attributes.get("source") not in _MANAGED_WIKI_KNOWLEDGE_SOURCES:
-        return None
-    slug = str(attributes.get("wiki_slug") or "").strip()
-    if not slug:
-        return None
-    return RemoteWikiFile(
-        file_id=file_id,
-        wiki_slug=slug,
-        content_sha256=str(attributes.get("content_sha256") or ""),
-    )
-
-
-async def list_remote_wiki_files(
-    *,
-    vector_store_id: str,
-    openai_client: Any | None = None,
-) -> list[RemoteWikiFile]:
-    """List wiki-managed files (MediaWiki and legacy GitHub wiki) in the vector store; unmanaged files are ignored."""
-    resolved_client = openai_client
-    if resolved_client is None:
-        from bulmaai.services.openai_client import client as resolved_client
-
-    remote_files: list[RemoteWikiFile] = []
-    async for entry in resolved_client.vector_stores.files.list(
-        vector_store_id=vector_store_id,
-        limit=100,
-    ):
-        remote = _remote_file_from_attributes(
-            str(getattr(entry, "id")),
-            getattr(entry, "attributes", None),
-        )
-        if remote is not None:
-            remote_files.append(remote)
-    return remote_files
-
-
-async def apply_wiki_sync(
-    plan: WikiSyncPlan,
-    *,
-    vector_store_id: str,
-    openai_client: Any | None = None,
-) -> dict[str, int]:
-    resolved_client = openai_client
-    if resolved_client is None:
-        from bulmaai.services.openai_client import client as resolved_client
-
-    uploaded = 0
+async def apply_wiki_sync(plan: WikiSyncPlan, *, pool: Any | None = None) -> dict[str, int]:
     for page in plan.uploads:
-        created_file = await resolved_client.files.create(
-            file=(page.filename, page.content.encode("utf-8")),
-            purpose="assistants",
+        await knowledge.upsert(
+            page.filename,
+            source=WIKI_KNOWLEDGE_SOURCE,
+            title=page.title,
+            content=page.content,
+            url=page.source_url,
+            pool=pool,
         )
-        file_id = str(getattr(created_file, "id"))
-        await resolved_client.vector_stores.files.create_and_poll(
-            vector_store_id=vector_store_id,
-            file_id=file_id,
-            attributes={
-                "source": WIKI_KNOWLEDGE_SOURCE,
-                "wiki_slug": page.slug,
-                "content_sha256": page.content_sha256,
-                "source_url": page.source_url,
-            },
-        )
-        uploaded += 1
-        log.info("Uploaded wiki knowledge file %s", page.filename)
+    for filename in plan.deletes:
+        await knowledge.delete(filename, pool=pool)
+    return {"uploaded": len(plan.uploads), "deleted": len(plan.deletes), "unchanged": plan.unchanged}
 
-    deleted = 0
-    for remote in plan.deletes:
-        await resolved_client.vector_stores.files.delete(
-            remote.file_id,
-            vector_store_id=vector_store_id,
-        )
-        try:
-            await resolved_client.files.delete(remote.file_id)
-        except Exception:
-            log.warning("Detached but could not delete file %s", remote.file_id, exc_info=True)
-        deleted += 1
-        log.info("Removed stale wiki knowledge file for slug %s", remote.wiki_slug)
 
-    return {"uploaded": uploaded, "deleted": deleted, "unchanged": plan.unchanged}
+async def sync_wiki_knowledge(
+    api_url: str,
+    *,
+    base_url: str = DEFAULT_WIKI_BASE_URL,
+    pool: Any | None = None,
+) -> dict[str, int]:
+    """Mirror the wiki into knowledge_docs: upsert new/changed pages, delete pages gone from the wiki."""
+    pages = await asyncio.to_thread(load_mediawiki_pages, api_url, base_url=base_url)
+    if not pages:
+        # An empty wiki is an outage or a bad URL, not a real state; syncing it would wipe the knowledge.
+        raise RuntimeError(f"No wiki pages found at {api_url}; refusing to sync an empty set.")
+    stored = await knowledge.list_by_source(WIKI_KNOWLEDGE_SOURCE, pool=pool)
+    return await apply_wiki_sync(plan_wiki_sync(pages, stored), pool=pool)

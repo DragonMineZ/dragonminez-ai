@@ -308,6 +308,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_transcripts_html_token
 CREATE INDEX IF NOT EXISTS idx_ticket_transcripts_channel_id
     ON ticket_transcripts (channel_id);
 
+-- knowledge_docs filename of the closed ticket's knowledge doc (openai_file_id is history only).
+ALTER TABLE ticket_transcripts ADD COLUMN IF NOT EXISTS knowledge_filename TEXT;
+
+-- Support AI knowledge (services/knowledge.py), searched with Postgres full-text search.
+-- source: mediawiki (wiki pages), ticket (closed tickets), faq (generated FAQ), local (data/knowledge/*.md).
+-- The 'simple' config lets Spanish/Portuguese questions still hit English pages on shared terms.
+CREATE TABLE IF NOT EXISTS knowledge_docs (
+    filename        TEXT PRIMARY KEY,
+    source          TEXT NOT NULL,
+    title           TEXT NOT NULL DEFAULT '',
+    url             TEXT,
+    content         TEXT NOT NULL,
+    content_sha256  TEXT NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tsv             tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('english', title), 'A')
+        || to_tsvector('english', content)
+        || to_tsvector('simple', title || ' ' || content)
+    ) STORED
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_tsv
+    ON knowledge_docs USING GIN (tsv);
+
 CREATE TABLE IF NOT EXISTS panel_audit_log (
     id          BIGSERIAL PRIMARY KEY,
     actor_id    BIGINT NOT NULL,

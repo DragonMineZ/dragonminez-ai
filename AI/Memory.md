@@ -12,6 +12,12 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 - Guardrails are enforced in code first; prompt text is only a second layer.
 - Tests: `test_bot_startup`, `test_ai_guard`.
 
+## AI provider
+
+- Claude via an Anthropic Console API key (`ANTHROPIC_API_KEY`), never a consumer Claude subscription (Pro/Max) token: those plans' terms don't allow powering a third-party service.
+- No OpenAI code paths are kept.
+- `support_ai_traces` / `support_sessions` / `ticket_transcripts.openai_file_id` keep their OpenAI-era names as history. Don't rename them.
+
 ## Discord UI: Components V2 only
 
 - Every bot message is native V2, built with `ui/v2.py` (card, head, facts, fit, trim, rows). Never send `discord.Embed` or a classic `discord.ui.View`.

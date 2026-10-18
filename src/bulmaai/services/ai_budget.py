@@ -1,8 +1,7 @@
-"""Daily OpenAI token budget for the free data-sharing pools.
+"""Daily Claude token caps, so a busy day can't run up the bill.
 
-Tool-free traffic on mini/nano models draws from the "small" pool, other models from the
-"big" pool. Requests with tools are excluded from the free program, so they draw from a
-"billed" pool we cap ourselves. Days roll over at 00:00 UTC, like OpenAI's pools.
+Haiku models draw from the "small" pool, every other model from the "big" pool.
+Days roll over at 00:00 UTC.
 """
 
 import logging
@@ -11,10 +10,10 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-SMALL, BIG, BILLED = "small", "big", "billed"
+SMALL, BIG = "small", "big"
 
 # ponytail: in-memory, seeded from today's support traces at startup; non-support calls made
-# before a restart are forgotten, the 90% default limits absorb that.
+# before a restart are forgotten, the default limits leave headroom for that.
 _day: date | None = None
 _used: dict[str, int] = {}
 
@@ -37,14 +36,11 @@ def reset() -> None:
     _used.clear()
 
 
-def pool_for(model: str | None, *, billed: bool = False) -> str:
-    if billed:
-        return BILLED
-    name = (model or "").lower()
-    return SMALL if "mini" in name or "nano" in name else BIG
+def pool_for(model: str | None) -> str:
+    return SMALL if "haiku" in (model or "").lower() else BIG
 
 
-def record(model: Any, tokens: Any, *, billed: bool = False) -> None:
+def record(model: Any, tokens: Any) -> None:
     """Never raises: accounting must not break a reply."""
     try:
         amount = int(tokens)
@@ -53,13 +49,25 @@ def record(model: Any, tokens: Any, *, billed: bool = False) -> None:
     if amount <= 0:
         return
     _roll()
-    pool = pool_for(str(model or ""), billed=billed)
+    pool = pool_for(str(model or ""))
     _used[pool] = _used.get(pool, 0) + amount
 
 
-def record_response(response: Any, *, billed: bool = False) -> None:
-    usage = getattr(response, "usage", None)
-    record(getattr(response, "model", None), getattr(usage, "total_tokens", None), billed=billed)
+def usage_total(usage: Any) -> int | None:
+    """Every token a Claude call billed: input, output and both cache counters."""
+    if usage is None:
+        return None
+    try:
+        return sum(
+            int(getattr(usage, name, 0) or 0)
+            for name in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def record_response(response: Any) -> None:
+    record(getattr(response, "model", None), usage_total(getattr(response, "usage", None)))
 
 
 def used(pool: str) -> int:
@@ -69,7 +77,7 @@ def used(pool: str) -> int:
 
 def has_room(pool: str, settings: Any) -> bool:
     """An unset limit means unlimited; 0 disables the pool."""
-    limit = getattr(settings, f"openai_daily_{pool}_token_limit", None)
+    limit = getattr(settings, f"ai_daily_{pool}_token_limit", None)
     return limit is None or used(pool) < int(limit)
 
 
@@ -78,30 +86,28 @@ def is_paused(settings: Any) -> bool:
 
 
 def pick_model(preferred: str, settings: Any) -> str | None:
-    """Model for a tool-free call: None when the small pool is spent (AI paused),
-    the mini model when a big model is asked for but the big pool is spent."""
+    """Model for a call: None when the small pool is spent (AI paused),
+    the small model when a big model is asked for but the big pool is spent."""
     if is_paused(settings):
         return None
     if pool_for(preferred) == BIG and not has_room(BIG, settings):
-        return getattr(settings, "openai_model", preferred)
+        return getattr(settings, "ai_model", preferred)
     return preferred
 
 
 def escalation_route(settings: Any) -> tuple[str, str, bool] | None:
-    """(model, reasoning effort, use_tools) for a second opinion, or None when nothing is left.
-    Billed big model with tools → free big model without tools → free mini at high effort."""
-    big_model = getattr(settings, "openai_support_escalation_model", "gpt-5")
-    effort = getattr(settings, "openai_support_reasoning_effort", "medium")
-    if has_room(BILLED, settings):
-        return big_model, effort, True
+    """(model, effort, use_tools) for a second opinion, or None when nothing is left.
+    Big model while the big pool has room, else the small model at high effort."""
+    big_model = getattr(settings, "ai_support_escalation_model", "claude-opus-5-5")
+    effort = getattr(settings, "ai_support_effort", "medium")
     if has_room(BIG, settings):
-        return big_model, effort, False
+        return big_model, effort, True
     if has_room(SMALL, settings):
-        return getattr(settings, "openai_model", "gpt-5-mini"), "high", False
+        return getattr(settings, "ai_model", "claude-haiku-5-5"), "high", True
     return None
 
 
 def seed(rows: Any) -> None:
-    """Rows of (model, billed, tokens) already spent today."""
-    for model, billed, tokens in rows:
-        record(model, tokens, billed=bool(billed))
+    """Rows of (model, tokens) already spent today."""
+    for model, tokens in rows:
+        record(model, tokens)

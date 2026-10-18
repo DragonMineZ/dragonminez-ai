@@ -1,75 +1,16 @@
+DragonMineZ support knowledge lives in the bot's Postgres table `knowledge_docs`
+(`services/knowledge.py`), searched with Postgres full-text search by the support AI.
+Each doc has a `source`:
 
-DragonMineZ support knowledge is stored in the OpenAI vector store configured by
-`OPENAI_SUPPORT_VECTOR_STORE_IDS`. The bot does not use a local/Postgres FAQ
-database. Curated FAQ entries should be maintained as text-native knowledge files
-and uploaded to the OpenAI Dashboard Storage vector store.
+- `mediawiki`: every English content page of https://wiki.dragonminez.com, stored as
+  `wiki--<Page_Title>.md`. The bot syncs it every 6 hours (`cogs/knowledge_sync.py`,
+  reading `WIKI_API_URL`). Edit the wiki, not the stored docs; the sync replaces them.
+- `ticket`: closed tickets that staff took part in and the summary marked as reusable.
+- `faq`: the generated FAQ (`support-faq.md`), published with
+  `scripts/suggest_support_faq.py --publish` (or `--publish-existing` after reviewing
+  the Markdown it wrote).
+- `local`: the `.md` files in this folder (this README excluded).
 
-The primary documentation source is the DragonMineZ wiki at
-https://wiki.dragonminez.com (MediaWiki), mirrored automatically into the vector
-store as `wiki--<Page_Title>.md` files by `scripts/sync_wiki_knowledge.py`, which
-reads the wiki API (`WIKI_API_URL`) every 6 hours from the `Wiki Knowledge Sync`
-workflow. Only English source pages are synced; translations are skipped. Do not
-hand-edit `wiki--` files in the store — edit the wiki instead; the sync replaces
-them. The legacy Trello PDF export is obsolete and should not be re-uploaded.
-
-Recommended vector stores:
-
-- `dragonminez-faq-prod` for short, approved FAQ answers generated from support traces
-- `dragonminez-support-docs-prod` for longer docs, guides, PDFs, changelogs, and policy notes
-
-The support bot can read both stores through:
-
-```powershell
-$env:OPENAI_SUPPORT_VECTOR_STORE_IDS='vs_faq,vs_support_docs'
-```
-
-The FAQ suggestion/publish script needs one upload target:
-
-```powershell
-$env:OPENAI_FAQ_VECTOR_STORE_ID='vs_faq'
-$env:OPENAI_FAQ_SUGGESTION_MODEL='gpt-5.4-mini'
-$env:OPENAI_FAQ_GENERATED_PATH='data/knowledge/generated/dragonminez-faq.md'
-```
-
-Recommended FAQ file shape:
-
-```markdown
-# DragonMineZ FAQ
-
-## How do I transform?
-
-Use the configured transform key after meeting the form requirements.
-Tags: forms, controls
-```
-
-Generate candidate FAQ entries from recorded support traces:
-
-```powershell
-$env:PYTHONPATH='src'; python scripts/suggest_support_faq.py --limit 200 --output data/knowledge/generated/dragonminez-faq.md
-```
-
-Review and edit the generated Markdown before publishing. After approval, upload it
-to the FAQ vector store without regenerating:
-
-```powershell
-$env:PYTHONPATH='src'; python scripts/suggest_support_faq.py --publish-existing
-```
-
-After updating FAQ or support docs, upload the changed file to the OpenAI vector
-store named for production support knowledge, wait until processing is complete,
-and keep the `vs_...` id in `OPENAI_SUPPORT_VECTOR_STORE_IDS`.
-
-```powershell
-$env:PYTHONPATH='src'; python scripts/export_support_eval_dataset.py --output data/evals/support_eval_dataset.jsonl
-```
-
-Preferred formats:
-- `.md` or `.txt` for curated support notes, FAQs, changelogs, and troubleshooting docs
-- `.json` for exported structured data such as tickets, Trello cards, or issue snapshots
-- `.html` for copied wiki/help pages
-- `.pdf` only when a text-native source is not available
-
-Why text-native files are still preferred:
-- text-native files preserve headings and structure better
-- OpenAI file search can retrieve cleaner chunks
-- admins can update individual files without rebuilding one large PDF export
+To add curated knowledge, drop a Markdown file here and commit it. The title is the
+first `# ` heading (or the file name). The bot loads this folder on every start and
+removes docs whose file was deleted.

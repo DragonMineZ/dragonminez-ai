@@ -2,7 +2,7 @@ py-cord[speed]>=2.8.0
 python-dotenv
 requests
 cryptography
-openai
+anthropic>=1.15
 pyjwt
 colorlog
 asyncpg

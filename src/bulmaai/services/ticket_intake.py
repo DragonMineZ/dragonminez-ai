@@ -7,7 +7,7 @@ from typing import Any
 
 from bulmaai.services import ai_budget
 from bulmaai.services.ai_guard import defuse_mentions, strip_links
-from bulmaai.services.support_faq import _extract_response_json
+from bulmaai.services.ai_oneshot import json_output_config, response_json
 from bulmaai.services.tickets import sanitize_slug
 
 INTAKE_INSTRUCTIONS = """You open DragonMineZ (Minecraft mod) Discord support tickets from a short form.
@@ -45,32 +45,26 @@ async def triage_intake(
     *,
     model: str,
     fallback_slug: str,
-    openai_client: Any | None = None,
+    client: Any | None = None,
     timeout_seconds: int = 20,
 ) -> TicketIntake:
     form_text = f"Category: {category}\n" + "\n".join(f"{label}: {value}" for label, value in answers)
 
-    resolved_client = openai_client
+    resolved_client = client
     if resolved_client is None:
-        from bulmaai.services.openai_client import client as resolved_client
+        from bulmaai.services.ai_client import client as resolved_client
 
     request_kwargs: dict[str, Any] = {
         "model": model,
-        "instructions": INTAKE_INSTRUCTIONS,
-        "input": [{"role": "user", "content": form_text[:6000]}],
-        "max_output_tokens": 600,
-        "metadata": {"app": "dragonminez-ai", "workflow": "ticket_intake"},
-        "store": True,
-        "text": {
-            "format": {"type": "json_schema", "name": "ticket_intake", "schema": INTAKE_SCHEMA, "strict": True}
-        },
+        "system": INTAKE_INSTRUCTIONS,
+        "messages": [{"role": "user", "content": form_text[:6000]}],
+        "max_tokens": 4000,
+        "output_config": json_output_config(INTAKE_SCHEMA),
     }
-    if model.startswith("gpt-5"):
-        request_kwargs["reasoning"] = {"effort": "low"}
 
-    response = await asyncio.wait_for(resolved_client.responses.create(**request_kwargs), timeout=timeout_seconds)
+    response = await asyncio.wait_for(resolved_client.messages.create(**request_kwargs), timeout=timeout_seconds)
     ai_budget.record_response(response)
-    payload = _extract_response_json(response)
+    payload = response_json(response, "ticket_intake")
     payload = payload if isinstance(payload, dict) else {}
     language = str(payload.get("language") or "en")
     return TicketIntake(
@@ -101,27 +95,23 @@ async def owner_says_solved(
     conversation: str,
     *,
     model: str,
-    openai_client: Any | None = None,
+    client: Any | None = None,
     timeout_seconds: int = 20,
 ) -> bool:
     """Yes/no: does the owner's last message (the end of `conversation`) say the ticket is solved?"""
-    resolved_client = openai_client
+    resolved_client = client
     if resolved_client is None:
-        from bulmaai.services.openai_client import client as resolved_client
+        from bulmaai.services.ai_client import client as resolved_client
 
     request_kwargs: dict[str, Any] = {
         "model": model,
-        "instructions": SOLVED_INSTRUCTIONS,
-        "input": [{"role": "user", "content": conversation[-4000:]}],
-        "max_output_tokens": 300,
-        "metadata": {"app": "dragonminez-ai", "workflow": "ticket_solved_check"},
-        "store": True,
-        "text": {"format": {"type": "json_schema", "name": "ticket_solved", "schema": SOLVED_SCHEMA, "strict": True}},
+        "system": SOLVED_INSTRUCTIONS,
+        "messages": [{"role": "user", "content": conversation[-4000:]}],
+        "max_tokens": 4000,
+        "output_config": json_output_config(SOLVED_SCHEMA),
     }
-    if model.startswith("gpt-5"):
-        request_kwargs["reasoning"] = {"effort": "low"}
 
-    response = await asyncio.wait_for(resolved_client.responses.create(**request_kwargs), timeout=timeout_seconds)
+    response = await asyncio.wait_for(resolved_client.messages.create(**request_kwargs), timeout=timeout_seconds)
     ai_budget.record_response(response)
-    payload = _extract_response_json(response)
+    payload = response_json(response, "ticket_solved")
     return isinstance(payload, dict) and payload.get("solved") is True

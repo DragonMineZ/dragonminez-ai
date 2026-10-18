@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.config import load_settings
@@ -16,37 +16,44 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "AI_SUPPORT_DEBOUNCE_SECONDS": "0",
-                "OPENAI_SUPPORT_FAST_REASONING_EFFORT": "low",
-                "OPENAI_SUPPORT_VECTOR_STORE_IDS": "vs_docs, vs_tickets",
-                "OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS": "8",
-                "OPENAI_SUPPORT_STORE_RESPONSES": "true",
-                "OPENAI_FAQ_SUGGESTION_MODEL": "gpt-5.4-mini",
-                "OPENAI_FAQ_VECTOR_STORE_ID": "vs_faq",
-                "OPENAI_FAQ_GENERATED_PATH": "data/knowledge/generated/faq.md",
+                "AI_SUPPORT_FAST_EFFORT": "high",
+                "AI_SUPPORT_EFFORT": "low",
+                "AI_SUPPORT_MAX_OUTPUT_TOKENS": "4000",
+                "AI_KNOWLEDGE_MAX_RESULTS": "8",
+                "AI_FAQ_SUGGESTION_MODEL": "claude-test",
+                "AI_FAQ_GENERATED_PATH": "data/knowledge/generated/faq.md",
             },
             clear=False,
         ):
             settings = load_settings(include_overrides=False)
 
         self.assertEqual(settings.ai_support_debounce_seconds, 0)
-        self.assertEqual(settings.openai_support_fast_reasoning_effort, "low")
-        self.assertEqual(settings.openai_support_vector_store_ids, ("vs_docs", "vs_tickets"))
-        self.assertEqual(settings.openai_support_file_search_max_results, 8)
-        self.assertTrue(settings.openai_support_store_responses)
-        self.assertEqual(settings.openai_faq_suggestion_model, "gpt-5.4-mini")
-        self.assertEqual(settings.openai_faq_vector_store_id, "vs_faq")
-        self.assertEqual(settings.openai_faq_generated_path, "data/knowledge/generated/faq.md")
+        self.assertEqual(settings.ai_support_fast_effort, "high")
+        self.assertEqual(settings.ai_support_effort, "low")
+        self.assertEqual(settings.ai_support_max_output_tokens, 4000)
+        self.assertEqual(settings.ai_knowledge_max_results, 8)
+        self.assertEqual(settings.ai_faq_suggestion_model, "claude-test")
+        self.assertEqual(settings.ai_faq_generated_path, "data/knowledge/generated/faq.md")
 
-    def test_escalation_and_budget_settings_default_to_free_pools(self) -> None:
-        with patch.dict(os.environ, {"OPENAI_DAILY_BILLED_TOKEN_LIMIT": "5000"}, clear=False):
+    def test_claude_model_and_budget_defaults(self) -> None:
+        with patch.dict(os.environ, {"AI_DAILY_BIG_TOKEN_LIMIT": "5000"}, clear=False):
             settings = load_settings(include_overrides=False)
 
-        self.assertEqual(settings.openai_support_model, "gpt-5-mini")
-        self.assertEqual(settings.openai_support_escalation_model, "gpt-5")
+        self.assertEqual(settings.anthropic_api_key, os.environ["ANTHROPIC_API_KEY"])
+        self.assertEqual(settings.ai_model, "claude-haiku-5-5")
+        self.assertEqual(settings.ai_support_model, "claude-haiku-5-5")
+        self.assertEqual(settings.ai_support_escalation_model, "claude-opus-5-5")
         self.assertEqual(settings.ai_support_escalation_confidence, 0.7)
-        self.assertEqual(settings.openai_daily_small_token_limit, 2_250_000)
-        self.assertEqual(settings.openai_daily_big_token_limit, 225_000)
-        self.assertEqual(settings.openai_daily_billed_token_limit, 5000)
+        self.assertEqual(settings.ai_daily_small_token_limit, 2_250_000)
+        self.assertEqual(settings.ai_daily_big_token_limit, 5000)
+        for name in ("ai_vision_model", "ai_translation_model", "ai_bugreport_model", "ai_faq_suggestion_model"):
+            self.assertEqual(getattr(settings, name), "claude-haiku-5-5")
+        self.assertFalse(any(name.startswith("openai_") for name in vars(settings)))
+
+    def test_anthropic_api_key_is_required(self) -> None:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "ANTHROPIC_API_KEY"):
+                load_settings(include_overrides=False)
 
     def test_phishdestroy_settings_are_environment_configurable(self) -> None:
         with patch.dict(
@@ -73,7 +80,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -121,7 +128,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -135,7 +142,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -150,7 +157,7 @@ class ConfigSettingsTests(unittest.TestCase):
     def test_wiki_settings_default_to_mediawiki_and_are_environment_configurable(self) -> None:
         base_env = {
             "DISCORD_TOKEN": "dummy-discord-token",
-            "OPENAI_KEY": "dummy-openai-key",
+            "ANTHROPIC_API_KEY": "dummy-anthropic-key",
             "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
         }
         with patch.dict(os.environ, base_env, clear=True):
@@ -214,7 +221,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -231,7 +238,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -283,7 +290,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -305,7 +312,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -335,7 +342,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -351,7 +358,7 @@ class ConfigSettingsTests(unittest.TestCase):
             os.environ,
             {
                 "DISCORD_TOKEN": "dummy-discord-token",
-                "OPENAI_KEY": "dummy-openai-key",
+                "ANTHROPIC_API_KEY": "dummy-anthropic-key",
                 "GH_APP_PRIVATE_KEY_PEM": "dummy-github-key",
             },
             clear=True,
@@ -369,8 +376,7 @@ class ConfigSettingsTests(unittest.TestCase):
                 "AI_TICKET_RESOLVE_MIN_CONFIDENCE": "0.7",
                 "AI_TICKET_RESOLVE_PROMPT_EXPONENT": "2.5",
                 "AI_TICKET_CLOSE_DELAY_SECONDS": "0",
-                "OPENAI_TICKET_SUMMARY_MODEL": "gpt-test",
-                "OPENAI_TICKET_VECTOR_STORE_ID": "vs_tickets",
+                "AI_TICKET_SUMMARY_MODEL": "claude-test",
             },
             clear=False,
         ):
@@ -379,8 +385,7 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.ai_ticket_resolve_min_confidence, 0.7)
         self.assertEqual(settings.ai_ticket_resolve_prompt_exponent, 2.5)
         self.assertEqual(settings.ai_ticket_close_delay_seconds, 0)
-        self.assertEqual(settings.openai_ticket_summary_model, "gpt-test")
-        self.assertEqual(settings.openai_ticket_vector_store_id, "vs_tickets")
+        self.assertEqual(settings.ai_ticket_summary_model, "claude-test")
 
 if __name__ == "__main__":
     unittest.main()

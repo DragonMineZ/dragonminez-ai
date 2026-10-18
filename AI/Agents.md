@@ -15,9 +15,9 @@ Entry point for any AI agent working here. Read this, then `AI/Memory.md` and `A
 
 - Git root is this folder (`.../dragonminez-ai/dragonminez-ai`). The parent folder is not a repo.
 - Python launcher is `py`. `python`/`python3` in Git Bash hit the Microsoft Store stub.
-- Tests: `PYTHONPATH=src py -m pytest tests -q` (~860 tests, ~80s). Without `PYTHONPATH` everything fails at collection. CI runs Python 3.13 with dummy `DISCORD_TOKEN`/`OPENAI_KEY`/`GH_APP_PRIVATE_KEY_PEM`.
+- Tests: `PYTHONPATH=src py -m pytest tests -q` (~860 tests, ~80s). Without `PYTHONPATH` everything fails at collection. CI runs Python 3.13 with dummy `DISCORD_TOKEN`/`ANTHROPIC_API_KEY`/`GH_APP_PRIVATE_KEY_PEM`.
 - No local `.env`. Importing `bulmaai.cogs.*` calls `load_settings()` and dies without `DISCORD_TOKEN`. Syntax-check with `py -m py_compile <file>` plus the tests.
-- Real Discord, OpenAI and Postgres can't run locally. Say so instead of claiming something was verified live.
+- Real Discord, the Claude API and Postgres can't run locally. Say so instead of claiming something was verified live.
 - Files with emoji: edit them with an editor tool, not `python -` heredocs (they corrupt on Windows). In heredocs, `\\n` inside Python strings becomes a real newline.
 - The bot starts as `python -m bulmaai` from `src/`. `python -m src.bulmaai` imports every module twice and is refused.
 

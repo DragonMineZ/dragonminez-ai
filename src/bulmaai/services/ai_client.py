@@ -11,17 +11,17 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Optional, TypedDict
 
-from openai import (
+from anthropic import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
-    AsyncOpenAI,
+    AsyncAnthropic,
     InternalServerError,
     RateLimitError,
 )
 
 from bulmaai.config import Settings, load_settings
-from bulmaai.services import ai_budget, ai_guard, ai_tools, support_info
+from bulmaai.services import ai_budget, ai_guard, ai_tools, knowledge, support_info
 from bulmaai.services.support_traces import SupportAITrace, record_support_ai_trace
 from bulmaai.services.wiki_knowledge import (
     DEFAULT_WIKI_BASE_URL,
@@ -30,11 +30,30 @@ from bulmaai.services.wiki_knowledge import (
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils import tools_registry
 
-client = AsyncOpenAI(api_key=load_settings().openai_key)
+client = AsyncAnthropic(api_key=load_settings().anthropic_api_key)
 log = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 3
-MAX_KNOWLEDGE_CHUNK_CHARS = 1500
+DEFAULT_KNOWLEDGE_MAX_RESULTS = 5
+# Server-side refusal fallback ("default" picks Anthropic's recommended model per refusal category).
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+CONTINUE_TURN = "(continue the support conversation)"
+START_TURN = "(start of the support conversation)"
+SEARCH_KNOWLEDGE_TOOL = "search_knowledge"
+SEARCH_KNOWLEDGE_SCHEMA: dict[str, Any] = {
+    "name": SEARCH_KNOWLEDGE_TOOL,
+    "description": (
+        "Search DragonMineZ wiki pages, solved support tickets and the FAQ. Write the query in English "
+        "(a few keywords: feature, item, error or symptom). Cite the filenames you used in [sources: ...]."
+    ),
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "Search keywords, in English."}},
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
 REPEAT_SIMILARITY = 0.85
 REPEAT_MIN_CHARS = 40
 REPEAT_NOTE = (
@@ -131,25 +150,30 @@ def _assistant_replies(messages: list[ConversationMessage]) -> list[str]:
     ]
 
 
-def _build_response_input(
+def _build_conversation(
     messages: list[ConversationMessage],
     *,
     context_lines: list[str] | None = None,
-) -> list[dict[str, str]]:
+) -> tuple[str, list[dict[str, str]]]:
+    """(context text for the system prompt, conversation turns). The turns start and end on a user turn,
+    as the Messages API needs (no assistant prefill)."""
     merged = _merge_assistant_turns(messages)
     context = [
         *(context_lines or []),
         f"today (UTC): {datetime.now(timezone.utc).date().isoformat()}",
         f"your earlier replies in this transcript: {sum(1 for m in merged if m.get('role') == 'assistant')}",
     ]
-    response_input: list[dict[str, str]] = [
-        {"role": "developer", "content": "Context:\n" + "\n".join(f"- {line}" for line in context)},
-    ]
+    turns: list[dict[str, str]] = []
     for message in merged:
         content = _message_to_input_content(message)
         if content:
-            response_input.append({"role": message.get("role", "user"), "content": content})
-    return response_input
+            role = "assistant" if message.get("role") == "assistant" else "user"
+            turns.append({"role": role, "content": content})
+    if not turns or turns[0]["role"] != "user":
+        turns.insert(0, {"role": "user", "content": START_TURN})
+    if turns[-1]["role"] != "user":
+        turns.append({"role": "user", "content": CONTINUE_TURN})
+    return "Context:\n" + "\n".join(f"- {line}" for line in context), turns
 
 
 SUPPORT_INFO_HEADER = (
@@ -159,7 +183,7 @@ SUPPORT_INFO_HEADER = (
 
 
 async def _support_info_text() -> str:
-    """Staff support info for the developer message; a DB failure only drops the section."""
+    """Staff support info for the system prompt; a DB failure only drops the section."""
     try:
         return support_info.render_for_ai(await support_info.cached_active())
     except Exception:
@@ -169,7 +193,7 @@ async def _support_info_text() -> str:
 
 def _build_data_input(
     knowledge: list[dict[str, str]], prefetch_lines: list[str], support_info_text: str = ""
-) -> list[dict[str, str]]:
+) -> str:
     parts: list[str] = []
     if support_info_text:
         parts.append(SUPPORT_INFO_HEADER + support_info_text)
@@ -183,7 +207,7 @@ def _build_data_input(
             "Knowledge search results for this conversation (cite the files you used in [sources: ...]):\n\n"
             + "\n\n".join(f"### {hit['filename']}\n{hit['text']}" for hit in knowledge)
         )
-    return [{"role": "developer", "content": "\n\n".join(parts)}] if parts else []
+    return "\n\n".join(parts)
 
 
 def _latest_user_message(
@@ -234,52 +258,19 @@ def _load_system_prompt(lang: str = "en") -> str:
     )
 
 
-def _extract_function_calls(response: Any) -> list[dict[str, Any]]:
-    calls: list[dict[str, Any]] = []
-    for item in getattr(response, "output", []) or []:
-        if getattr(item, "type", None) != "function_call":
-            continue
-        calls.append(
-            {
-                "name": item.name,
-                "arguments": getattr(item, "arguments", "{}"),
-                "call_id": getattr(item, "call_id", None),
-            }
-        )
-    return calls
+def _extract_tool_uses(response: Any) -> list[Any]:
+    """The `tool_use` blocks of a response that stopped to call tools."""
+    if getattr(response, "stop_reason", None) != "tool_use":
+        return []
+    return [block for block in getattr(response, "content", []) or [] if getattr(block, "type", None) == "tool_use"]
 
 
-def _extract_output_text(response: Any) -> str:
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return output_text.strip()
-
-    reply_text = ""
-    for item in getattr(response, "output", []) or []:
-        if getattr(item, "type", None) != "message":
-            continue
-        for part in getattr(item, "content", []) or []:
-            if getattr(part, "type", None) == "output_text":
-                reply_text += getattr(part, "text", "")
-    return reply_text.strip()
-
-
-def _extract_file_citations(response: Any) -> list[str]:
-    """Collect cited knowledge filenames from file_search annotations, in order."""
-    filenames: list[str] = []
-    for item in getattr(response, "output", []) or []:
-        if getattr(item, "type", None) != "message":
-            continue
-        for part in getattr(item, "content", []) or []:
-            if getattr(part, "type", None) != "output_text":
-                continue
-            for annotation in getattr(part, "annotations", []) or []:
-                if getattr(annotation, "type", None) != "file_citation":
-                    continue
-                filename = getattr(annotation, "filename", None)
-                if filename and filename not in filenames:
-                    filenames.append(str(filename))
-    return filenames
+def _extract_text(response: Any) -> str:
+    return "".join(
+        getattr(block, "text", "") or ""
+        for block in getattr(response, "content", []) or []
+        if getattr(block, "type", None) == "text"
+    ).strip()
 
 
 MAX_WIKI_SOURCE_LINKS = 3
@@ -386,77 +377,37 @@ def _hydrate_tool_args(
 
 
 def _select_reasoning_effort(settings: Any, *, high_confidence: bool = False) -> str:
-    default_effort = getattr(settings, "openai_support_reasoning_effort", "medium")
-    fast_effort = getattr(settings, "openai_support_fast_reasoning_effort", default_effort)
+    default_effort = getattr(settings, "ai_support_effort", "medium")
+    fast_effort = getattr(settings, "ai_support_fast_effort", default_effort)
     if high_confidence:
         return fast_effort
     return default_effort
 
 
-def _support_vector_store_ids(settings: Any) -> list[str]:
-    return [
-        str(value).strip()
-        for value in getattr(settings, "openai_support_vector_store_ids", ())
-        if str(value).strip()
-    ]
-
-
-def _file_search_max_results(settings: Any) -> int:
+def _knowledge_max_results(settings: Any) -> int:
     try:
-        return int(getattr(settings, "openai_support_file_search_max_results", 0) or 0)
+        return int(getattr(settings, "ai_knowledge_max_results", 0) or 0) or DEFAULT_KNOWLEDGE_MAX_RESULTS
     except (TypeError, ValueError):
-        return 0
+        return DEFAULT_KNOWLEDGE_MAX_RESULTS
 
 
-def _build_file_search_tool(settings: Any) -> dict[str, Any] | None:
-    vector_store_ids = _support_vector_store_ids(settings)
-    if not vector_store_ids:
-        return None
-    tool: dict[str, Any] = {
-        "type": "file_search",
-        "vector_store_ids": vector_store_ids,
-    }
-    max_results = _file_search_max_results(settings)
-    if max_results > 0:
-        tool["max_num_results"] = max_results
-    return tool
-
-
-async def _search_knowledge(query: str, settings: Any) -> list[dict[str, str]]:
-    """Retrieval for the tool-free pass (tool use is excluded from the free token pool)."""
-    vector_store_ids = _support_vector_store_ids(settings)
-    if not vector_store_ids or not query:
+async def _search_knowledge(query: str, settings: Any) -> list[dict[str, Any]]:
+    """Prefetch retrieval before the first call; a failure only drops the section."""
+    if not query:
         return []
-    max_results = _file_search_max_results(settings) or 5
     try:
-        pages = await asyncio.gather(
-            *(
-                client.vector_stores.search(
-                    vector_store_id=vector_store_id,
-                    query=query,
-                    max_num_results=max_results,
-                    rewrite_query=True,
-                )
-                for vector_store_id in vector_store_ids
-            )
-        )
+        return await knowledge.search(query, _knowledge_max_results(settings))
     except Exception:
         log.exception("Knowledge search failed", extra={"event": "support_knowledge_search_failed"})
         return []
-    hits = sorted(
-        (hit for page in pages for hit in getattr(page, "data", []) or []),
-        key=lambda hit: getattr(hit, "score", 0.0) or 0.0,
-        reverse=True,
-    )
-    return [
-        {
-            "filename": str(hit.filename),
-            "text": "\n".join(
-                getattr(part, "text", "") for part in hit.content or [] if getattr(part, "type", None) == "text"
-            )[:MAX_KNOWLEDGE_CHUNK_CHARS],
-        }
-        for hit in hits[:max_results]
-    ]
+
+
+async def _run_knowledge_tool(args: dict[str, Any], settings: Any, filenames: set[str]) -> dict[str, Any]:
+    """The `search_knowledge` client tool. Raises on a DB failure (reported to the model as is_error)."""
+    query = str(args.get("query") or "").strip()
+    hits = await knowledge.search(query, _knowledge_max_results(settings)) if query else []
+    filenames.update(hit["filename"] for hit in hits)
+    return {"results": [{"filename": hit["filename"], "title": hit["title"], "text": hit["text"]} for hit in hits]}
 
 
 async def _prefetch(bot: Any, user_id: int, text: str, account_key: Any = None) -> list[str]:
@@ -469,18 +420,17 @@ async def _prefetch(bot: Any, user_id: int, text: str, account_key: Any = None) 
         return []
 
 
-def _build_prompt_cache_key(*, model: str, tools: list[dict[str, Any]]) -> str:
-    tool_signature = hashlib.sha256(
-        json.dumps(tools, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()[:16]
-    return f"support:{model}:{tool_signature}"
+def _uses_server_fallback(model: str) -> bool:
+    """Haiku has no server-side refusal fallback; its refusals become "(no reply)"."""
+    return "haiku" not in (model or "").lower()
 
 
-async def _create_response(*, timeout_seconds: int, **kwargs: Any) -> Any:
-    return await asyncio.wait_for(
-        client.responses.create(**kwargs),
-        timeout=timeout_seconds,
-    )
+async def _create_message(*, timeout_seconds: int, **kwargs: Any) -> Any:
+    if _uses_server_fallback(kwargs.get("model", "")):
+        call = client.beta.messages.create(**kwargs, betas=[FALLBACK_BETA], fallbacks="default")
+    else:
+        call = client.messages.create(**kwargs)
+    return await asyncio.wait_for(call, timeout=timeout_seconds)
 
 
 def is_transient_ai_error(error: BaseException) -> bool:
@@ -494,7 +444,7 @@ def is_transient_ai_error(error: BaseException) -> bool:
     return False
 
 
-def _build_openai_metadata(
+def _build_trace_metadata(
     *,
     workflow: str,
     language: str,
@@ -535,21 +485,14 @@ def _usage_int(usage: Any, *names: str) -> int | None:
 
 
 def _extract_response_usage(response: Any) -> dict[str, int | None]:
+    """Claude usage: the total includes both cache counters; there is no reasoning-token count."""
     usage = getattr(response, "usage", None)
-    input_details = (
-        _get_attr_or_key(usage, "input_tokens_details")
-        or _get_attr_or_key(usage, "prompt_tokens_details")
-    )
-    output_details = (
-        _get_attr_or_key(usage, "output_tokens_details")
-        or _get_attr_or_key(usage, "completion_tokens_details")
-    )
     return {
-        "input_tokens": _usage_int(usage, "input_tokens", "prompt_tokens"),
-        "output_tokens": _usage_int(usage, "output_tokens", "completion_tokens"),
-        "total_tokens": _usage_int(usage, "total_tokens"),
-        "cached_tokens": _usage_int(input_details, "cached_tokens"),
-        "reasoning_tokens": _usage_int(output_details, "reasoning_tokens"),
+        "input_tokens": _usage_int(usage, "input_tokens"),
+        "output_tokens": _usage_int(usage, "output_tokens"),
+        "total_tokens": ai_budget.usage_total(usage),
+        "cached_tokens": _usage_int(usage, "cache_read_input_tokens"),
+        "reasoning_tokens": None,
     }
 
 
@@ -583,7 +526,14 @@ def _is_clarify_loop(result: AgentResult, previous_replies: list[str]) -> bool:
     return result.get("kind") == "clarify" and bool(previous_replies) and "?" in previous_replies[-1]
 
 
+def _reply_suppressed(tool_results: list[ToolCallResult]) -> bool:
+    """A tool already answered the requester (e.g. it posted its own card)."""
+    return any(isinstance(r["output"], dict) and r["output"].get("suppress_ai_reply") is True for r in tool_results)
+
+
 def _needs_escalation(result: AgentResult, *, repeat: bool, threshold: float, clarify_loop: bool = False) -> bool:
+    if _reply_suppressed(result.get("tool_results") or []):
+        return False
     if repeat or clarify_loop or result.get("reply") == "(no reply)":
         return True
     kind = result.get("kind")
@@ -608,7 +558,7 @@ async def run_support_agent(
     requester_is_staff: bool = False,
     channel_kind: str | None = None,
 ) -> AgentResult:
-    """Tool-free first pass on the fast model (free pool), escalating when it is unsure or repeats itself."""
+    """Fast first pass on the support model, escalating when it is unsure, repeats itself or loops on questions."""
     runtime_settings = settings or load_settings()
     last_user = _latest_user_message(messages, target_speaker_id=str(user_id))
     if language_hint:
@@ -618,7 +568,7 @@ async def run_support_agent(
     else:
         language = "en"
 
-    preferred = model_override or runtime_settings.openai_support_model or runtime_settings.openai_model
+    preferred = model_override or runtime_settings.ai_support_model or runtime_settings.ai_model
     model = ai_budget.pick_model(preferred, runtime_settings)
     if model is None:
         return AgentResult(
@@ -639,10 +589,12 @@ async def run_support_agent(
         _prefetch(bot, user_id, query, (channel_id, user_id) if ticket_conversation else None),
         _support_info_text(),
     )
+    context_text, conversation = _build_conversation(messages, context_lines=context_lines)
     run = functools.partial(
         _run_once,
-        base_input=_build_response_input(messages, context_lines=context_lines),
-        data_input=_build_data_input(knowledge, prefetch_lines, support_info_text),
+        context_text=context_text,
+        conversation=conversation,
+        data_text=_build_data_input(knowledge, prefetch_lines, support_info_text),
         staff_links=ai_guard.link_targets(support_info_text),
         knowledge_filenames={hit["filename"] for hit in knowledge},
         enabled_tools=enabled_tools,
@@ -656,7 +608,7 @@ async def run_support_agent(
         channel_kind=channel_kind,
     )
     fast_effort = _select_reasoning_effort(runtime_settings, high_confidence=True)
-    result, trace = await run(model=model, effort=fast_effort, use_tools=False, workflow="support_question")
+    result, trace = await run(model=model, effort=fast_effort, use_tools=True, workflow="support_question")
     result["escalated"] = False
     result["paused"] = False
 
@@ -668,7 +620,7 @@ async def run_support_agent(
     if (
         not _needs_escalation(result, repeat=repeat, threshold=threshold, clarify_loop=clarify_loop)
         or route is None
-        or route == (model, fast_effort, False)
+        or route[:2] == (model, fast_effort)
     ):
         await _record_traces(trace)
         return result
@@ -689,7 +641,9 @@ async def run_support_agent(
         log.exception("Support escalation failed", extra={"event": "support_escalation_failed", "channel_id": channel_id})
         await _record_traces(trace)
         return result
-    if second["reply"] == "(no reply)" and not second["tool_results"]:
+    if second["reply"] == "(no reply)" and not any(
+        call["name"] != SEARCH_KNOWLEDGE_TOOL for call in second["tool_results"]
+    ):
         await _record_traces(trace, drafts=[second_trace])
         return result
     second["escalated"] = True
@@ -712,7 +666,7 @@ async def _record_traces(sent: SupportAITrace, *, drafts: list[SupportAITrace] =
             await record_support_ai_trace(trace)
         except Exception:
             log.exception(
-                "Failed to record OpenAI support trace",
+                "Failed to record support AI trace",
                 extra={"event": "support_trace_record_failed", "channel_id": trace.channel_id},
             )
 
@@ -723,8 +677,9 @@ async def _run_once(
     effort: str,
     use_tools: bool,
     workflow: str,
-    base_input: list[dict[str, str]],
-    data_input: list[dict[str, str]],
+    context_text: str,
+    conversation: list[dict[str, str]],
+    data_text: str,
     knowledge_filenames: set[str],
     enabled_tools: list[str],
     language: str,
@@ -738,95 +693,108 @@ async def _run_once(
     notes: list[str] | None = None,
     staff_links: frozenset[str] = frozenset(),
 ) -> tuple[AgentResult, SupportAITrace]:
-    store = bool(getattr(settings, "openai_support_store_responses", True))
     tools: list[dict[str, Any]] = []
     if use_tools:
-        # The tool loop chains rounds with previous_response_id, which needs stored responses.
-        if store:
-            tools.extend(get_schemas(enabled_tools))
-        file_search_tool = _build_file_search_tool(settings)
-        if file_search_tool is not None:
-            tools.append(file_search_tool)
-    file_search_enabled = any(tool.get("type") == "file_search" for tool in tools)
-    request_input = [*base_input, *data_input, *({"role": "developer", "content": note} for note in notes or [])]
-    request_metadata = _build_openai_metadata(
+        tools.extend(get_schemas(enabled_tools))
+        tools.append(SEARCH_KNOWLEDGE_SCHEMA)
+    knowledge_tool_enabled = any(tool.get("name") == SEARCH_KNOWLEDGE_TOOL for tool in tools)
+    # Volatile text (date, data, notes) goes after the cached prompt so the prefix stays cacheable.
+    dynamic_text = "\n\n".join(part for part in (context_text, data_text, *(notes or [])) if part)
+    system = [
+        {"type": "text", "text": _load_system_prompt(language), "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": dynamic_text},
+    ]
+    request_metadata = _build_trace_metadata(
         workflow=workflow,
         language=language,
         channel_id=channel_id,
         user_id=user_id,
-        file_search_enabled=file_search_enabled,
+        file_search_enabled=knowledge_tool_enabled,
         ticket_conversation=ticket_conversation,
     )
-    prompt_cache_key = _build_prompt_cache_key(model=model, tools=tools)
     request_kwargs: dict[str, Any] = {
         "model": model,
-        "instructions": _load_system_prompt(language),
-        "input": request_input,
-        "max_output_tokens": settings.openai_support_max_output_tokens,
-        "metadata": request_metadata,
-        "prompt_cache_key": prompt_cache_key,
-        "safety_identifier": _build_safety_identifier(user_id),
-        "store": store,
+        "max_tokens": settings.ai_support_max_output_tokens,
+        "system": system,
+        "messages": conversation,
+        "output_config": {"effort": effort},
+        "metadata": {"user_id": _build_safety_identifier(user_id)},
     }
     if tools:
         request_kwargs["tools"] = tools
-        request_kwargs["tool_choice"] = "auto"
-    # reasoning/verbosity are gpt-5 only; other models 400 on them.
-    if model.startswith("gpt-5"):
-        request_kwargs["text"] = {"verbosity": "low"}
-        request_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
+        request_kwargs["tool_choice"] = {"type": "auto"}
 
     started_at = time.perf_counter()
-    response = await _create_response(timeout_seconds=settings.ai_support_timeout_seconds, **request_kwargs)
+    response = await _create_message(timeout_seconds=settings.ai_support_timeout_seconds, **request_kwargs)
     responses = [response]
     tool_results: list[ToolCallResult] = []
-    previous_response_id: str | None = None
+    cited_pool = set(knowledge_filenames)
+    turns: list[Any] = list(conversation)
     for round_index in range(MAX_TOOL_ROUNDS):
-        calls = _extract_function_calls(response)
+        calls = _extract_tool_uses(response)
         if not calls:
             break
-        outputs: list[dict[str, Any]] = []
+        result_blocks: list[dict[str, Any]] = []
         for call in calls:
+            args = call.input if isinstance(call.input, dict) else {}
+            is_error = False
             try:
-                args = json.loads(call["arguments"]) if isinstance(call["arguments"], str) else call["arguments"]
-            except json.JSONDecodeError:
-                args = {}
-            args = _hydrate_tool_args(
-                name=call["name"],
-                args=args if isinstance(args, dict) else {},
-                user_id=user_id,
-                requester_is_staff=requester_is_staff,
-                channel_kind=channel_kind,
-            )
-            try:
-                output = await tools_registry.get_func(call["name"], bot_context=bot)(**args)
+                if call.name == SEARCH_KNOWLEDGE_TOOL:
+                    args = {"query": str(args.get("query") or "")}
+                    output = await _run_knowledge_tool(args, settings, cited_pool)
+                else:
+                    args = _hydrate_tool_args(
+                        name=call.name,
+                        args=args,
+                        user_id=user_id,
+                        requester_is_staff=requester_is_staff,
+                        channel_kind=channel_kind,
+                    )
+                    output = await tools_registry.get_func(call.name, bot_context=bot)(**args)
             except Exception:
-                log.exception("Support tool failed", extra={"event": "support_tool_failed", "tool": call["name"]})
+                log.exception("Support tool failed", extra={"event": "support_tool_failed", "tool": call.name})
                 output = {"error": "tool_failed"}
-            tool_results.append(ToolCallResult(name=call["name"], arguments=args, output=output))
-            outputs.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call["call_id"],
-                    "output": json.dumps(output, ensure_ascii=False, default=str),
-                }
-            )
-        if any(isinstance(r["output"], dict) and r["output"].get("suppress_ai_reply") is True for r in tool_results):
+                is_error = True
+            tool_results.append(ToolCallResult(name=call.name, arguments=args, output=output))
+            block: dict[str, Any] = {
+                "type": "tool_result",
+                "tool_use_id": call.id,
+                "content": json.dumps(output, ensure_ascii=False, default=str),
+            }
+            if is_error:
+                block["is_error"] = True
+            result_blocks.append(block)
+        if _reply_suppressed(tool_results):
             break
-        previous_response_id = getattr(response, "id", None)
-        followup_kwargs = {**request_kwargs, "input": outputs, "previous_response_id": previous_response_id}
+        # The full content goes back unchanged: thinking (and fallback) blocks must be echoed as they came.
+        turns = [*turns, {"role": "assistant", "content": response.content}, {"role": "user", "content": result_blocks}]
+        followup_kwargs = {**request_kwargs, "messages": turns}
         if round_index == MAX_TOOL_ROUNDS - 1:
-            followup_kwargs["tool_choice"] = "none"
-        response = await _create_response(timeout_seconds=settings.ai_support_timeout_seconds, **followup_kwargs)
+            followup_kwargs["tool_choice"] = {"type": "none"}
+        response = await _create_message(timeout_seconds=settings.ai_support_timeout_seconds, **followup_kwargs)
         responses.append(response)
 
     for each in responses:
-        ai_budget.record_response(each, billed=bool(tools))
+        ai_budget.record_response(each)
 
-    suppressed = any(
-        isinstance(r["output"], dict) and r["output"].get("suppress_ai_reply") is True for r in tool_results
-    )
-    raw_text = "(no reply)" if suppressed else (_extract_output_text(response) or "(no reply)")
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason == "refusal":
+        log.info(
+            "Support model refused (%s)",
+            getattr(getattr(response, "stop_details", None), "category", None) or "no category",
+            extra={"event": "support_ai_refusal", "channel_id": channel_id, "model": model, "workflow": workflow},
+        )
+    elif stop_reason == "max_tokens":
+        log.warning(
+            "Support reply hit max_tokens (%s)",
+            settings.ai_support_max_output_tokens,
+            extra={"event": "support_ai_max_tokens", "channel_id": channel_id, "model": model, "workflow": workflow},
+        )
+
+    if _reply_suppressed(tool_results) or stop_reason == "refusal":
+        raw_text = "(no reply)"
+    else:
+        raw_text = _extract_text(response) or "(no reply)"
     reply_text, confidence = _split_confidence(raw_text)
     reply_text, kind = _split_kind(reply_text)
     reply_text, sources = _split_sources(reply_text)
@@ -840,8 +808,7 @@ async def _run_once(
             "; blocked" if guard_flags & ai_guard.BLOCKING_FLAGS else "; defused",
             extra={"event": "ai_reply_guarded", "channel_id": channel_id, "user_id": user_id, "workflow": workflow},
         )
-    cited = [name for each in responses for name in _extract_file_citations(each)]
-    cited += [name for name in sources if name in knowledge_filenames]
+    cited = [name for name in sources if name in cited_pool]
     reply_text = _append_wiki_sources(
         reply_text,
         list(dict.fromkeys(cited)),
@@ -854,25 +821,30 @@ async def _run_once(
         workflow=workflow,
         response_id=response_id,
         openai_conversation_id=None,
-        previous_response_id=previous_response_id,
+        previous_response_id=None,
         model=model,
         language=language,
         channel_id=channel_id,
         user_id=user_id,
-        prompt_cache_key=prompt_cache_key,
-        file_search_enabled=file_search_enabled,
-        vector_store_ids=_support_vector_store_ids(settings) if file_search_enabled else [],
+        prompt_cache_key=None,
+        file_search_enabled=knowledge_tool_enabled,
+        vector_store_ids=[],
         tool_names=_tool_names_for_trace(tools, tool_results),
         latency_ms=int((time.perf_counter() - started_at) * 1000),
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
         total_tokens=usage.get("total_tokens"),
         cached_tokens=usage.get("cached_tokens"),
-        reasoning_tokens=usage.get("reasoning_tokens"),
+        reasoning_tokens=None,
         reply_text=reply_text,
         confidence=confidence,
-        input_json=request_input,
-        request_metadata={**request_metadata, "reply_kind": kind or "", "reasoning_effort": effort},
+        input_json=[{"role": "system", "content": dynamic_text}, *conversation],
+        request_metadata={
+            **request_metadata,
+            "reply_kind": kind or "",
+            "reasoning_effort": effort,
+            "stop_reason": str(stop_reason or ""),
+        },
     )
 
     result = AgentResult(

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bulmaai.services.ai_oneshot import json_output_config, response_json
 
 FAQ_SUGGESTION_INSTRUCTIONS = """You generate DragonMineZ support FAQ candidates.
 
@@ -24,7 +25,6 @@ FAQ_CANDIDATE_SCHEMA: dict[str, Any] = {
     "properties": {
         "candidates": {
             "type": "array",
-            "maxItems": 20,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -58,6 +58,7 @@ FAQ_CANDIDATE_SCHEMA: dict[str, Any] = {
     "required": ["candidates"],
 }
 
+FAQ_KNOWLEDGE_FILENAME = "support-faq.md"
 SPEAKER_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s*", re.MULTILINE)
 
 
@@ -232,8 +233,8 @@ def render_faq_markdown(
     lines = [
         f"# {title}",
         "",
-        "These entries are generated from approved support traces for OpenAI file_search.",
-        "Review and edit answers before uploading to the production vector store.",
+        "These entries are generated from approved support traces for the support AI's knowledge.",
+        "Review and edit answers before publishing them.",
         "",
     ]
     for candidate in sorted(candidates, key=_candidate_sort_key):
@@ -266,21 +267,6 @@ def write_faq_markdown(candidates: Iterable[FAQCandidate], output_path: Path) ->
     output_path.write_text(render_faq_markdown(candidates), encoding="utf-8", newline="\n")
 
 
-def _extract_response_json(response: Any) -> Any:
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return json.loads(output_text)
-
-    text_parts: list[str] = []
-    for item in getattr(response, "output", []) or []:
-        if getattr(item, "type", None) != "message":
-            continue
-        for part in getattr(item, "content", []) or []:
-            if getattr(part, "type", None) == "output_text":
-                text_parts.append(getattr(part, "text", ""))
-    return json.loads("".join(text_parts))
-
-
 def _sources_payload(sources: Sequence[SupportFAQSource]) -> list[dict[str, Any]]:
     return [
         {
@@ -299,8 +285,8 @@ def _sources_payload(sources: Sequence[SupportFAQSource]) -> list[dict[str, Any]
 async def suggest_faq_candidates(
     sources: Sequence[SupportFAQSource],
     *,
-    openai_client: Any | None = None,
-    model: str = "gpt-5.4-mini",
+    client: Any | None = None,
+    model: str = "claude-haiku-5-5",
     max_candidates: int = 20,
     min_confidence: float = 0.6,
     timeout_seconds: int = 60,
@@ -308,67 +294,44 @@ async def suggest_faq_candidates(
     source_payload = _sources_payload(sources)
     if not source_payload:
         return []
-    resolved_client = openai_client
+    resolved_client = client
     if resolved_client is None:
-        from bulmaai.services.openai_client import client as resolved_client
+        from bulmaai.services.ai_client import client as resolved_client
 
+    limit = max(1, min(int(max_candidates), 20))
     response = await asyncio.wait_for(
-        resolved_client.responses.create(
+        resolved_client.messages.create(
             model=model,
-            instructions=FAQ_SUGGESTION_INSTRUCTIONS,
-            input=[
+            system=FAQ_SUGGESTION_INSTRUCTIONS,
+            messages=[
                 {
                     "role": "user",
                     "content": json.dumps(
                         {
                             "task": "Suggest reusable FAQ candidates from these support traces.",
-                            "max_candidates": max(1, min(int(max_candidates), 20)),
+                            "max_candidates": limit,
                             "sources": source_payload,
                         },
                         ensure_ascii=False,
                     ),
                 }
             ],
-            max_output_tokens=3000,
-            metadata={
-                "app": "dragonminez-ai",
-                "workflow": "support_faq_suggestion",
-                "source_count": str(len(source_payload)),
-            },
-            store=True,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "support_faq_candidates",
-                    "schema": FAQ_CANDIDATE_SCHEMA,
-                    "strict": True,
-                }
-            },
+            max_tokens=8000,
+            output_config=json_output_config(FAQ_CANDIDATE_SCHEMA),
         ),
         timeout=timeout_seconds,
     )
-    return normalize_faq_candidates(_extract_response_json(response), min_confidence=min_confidence)
+    return normalize_faq_candidates(response_json(response, "faq_suggestion"), min_confidence=min_confidence)[:limit]
 
 
-async def publish_faq_markdown_to_vector_store(
-    faq_path: Path,
-    *,
-    vector_store_id: str,
-    openai_client: Any | None = None,
-) -> dict[str, str]:
-    resolved_client = openai_client
-    if resolved_client is None:
-        from bulmaai.services.openai_client import client as resolved_client
+async def publish_faq_markdown(markdown: str, *, pool: Any | None = None) -> bool:
+    """Replace the generated FAQ doc the support AI searches; True when its content changed."""
+    from bulmaai.services import knowledge
 
-    with faq_path.open("rb") as handle:
-        uploaded_file = await resolved_client.files.create(file=handle, purpose="assistants")
-
-    uploaded_file_id = str(getattr(uploaded_file, "id"))
-    vector_store_file = await resolved_client.vector_stores.files.create(
-        vector_store_id=vector_store_id,
-        file_id=uploaded_file_id,
+    return await knowledge.upsert(
+        FAQ_KNOWLEDGE_FILENAME,
+        source="faq",
+        title=knowledge.local_doc_title(FAQ_KNOWLEDGE_FILENAME, markdown),
+        content=markdown,
+        pool=pool,
     )
-    return {
-        "file_id": uploaded_file_id,
-        "vector_store_file_id": str(getattr(vector_store_file, "id")),
-    }

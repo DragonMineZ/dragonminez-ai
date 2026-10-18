@@ -3,10 +3,10 @@ import logging
 
 import discord
 from discord.ext import commands
-from openai import AsyncOpenAI
 
 from bulmaai.cogs.ai_tickets import DISCORD_MESSAGE_LIMIT, _chunk_discord_message
-from bulmaai.services import ai_budget
+from bulmaai.services import ai_budget, ai_client
+from bulmaai.services.ai_oneshot import response_text
 from bulmaai.utils.forwards import full_attachments, full_content
 from bulmaai.utils.permissions import is_admin
 
@@ -79,22 +79,23 @@ def translated_role_mentions(
 async def translate_text(cog: "AiAnnTranslation", text: str, target_language: str) -> str:
     language_name = "Spanish" if target_language == "es" else "Brazilian Portuguese"
 
-    response = await cog.client.responses.create(
-        model=cog.settings.openai_translation_model,
-        instructions=f"{TRANSLATION_INSTRUCTIONS}\n\nTranslate to {language_name}.",
-        input=text,
-        text={"verbosity": "medium"},
+    response = await cog.client.messages.create(
+        model=cog.settings.ai_translation_model,
+        system=f"{TRANSLATION_INSTRUCTIONS}\n\nTranslate to {language_name}.",
+        messages=[{"role": "user", "content": text}],
+        max_tokens=8000,
+        output_config={"effort": "low"},
     )
     ai_budget.record_response(response)
 
-    return response.output_text.strip()
+    return response_text(response, "announcement_translation").strip()
 
 
 class AiAnnTranslation(commands.Cog):
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.client = AsyncOpenAI(api_key=bot.settings.openai_key)
+        self.client = ai_client.client
 
     @property
     def settings(self):

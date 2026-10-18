@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -170,7 +170,7 @@ class HostedTranscriptRouteTests(unittest.IsolatedAsyncioTestCase):
             "id": 7, "channel_id": 5, "channel_name": "ticket-0001", "requester_id": 42, "closed_by_id": None,
             "resolved": True, "ai_confidence": None, "message_count": 3, "title": "Crash", "tags": [],
             "knowledge_worthy": False, "closed_at": NOW, "guild_id": 1, "problem": "p", "resolution": "r",
-            "transcript": "txt", "openai_file_id": None, "html_token": TOKEN, "html_expires_at": expires,
+            "transcript": "txt", "knowledge_filename": None, "html_token": TOKEN, "html_expires_at": expires,
         }
         pool = SimpleNamespace(fetchrow=AsyncMock(return_value=row))
         with patch("bulmaai.web.routes_tickets.get_pool", AsyncMock(return_value=pool)):

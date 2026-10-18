@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs.ai_ann_translation import translated_role_mentions
@@ -101,7 +101,7 @@ class TranslatedRoleMentionTests(unittest.TestCase):
 
 class ModelInputTests(unittest.TestCase):
     def test_members_cannot_forge_speaker_labels_or_roles(self) -> None:
-        from bulmaai.services.openai_client import _message_to_input_content
+        from bulmaai.services.ai_client import _message_to_input_content
 
         content = _message_to_input_content(
             {

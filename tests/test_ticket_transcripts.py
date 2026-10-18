@@ -3,55 +3,37 @@ import os
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services.ticket_transcripts import (
     TicketSummary,
     TranscriptLine,
     anonymize_lines,
+    backfill_ticket_knowledge,
     get_image_analyses,
     record_ticket_transcript,
     render_knowledge_markdown,
+    render_summary_knowledge_markdown,
     render_transcript_text,
+    save_ticket_knowledge,
+    stored_knowledge_filename,
     summarize_ticket,
-    upload_ticket_knowledge,
 )
 
 
-class FakeFiles:
-    def __init__(self) -> None:
-        self.calls = []
-
-    async def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return SimpleNamespace(id="file_ticket")
-
-
-class FakeVectorStoreFiles:
-    def __init__(self) -> None:
-        self.calls = []
-
-    async def create_and_poll(self, **kwargs):
-        self.calls.append(kwargs)
-        return SimpleNamespace(id="vs_file_ticket")
-
-
-class FakeVectorStores:
-    def __init__(self) -> None:
-        self.files = FakeVectorStoreFiles()
-
-
-class FakeOpenAIClient:
+class FakeClient:
     def __init__(self, payload: dict) -> None:
-        self.responses = SimpleNamespace(
-            create=AsyncMock(return_value=SimpleNamespace(output_text=json.dumps(payload)))
+        self.messages = SimpleNamespace(
+            create=AsyncMock(
+                return_value=SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text=json.dumps(payload))], stop_reason="end_turn"
+                )
+            )
         )
-        self.files = FakeFiles()
-        self.vector_stores = FakeVectorStores()
 
 
 class FakeConnection:
@@ -155,7 +137,7 @@ class TicketTranscriptTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Goku", markdown)
 
     async def test_summarize_ticket_returns_normalized_summary_with_anonymized_transcript(self) -> None:
-        fake_client = FakeOpenAIClient(
+        fake_client = FakeClient(
             {
                 "title": "  Transform key not binding  ",
                 "problem": "Requester could not use the transform key.",
@@ -166,46 +148,49 @@ class TicketTranscriptTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        summary = await summarize_ticket(_lines(), model="gpt-5-mini", openai_client=fake_client)
+        summary = await summarize_ticket(_lines(), model="claude-haiku-5-5", client=fake_client)
 
         self.assertEqual(summary.title, "Transform key not binding")
         self.assertEqual(summary.tags, ("controls", "keybinds"))
         self.assertTrue(summary.resolved)
         self.assertTrue(summary.knowledge_worthy)
 
-        call = fake_client.responses.create.call_args.kwargs
-        self.assertEqual(call["text"]["format"]["type"], "json_schema")
-        self.assertEqual(call["text"]["format"]["name"], "ticket_summary")
-        sent_transcript = call["input"][0]["content"]
+        call = fake_client.messages.create.call_args.kwargs
+        self.assertEqual(call["output_config"]["format"]["type"], "json_schema")
+        self.assertEqual(call["output_config"]["effort"], "low")
+        self.assertIn("system", call)
+        sent_transcript = call["messages"][0]["content"]
         self.assertNotIn("Goku", sent_transcript)
         self.assertIn("Requester", sent_transcript)
 
     async def test_summarize_ticket_returns_none_for_empty_lines_without_calling_client(self) -> None:
-        fake_client = FakeOpenAIClient({})
+        fake_client = FakeClient({})
 
-        summary = await summarize_ticket([], model="gpt-5-mini", openai_client=fake_client)
+        summary = await summarize_ticket([], model="claude-haiku-5-5", client=fake_client)
 
         self.assertIsNone(summary)
-        fake_client.responses.create.assert_not_called()
+        fake_client.messages.create.assert_not_called()
 
-    async def test_upload_ticket_knowledge_uploads_then_polls_vector_store(self) -> None:
-        fake_client = FakeOpenAIClient({})
+    async def test_save_ticket_knowledge_upserts_a_ticket_doc(self) -> None:
+        upsert = AsyncMock(return_value=True)
 
-        file_id = await upload_ticket_knowledge(
-            "# content",
-            filename="ticket-20260926-42.md",
-            vector_store_id="vs_tickets",
-            attributes={"source": "ticket-transcript", "knowledge_worthy": True},
-            openai_client=fake_client,
+        with patch("bulmaai.services.knowledge.upsert", upsert):
+            filename = await save_ticket_knowledge(
+                "# content", filename="ticket-20260926-42.md", title="Crash", pool="pool"
+            )
+
+        self.assertEqual(filename, "ticket-20260926-42.md")
+        upsert.assert_awaited_once_with(
+            "ticket-20260926-42.md", source="ticket", title="Crash", content="# content", pool="pool"
         )
 
-        self.assertEqual(file_id, "file_ticket")
-        self.assertEqual(fake_client.files.calls[0]["purpose"], "assistants")
-        self.assertEqual(fake_client.files.calls[0]["file"][0], "ticket-20260926-42.md")
-        poll_call = fake_client.vector_stores.files.calls[0]
-        self.assertEqual(poll_call["vector_store_id"], "vs_tickets")
-        self.assertEqual(poll_call["file_id"], "file_ticket")
-        self.assertEqual(poll_call["attributes"]["knowledge_worthy"], True)
+    async def test_stored_knowledge_filename_reads_the_knowledge_filename_column(self) -> None:
+        pool = SimpleNamespace(fetchval=AsyncMock(return_value="ticket-20260901-42.md"))
+
+        self.assertEqual(await stored_knowledge_filename(42, pool=pool), "ticket-20260901-42.md")
+        sql, channel_id = pool.fetchval.await_args.args
+        self.assertIn("SELECT knowledge_filename", sql)
+        self.assertEqual(channel_id, 42)
 
     async def test_get_image_analyses_empty_input_skips_pool(self) -> None:
         result = await get_image_analyses([])
@@ -258,7 +243,7 @@ class RecordTranscriptTests(unittest.IsolatedAsyncioTestCase):
             message_count=3,
             summary=None,
             transcript="text",
-            openai_file_id=None,
+            knowledge_filename=None,
             html_token="k" * 32,
             html_expires_at=None,
             pool=FakePool(conn),
@@ -270,7 +255,8 @@ class RecordTranscriptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(conn.statements), 1)  # no DELETE, no INSERT: same id
         sql, args = conn.statements[0]
         self.assertIn("WHERE id = (SELECT max(id) FROM ticket_transcripts WHERE channel_id = $1)", sql)
-        self.assertIn("COALESCE($15, openai_file_id)", sql)  # the first close's knowledge file is kept
+        self.assertIn("COALESCE($15, knowledge_filename)", sql)  # an earlier close's knowledge doc is kept
+        self.assertNotIn("openai_file_id", sql)
         self.assertEqual((args[0], args[15], args[16]), (900, "k" * 32, None))
 
     async def test_first_close_inserts(self) -> None:
@@ -278,6 +264,79 @@ class RecordTranscriptTests(unittest.IsolatedAsyncioTestCase):
         await self.record(conn)
         self.assertEqual([sql.split()[0] for sql, _ in conn.statements], ["UPDATE", "INSERT"])
         self.assertFalse(any("DELETE" in sql for sql, _ in conn.statements))
+        self.assertIn("knowledge_filename", conn.statements[1][0])
+        self.assertNotIn("openai_file_id", conn.statements[1][0])
+
+
+class BackfillPool:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+        self.fetch_sql = ""
+        self.executed = []
+
+    async def fetch(self, sql, *args):
+        self.fetch_sql = sql
+        return self.rows
+
+    async def execute(self, sql, *args):
+        self.executed.append((sql, args))
+        return "UPDATE 1"
+
+
+class BackfillTicketKnowledgeTests(unittest.IsolatedAsyncioTestCase):
+    def _row(self) -> dict:
+        return {
+            "id": 7,
+            "channel_id": 42,
+            "closed_at": datetime(2026, 9, 1, 12, tzinfo=timezone.utc),
+            "title": "Crash on launch @everyone",
+            "problem": "Game crashes, see https://evil.tld/x",
+            "resolution": "Updated GeckoLib.",
+            "tags": ["crash", "geckolib"],
+            "resolved": True,
+        }
+
+    def test_summary_doc_has_the_header_but_no_conversation(self) -> None:
+        markdown = render_summary_knowledge_markdown(self._row())
+
+        self.assertTrue(markdown.startswith("# Support ticket: Crash on launch"))
+        self.assertIn("closed 2026-09-01", markdown)
+        self.assertIn("Outcome: Resolved", markdown)
+        self.assertIn("Tags: crash, geckolib", markdown)
+        self.assertIn("## Problem", markdown)
+        self.assertIn("Updated GeckoLib.", markdown)
+        self.assertNotIn("## Conversation", markdown)
+        self.assertNotIn("evil.tld", markdown)
+        self.assertNotIn("@everyone", markdown)
+
+    async def test_backfill_upserts_each_old_row_and_sets_its_filename(self) -> None:
+        pool = BackfillPool([self._row()])
+        upsert = AsyncMock(return_value=True)
+
+        with patch("bulmaai.services.knowledge.upsert", upsert):
+            moved = await backfill_ticket_knowledge(pool=pool)
+
+        self.assertEqual(moved, 1)
+        self.assertIn("openai_file_id IS NOT NULL AND knowledge_filename IS NULL", pool.fetch_sql)
+        filename = upsert.await_args.args[0]
+        self.assertEqual(filename, "ticket-20260901-42.md")
+        self.assertEqual(upsert.await_args.kwargs["source"], "ticket")
+        self.assertTrue(upsert.await_args.kwargs["title"].startswith("Crash on launch"))
+        self.assertNotIn("@everyone", upsert.await_args.kwargs["title"])
+        self.assertNotIn("## Conversation", upsert.await_args.kwargs["content"])
+        sql, args = pool.executed[0]
+        self.assertIn("SET knowledge_filename = $2", sql)
+        self.assertIn("knowledge_filename IS NULL", sql)
+        self.assertEqual(args, (7, filename))
+
+    async def test_backfill_with_nothing_left_does_nothing(self) -> None:
+        pool = BackfillPool([])
+        upsert = AsyncMock()
+
+        with patch("bulmaai.services.knowledge.upsert", upsert):
+            self.assertEqual(await backfill_ticket_knowledge(pool=pool), 0)
+        upsert.assert_not_awaited()
+        self.assertEqual(pool.executed, [])
 
 
 if __name__ == "__main__":

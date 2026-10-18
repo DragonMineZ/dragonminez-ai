@@ -179,7 +179,7 @@ class BulmaAI(discord.Bot):
             midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             ai_budget.seed(await support_traces.sum_tokens_by_model_since(midnight))
         except Exception:
-            log.exception("Failed to seed today's OpenAI token budget from traces")
+            log.exception("Failed to seed today's AI token budget from traces")
         message_templates.ensure_message_templates_file()
 
     def reload_settings(self) -> Settings:

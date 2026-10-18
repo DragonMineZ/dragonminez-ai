@@ -4,11 +4,11 @@ import re
 
 import discord
 from discord.ext import commands, tasks
-from openai import AsyncOpenAI
 from requests import HTTPError
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
+from bulmaai.services import ai_client
 from bulmaai.services.bug_report_ai import (
     BugTriage,
     DuplicateAssessment,
@@ -91,7 +91,7 @@ class BugReportsCog(ReloadableCog):
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.client = AsyncOpenAI(api_key=self.settings.openai_key)
+        self.client = ai_client.client
         self._poll_lock = asyncio.Lock()
         self._creating_issues: set[int] = set()
         self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
@@ -112,7 +112,6 @@ class BugReportsCog(ReloadableCog):
 
     async def on_shutdown(self) -> None:
         self.poll_tracked_issues.cancel()
-        await self.client.close()
 
     def _start_polling_if_configured(self) -> None:
         if self.poll_tracked_issues.is_running():
@@ -160,7 +159,7 @@ class BugReportsCog(ReloadableCog):
         try:
             triage = await analyze_bug_report(
                 self.client,
-                model=self.settings.openai_bugreport_model,
+                model=self.settings.ai_bugreport_model,
                 report_text=full_text,
                 attachments=attachments,
                 fallback_title=thread.name[:240] or "Bug report",
@@ -245,7 +244,7 @@ class BugReportsCog(ReloadableCog):
         report_text = triage.summary or triage.title
         assessment = await assess_duplicate(
             self.client,
-            model=self.settings.openai_bugreport_model,
+            model=self.settings.ai_bugreport_model,
             report_text=report_text,
             candidates=issues,
         )

@@ -199,7 +199,7 @@
           fieldRow(t("Outcome"), outcome(tr.resolved)),
           fieldRow(t("AI confidence"), tr.ai_confidence === null ? t("n/a") : t("{confidence}%", { confidence: Math.round(tr.ai_confidence * 100) })),
           fieldRow(t("Messages"), String(tr.message_count)),
-          fieldRow(t("AI knowledge"), tr.openai_file_id ? badge(t("added"), "accent") : badge(t("not added")))),
+          fieldRow(t("AI knowledge"), tr.knowledge_filename ? badge(t("added"), "accent") : badge(t("not added")))),
         tr.tags.length ? h("div", { class: "row" }, tr.tags.map((tag) => badge(tag))) : null),
       h("div", { class: "card stack" },
         h("h3", {}, t("Problem")), h("p", {}, tr.problem || "—"),

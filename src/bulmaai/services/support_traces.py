@@ -160,20 +160,20 @@ async def record_support_ai_trace(
         )
 
 
-async def sum_tokens_by_model_since(since: Any, *, pool: Any | None = None) -> list[tuple[str, bool, int]]:
-    """(model, used_tools, tokens) spent since `since`; tool traffic is billed outside the free pool."""
+async def sum_tokens_by_model_since(since: Any, *, pool: Any | None = None) -> list[tuple[str, int]]:
+    """(model, tokens) spent since `since`."""
     resolved_pool = pool or await get_pool()
     async with resolved_pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT model, cardinality(tool_names) > 0 AS used_tools, COALESCE(SUM(total_tokens), 0) AS tokens
+            SELECT model, COALESCE(SUM(total_tokens), 0) AS tokens
             FROM support_ai_traces
             WHERE created_at >= $1
-            GROUP BY 1, 2
+            GROUP BY 1
             """,
             since,
         )
-    return [(str(row["model"]), bool(row["used_tools"]), int(row["tokens"])) for row in rows]
+    return [(str(row["model"]), int(row["tokens"])) for row in rows]
 
 
 async def list_support_eval_trace_rows(

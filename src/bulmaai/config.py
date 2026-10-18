@@ -93,39 +93,30 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.mod_case_cards",
     "bulmaai.cogs.presence",
     "bulmaai.cogs.support_info",
+    "bulmaai.cogs.knowledge_sync",
 )
 
-DEFAULT_OPENAI_MODEL = "gpt-5-mini"
-# First pass is tool-free on a mini model so it draws from the free data-sharing pool;
-# unsure answers escalate to the big model with tools (tool traffic is billed).
-DEFAULT_OPENAI_SUPPORT_MODEL = "gpt-5-mini"
-DEFAULT_OPENAI_SUPPORT_ESCALATION_MODEL = "gpt-5"
+DEFAULT_AI_MODEL = "claude-haiku-5-5"
+# First pass runs on the small model; unsure answers escalate to the big model.
+DEFAULT_AI_SUPPORT_MODEL = "claude-haiku-5-5"
+DEFAULT_AI_SUPPORT_ESCALATION_MODEL = "claude-opus-5-5"
 DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE = 0.7
-# 90% of the Tier 1-2 free pools (2.5M mini / 250k big per UTC day); billed = tool traffic cap.
-DEFAULT_OPENAI_DAILY_SMALL_TOKEN_LIMIT = 2_250_000
-DEFAULT_OPENAI_DAILY_BIG_TOKEN_LIMIT = 225_000
-DEFAULT_OPENAI_DAILY_BILLED_TOKEN_LIMIT = 300_000
-DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT = "medium"
-DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT = "low"
-DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS = 1500
-DEFAULT_OPENAI_SUPPORT_VECTOR_STORE_IDS: Sequence[str] = ()
-DEFAULT_OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS = 5
-DEFAULT_OPENAI_SUPPORT_STORE_RESPONSES = True
-DEFAULT_OPENAI_FAQ_SUGGESTION_MODEL = "gpt-5.4-mini"
-DEFAULT_OPENAI_FAQ_VECTOR_STORE_ID: str | None = None
-DEFAULT_OPENAI_FAQ_GENERATED_PATH = "data/knowledge/generated/dragonminez-faq.md"
-# Wiki knowledge sync (scripts/sync_wiki_knowledge.py).
-DEFAULT_OPENAI_WIKI_VECTOR_STORE_ID: str | None = "vs_69fd2b417b148191ad2aa252afd0e034"
+# Daily token caps per pool (UTC day): small = haiku models, big = everything else.
+DEFAULT_AI_DAILY_SMALL_TOKEN_LIMIT = 2_250_000
+DEFAULT_AI_DAILY_BIG_TOKEN_LIMIT = 225_000
+DEFAULT_AI_SUPPORT_EFFORT = "medium"
+DEFAULT_AI_SUPPORT_FAST_EFFORT = "low"
+# Thinking tokens count against max_tokens, so keep this roomy.
+DEFAULT_AI_SUPPORT_MAX_OUTPUT_TOKENS = 8000
+DEFAULT_AI_KNOWLEDGE_MAX_RESULTS = 5
+DEFAULT_AI_FAQ_SUGGESTION_MODEL = "claude-haiku-5-5"
+DEFAULT_AI_FAQ_GENERATED_PATH = "data/knowledge/generated/dragonminez-faq.md"
 DEFAULT_WIKI_API_URL = "https://wiki.dragonminez.com/api.php"
 DEFAULT_WIKI_BASE_URL = "https://wiki.dragonminez.com/wiki/Special:MyLanguage"
-# Pin helper models to incentive-eligible IDs where possible.
-DEFAULT_OPENAI_VISION_MODEL = "gpt-4.1-mini-2025-04-14"
-DEFAULT_OPENAI_TRANSLATION_MODEL = "gpt-4.1-mini-2025-04-14"
-# Bug-report triage runs on a cheap model to keep token usage low.
-DEFAULT_OPENAI_BUGREPORT_MODEL = "gpt-5-mini"
-DEFAULT_OPENAI_TICKET_SUMMARY_MODEL = "gpt-5-mini"
-# Falls back to the first OPENAI_SUPPORT_VECTOR_STORE_IDS entry so closed tickets feed file_search.
-DEFAULT_OPENAI_TICKET_VECTOR_STORE_ID: str | None = None
+DEFAULT_AI_VISION_MODEL = "claude-haiku-5-5"
+DEFAULT_AI_TRANSLATION_MODEL = "claude-haiku-5-5"
+DEFAULT_AI_BUGREPORT_MODEL = "claude-haiku-5-5"
+DEFAULT_AI_TICKET_SUMMARY_MODEL = "claude-haiku-5-5"
 
 DEFAULT_PGHOST = "localhost"
 DEFAULT_PGPORT = 5432
@@ -281,7 +272,7 @@ DEFAULT_SETTINGS_OVERRIDES_PATH = "data/settings_overrides.json"
 
 NON_OVERRIDABLE_SETTINGS = {
     "discord_token",
-    "openai_key",
+    "anthropic_api_key",
     "POSTGRES_DSN",
     "PGPASSWORD",
     "GH_APP_PRIVATE_KEY_PEM",
@@ -311,29 +302,24 @@ class Settings:
     dev_guild_id: int | None
     log_level: str
     initial_extensions: Sequence[str]
-    openai_key: str
-    openai_model: str
-    openai_support_model: str
-    openai_support_escalation_model: str
+    anthropic_api_key: str
+    ai_model: str
+    ai_support_model: str
+    ai_support_escalation_model: str
     ai_support_escalation_confidence: float
-    openai_daily_small_token_limit: int
-    openai_daily_big_token_limit: int
-    openai_daily_billed_token_limit: int
-    openai_support_reasoning_effort: str
-    openai_support_fast_reasoning_effort: str
-    openai_support_max_output_tokens: int
-    openai_support_vector_store_ids: Sequence[str]
-    openai_support_file_search_max_results: int
-    openai_support_store_responses: bool
-    openai_faq_suggestion_model: str
-    openai_faq_vector_store_id: str | None
-    openai_faq_generated_path: str
-    openai_wiki_vector_store_id: str | None
+    ai_daily_small_token_limit: int
+    ai_daily_big_token_limit: int
+    ai_support_effort: str
+    ai_support_fast_effort: str
+    ai_support_max_output_tokens: int
+    ai_knowledge_max_results: int
+    ai_faq_suggestion_model: str
+    ai_faq_generated_path: str
     wiki_api_url: str
     wiki_base_url: str
-    openai_vision_model: str
-    openai_translation_model: str
-    openai_bugreport_model: str
+    ai_vision_model: str
+    ai_translation_model: str
+    ai_bugreport_model: str
     bug_reports_enabled: bool
     bug_report_forum_channel_id: int | None
     bug_report_repo: str
@@ -401,8 +387,7 @@ class Settings:
     ai_ticket_resolve_prompt_exponent: float
     ai_ticket_close_delay_seconds: int
     ai_ticket_escalation_role_ids: Sequence[int]
-    openai_ticket_summary_model: str
-    openai_ticket_vector_store_id: str | None
+    ai_ticket_summary_model: str
     message_presets_path: str
     announcement_source_channel_id: int | None
     announcement_spanish_channel_id: int | None
@@ -563,7 +548,7 @@ def _settings_overrides_path() -> Path:
 
 def _build_settings_from_env() -> Settings:
     token = _require_env("DISCORD_TOKEN")
-    openai_key = _get_env("OPENAI_KEY") or _require_env("OPENAI_API_KEY")
+    anthropic_api_key = _require_env("ANTHROPIC_API_KEY")
 
     PGDSN = _get_env("PGDSN")
     PGPASSWORD = _get_env("PGPASSWORD")
@@ -588,96 +573,71 @@ def _build_settings_from_env() -> Settings:
         dev_guild_id=DEFAULT_DEV_GUILD_ID,
         log_level=DEFAULT_LOG_LEVEL,
         initial_extensions=DEFAULT_INITIAL_EXTENSIONS,
-        openai_key=openai_key,
-        openai_model=_get_env("OPENAI_MODEL", DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL,
-        openai_support_model=(
-            _get_env("OPENAI_SUPPORT_MODEL", DEFAULT_OPENAI_SUPPORT_MODEL)
-            or DEFAULT_OPENAI_SUPPORT_MODEL
+        anthropic_api_key=anthropic_api_key,
+        ai_model=_get_env("AI_MODEL", DEFAULT_AI_MODEL) or DEFAULT_AI_MODEL,
+        ai_support_model=(
+            _get_env("AI_SUPPORT_MODEL", DEFAULT_AI_SUPPORT_MODEL)
+            or DEFAULT_AI_SUPPORT_MODEL
         ),
-        openai_support_escalation_model=(
-            _get_env("OPENAI_SUPPORT_ESCALATION_MODEL", DEFAULT_OPENAI_SUPPORT_ESCALATION_MODEL)
-            or DEFAULT_OPENAI_SUPPORT_ESCALATION_MODEL
+        ai_support_escalation_model=(
+            _get_env("AI_SUPPORT_ESCALATION_MODEL", DEFAULT_AI_SUPPORT_ESCALATION_MODEL)
+            or DEFAULT_AI_SUPPORT_ESCALATION_MODEL
         ),
         ai_support_escalation_confidence=_get_env_float_default(
             "AI_SUPPORT_ESCALATION_CONFIDENCE",
             DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE,
         ),
-        openai_daily_small_token_limit=_get_env_int(
-            "OPENAI_DAILY_SMALL_TOKEN_LIMIT", DEFAULT_OPENAI_DAILY_SMALL_TOKEN_LIMIT
+        ai_daily_small_token_limit=_get_env_int(
+            "AI_DAILY_SMALL_TOKEN_LIMIT", DEFAULT_AI_DAILY_SMALL_TOKEN_LIMIT
         ),
-        openai_daily_big_token_limit=_get_env_int(
-            "OPENAI_DAILY_BIG_TOKEN_LIMIT", DEFAULT_OPENAI_DAILY_BIG_TOKEN_LIMIT
+        ai_daily_big_token_limit=_get_env_int(
+            "AI_DAILY_BIG_TOKEN_LIMIT", DEFAULT_AI_DAILY_BIG_TOKEN_LIMIT
         ),
-        openai_daily_billed_token_limit=_get_env_int(
-            "OPENAI_DAILY_BILLED_TOKEN_LIMIT", DEFAULT_OPENAI_DAILY_BILLED_TOKEN_LIMIT
+        ai_support_effort=(
+            _get_env("AI_SUPPORT_EFFORT", DEFAULT_AI_SUPPORT_EFFORT)
+            or DEFAULT_AI_SUPPORT_EFFORT
         ),
-        openai_support_reasoning_effort=(
-            _get_env(
-                "OPENAI_SUPPORT_REASONING_EFFORT",
-                DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT,
-            )
-            or DEFAULT_OPENAI_SUPPORT_REASONING_EFFORT
+        ai_support_fast_effort=(
+            _get_env("AI_SUPPORT_FAST_EFFORT", DEFAULT_AI_SUPPORT_FAST_EFFORT)
+            or DEFAULT_AI_SUPPORT_FAST_EFFORT
         ),
-        openai_support_fast_reasoning_effort=(
-            _get_env(
-                "OPENAI_SUPPORT_FAST_REASONING_EFFORT",
-                DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT,
-            )
-            or DEFAULT_OPENAI_SUPPORT_FAST_REASONING_EFFORT
-        ),
-        openai_support_max_output_tokens=(
+        ai_support_max_output_tokens=(
             _get_env_int(
-                "OPENAI_SUPPORT_MAX_OUTPUT_TOKENS",
-                DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS,
+                "AI_SUPPORT_MAX_OUTPUT_TOKENS",
+                DEFAULT_AI_SUPPORT_MAX_OUTPUT_TOKENS,
             )
-            or DEFAULT_OPENAI_SUPPORT_MAX_OUTPUT_TOKENS
+            or DEFAULT_AI_SUPPORT_MAX_OUTPUT_TOKENS
         ),
-        openai_support_vector_store_ids=_get_env_str_list(
-            "OPENAI_SUPPORT_VECTOR_STORE_IDS",
-            DEFAULT_OPENAI_SUPPORT_VECTOR_STORE_IDS,
-        ),
-        openai_support_file_search_max_results=(
+        ai_knowledge_max_results=(
             _get_env_int(
-                "OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS",
-                DEFAULT_OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS,
+                "AI_KNOWLEDGE_MAX_RESULTS",
+                DEFAULT_AI_KNOWLEDGE_MAX_RESULTS,
             )
-            or DEFAULT_OPENAI_SUPPORT_FILE_SEARCH_MAX_RESULTS
+            or DEFAULT_AI_KNOWLEDGE_MAX_RESULTS
         ),
-        openai_support_store_responses=_get_env_bool(
-            "OPENAI_SUPPORT_STORE_RESPONSES",
-            DEFAULT_OPENAI_SUPPORT_STORE_RESPONSES,
+        ai_faq_suggestion_model=(
+            _get_env("AI_FAQ_SUGGESTION_MODEL", DEFAULT_AI_FAQ_SUGGESTION_MODEL)
+            or DEFAULT_AI_FAQ_SUGGESTION_MODEL
         ),
-        openai_faq_suggestion_model=(
-            _get_env("OPENAI_FAQ_SUGGESTION_MODEL", DEFAULT_OPENAI_FAQ_SUGGESTION_MODEL)
-            or DEFAULT_OPENAI_FAQ_SUGGESTION_MODEL
-        ),
-        openai_faq_vector_store_id=_get_env(
-            "OPENAI_FAQ_VECTOR_STORE_ID",
-            DEFAULT_OPENAI_FAQ_VECTOR_STORE_ID,
-        ),
-        openai_faq_generated_path=(
-            _get_env("OPENAI_FAQ_GENERATED_PATH", DEFAULT_OPENAI_FAQ_GENERATED_PATH)
-            or DEFAULT_OPENAI_FAQ_GENERATED_PATH
-        ),
-        openai_wiki_vector_store_id=_get_env(
-            "OPENAI_WIKI_VECTOR_STORE_ID",
-            DEFAULT_OPENAI_WIKI_VECTOR_STORE_ID,
+        ai_faq_generated_path=(
+            _get_env("AI_FAQ_GENERATED_PATH", DEFAULT_AI_FAQ_GENERATED_PATH)
+            or DEFAULT_AI_FAQ_GENERATED_PATH
         ),
         wiki_api_url=_get_env("WIKI_API_URL", DEFAULT_WIKI_API_URL) or DEFAULT_WIKI_API_URL,
         wiki_base_url=(
             _get_env("WIKI_BASE_URL", DEFAULT_WIKI_BASE_URL) or DEFAULT_WIKI_BASE_URL
         ),
-        openai_vision_model=(
-            _get_env("OPENAI_VISION_MODEL", DEFAULT_OPENAI_VISION_MODEL)
-            or DEFAULT_OPENAI_VISION_MODEL
+        ai_vision_model=(
+            _get_env("AI_VISION_MODEL", DEFAULT_AI_VISION_MODEL)
+            or DEFAULT_AI_VISION_MODEL
         ),
-        openai_translation_model=(
-            _get_env("OPENAI_TRANSLATION_MODEL", DEFAULT_OPENAI_TRANSLATION_MODEL)
-            or DEFAULT_OPENAI_TRANSLATION_MODEL
+        ai_translation_model=(
+            _get_env("AI_TRANSLATION_MODEL", DEFAULT_AI_TRANSLATION_MODEL)
+            or DEFAULT_AI_TRANSLATION_MODEL
         ),
-        openai_bugreport_model=(
-            _get_env("OPENAI_BUGREPORT_MODEL", DEFAULT_OPENAI_BUGREPORT_MODEL)
-            or DEFAULT_OPENAI_BUGREPORT_MODEL
+        ai_bugreport_model=(
+            _get_env("AI_BUGREPORT_MODEL", DEFAULT_AI_BUGREPORT_MODEL)
+            or DEFAULT_AI_BUGREPORT_MODEL
         ),
         bug_reports_enabled=_get_env_bool("BUG_REPORTS_ENABLED", DEFAULT_BUG_REPORTS_ENABLED),
         bug_report_forum_channel_id=_get_env_int(
@@ -858,8 +818,7 @@ def _build_settings_from_env() -> Settings:
         ticket_transcript_retention_days=_get_env_int("TICKET_TRANSCRIPT_RETENTION_DAYS", 30) or 0,
         log_page_public_url=_get_env("LOG_PAGE_PUBLIC_URL", "https://logs.dragonminez.com") or "https://logs.dragonminez.com",
         log_page_dir=_get_env("LOG_PAGE_DIR", "data/log_pages") or "data/log_pages",
-        openai_ticket_summary_model=_get_env("OPENAI_TICKET_SUMMARY_MODEL", DEFAULT_OPENAI_TICKET_SUMMARY_MODEL) or DEFAULT_OPENAI_TICKET_SUMMARY_MODEL,
-        openai_ticket_vector_store_id=_get_env("OPENAI_TICKET_VECTOR_STORE_ID", DEFAULT_OPENAI_TICKET_VECTOR_STORE_ID),
+        ai_ticket_summary_model=_get_env("AI_TICKET_SUMMARY_MODEL", DEFAULT_AI_TICKET_SUMMARY_MODEL) or DEFAULT_AI_TICKET_SUMMARY_MODEL,
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
         announcement_source_channel_id=_get_env_int(
             "ANNOUNCEMENT_SOURCE_CHANNEL_ID",

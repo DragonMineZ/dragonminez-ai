@@ -15,7 +15,7 @@ log =logging.getLogger(__name__)
 
 SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"(?i)\b(authorization\s*:\s*bearer)\s+[\w.\-]+"),
-    re.compile(r"(?i)\b(discord_token|openai_key|gh_app_private_key_pem|patreon_creator_token|curseforge_api_key|token|api[_-]?key)\s*=\s*[^,\s]+"),
+    re.compile(r"(?i)\b(discord_token|anthropic_api_key|anthropic|gh_app_private_key_pem|patreon_creator_token|curseforge_api_key|token|api[_-]?key)\s*=\s*[^,\s]+"),
     re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"),
 )
 FORWARDED_CONTEXT_FIELDS = (

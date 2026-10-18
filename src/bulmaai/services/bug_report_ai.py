@@ -2,10 +2,11 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 
 from bulmaai.services import ai_budget
 from bulmaai.services.ai_guard import defuse_mentions, strip_links
+from bulmaai.services.ai_oneshot import json_output_config, response_text
 from bulmaai.utils.log_parser import LogReport
 
 log = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ def log_digest(filename: str, report: LogReport) -> str:
 
 
 async def analyze_bug_report(
-    client: AsyncOpenAI,
+    client: AsyncAnthropic,
     *,
     model: str,
     report_text: str,
@@ -164,23 +165,15 @@ async def analyze_bug_report(
 
     request_kwargs: dict = {
         "model": model,
-        "instructions": TRIAGE_INSTRUCTIONS,
-        "input": user_input,
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "bug_triage",
-                "schema": TRIAGE_SCHEMA,
-                "strict": True,
-            }
-        },
+        "system": TRIAGE_INSTRUCTIONS,
+        "messages": [{"role": "user", "content": user_input}],
+        "max_tokens": 6000,
+        "output_config": json_output_config(TRIAGE_SCHEMA),
     }
-    if model.startswith("gpt-5"):
-        request_kwargs["reasoning"] = {"effort": "low"}
 
-    response = await client.responses.create(**request_kwargs)
+    response = await client.messages.create(**request_kwargs)
     ai_budget.record_response(response)
-    raw = (response.output_text or "").strip()
+    raw = response_text(response, "bug_triage").strip()
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -192,7 +185,7 @@ async def analyze_bug_report(
 
 
 async def assess_duplicate(
-    client: AsyncOpenAI,
+    client: AsyncAnthropic,
     *,
     model: str,
     report_text: str,
@@ -223,24 +216,16 @@ async def assess_duplicate(
 
     request_kwargs: dict = {
         "model": model,
-        "instructions": DUPLICATE_INSTRUCTIONS,
-        "input": user_input,
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "bug_duplicate",
-                "schema": DUPLICATE_SCHEMA,
-                "strict": True,
-            }
-        },
+        "system": DUPLICATE_INSTRUCTIONS,
+        "messages": [{"role": "user", "content": user_input}],
+        "max_tokens": 4000,
+        "output_config": json_output_config(DUPLICATE_SCHEMA),
     }
-    if model.startswith("gpt-5"):
-        request_kwargs["reasoning"] = {"effort": "low"}
 
     try:
-        response = await client.responses.create(**request_kwargs)
+        response = await client.messages.create(**request_kwargs)
         ai_budget.record_response(response)
-        data = json.loads((response.output_text or "").strip())
+        data = json.loads(response_text(response, "bug_duplicate").strip())
     except (json.JSONDecodeError, TypeError):
         log.warning("Duplicate assessment returned non-JSON output")
         return _NO_MATCH

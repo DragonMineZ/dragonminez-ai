@@ -1,5 +1,5 @@
 """Staff-curated support info (cogs/support_info.py): temporary known issues with their workaround, posted publicly
-every 24h, and permanent custom answers. Every active entry goes into the support AI's context (openai_client)."""
+every 24h, and permanent custom answers. Every active entry goes into the support AI's context (ai_client)."""
 
 import time
 from collections.abc import Sequence

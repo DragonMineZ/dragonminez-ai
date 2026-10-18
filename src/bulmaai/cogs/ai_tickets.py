@@ -10,17 +10,17 @@ from typing import Any
 
 import discord
 from discord.ext import commands
-from openai import AsyncOpenAI
 
 from bulmaai.cogs import dmzdebug as dmzdebug_cog
 from bulmaai.cogs import log_parser as log_parser_cog
-from bulmaai.config import load_settings
 from bulmaai.services import ai_budget
+from bulmaai.services.ai_oneshot import response_text
 from bulmaai.services.ai_guard import can_post_publicly, defuse_mentions, safe_name, strip_links
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
-from bulmaai.services.openai_client import (
+from bulmaai.services.ai_client import (
     ConversationMessage,
+    client as vision_client,
     is_transient_ai_error,
     run_support_agent,
 )
@@ -40,14 +40,14 @@ from bulmaai.services.ticket_transcripts import (
     TranscriptLine,
     delete_image_analyses,
     get_image_analyses,
-    knowledge_file_id,
     record_ticket_transcript,
     render_knowledge_markdown,
     render_transcript_text,
     save_image_analysis,
+    save_ticket_knowledge,
+    stored_knowledge_filename,
     summarize_ticket,
     ticket_knowledge_filename,
-    upload_ticket_knowledge,
 )
 from bulmaai.services.tickets import ClosedGap, get_ticket_by_channel, hide_closed_messages, note_ticket_message
 from bulmaai.ui.v2 import while_busy
@@ -64,7 +64,6 @@ from bulmaai.utils.permissions import (
 )
 
 log = logging.getLogger(__name__)
-vision_client = AsyncOpenAI(api_key=load_settings().openai_key)
 
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
@@ -451,14 +450,6 @@ def _parse_resolve_custom_id(custom_id: str) -> tuple[bool, int, str] | None:
         return answer == "yes", int(requester_id), language
     except ValueError:
         return None
-
-
-def _ticket_vector_store_id(settings: Any) -> str | None:
-    """Closed tickets land in the support store by default so file_search learns from them."""
-    explicit = getattr(settings, "openai_ticket_vector_store_id", None)
-    if explicit:
-        return explicit
-    return next(iter(getattr(settings, "openai_support_vector_store_ids", ()) or ()), None)
 
 
 def _build_close_card(
@@ -885,8 +876,9 @@ class AITicketsCog(ReloadableCog):
                 {
                     "role": "user",
                     "content": [
+                        {"type": "image", "source": {"type": "url", "url": url}},
                         {
-                            "type": "input_text",
+                            "type": "text",
                             "text": (
                                 "Read this support screenshot. Start with one short sentence saying "
                                 "what it shows, then extract only actionable details relevant to "
@@ -896,22 +888,22 @@ class AITicketsCog(ReloadableCog):
                                 "in the saved ticket transcript."
                             ),
                         },
-                        {"type": "input_image", "image_url": url},
                     ],
                 }
             ]
             response = await asyncio.wait_for(
-                vision_client.responses.create(
-                    model=settings.openai_vision_model,
-                    input=payload,
-                    max_output_tokens=settings.openai_support_max_output_tokens,
-                    text={"verbosity": "medium"},
+                vision_client.messages.create(
+                    model=settings.ai_vision_model,
+                    messages=payload,
+                    max_tokens=settings.ai_support_max_output_tokens,
+                    output_config={"effort": "low"},
                 ),
                 timeout=settings.ai_support_timeout_seconds,
             )
             ai_budget.record_response(response)
-            if response.output_text:
-                return response.output_text.strip()
+            text = response_text(response, "image_context").strip()
+            if text:
+                return text
         except Exception:
             log.exception("Failed to extract image context from %s", url)
         return ""
@@ -1316,7 +1308,7 @@ class AITicketsCog(ReloadableCog):
         try:
             solved = await owner_says_solved(
                 conversation,
-                model=settings.openai_ticket_summary_model,
+                model=settings.ai_ticket_summary_model,
                 timeout_seconds=settings.ai_support_timeout_seconds,
             )
         except Exception:
@@ -1431,7 +1423,7 @@ class AITicketsCog(ReloadableCog):
         staff_solved: bool = False,
         ticket_id: int | None = None,
     ) -> bool:
-        """Transcript → hosted HTML page → summarize → learn (vector store) → embed → record → optionally delete.
+        """Transcript → hosted HTML page → summarize → learn (knowledge_docs) → embed → record → optionally delete.
         resolved=None lets the summary decide. staff_solved: closed with the staff Solved button; then a support info
         suggestion from the summary goes to staff review.
         Returns whether the transcript was saved for the panel."""
@@ -1454,7 +1446,7 @@ class AITicketsCog(ReloadableCog):
                 if not ai_budget.is_paused(settings):
                     summary = await summarize_ticket(
                         lines,
-                        model=settings.openai_ticket_summary_model,
+                        model=settings.ai_ticket_summary_model,
                         timeout_seconds=settings.ai_support_timeout_seconds,
                     )
             except Exception:
@@ -1470,26 +1462,22 @@ class AITicketsCog(ReloadableCog):
             if resolved is None:
                 resolved = bool(summary and summary.resolved)
 
-            openai_file_id: str | None = None
-            vector_store_id = _ticket_vector_store_id(settings)
+            knowledge_filename: str | None = None
             # Only tickets a staff member took part in may teach the AI, and only their lines are kept.
             staff_reviewed = any(line.speaker_kind == "staff" for line in lines)
-            if summary is not None and summary.knowledge_worthy and staff_reviewed and vector_store_id:
+            if summary is not None and summary.knowledge_worthy and staff_reviewed:
                 try:
-                    # ponytail: a re-close keeps the first close's knowledge file; no vector-store delete helper yet.
-                    if await knowledge_file_id(channel.id) is None:
-                        openai_file_id = await upload_ticket_knowledge(
-                            render_knowledge_markdown(summary, lines, closed_at=closed_at),
-                            filename=ticket_knowledge_filename(channel.id, closed_at),
-                            vector_store_id=vector_store_id,
-                            attributes={
-                                "source": "ticket",
-                                "resolved": resolved,
-                                "closed_at": closed_at.date().isoformat(),
-                            },
-                        )
+                    # A re-close overwrites the doc an earlier close wrote: one knowledge doc per ticket.
+                    filename = await stored_knowledge_filename(channel.id) or ticket_knowledge_filename(
+                        channel.id, closed_at
+                    )
+                    knowledge_filename = await save_ticket_knowledge(
+                        render_knowledge_markdown(summary, lines, closed_at=closed_at),
+                        filename=filename,
+                        title=summary.title,
+                    )
                 except Exception:
-                    log.exception("Failed to upload ticket knowledge", extra={"channel_id": channel.id})
+                    log.exception("Failed to save ticket knowledge", extra={"channel_id": channel.id})
             # The Solved click is staff vouching for the ticket, and staff approve the suggestion before it is used.
             if staff_solved and summary is not None and summary.support_info is not None:
                 await self._suggest_support_info(
@@ -1506,7 +1494,7 @@ class AITicketsCog(ReloadableCog):
                 confidence=confidence,
                 message_count=message_count,
                 open_for=closed_at - channel.created_at,
-                added_to_knowledge=openai_file_id is not None,
+                added_to_knowledge=knowledge_filename is not None,
                 closed_at=closed_at,
                 page_link=page_url(settings, page.token) if page else None,
                 page_expires_at=page.expires_at if page else None,
@@ -1523,7 +1511,7 @@ class AITicketsCog(ReloadableCog):
                     message_count=message_count,
                     summary=summary,
                     transcript=transcript,
-                    openai_file_id=openai_file_id,
+                    knowledge_filename=knowledge_filename,
                     html_token=page.token if page else None,
                     html_expires_at=page.expires_at if page else None,
                 )

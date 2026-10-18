@@ -4,12 +4,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
 
-from bulmaai.cogs.ai_ann_translation import AiAnnTranslation, build_announcement_sends
+from bulmaai.cogs.ai_ann_translation import AiAnnTranslation, build_announcement_sends, translate_text
 
 
 class BuildAnnouncementSendsTests(unittest.TestCase):
@@ -82,6 +82,33 @@ class AutoPublishTests(unittest.IsolatedAsyncioTestCase):
         await cog.on_message_publish(link_post)
         prompt.publish.assert_not_awaited()
         link_post.publish.assert_awaited_once()
+
+
+class TranslateTextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_translate_text_uses_the_messages_api(self) -> None:
+        response = SimpleNamespace(content=[SimpleNamespace(type="text", text="  Hola  ")], stop_reason="end_turn")
+        cog = SimpleNamespace(
+            client=SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(return_value=response))),
+            settings=SimpleNamespace(ai_translation_model="claude-haiku-5-5"),
+        )
+
+        self.assertEqual(await translate_text(cog, "Hello", "es"), "Hola")
+
+        kwargs = cog.client.messages.create.await_args.kwargs
+        self.assertEqual(kwargs["model"], "claude-haiku-5-5")
+        self.assertIn("Spanish", kwargs["system"])
+        self.assertEqual(kwargs["messages"], [{"role": "user", "content": "Hello"}])
+        self.assertGreaterEqual(kwargs["max_tokens"], 4000)
+        self.assertEqual(kwargs["output_config"], {"effort": "low"})
+
+    async def test_refusal_gives_empty_translation(self) -> None:
+        response = SimpleNamespace(content=[], stop_reason="refusal")
+        cog = SimpleNamespace(
+            client=SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(return_value=response))),
+            settings=SimpleNamespace(ai_translation_model="claude-haiku-5-5"),
+        )
+
+        self.assertEqual(await translate_text(cog, "Hello", "pt"), "")
 
 
 if __name__ == "__main__":

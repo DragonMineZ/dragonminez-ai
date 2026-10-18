@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
@@ -19,7 +19,6 @@ from bulmaai.cogs.ai_tickets import (
     _message_content,
     _parse_resolve_custom_id,
     _resolve_prompt_probability,
-    _ticket_vector_store_id,
     _chunk_discord_message,
     _has_user_visible_tool_result,
     _is_ack_message,
@@ -88,12 +87,17 @@ class DiscordMessageChunkTests(unittest.TestCase):
 
     def test_owner_says_solved_reads_the_models_yes_no(self) -> None:
         for output_text, expected in (('{"solved": true}', True), ('{"solved": false}', False), ("{}", False)):
-            client = types.SimpleNamespace(
-                responses=types.SimpleNamespace(create=AsyncMock(return_value=types.SimpleNamespace(output_text=output_text)))
+            response = types.SimpleNamespace(
+                content=[types.SimpleNamespace(type="text", text=output_text)], stop_reason="end_turn"
             )
-            solved = asyncio.run(owner_says_solved("Owner: thank you, works a treat", model="gpt-5-mini", openai_client=client))
+            client = types.SimpleNamespace(messages=types.SimpleNamespace(create=AsyncMock(return_value=response)))
+            solved = asyncio.run(owner_says_solved("Owner: thank you, works a treat", model="claude-haiku-5-5", client=client))
             self.assertIs(solved, expected)
-            self.assertIn("works a treat", client.responses.create.await_args.kwargs["input"][0]["content"])
+            kwargs = client.messages.create.await_args.kwargs
+            self.assertIn("works a treat", kwargs["messages"][0]["content"])
+            self.assertIn("system", kwargs)
+            self.assertEqual(kwargs["output_config"]["format"]["type"], "json_schema")
+            self.assertEqual(kwargs["output_config"]["effort"], "low")
 
     def test_relative_age_renders_compact_units(self) -> None:
         now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
@@ -168,8 +172,8 @@ class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
         second_started = asyncio.Event()
         call_count = 0
         settings = types.SimpleNamespace(
-            openai_vision_model="gpt-test",
-            openai_support_max_output_tokens=100,
+            ai_vision_model="gpt-test",
+            ai_support_max_output_tokens=100,
             ai_support_timeout_seconds=1,
         )
         bot = types.SimpleNamespace(settings=settings)
@@ -184,18 +188,23 @@ class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
         async def fake_create(**kwargs):
             nonlocal call_count
             call_count += 1
-            prompts.append(kwargs["input"][0]["content"][0]["text"])
+            content = kwargs["messages"][0]["content"]
+            self.assertEqual(content[0]["type"], "image")
+            self.assertEqual(content[0]["source"]["type"], "url")
+            prompts.append(content[1]["text"])
             if call_count == 1:
                 first_started.set()
                 await asyncio.wait_for(second_started.wait(), timeout=0.5)
             else:
                 second_started.set()
                 await asyncio.wait_for(first_started.wait(), timeout=0.5)
-            return types.SimpleNamespace(output_text="image details")
+            return types.SimpleNamespace(
+                content=[types.SimpleNamespace(type="text", text="image details")], stop_reason="end_turn"
+            )
 
         with (
             patch(
-                "bulmaai.cogs.ai_tickets.vision_client.responses.create",
+                "bulmaai.cogs.ai_tickets.vision_client.messages.create",
                 new_callable=AsyncMock,
                 side_effect=fake_create,
             ),
@@ -212,8 +221,8 @@ class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cached_image_analyses_are_not_reprocessed(self) -> None:
         settings = types.SimpleNamespace(
-            openai_vision_model="gpt-test",
-            openai_support_max_output_tokens=100,
+            ai_vision_model="gpt-test",
+            ai_support_max_output_tokens=100,
             ai_support_timeout_seconds=1,
         )
         cog = AITicketsCog(types.SimpleNamespace(settings=settings))
@@ -221,7 +230,7 @@ class ImageContextLatencyTests(unittest.IsolatedAsyncioTestCase):
         message = types.SimpleNamespace(attachments=[attachment], channel=types.SimpleNamespace(id=55))
 
         with (
-            patch("bulmaai.cogs.ai_tickets.vision_client.responses.create", new_callable=AsyncMock) as create,
+            patch("bulmaai.cogs.ai_tickets.vision_client.messages.create", new_callable=AsyncMock) as create,
             patch("bulmaai.cogs.ai_tickets.get_image_analyses", new_callable=AsyncMock, return_value={7: "crash screen"}),
         ):
             result = await cog._extract_image_context(message)
@@ -368,14 +377,6 @@ class ResolvePromptTests(unittest.IsolatedAsyncioTestCase):
     def test_solved_close_text_has_every_language(self) -> None:
         self.assertEqual(set(ai_tickets.SOLVED_CLOSE_TEXT), set(ai_tickets.RESOLVE_PROMPT_TEXT))
 
-    def test_ticket_vector_store_falls_back_to_support_store(self) -> None:
-        settings = types.SimpleNamespace(openai_ticket_vector_store_id=None, openai_support_vector_store_ids=("vs_a", "vs_b"))
-        self.assertEqual(_ticket_vector_store_id(settings), "vs_a")
-        settings.openai_ticket_vector_store_id = "vs_tickets"
-        self.assertEqual(_ticket_vector_store_id(settings), "vs_tickets")
-        settings = types.SimpleNamespace(openai_ticket_vector_store_id=None, openai_support_vector_store_ids=())
-        self.assertIsNone(_ticket_vector_store_id(settings))
-
     def test_message_content_only_renders_previously_analyzed_images(self) -> None:
         message = types.SimpleNamespace(
             clean_content="it crashes",
@@ -431,15 +432,13 @@ class LogAnalysesTests(unittest.IsolatedAsyncioTestCase):
 
 class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        knowledge = patch("bulmaai.cogs.ai_tickets.knowledge_file_id", AsyncMock(return_value=None))
-        self.knowledge_file_id = knowledge.start()
+        knowledge = patch("bulmaai.cogs.ai_tickets.stored_knowledge_filename", AsyncMock(return_value=None))
+        self.stored_knowledge_filename = knowledge.start()
         self.addCleanup(knowledge.stop)
 
     def _cog(self) -> AITicketsCog:
         settings = types.SimpleNamespace(
-            openai_ticket_summary_model="gpt-test",
-            openai_ticket_vector_store_id="vs_tickets",
-            openai_support_vector_store_ids=(),
+            ai_ticket_summary_model="gpt-test",
             ai_support_timeout_seconds=5,
             ai_ticket_close_delay_seconds=0,
             ai_ticket_escalation_role_ids=(111, 222),
@@ -464,7 +463,10 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         return (
             patch.object(cog, "_collect_transcript", AsyncMock(return_value=(lines, requester_id))),
             patch("bulmaai.cogs.ai_tickets.summarize_ticket", AsyncMock(return_value=summary)),
-            patch("bulmaai.cogs.ai_tickets.upload_ticket_knowledge", AsyncMock(return_value="file_1")),
+            patch(
+                "bulmaai.cogs.ai_tickets.save_ticket_knowledge",
+                AsyncMock(side_effect=lambda markdown, **kwargs: kwargs["filename"]),
+            ),
             patch("bulmaai.cogs.ai_tickets.record_ticket_transcript", AsyncMock()),
             patch("bulmaai.cogs.ai_tickets.delete_image_analyses", AsyncMock()),
         )
@@ -488,17 +490,18 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Update GeckoLib", knowledge)
         self.assertNotIn("game crashes", knowledge)  # member lines never become knowledge
         self.assertNotIn("evil.tld", knowledge)
-        self.assertEqual(upload.await_args.kwargs["vector_store_id"], "vs_tickets")
-        self.assertTrue(upload.await_args.kwargs["attributes"]["resolved"])
-        self.assertEqual(record.await_args.kwargs["openai_file_id"], "file_1")
+        filename = upload.await_args.kwargs["filename"]
+        self.assertRegex(filename, r"^ticket-\d{8}-10\.md$")
+        self.assertEqual(upload.await_args.kwargs["title"], "Crash on launch")
+        self.assertEqual(record.await_args.kwargs["knowledge_filename"], filename)
         self.assertEqual(record.await_args.kwargs["ai_confidence"], 0.9)
         self.assertIn("Crash on launch", channel.send.await_args.kwargs["view"].children[0].items[0].content)
         channel.delete.assert_awaited_once()
         self.assertNotIn(10, cog._closing_channels)
 
-    async def test_reclose_keeps_the_first_knowledge_file_instead_of_uploading_a_twin(self) -> None:
+    async def test_reclose_overwrites_the_first_knowledge_doc_instead_of_adding_a_twin(self) -> None:
         cog = self._cog()
-        self.knowledge_file_id.return_value = "file_first"
+        self.stored_knowledge_filename.return_value = "ticket-20260901-16.md"
         now = datetime.now(timezone.utc)
         lines = [TranscriptLine(now, "staff", "Vegeta", "Update GeckoLib.")]
         summary = TicketSummary("Crash", "Crash.", "Updated GeckoLib.", True, ("crash",), True)
@@ -509,8 +512,8 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
                 self._channel(16), closed_by_id=5, requester_id=42, resolved=True, delete_channel=False, announce=False
             )
 
-        upload.assert_not_called()
-        self.assertIsNone(record.await_args.kwargs["openai_file_id"])  # the row keeps file_first (COALESCE)
+        self.assertEqual(upload.await_args.kwargs["filename"], "ticket-20260901-16.md")
+        self.assertEqual(record.await_args.kwargs["knowledge_filename"], "ticket-20260901-16.md")
 
     async def test_close_links_the_hosted_page_and_records_it(self) -> None:
         cog = self._cog()

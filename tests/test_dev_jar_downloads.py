@@ -1014,7 +1014,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch_notes_repo="dragonminez",
                 patch_notes_branch="v2.1.x",
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
-                openai_model="gpt-5-mini",
+                ai_model="claude-haiku-5-5",
             )
             cog._pending_review_lock = asyncio.Lock()
 
@@ -1187,7 +1187,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch_notes_repo="dragonminez",
                 patch_notes_branch="v2.1.x",
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
-                openai_model="gpt-5-mini",
+                ai_model="claude-haiku-5-5",
             )
 
             with patch(
@@ -1238,7 +1238,7 @@ class DevJarDownloadsTests(unittest.IsolatedAsyncioTestCase):
                 patch_notes_repo="dragonminez",
                 patch_notes_branch="v2.1.x",
                 patch_notes_file_path="PATCH_NOTES-v2.1.1.md",
-                openai_model="gpt-5-mini",
+                ai_model="claude-haiku-5-5",
             )
 
             published: list[str] = []

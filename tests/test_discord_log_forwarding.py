@@ -57,7 +57,7 @@ class DiscordLogForwardingTests(unittest.IsolatedAsyncioTestCase):  # cards need
             logging.ERROR,
             __file__,
             12,
-            "OpenAI failed with OPENAI_KEY=sk-test1234567890 while handling user content",
+            "Claude failed with ANTHROPIC_API_KEY=sk-test1234567890 while handling user content",
             (),
             None,
         )

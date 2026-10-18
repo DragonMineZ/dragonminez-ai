@@ -5,13 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
 
 from bulmaai.cogs import support_info as cog_module
-from bulmaai.services import openai_client
+from bulmaai.services import ai_client
 from bulmaai.services import support_info as db
 from bulmaai.ui import support_info_views as views
 from v2_helpers import text
@@ -106,24 +106,23 @@ class RenderForAITests(unittest.TestCase):
 
 class DataInputTests(unittest.IsolatedAsyncioTestCase):
     def test_support_info_section_goes_first(self) -> None:
-        data = openai_client._build_data_input(
+        content = ai_client._build_data_input(
             [{"filename": "wiki--X.md", "text": "x"}], ["requester_x: 1"], "### [temporary] A\na"
         )
-        content = data[0]["content"]
-        self.assertTrue(content.startswith(openai_client.SUPPORT_INFO_HEADER + "### [temporary] A"))
+        self.assertTrue(content.startswith(ai_client.SUPPORT_INFO_HEADER + "### [temporary] A"))
         self.assertLess(content.index("Support info"), content.index("Looked-up data"))
         self.assertLess(content.index("Looked-up data"), content.index("Knowledge search"))
 
     def test_no_section_without_entries(self) -> None:
-        self.assertEqual(openai_client._build_data_input([], [], ""), [])
-        content = openai_client._build_data_input([], ["a"])[0]["content"]
+        self.assertEqual(ai_client._build_data_input([], [], ""), "")
+        content = ai_client._build_data_input([], ["a"])
         self.assertNotIn("Support info", content)
 
     async def test_db_failure_drops_the_section(self) -> None:
         with patch.object(db, "cached_active", AsyncMock(side_effect=OSError("db down"))):
-            self.assertEqual(await openai_client._support_info_text(), "")
+            self.assertEqual(await ai_client._support_info_text(), "")
         with patch.object(db, "cached_active", AsyncMock(return_value=[entry()])):
-            self.assertIn("### [temporary] Beta 2.2.1", await openai_client._support_info_text())
+            self.assertIn("### [temporary] Beta 2.2.1", await ai_client._support_info_text())
 
 
 class DailyCardTests(unittest.IsolatedAsyncioTestCase):

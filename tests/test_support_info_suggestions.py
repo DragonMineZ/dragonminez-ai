@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
@@ -101,16 +101,14 @@ class SummarySchemaTests(unittest.TestCase):
 
 class CloseSuggestionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        knowledge = patch("bulmaai.cogs.ai_tickets.knowledge_file_id", AsyncMock(return_value=None))
+        knowledge = patch("bulmaai.cogs.ai_tickets.stored_knowledge_filename", AsyncMock(return_value=None))
         knowledge.start()
         self.addCleanup(knowledge.stop)
         self.support_cog = SimpleNamespace(suggest_from_ticket=AsyncMock())
         page = StoredPage(token="p" * 32, expires_at=None)
         cogs = {"SupportInfoCog": self.support_cog, "TicketsCog": SimpleNamespace(build_page=AsyncMock(return_value=page))}
         settings = types.SimpleNamespace(
-            openai_ticket_summary_model="gpt-test",
-            openai_ticket_vector_store_id=None,
-            openai_support_vector_store_ids=(),
+            ai_ticket_summary_model="gpt-test",
             ai_support_timeout_seconds=5,
             ai_ticket_close_delay_seconds=0,
             ai_ticket_escalation_role_ids=(),

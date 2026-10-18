@@ -1,21 +1,21 @@
 import os
 import unittest
-from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services.wiki_knowledge import (
     MEDIAWIKI_TITLES_PER_REQUEST,
     MEDIAWIKI_USER_AGENT,
-    RemoteWikiFile,
+    apply_wiki_sync,
     clean_wikitext,
-    list_remote_wiki_files,
     load_mediawiki_pages,
     plan_wiki_sync,
     render_wiki_knowledge_file,
+    sync_wiki_knowledge,
     wiki_knowledge_filename,
     wiki_page_slug,
     wiki_page_title,
@@ -294,186 +294,78 @@ class PlanWikiSyncTests(unittest.TestCase):
         unchanged = render_wiki_knowledge_file(slug="Raids", body="same")
         changed = render_wiki_knowledge_file(slug="Sagas", body="new content")
         new = render_wiki_knowledge_file(slug="Dragons_and_Wishes", body="fresh")
+        stored = {
+            "wiki--Raids.md": unchanged.content_sha256,
+            "wiki--Sagas.md": "old-hash",
+            "wiki--Deleted_Page.md": "whatever",
+        }
 
-        remote_unchanged = RemoteWikiFile(
-            file_id="file-1", wiki_slug="Raids", content_sha256=unchanged.content_sha256
-        )
-        remote_changed = RemoteWikiFile(
-            file_id="file-2", wiki_slug="Sagas", content_sha256="old-hash"
-        )
-        remote_stale = RemoteWikiFile(
-            file_id="file-3", wiki_slug="Deleted_Page", content_sha256="whatever"
-        )
-
-        plan = plan_wiki_sync(
-            [unchanged, changed, new],
-            [remote_unchanged, remote_changed, remote_stale],
-        )
+        plan = plan_wiki_sync([unchanged, changed, new], stored)
 
         self.assertEqual([page.slug for page in plan.uploads], ["Sagas", "Dragons_and_Wishes"])
-        self.assertEqual(
-            sorted(remote.file_id for remote in plan.deletes),
-            ["file-2", "file-3"],
-        )
+        self.assertEqual(plan.deletes, ("wiki--Deleted_Page.md",))
         self.assertEqual(plan.unchanged, 1)
+        self.assertIn("wiki--Deleted_Page.md", stored)  # the caller's dict is left alone
 
-    def test_plan_with_empty_remote_uploads_everything(self) -> None:
+    def test_plan_with_nothing_stored_uploads_everything(self) -> None:
         pages = [render_wiki_knowledge_file(slug="Races", body="hub")]
 
-        plan = plan_wiki_sync(pages, [])
+        plan = plan_wiki_sync(pages, {})
 
         self.assertEqual(len(plan.uploads), 1)
         self.assertEqual(plan.deletes, ())
         self.assertEqual(plan.unchanged, 0)
 
-    def test_plan_keeps_one_current_copy_and_deletes_duplicates(self) -> None:
+
+class ApplyWikiSyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_apply_upserts_pages_with_url_and_deletes_gone_ones(self) -> None:
+        page = render_wiki_knowledge_file(slug="Forms/Super_Saiyan", body="Transform.")
+        plan = plan_wiki_sync([page], {"wiki--Gone.md": "x"})
+        upsert, delete = AsyncMock(return_value=True), AsyncMock(return_value=True)
+
+        with patch("bulmaai.services.knowledge.upsert", upsert), patch("bulmaai.services.knowledge.delete", delete):
+            result = await apply_wiki_sync(plan, pool="pool")
+
+        self.assertEqual(result, {"uploaded": 1, "deleted": 1, "unchanged": 0})
+        upsert.assert_awaited_once_with(
+            "wiki--Forms%2FSuper_Saiyan.md",
+            source="mediawiki",
+            title="Forms/Super Saiyan",
+            content=page.content,
+            url=f"{WIKI_BASE_URL}/Forms/Super_Saiyan",
+            pool="pool",
+        )
+        delete.assert_awaited_once_with("wiki--Gone.md", pool="pool")
+
+    async def test_sync_compares_against_stored_mediawiki_rows(self) -> None:
         page = render_wiki_knowledge_file(slug="Raids", body="same")
+        stored = {"wiki--Raids.md": page.content_sha256, "wiki--Old.md": "x"}
+        list_by_source = AsyncMock(return_value=stored)
+        upsert, delete = AsyncMock(), AsyncMock()
 
-        plan = plan_wiki_sync(
-            [page],
-            [
-                RemoteWikiFile(file_id="file-legacy", wiki_slug="Raids", content_sha256="github-hash"),
-                RemoteWikiFile(file_id="file-current", wiki_slug="Raids", content_sha256=page.content_sha256),
-            ],
-        )
+        with (
+            patch("bulmaai.services.wiki_knowledge.load_mediawiki_pages", return_value=[page]) as load,
+            patch("bulmaai.services.knowledge.list_by_source", list_by_source),
+            patch("bulmaai.services.knowledge.upsert", upsert),
+            patch("bulmaai.services.knowledge.delete", delete),
+        ):
+            result = await sync_wiki_knowledge(API_URL, base_url=WIKI_BASE_URL)
 
-        self.assertEqual(plan.uploads, ())
-        self.assertEqual([remote.file_id for remote in plan.deletes], ["file-legacy"])
-        self.assertEqual(plan.unchanged, 1)
+        load.assert_called_once_with(API_URL, base_url=WIKI_BASE_URL)
+        list_by_source.assert_awaited_once_with("mediawiki", pool=None)
+        upsert.assert_not_awaited()
+        delete.assert_awaited_once_with("wiki--Old.md", pool=None)
+        self.assertEqual(result, {"uploaded": 0, "deleted": 1, "unchanged": 1})
 
-
-class _FakeVectorStoreFiles:
-    def __init__(self, entries: list[SimpleNamespace]) -> None:
-        self.entries = entries
-        self.list_calls: list[dict[str, Any]] = []
-
-    def list(self, **kwargs: Any):
-        self.list_calls.append(kwargs)
-        entries = self.entries
-
-        async def iterate():
-            for entry in entries:
-                yield entry
-
-        return iterate()
-
-
-class ListRemoteWikiFilesTests(unittest.IsolatedAsyncioTestCase):
-    async def test_legacy_github_wiki_files_are_managed_and_planned_for_deletion(self) -> None:
-        files = _FakeVectorStoreFiles(
-            [
-                SimpleNamespace(
-                    id="file-legacy",
-                    attributes={"source": "github-wiki", "wiki_slug": "Stats-and-Attributes", "content_sha256": "a"},
-                ),
-                SimpleNamespace(
-                    id="file-legacy-same-slug",
-                    attributes={"source": "github-wiki", "wiki_slug": "Raids", "content_sha256": "b"},
-                ),
-                SimpleNamespace(
-                    id="file-removed-page",
-                    attributes={"source": "mediawiki", "wiki_slug": "Saiyan", "content_sha256": "c"},
-                ),
-                SimpleNamespace(
-                    id="file-faq",
-                    attributes={"source": "support-faq", "wiki_slug": "Raids", "content_sha256": "d"},
-                ),
-                SimpleNamespace(id="file-ticket", attributes=None),
-            ]
-        )
-        client = SimpleNamespace(vector_stores=SimpleNamespace(files=files))
-
-        remote = await list_remote_wiki_files(vector_store_id="vs_wiki", openai_client=client)
-
-        self.assertEqual(
-            [entry.file_id for entry in remote],
-            ["file-legacy", "file-legacy-same-slug", "file-removed-page"],
-        )
-        self.assertEqual(files.list_calls[0]["vector_store_id"], "vs_wiki")
-
-        pages = [
-            render_wiki_knowledge_file(slug="Stats_and_Attributes", body="stats"),
-            render_wiki_knowledge_file(slug="Raids", body="raids"),
-        ]
-        plan = plan_wiki_sync(pages, remote)
-
-        self.assertEqual([page.slug for page in plan.uploads], ["Stats_and_Attributes", "Raids"])
-        self.assertEqual(
-            sorted(entry.file_id for entry in plan.deletes),
-            ["file-legacy", "file-legacy-same-slug", "file-removed-page"],
-        )
-
-
-class WikiCitationExtractionTests(unittest.TestCase):
-    def _response_with_annotations(self, annotations: list[SimpleNamespace]) -> SimpleNamespace:
-        return SimpleNamespace(
-            output=[
-                SimpleNamespace(
-                    type="message",
-                    content=[
-                        SimpleNamespace(
-                            type="output_text",
-                            text="answer",
-                            annotations=annotations,
-                        )
-                    ],
-                )
-            ]
-        )
-
-    def test_extracts_cited_filenames_in_order_without_duplicates(self) -> None:
-        from bulmaai.services.openai_client import _extract_file_citations
-
-        response = self._response_with_annotations(
-            [
-                SimpleNamespace(type="file_citation", filename="wiki--Raids.md"),
-                SimpleNamespace(type="file_citation", filename="wiki--Raids.md"),
-                SimpleNamespace(type="file_citation", filename="dragonminez-faq.md"),
-                SimpleNamespace(type="url_citation", filename="ignored.md"),
-            ]
-        )
-
-        self.assertEqual(
-            _extract_file_citations(response),
-            ["wiki--Raids.md", "dragonminez-faq.md"],
-        )
-
-    def test_append_wiki_sources_links_only_wiki_files(self) -> None:
-        from bulmaai.services.openai_client import _append_wiki_sources
-
-        reply = _append_wiki_sources(
-            "Do the raid at night.",
-            ["wiki--World_Bosses.md", "wiki--Bio-Android.md", "dragonminez-faq.md"],
-            base_url=WIKI_BASE_URL,
-        )
-
-        self.assertIn("Do the raid at night.", reply)
-        self.assertIn(f"[World Bosses](<{WIKI_BASE_URL}/World_Bosses>)", reply)
-        self.assertIn(f"[Bio-Android](<{WIKI_BASE_URL}/Bio-Android>)", reply)
-        self.assertNotIn("dragonminez-faq", reply)
-
-    def test_append_wiki_sources_skips_empty_reply_and_caps_links(self) -> None:
-        from bulmaai.services.openai_client import (
-            MAX_WIKI_SOURCE_LINKS,
-            _append_wiki_sources,
-        )
-
-        self.assertEqual(
-            _append_wiki_sources(
-                "(no reply)",
-                ["wiki--Raids.md"],
-                base_url=WIKI_BASE_URL,
-            ),
-            "(no reply)",
-        )
-
-        filenames = [f"wiki--Page_{index}.md" for index in range(6)]
-        reply = _append_wiki_sources(
-            "answer",
-            filenames,
-            base_url=WIKI_BASE_URL,
-        )
-        self.assertEqual(reply.count("](<"), MAX_WIKI_SOURCE_LINKS)
+    async def test_sync_refuses_an_empty_wiki(self) -> None:
+        delete = AsyncMock()
+        with (
+            patch("bulmaai.services.wiki_knowledge.load_mediawiki_pages", return_value=[]),
+            patch("bulmaai.services.knowledge.delete", delete),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "refusing"):
+                await sync_wiki_knowledge(API_URL)
+        delete.assert_not_awaited()
 
 
 if __name__ == "__main__":

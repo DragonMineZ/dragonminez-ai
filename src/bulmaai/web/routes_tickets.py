@@ -164,7 +164,7 @@ async def get_transcript(request: web.Request, actor: Actor) -> web.Response:
         raise api_error(400, "Transcript id must be an integer.")
     pool = await get_pool()
     row = await pool.fetchrow(
-        f"SELECT {_SUMMARY_COLUMNS}, guild_id, problem, resolution, transcript, openai_file_id, "
+        f"SELECT {_SUMMARY_COLUMNS}, guild_id, problem, resolution, transcript, knowledge_filename, "
         "html_token, html_expires_at FROM ticket_transcripts WHERE id = $1",
         transcript_id,
     )
@@ -177,7 +177,7 @@ async def get_transcript(request: web.Request, actor: Actor) -> web.Response:
         problem=row["problem"],
         resolution=row["resolution"],
         transcript=row["transcript"],
-        openai_file_id=row["openai_file_id"],
+        knowledge_filename=row["knowledge_filename"],
         guild_id=str(row["guild_id"]) if row["guild_id"] else None,
         html_url=ticket_pages.page_url(request.app[BOT].settings, row["html_token"]) if live else None,
         html_permanent=live and expires is None,

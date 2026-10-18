@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
@@ -34,7 +34,7 @@ SETTINGS = SimpleNamespace(
     ticket_transcript_public_url="https://tickets.example",
     ai_ticket_category_id=1,
     ticket_closed_category_id=2,
-    openai_ticket_summary_model="gpt-5-mini",
+    ai_ticket_summary_model="gpt-5-mini",
     announcement_role_en_id=EN_ROLE,
     announcement_role_es_id=ES_ROLE,
     announcement_role_pt_id=PT_ROLE,
@@ -322,7 +322,8 @@ class InlineImageTests(unittest.IsolatedAsyncioTestCase):
 
 class FakeOpenAI:
     def __init__(self, payload):
-        self.responses = SimpleNamespace(create=AsyncMock(return_value=SimpleNamespace(output_text=json.dumps(payload))))
+        response = SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(payload))], stop_reason="end_turn")
+        self.messages = SimpleNamespace(create=AsyncMock(return_value=response))
 
 
 class IntakeTests(unittest.IsolatedAsyncioTestCase):
@@ -331,13 +332,16 @@ class IntakeTests(unittest.IsolatedAsyncioTestCase):
             {"channel_slug": "@everyone Crash!!", "language": "fr", "summary": "See https://evil.example and @everyone"}
         )
         intake = await triage_intake(
-            "Bug", [("Summary", "boom")], model="gpt-5-mini", fallback_slug="bug", openai_client=client
+            "Bug", [("Summary", "boom")], model="claude-haiku-5-5", fallback_slug="bug", client=client
         )
         self.assertEqual(intake.channel_slug, "everyone-crash")
         self.assertEqual(intake.language, "en")
         self.assertNotIn("evil.example", intake.summary)
         self.assertNotIn("@everyone", intake.summary)
-        self.assertEqual(client.responses.create.await_args.kwargs["model"], "gpt-5-mini")
+        kwargs = client.messages.create.await_args.kwargs
+        self.assertEqual(kwargs["model"], "claude-haiku-5-5")
+        self.assertEqual(kwargs["messages"][0]["role"], "user")
+        self.assertEqual(kwargs["output_config"]["format"]["type"], "json_schema")
 
 
 def make_cog():

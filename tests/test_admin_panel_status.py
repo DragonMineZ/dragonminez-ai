@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
@@ -67,7 +67,7 @@ class StatusApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["latency_ms"], 42)
         self.assertTrue(data["db"]["ok"])
         self.assertEqual(data["guild"]["member_count"], 3)
-        self.assertEqual({p["pool"] for p in data["ai_budget"]["pools"]}, {"small", "big", "billed"})
+        self.assertEqual({p["pool"] for p in data["ai_budget"]["pools"]}, {"small", "big"})
         self.assertIn("bulmaai.cogs.meta", data["extensions"])
 
     async def test_status_reports_db_error(self):

@@ -70,9 +70,9 @@ def _ai_budget(settings: Any) -> dict[str, Any]:
         {
             "pool": pool,
             "used": ai_budget.used(pool),
-            "limit": getattr(settings, f"openai_daily_{pool}_token_limit", None),
+            "limit": getattr(settings, f"ai_daily_{pool}_token_limit", None),
         }
-        for pool in (ai_budget.SMALL, ai_budget.BIG, ai_budget.BILLED)
+        for pool in (ai_budget.SMALL, ai_budget.BIG)
     ]
     return {"pools": pools, "paused": ai_budget.is_paused(settings), "resets_at": resets_at.isoformat()}
 

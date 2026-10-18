@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -136,7 +136,7 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
             "id": 7, "channel_id": TICKET_ID, "channel_name": "ticket-0001", "requester_id": 42, "closed_by_id": None,
             "resolved": True, "ai_confidence": 0.9, "message_count": 3, "title": "Crash on start", "tags": ["crash"],
             "knowledge_worthy": True, "closed_at": NOW, "guild_id": 1, "problem": "p", "resolution": "r",
-            "transcript": "Transcript: #ticket-0001", "openai_file_id": None,
+            "transcript": "Transcript: #ticket-0001", "knowledge_filename": "ticket-20260901-1.md",
             "html_token": None, "html_expires_at": None,
         }
         pool = SimpleNamespace(fetch=AsyncMock(return_value=[row]), fetchrow=AsyncMock(return_value=row))
@@ -153,6 +153,9 @@ class TicketsPatreonPanelTests(unittest.IsolatedAsyncioTestCase):
 
             detail = await (await self.client.get("/api/transcripts/7")).json()
             self.assertEqual(detail["transcript"], "Transcript: #ticket-0001")
+            self.assertEqual(detail["knowledge_filename"], "ticket-20260901-1.md")
+            self.assertNotIn("openai_file_id", detail)
+            self.assertIn("knowledge_filename", pool.fetchrow.await_args.args[0])
             pool.fetchrow.return_value = None
             self.assertEqual((await self.client.get("/api/transcripts/8")).status, 404)
         self.assertEqual((await self.client.get("/api/transcripts/abc")).status, 400)

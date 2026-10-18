@@ -1,10 +1,10 @@
 """Read-only data the support AI can see.
 
 The same handlers serve two paths:
-- escalation runs expose them as function tools (billed, the model decides what to look up);
-- the free first pass gets `build_prefetch_lines` output injected as context instead.
+- support runs expose them as Claude client tools (the model decides what to look up);
+- every run also gets `build_prefetch_lines` output injected as context up front.
 
-Identity tools only ever receive the triggering user's id (forced in openai_client._hydrate_tool_args).
+Identity tools only ever receive the triggering user's id (forced in ai_client._hydrate_tool_args).
 Outputs are minimized: no real names, Patreon ids, tier ids or billing dates.
 """
 

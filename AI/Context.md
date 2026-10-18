@@ -1,6 +1,6 @@
 # dragonminez-ai Context
 
-Architecture facts. Keep them true: update this file when a structure below changes. Last checked 2026-10-16.
+Architecture facts. Keep them true: update this file when a structure below changes. Last checked 2026-10-17.
 
 ## What it is
 
@@ -22,10 +22,11 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
 - `cogs/`: Discord commands, listeners and `tasks.loop` jobs. Keep them thin.
 - `services/`: logic and DB access (asyncpg). Highlights:
   - `mod_actions` (all moderation actions)
-  - `openai_client` + `ai_tools` + `ai_guard` (AI calls, tools, output screening)
-  - `ai_budget` (daily token budget, seeded from `support_traces`)
-  - `tickets`, `ticket_transcripts`. `tickets.language` is the ticket's support language (member-facing text via `ui/ticket_views.TEXT`, AI via `ai_tickets._ticket_language`); `note_ticket_message` tracks the owner-reply countdown with one conditional UPDATE per ticket message
-  - `support_info`: staff-curated entries (`support_info` table). Temporary ones (current issues, optional expiry) and permanent ones (custom answers); every active entry goes into the support AI's developer message (`openai_client._build_data_input`, 60s cache). `cogs/support_info.py` posts active temporary entries to `support_info_channel_id` every 24h (replacing the previous post; `support_info_post` row), runs `/info`, and owns the staff review card for AI suggestions (`finish_suggestion`). The ticket summary may carry a `support_info` suggestion; it is stored as `suggested` only on a staff Solved close. Panel page: `web/routes_support_info.py`.
+  - `ai_client` (shared `AsyncAnthropic` client; the `anthropic` SDK is the only AI provider) + `ai_tools` + `ai_guard` (AI calls, tools, output screening). The support AI's fast pass is `claude-haiku-5-5`, escalation is `claude-opus-5-5`; both passes can use tools, including `search_knowledge`. `ai_oneshot` holds the single-shot helpers (summaries, translations, titles)
+  - `ai_budget` (two daily token pools: small = haiku, big = all other models; seeded from `support_traces`)
+  - `knowledge` (Postgres `knowledge_docs` table, full-text search; sources: mediawiki, ticket, faq, local `data/knowledge/*.md`)
+  - `tickets`, `ticket_transcripts` (`knowledge_filename` links a transcript to its `knowledge_docs` row). `tickets.language` is the ticket's support language (member-facing text via `ui/ticket_views.TEXT`, AI via `ai_tickets._ticket_language`); `note_ticket_message` tracks the owner-reply countdown with one conditional UPDATE per ticket message
+  - `support_info`: staff-curated entries (`support_info` table). Temporary ones (current issues, optional expiry) and permanent ones (custom answers); every active entry goes into the support AI's developer message (`ai_client._build_data_input`, 60s cache). `cogs/support_info.py` posts active temporary entries to `support_info_channel_id` every 24h (replacing the previous post; `support_info_post` row), runs `/info`, and owns the staff review card for AI suggestions (`finish_suggestion`). The ticket summary may carry a `support_info` suggestion; it is stored as `suggested` only on a staff Solved close. Panel page: `web/routes_support_info.py`.
   - `log_pages` (redact + render + 24h storage for uploaded logs). The `log_parser`/`dmzdebug` cogs post the cards; their `summary_for_ai` text is what the support AI sees for a log attachment (`ai_tickets._log_analyses`), never the raw file.
   - `/dmzdebug` dumps: the mod (v2.2+, `DebugCommand`) writes `<player>.json` (`schemaVersion` 1, camelCase `party`/`quests` blocks, typed NBT under `sections`); v2.1 and older wrote the `<player>.log` text dump. `utils/dmzdebug_parser.py` reads both into one `DebugReport` (JSON `party`/`quests` are mapped to the text parser's snake_case shapes so `dmzdebug_diagnostics` handles both the same way).
   - `build_gate`, `patreon_*`
@@ -39,12 +40,12 @@ The mod repo is a sibling checkout at `../../dragonminez` (GitHub `DragonMineZ/d
 
 - `scripts/schema.sql` runs on every startup (`services/db_schema.ensure_schema`). Schema changes are idempotent `CREATE ... IF NOT EXISTS` / `ALTER ... ADD COLUMN IF NOT EXISTS`. There are no migrations.
 - `data/`:
-  - `knowledge/`
+  - `knowledge/`: local knowledge `.md` files, loaded into `knowledge_docs` (source `local`)
   - `message_templates.json` (rules and support-us templates)
   - `settings_overrides.json`
   - ticket transcripts (gitignored)
   - `log_pages/`: redacted log/dmzdebug viewer pages, expired by file mtime after 24h (`services/log_pages`, swept hourly by the `log_parser` cog; gitignored)
-- AI support knowledge is an OpenAI vector store, synced from wiki.dragonminez.com by `scripts/sync_wiki_knowledge.py` (`.github/workflows/wiki-sync.yml`).
+- AI support knowledge lives in `knowledge_docs`. `cogs/knowledge_sync.py` re-syncs wiki.dragonminez.com into it inside the bot every 6h.
 
 ## Deploy
 

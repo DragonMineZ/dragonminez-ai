@@ -1,14 +1,21 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
+os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services.support_faq import (
+    FAQ_KNOWLEDGE_FILENAME,
     FAQCandidate,
     SupportFAQSource,
     normalize_faq_candidates,
-    publish_faq_markdown_to_vector_store,
+    publish_faq_markdown,
     render_faq_markdown,
     suggest_faq_candidates,
     support_trace_to_faq_source,
@@ -23,40 +30,14 @@ class FakeResponses:
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(output_text=json.dumps(self.payload))
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=json.dumps(self.payload))], stop_reason="end_turn"
+        )
 
 
-class FakeFiles:
-    def __init__(self) -> None:
-        self.calls = []
-
-    async def create(self, **kwargs):
-        self.calls.append(kwargs)
-        file_arg = kwargs["file"]
-        self.uploaded_name = getattr(file_arg, "name", "")
-        self.uploaded_text = file_arg.read().decode("utf-8")
-        return SimpleNamespace(id="file_faq")
-
-
-class FakeVectorStoreFiles:
-    def __init__(self) -> None:
-        self.calls = []
-
-    async def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return SimpleNamespace(id="vs_file_faq")
-
-
-class FakeVectorStores:
-    def __init__(self) -> None:
-        self.files = FakeVectorStoreFiles()
-
-
-class FakeOpenAIClient:
+class FakeClient:
     def __init__(self, payload: dict | None = None) -> None:
-        self.responses = FakeResponses(payload or {"candidates": []})
-        self.files = FakeFiles()
-        self.vector_stores = FakeVectorStores()
+        self.messages = FakeResponses(payload or {"candidates": []})
 
 
 class SubscriptOnlyRow:
@@ -180,7 +161,7 @@ class SupportFAQTests(unittest.IsolatedAsyncioTestCase):
             write_faq_markdown([candidate], output)
             self.assertEqual(output.read_text(encoding="utf-8"), render_faq_markdown([candidate]))
 
-    async def test_suggest_faq_candidates_asks_openai_for_structured_candidates(self) -> None:
+    async def test_suggest_faq_candidates_asks_claude_for_structured_candidates(self) -> None:
         source = SupportFAQSource(
             trace_id=7,
             created_at="2026-05-08T12:00:00Z",
@@ -189,7 +170,7 @@ class SupportFAQTests(unittest.IsolatedAsyncioTestCase):
             question="How do I transform?",
             answer="Use the configured transform key.",
         )
-        fake_client = FakeOpenAIClient(
+        fake_client = FakeClient(
             {
                 "candidates": [
                     {
@@ -206,39 +187,35 @@ class SupportFAQTests(unittest.IsolatedAsyncioTestCase):
 
         candidates = await suggest_faq_candidates(
             [source],
-            openai_client=fake_client,
-            model="gpt-5.4-mini",
+            client=fake_client,
+            model="claude-haiku-5-5",
             max_candidates=3,
         )
 
         self.assertEqual(candidates[0].question, "How do I transform?")
-        call = fake_client.responses.calls[0]
-        self.assertEqual(call["model"], "gpt-5.4-mini")
-        self.assertEqual(call["metadata"]["workflow"], "support_faq_suggestion")
-        self.assertEqual(call["store"], True)
-        self.assertIn("FAQ candidates", call["instructions"])
-        self.assertIn("How do I transform?", json.dumps(call["input"], ensure_ascii=False))
+        call = fake_client.messages.calls[0]
+        self.assertEqual(call["model"], "claude-haiku-5-5")
+        self.assertEqual(call["output_config"]["format"]["type"], "json_schema")
+        self.assertIn("FAQ candidates", call["system"])
+        self.assertEqual(call["messages"][0]["role"], "user")
+        self.assertIn("How do I transform?", call["messages"][0]["content"])
 
-    async def test_publish_faq_markdown_uploads_file_to_vector_store(self) -> None:
-        fake_client = FakeOpenAIClient()
+    async def test_publish_faq_markdown_upserts_one_faq_doc(self) -> None:
+        upsert = AsyncMock(return_value=True)
+        markdown = "# DragonMineZ FAQ\n\n## Q\nA\n"
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            faq_path = Path(temp_dir) / "dragonminez-faq.md"
-            faq_path.write_bytes(b"# FAQ\n\n## Q\nA\n")
-            result = await publish_faq_markdown_to_vector_store(
-                faq_path,
-                vector_store_id="vs_faq",
-                openai_client=fake_client,
-            )
+        with patch("bulmaai.services.knowledge.upsert", upsert):
+            changed = await publish_faq_markdown(markdown, pool="pool")
 
-        self.assertEqual(result["file_id"], "file_faq")
-        self.assertEqual(result["vector_store_file_id"], "vs_file_faq")
-        self.assertEqual(fake_client.files.calls[0]["purpose"], "assistants")
-        self.assertEqual(fake_client.files.uploaded_text, "# FAQ\n\n## Q\nA\n")
-        self.assertEqual(
-            fake_client.vector_stores.files.calls[0],
-            {"vector_store_id": "vs_faq", "file_id": "file_faq"},
+        self.assertTrue(changed)
+        upsert.assert_awaited_once_with(
+            FAQ_KNOWLEDGE_FILENAME,
+            source="faq",
+            title="DragonMineZ FAQ",
+            content=markdown,
+            pool="pool",
         )
+        self.assertEqual(FAQ_KNOWLEDGE_FILENAME, "support-faq.md")
 
 
 if __name__ == "__main__":

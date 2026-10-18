@@ -17,7 +17,7 @@ from bulmaai.cogs.ai_tickets import (
 from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, can_post_publicly, safe_name, screen_question
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
-from bulmaai.services.openai_client import (
+from bulmaai.services.ai_client import (
     ConversationMessage,
     is_transient_ai_error,
     run_support_agent,

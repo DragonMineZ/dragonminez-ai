@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 # cogs.moderation now imports services.mod_actions, whose import chain (mod_cases -> database.db)
 # calls load_settings() at import time; these need to exist regardless of test run/discovery order.
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
-os.environ.setdefault("OPENAI_KEY", "dummy-openai-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs.moderation import _NOTICE_TEXT, _READABLE_REASONS, ModerationCog

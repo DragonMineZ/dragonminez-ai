@@ -26,13 +26,14 @@ from bulmaai.services.ai_client import (
     _split_confidence,
     _split_close,
     _split_kind,
-    _split_sources,
+    _append_source_links,
     get_schemas,
     run_support_agent,
 )
 from bulmaai.utils import tools_registry
 
 HAIKU = "claude-haiku-5-5"
+WIKI = "https://wiki.dragonminez.com/Transformations"
 SONNET = "claude-sonnet-5-5"
 
 
@@ -181,7 +182,7 @@ class ConversationTests(unittest.TestCase):
 
 
 class MarkerAndRepeatTests(unittest.TestCase):
-    def test_splits_kind_and_sources_markers(self) -> None:
+    def test_splits_kind_marker(self) -> None:
         self.assertEqual(_split_kind("Hi\n[kind: Clarify]"), ("Hi", "clarify"))
         self.assertEqual(_split_kind("Hi"), ("Hi", None))
         self.assertEqual(_split_kind("[kind: offtopic]"), ("(no reply)", "offtopic"))
@@ -189,10 +190,21 @@ class MarkerAndRepeatTests(unittest.TestCase):
     def test_split_close_marker(self):
         self.assertEqual(_split_close("Done, the ticket can be closed.\n[close: Yes]"), ("Done, the ticket can be closed.", True))
         self.assertEqual(_split_close("Try reinstalling."), ("Try reinstalling.", False))
+
+    def test_source_links_are_one_per_page_and_skip_non_urls(self) -> None:
+        cited = [
+            ("Forms: Super Saiyan (2/3)", "https://wiki.dragonminez.com/Forms#Super_Saiyan"),
+            ("Forms: Kaioken", "https://wiki.dragonminez.com/Forms#Kaioken"),
+            ("Ticket 12", "ticket-12.md"),
+            ("Races", "https://wiki.dragonminez.com/Races"),
+        ]
         self.assertEqual(
-            _split_sources("Hi\n[sources: wiki--A.md, `wiki--B.md`]"),
-            ("Hi", ["wiki--A.md", "wiki--B.md"]),
+            _append_source_links("Hi", cited),
+            "Hi\n-# 📖 [Forms: Super Saiyan](<https://wiki.dragonminez.com/Forms#Super_Saiyan>)"
+            " · [Races](<https://wiki.dragonminez.com/Races>)",
         )
+        self.assertEqual(_append_source_links("Hi", [("Ticket 12", "ticket-12.md")]), "Hi")
+        self.assertEqual(_append_source_links("(no reply)", cited), "(no reply)")
 
     def test_detects_repeated_replies_but_not_short_or_different_ones(self) -> None:
         previous = ["Update GeckoLib to 4.8.3 and TerraBlender to 3.0.1.10, then restart the game."]
@@ -224,6 +236,11 @@ def _settings(**overrides):
 
 def _text(text: str):
     return types.SimpleNamespace(type="text", text=text)
+
+
+def _cited_text(text: str, title: str, source: str):
+    citation = types.SimpleNamespace(type="search_result_location", title=title, source=source, cited_text=text)
+    return types.SimpleNamespace(type="text", text=text, citations=[citation])
 
 
 def _thinking():
@@ -307,8 +324,19 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fast_pass_offers_tools_at_fast_effort_and_is_grounded_in_prefetched_knowledge(self) -> None:
         result, create_message, record_trace = await self._run(
-            [_message("Press G to transform.\n[sources: wiki--Transformations.md]\n[kind: answer]\n[confidence: 0.95]")],
-            knowledge=[{"filename": "wiki--Transformations.md", "text": "Press G to transform."}],
+            [
+                _message(
+                    content=[
+                        _thinking(),
+                        _cited_text("Press G to transform.", "Transformations: Keys", WIKI + "#Keys"),
+                        _text("\n[kind: answer]\n[confidence: 0.95]"),
+                    ]
+                )
+            ],
+            knowledge=[
+                {"filename": "wiki--Transformations--keys.md", "title": "Transformations: Keys", "url": WIKI + "#Keys", "text": "Press G to transform."},
+                {"filename": "dmz22-forms-saiyan.md", "title": "Saiyan forms", "url": None, "text": "SSJ needs..."},
+            ],
         )
 
         create_message.assert_awaited_once()
@@ -328,10 +356,25 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cache_control", dynamic)
         self.assertEqual(kwargs["cache_control"], {"type": "ephemeral"})
         self.assertIn("channel: support ticket", dynamic["text"])
-        self.assertIn("### wiki--Transformations.md\nPress G to transform.", dynamic["text"])
-        self.assertEqual(kwargs["messages"], [{"role": "user", "content": "[requester unknown]\nHow do I transform?"}])
+        self.assertIn("Knowledge search results", dynamic["text"])
+        self.assertNotIn("Press G", dynamic["text"])
+        (turn,) = kwargs["messages"]
+        self.assertEqual(turn["role"], "user")
+        first, second, question = turn["content"]
+        self.assertEqual(
+            first,
+            {
+                "type": "search_result",
+                "source": WIKI + "#Keys",
+                "title": "Transformations: Keys",
+                "content": [{"type": "text", "text": "Press G to transform."}],
+                "citations": {"enabled": True},
+            },
+        )
+        self.assertEqual((second["source"], second["citations"]), ("dmz22-forms-saiyan.md", {"enabled": True}))
+        self.assertEqual(question, {"type": "text", "text": "[requester unknown]\nHow do I transform?"})
 
-        self.assertTrue(result["reply"].startswith("Press G to transform.\n-# 📖 ["))
+        self.assertEqual(result["reply"], f"Press G to transform.\n-# 📖 [Transformations: Keys](<{WIKI}#Keys>)")
         self.assertEqual((result["kind"], result["confidence"], result["escalated"]), ("answer", 0.95, False))
         trace = record_trace.await_args.args[0]
         self.assertEqual((trace.model, trace.workflow), (HAIKU, "support_question"))
@@ -549,14 +592,18 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         hit = {
             "filename": "wiki--Transformations.md",
             "title": "Transformations",
-            "url": "https://wiki.dragonminez.com/Transformations",
+            "url": WIKI,
             "text": "Press G to transform.",
         }
         result, create_message, _ = await self._run(
             [
                 _message(content=[_tool_use("search_knowledge", "toolu_k", {"query": "transform key"})]),
                 _message(
-                    "Press G.\n[sources: wiki--Transformations.md, wiki--Made_Up.md]\n[kind: answer]\n[confidence: 0.9]"
+                    content=[
+                        _cited_text("Press G.", "Transformations", WIKI),
+                        _cited_text(" Hold it to charge.", "Transformations", WIKI),
+                        _text("\n[kind: answer]\n[confidence: 0.9]"),
+                    ]
                 ),
             ],
             search_hits=[hit],
@@ -565,12 +612,33 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         self.knowledge_search.assert_awaited_once_with("transform key", 5)
         block = create_message.await_args_list[1].kwargs["messages"][-1]["content"][0]
         self.assertEqual(
-            json.loads(block["content"]),
-            {"results": [{"filename": "wiki--Transformations.md", "title": "Transformations", "text": "Press G to transform."}]},
+            block["content"],
+            [
+                {
+                    "type": "search_result",
+                    "source": WIKI,
+                    "title": "Transformations",
+                    "content": [{"type": "text", "text": "Press G to transform."}],
+                    "citations": {"enabled": True},
+                }
+            ],
+        )
+        self.assertEqual(
+            result["tool_results"][0]["output"],
+            {"results": [{"filename": "wiki--Transformations.md", "title": "Transformations"}]},
         )
         self.assertEqual(result["tool_results"][0]["arguments"], {"query": "transform key"})
-        self.assertIn("[Transformations](<", result["reply"])
-        self.assertNotIn("Made", result["reply"])
+        self.assertEqual(result["reply"], f"Press G. Hold it to charge.\n-# 📖 [Transformations](<{WIKI}>)")
+
+    async def test_empty_knowledge_search_returns_a_text_block(self) -> None:
+        _, create_message, _ = await self._run(
+            [
+                _message(content=[_tool_use("search_knowledge", "toolu_k", {"query": "zzz"})]),
+                _message("Not sure.\n[kind: answer]\n[confidence: 0.9]"),
+            ],
+        )
+        block = create_message.await_args_list[1].kwargs["messages"][-1]["content"][0]
+        self.assertEqual(block["content"], [{"type": "text", "text": "No results found."}])
 
     async def test_failed_knowledge_search_is_reported_as_a_tool_error(self) -> None:
         with patch("bulmaai.services.ai_client.knowledge.search", AsyncMock(side_effect=OSError("db down"))):

@@ -71,6 +71,13 @@ class SupportFAQTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source.question, "How do I transform?")
         self.assertEqual(source.answer, "Use the transform key after unlocking the form.")
 
+    def test_support_trace_question_skips_knowledge_search_results(self) -> None:
+        hit = {"type": "search_result", "source": "s", "title": "t", "content": [{"type": "text", "text": "wiki"}]}
+        question = {"type": "text", "text": "[requester Bruno]\nHow do I transform?"}
+        row = {"id": 1, "created_at": "x", "input_json": [{"role": "user", "content": [hit, question]}]}
+
+        self.assertEqual(support_trace_to_faq_source(row).question, "How do I transform?")
+
     def test_support_trace_to_faq_source_accepts_subscript_only_rows(self) -> None:
         row = SubscriptOnlyRow(
             {

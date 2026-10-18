@@ -23,10 +23,6 @@ from anthropic import (
 from bulmaai.config import Settings, load_settings
 from bulmaai.services import ai_budget, ai_guard, ai_tools, knowledge, support_info
 from bulmaai.services.support_traces import SupportAITrace, record_support_ai_trace
-from bulmaai.services.wiki_knowledge import (
-    DEFAULT_WIKI_BASE_URL,
-    wiki_url_for_citation_filename,
-)
 from bulmaai.utils.language import detect_language_from_text
 from bulmaai.utils import tools_registry
 
@@ -44,7 +40,7 @@ SEARCH_KNOWLEDGE_SCHEMA: dict[str, Any] = {
     "name": SEARCH_KNOWLEDGE_TOOL,
     "description": (
         "Search DragonMineZ wiki pages, solved support tickets and the FAQ. Write the query in English "
-        "(a few keywords: feature, item, error or symptom). Cite the filenames you used in [sources: ...]."
+        "(a few keywords: feature, item, error or symptom)."
     ),
     "strict": True,
     "input_schema": {
@@ -204,10 +200,34 @@ def _build_data_input(
         )
     if knowledge:
         parts.append(
-            "Knowledge search results for this conversation (cite the files you used in [sources: ...]):\n\n"
-            + "\n\n".join(f"### {hit['filename']}\n{hit['text']}" for hit in knowledge)
+            "Knowledge search results for this conversation are attached to the latest user turn as search results "
+            "(from the bot's search, not written by the requester)."
         )
     return "\n\n".join(parts)
+
+
+def _search_result_blocks(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Knowledge hits as citable `search_result` blocks; every block in a request must share the citations setting."""
+    return [
+        {
+            "type": "search_result",
+            "source": hit.get("url") or hit["filename"],
+            "title": hit.get("title") or hit["filename"],
+            "content": [{"type": "text", "text": hit["text"]}],
+            "citations": {"enabled": True},
+        }
+        for hit in hits
+        if hit.get("text")
+    ]
+
+
+def _with_knowledge(conversation: list[dict[str, Any]], hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prefetched hits go in front of the latest user turn: search results are not allowed in `system`."""
+    blocks = _search_result_blocks(hits)
+    if not blocks:
+        return conversation
+    *head, last = conversation
+    return [*head, {"role": "user", "content": [*blocks, {"type": "text", "text": last["content"]}]}]
 
 
 def _latest_user_message(
@@ -276,7 +296,6 @@ def _extract_text(response: Any) -> str:
 MAX_WIKI_SOURCE_LINKS = 3
 CONFIDENCE_MARKER_RE = re.compile(r"\[\s*confidence\s*[:=]\s*([0-9]*\.?[0-9]+)\s*\]", re.IGNORECASE)
 KIND_MARKER_RE = re.compile(r"\[\s*kind\s*[:=]\s*(answer|clarify|handoff|offtopic)\s*\]", re.IGNORECASE)
-SOURCES_MARKER_RE = re.compile(r"\[\s*sources\s*[:=]\s*([^\]]*)\]", re.IGNORECASE)
 CLOSE_MARKER_RE = re.compile(r"\[\s*close\s*[:=]\s*yes\s*\]", re.IGNORECASE)
 
 
@@ -305,15 +324,6 @@ def _split_close(reply_text: str) -> tuple[str, bool]:
     return CLOSE_MARKER_RE.sub("", reply_text).strip() or "(no reply)", True
 
 
-def _split_sources(reply_text: str) -> tuple[str, list[str]]:
-    matches = SOURCES_MARKER_RE.findall(reply_text)
-    if not matches:
-        return reply_text, []
-    stripped = SOURCES_MARKER_RE.sub("", reply_text).strip() or "(no reply)"
-    names = [name.strip().strip("`'\"") for match in matches for name in match.split(",")]
-    return stripped, [name for name in names if name]
-
-
 def _normalize_for_repeat(text: str) -> str:
     lines = [line for line in text.splitlines() if not line.startswith("-# 📖")]
     return " ".join(" ".join(lines).lower().split())
@@ -329,25 +339,33 @@ def _is_repeat(reply: str, previous_replies: list[str]) -> bool:
     )
 
 
-def _append_wiki_sources(
-    reply_text: str,
-    cited_filenames: list[str],
-    *,
-    base_url: str,
-) -> str:
+PART_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
+
+
+def _cited_sources(response: Any) -> list[tuple[str, str]]:
+    """(title, source) of every API citation in the reply, in reply order."""
+    return [
+        (str(getattr(citation, "title", None) or ""), str(getattr(citation, "source", None) or ""))
+        for block in getattr(response, "content", []) or []
+        if getattr(block, "type", None) == "text"
+        for citation in getattr(block, "citations", None) or []
+        if getattr(citation, "type", None) == "search_result_location"
+    ]
+
+
+def _append_source_links(reply_text: str, cited: list[tuple[str, str]]) -> str:
+    """One link per cited page (wiki sections share a page URL up to the #anchor); non-URL sources get none."""
     if not reply_text or reply_text == "(no reply)":
         return reply_text
 
     links: list[str] = []
-    seen_urls: set[str] = set()
-    for filename in cited_filenames:
-        mapped = wiki_url_for_citation_filename(filename, base_url=base_url)
-        if mapped is None:
+    seen_pages: set[str] = set()
+    for title, url in cited:
+        page = url.split("#", 1)[0]
+        if not url.startswith(("https://", "http://")) or page in seen_pages:
             continue
-        title, url = mapped
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
+        seen_pages.add(page)
+        title = PART_SUFFIX_RE.sub("", title) or page
         # <...> suppresses Discord link embeds; -# renders as subtext.
         links.append(f"[{title}](<{url}>)")
         if len(links) >= MAX_WIKI_SOURCE_LINKS:
@@ -402,12 +420,10 @@ async def _search_knowledge(query: str, settings: Any) -> list[dict[str, Any]]:
         return []
 
 
-async def _run_knowledge_tool(args: dict[str, Any], settings: Any, filenames: set[str]) -> dict[str, Any]:
+async def _run_knowledge_tool(args: dict[str, Any], settings: Any) -> list[dict[str, Any]]:
     """The `search_knowledge` client tool. Raises on a DB failure (reported to the model as is_error)."""
     query = str(args.get("query") or "").strip()
-    hits = await knowledge.search(query, _knowledge_max_results(settings)) if query else []
-    filenames.update(hit["filename"] for hit in hits)
-    return {"results": [{"filename": hit["filename"], "title": hit["title"], "text": hit["text"]} for hit in hits]}
+    return await knowledge.search(query, _knowledge_max_results(settings)) if query else []
 
 
 async def _prefetch(bot: Any, user_id: int, text: str, account_key: Any = None) -> list[str]:
@@ -604,7 +620,7 @@ async def run_support_agent(
         conversation=conversation,
         data_text=_build_data_input(knowledge, prefetch_lines, support_info_text),
         staff_links=ai_guard.link_targets(support_info_text),
-        knowledge_filenames={hit["filename"] for hit in knowledge},
+        knowledge_hits=knowledge,
         enabled_tools=enabled_tools,
         language=language,
         settings=runtime_settings,
@@ -690,7 +706,7 @@ async def _run_once(
     context_text: str,
     conversation: list[dict[str, str]],
     data_text: str,
-    knowledge_filenames: set[str],
+    knowledge_hits: list[dict[str, Any]],
     enabled_tools: list[str],
     language: str,
     settings: Any,
@@ -726,7 +742,7 @@ async def _run_once(
         "model": model,
         "max_tokens": settings.ai_support_max_output_tokens,
         "system": system,
-        "messages": conversation,
+        "messages": _with_knowledge(conversation, knowledge_hits),
         "output_config": {"effort": effort},
         "metadata": {"user_id": _build_safety_identifier(user_id)},
         # Caches the conversation too, so each tool round re-reads the previous round's prefix at 0.1x.
@@ -740,8 +756,7 @@ async def _run_once(
     response = await _create_message(timeout_seconds=settings.ai_support_timeout_seconds, **request_kwargs)
     responses = [response]
     tool_results: list[ToolCallResult] = []
-    cited_pool = set(knowledge_filenames)
-    turns: list[Any] = list(conversation)
+    turns: list[Any] = list(request_kwargs["messages"])
     for round_index in range(MAX_TOOL_ROUNDS):
         calls = _extract_tool_uses(response)
         if not calls:
@@ -753,7 +768,8 @@ async def _run_once(
             try:
                 if call.name == SEARCH_KNOWLEDGE_TOOL:
                     args = {"query": str(args.get("query") or "")}
-                    output = await _run_knowledge_tool(args, settings, cited_pool)
+                    hits = await _run_knowledge_tool(args, settings)
+                    output = {"results": [{"filename": hit["filename"], "title": hit["title"]} for hit in hits]}
                 else:
                     args = _hydrate_tool_args(
                         name=call.name,
@@ -773,6 +789,9 @@ async def _run_once(
                 "tool_use_id": call.id,
                 "content": json.dumps(output, ensure_ascii=False, default=str),
             }
+            if call.name == SEARCH_KNOWLEDGE_TOOL and not is_error:
+                # A tool_result holding search results may hold nothing else.
+                block["content"] = _search_result_blocks(hits) or [{"type": "text", "text": "No results found."}]
             if is_error:
                 block["is_error"] = True
             result_blocks.append(block)
@@ -809,7 +828,6 @@ async def _run_once(
         raw_text = _extract_text(response) or "(no reply)"
     reply_text, confidence = _split_confidence(raw_text)
     reply_text, kind = _split_kind(reply_text)
-    reply_text, sources = _split_sources(reply_text)
     reply_text, suggested_close = _split_close(reply_text)
     # Before the wiki links are appended: those are ours, everything above them is model output.
     reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings, staff_links)
@@ -820,12 +838,7 @@ async def _run_once(
             "; blocked" if guard_flags & ai_guard.BLOCKING_FLAGS else "; defused",
             extra={"event": "ai_reply_guarded", "channel_id": channel_id, "user_id": user_id, "workflow": workflow},
         )
-    cited = [name for name in sources if name in cited_pool]
-    reply_text = _append_wiki_sources(
-        reply_text,
-        list(dict.fromkeys(cited)),
-        base_url=getattr(settings, "wiki_base_url", DEFAULT_WIKI_BASE_URL),
-    )
+    reply_text = _append_source_links(reply_text, _cited_sources(response))
 
     response_id = getattr(response, "id", None)
     usage = _sum_usage(responses)
@@ -850,7 +863,7 @@ async def _run_once(
         reasoning_tokens=None,
         reply_text=reply_text,
         confidence=confidence,
-        input_json=[{"role": "system", "content": dynamic_text}, *conversation],
+        input_json=[{"role": "system", "content": dynamic_text}, *request_kwargs["messages"]],
         request_metadata={
             **request_metadata,
             "reply_kind": kind or "",

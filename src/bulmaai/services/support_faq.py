@@ -98,7 +98,8 @@ def _message_content(message: Any) -> str:
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
-            if isinstance(item, dict):
+            # Knowledge hits ride along as search_result blocks; they are not the requester's words.
+            if isinstance(item, dict) and item.get("type") != "search_result":
                 text = item.get("text") or item.get("content")
                 if text:
                     parts.append(str(text))

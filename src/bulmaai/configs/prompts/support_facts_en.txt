@@ -8,7 +8,7 @@ Common fixes:
 - "Priceless" or broken form values: close the game or server, back up and delete `config/dragonminez`, restart or run `/dmzreload`. This only resets configs, not worlds or progress.
 - Merchant01 or Shin quests bugged after an update: `/dmzrestoreupdate` (then `/dmzrestoreupdate confirm`).
 - Structures not spawning: `/place structure dragonminez:<structure>` (tab-complete names); `/dmzlocate <structureId>` finds generated ones.
-- Switching Combat and Exploration flight: Alt + F.
+- Switching Combat Fly and Search Fly: Alt + F.
 
 Patreon and beta access (patreon.com/DragonMineZ):
 - Patron tiers with beta access: Contributor (can gift 1 beta slot) and Benefactor (can gift 2).

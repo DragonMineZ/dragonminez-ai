@@ -69,6 +69,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.ai_ann_translation",
     "bulmaai.cogs.message_templates",
     "bulmaai.cogs.log_parser",
+    "bulmaai.cogs.log_corpus",
     "bulmaai.cogs.dmzdebug",
     "bulmaai.cogs.moderation",
     "bulmaai.cogs.mod_commands",
@@ -480,6 +481,11 @@ class Settings:
     log_ai_enabled: bool = True
     log_ai_daily_limit: int = 3
     log_ai_patron_daily_limit: int = 10
+    # Log corpus (cogs/log_corpus.py): every analyzed main-guild log, redacted, announced here with an admin Exclude
+    # toggle; None turns the collector off. At the threshold of waiting logs for one DMZ version Bruno is pinged
+    # to download them as a .zip (0 = never ping).
+    log_corpus_channel_id: int | None = 1350534736795275357
+    log_corpus_ping_threshold: int = 20
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"
@@ -827,6 +833,8 @@ def _build_settings_from_env() -> Settings:
         log_ai_enabled=_get_env_bool("LOG_AI_ENABLED", True),
         log_ai_daily_limit=_get_env_int("LOG_AI_DAILY_LIMIT", 3) or 0,
         log_ai_patron_daily_limit=_get_env_int("LOG_AI_PATRON_DAILY_LIMIT", 10) or 0,
+        log_corpus_channel_id=_get_env_int("LOG_CORPUS_CHANNEL_ID", 1350534736795275357),
+        log_corpus_ping_threshold=_get_env_int("LOG_CORPUS_PING_THRESHOLD", 20) or 0,
         ai_ticket_summary_model=_get_env("AI_TICKET_SUMMARY_MODEL", DEFAULT_AI_TICKET_SUMMARY_MODEL) or DEFAULT_AI_TICKET_SUMMARY_MODEL,
         message_presets_path=_get_env("MESSAGE_PRESETS_PATH", DEFAULT_MESSAGE_PRESETS_PATH) or DEFAULT_MESSAGE_PRESETS_PATH,
         announcement_source_channel_id=_get_env_int(

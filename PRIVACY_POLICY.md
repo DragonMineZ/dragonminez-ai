@@ -24,6 +24,12 @@ We collect only the data needed to operate the Bot's features:
   it also reads the recent messages around yours (up to 15 from the last 30
   minutes, from anyone) so it understands the conversation. The Bot's moderation feature also inspects
   message content to detect phishing links and unsolicited server invites.
+  Crash and game logs the Bot analyzes (in public channels and tickets) may be
+  kept temporarily to improve the Bot's log analyzer, together with a few
+  messages posted around them. Personal details (account names, file paths,
+  IP addresses, emails, tokens) and Discord IDs and names are removed. The Bot
+  deletes its copy once the logs are downloaded for that work, or after 60 days
+  at most.
 - **Support interaction logs.** When you use the AI support feature, we store the
   text of your question and the Bot's reply, together with technical metadata
   (timestamps, channel ID, user ID, model name, token counts, and latency) for

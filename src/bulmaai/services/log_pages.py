@@ -10,7 +10,7 @@ import html
 import logging
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -33,7 +33,29 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(Connecting to )[^\s,]+"), r"\1<server>"),
     # IPs as Java prints them: "/1.2.3.4" or "1.2.3.4:25565"
     (re.compile(r"(?<=/)(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:\d{1,3}\.){3}\d{1,3}(?=:\d)"), "<ip>"),
+    (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"), "<email>"),
+    # Session / access tokens: "token:eyJ...:uuid", "accessToken=...", "sessionId: ..."
+    (re.compile(r"(token:)[^\s,\]]+", re.IGNORECASE), r"\1<redacted>"),
+    (re.compile(r"(access[_-]?token|session[_-]?id)(\"?\s*[:=]\s*\"?)[^\s,\"\]]+", re.IGNORECASE), r"\1\2<redacted>"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*"), "<redacted>"),
+    # UUIDs that name a player; mod and registry UUIDs stay
+    (re.compile(r"(UUID of player [^\n]*? is )[0-9a-fA-F-]{32,36}"), r"\1<uuid>"),
+    (re.compile(r"(\b(?:player|user|profile|account)[ _-]?(?:uuid|id)\b[\s:=\"']+)[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", re.IGNORECASE), r"\1<uuid>"),
 )
+
+# The account's own name, learned from the log itself and then scrubbed from every line (chat, paths, file names).
+_PLAYER_NAME_RES = (
+    re.compile(r"Setting user: (\w{3,16})\b"),
+    re.compile(r"--username[,=\s]+(\w{3,16})\b", re.IGNORECASE),
+    re.compile(r"\]: (\w{3,16}) (?:joined|left) the game"),
+    re.compile(r"\]: (\w{3,16}) lost connection"),
+    re.compile(r"\]: (\w{3,16})\[/[^\]\s]+\] logged in with entity id"),
+)
+_NOT_NAMES = frozenset({"Player", "Dev", "Server", "Client", "Minecraft", "null", "None"})
+
+
+def player_names(text: str) -> set[str]:
+    return {m.group(1) for pattern in _PLAYER_NAME_RES for m in pattern.finditer(text)} - _NOT_NAMES
 
 _RE_LEVEL = re.compile(r"^\[[^\]\n]*\]\s*\[[^\]\n]*?/(FATAL|ERROR|WARN|INFO|DEBUG|TRACE)\]")
 _RE_TRACE = re.compile(r"^\s+at |^\s*Caused by:|^\s*\.\.\. \d+ more|^\s*Suppressed:")
@@ -43,7 +65,10 @@ _RE_JSON_PAIR = re.compile(r'^( *)"([^"\n]*)": (.*)$')
 _LEVELS = ("ERROR", "WARN", "INFO", "DEBUG")
 
 
-def redact(text: str) -> str:
+def redact(text: str, names: Iterable[str] = ()) -> str:
+    """names: account names learned elsewhere (e.g. from the log a chat message sits next to), masked as well."""
+    for name in sorted(player_names(text) | set(names), key=len, reverse=True):
+        text = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", "<player>", text)
     for pattern, replacement in _REDACTIONS:
         text = pattern.sub(replacement, text)
     return text

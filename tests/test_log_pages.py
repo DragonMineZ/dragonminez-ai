@@ -34,6 +34,48 @@ class RedactAndRenderTests(unittest.TestCase):
         self.assertIn("C:\\Users\\<user>\\curseforge", text)
         self.assertIn("mod 1.20.1.2 loaded", text)
 
+    def test_player_name_is_learned_from_the_log_and_masked_everywhere(self):
+        log = (
+            "[12:00:00] [main/INFO]: Setting user: SonGoku99\n"
+            "[12:00:01] [Server thread/INFO]: SonGoku99[/127.0.0.1:5000] logged in with entity id 7\n"
+            "[12:00:02] [Server thread/INFO]: SonGoku99 joined the game\n"
+            "[12:00:03] [Render thread/INFO]: [CHAT] <SonGoku99> hi, SonGoku990 is my alt\n"
+            "Saved to C:\\Users\\Someone\\saves\\SonGoku99_world\n"
+        )
+        self.assertEqual(log_pages.player_names(log), {"SonGoku99"})
+        text = log_pages.redact(log)
+        self.assertNotIn("SonGoku99 ", text)
+        self.assertIn("Setting user: <player>", text)
+        self.assertIn("<player> joined the game", text)
+        self.assertIn("<<player>>", text)
+        self.assertIn("SonGoku990 is my alt", text)  # only the whole name, not a longer word containing it
+        self.assertIn("<ip>", text)
+
+    def test_generic_names_are_never_learned(self):
+        self.assertEqual(log_pages.player_names("Setting user: Player\n[x]: Dev joined the game\n"), set())
+
+    def test_extra_names_are_masked_in_other_text(self):
+        self.assertEqual(log_pages.redact("thanks Vegeta77, still broken", names={"Vegeta77"}), "thanks <player>, still broken")
+
+    def test_emails_tokens_jwts_and_player_uuids_are_masked(self):
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF123_-"
+        text = log_pages.redact(
+            "contact me at goku.son@capsule-corp.example.com\n"
+            f"--accessToken {jwt}\n"
+            f"session token:{jwt}:0a1b\n"
+            'accessToken="abc123secret" sessionId: s3cr3t\n'
+            f"bearer {jwt}\n"
+            "UUID of player Goku is 0a1b2c3d-1111-2222-3333-444455556666\n"
+            "player_uuid=0a1b2c3d111122223333444455556666\n"
+            "Registered capability with id 9f8e7d6c-1111-2222-3333-444455556666\n"
+        )
+        for secret in ("goku.son@", "capsule-corp", "eyJhbGci", "abc123secret", "s3cr3t", "0a1b2c3d"):
+            self.assertNotIn(secret, text)
+        self.assertIn("<email>", text)
+        self.assertIn("is <uuid>", text)
+        self.assertIn("player_uuid=<uuid>", text)
+        self.assertIn("9f8e7d6c-1111-2222-3333-444455556666", text)  # not a player's id
+
     def test_log_page_escapes_colors_levels_and_lists_problems(self):
         page = log_pages.render(LOG, title="latest.log", kind="log", facts=[("Forge", "47.4.10")], marks=[(2, "Boom")])
         self.assertNotIn("<script>alert", page)

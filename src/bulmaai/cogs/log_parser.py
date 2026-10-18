@@ -7,7 +7,7 @@ from collections import defaultdict
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget, log_ai_quota, log_pages
+from bulmaai.services import ai_budget, log_ai_quota, log_corpus, log_pages
 from bulmaai.services.ai_client import ConversationMessage, run_support_agent
 from bulmaai.services.ai_guard import NO_REPLY, can_post_publicly, defang, safe_name
 from bulmaai.services.moderation import ModerationState
@@ -378,6 +378,7 @@ class LogParserCog(commands.Cog):
                 async with message.channel.typing():
                     report, url = await self._analyze(text, attachment.filename)
                 sent = await message.reply(view=_build_card(report, attachment.filename, url), mention_author=False)
+                self._collect(message, text, attachment.filename, report)
                 await self._add_diagnosis(sent, message, report, attachment.filename, url, approved=False)
             else:
                 # ── Uncertain name → queue for admin approval ─────────────
@@ -442,7 +443,18 @@ class LogParserCog(commands.Cog):
             async with message.channel.typing():
                 report, url = await self._analyze(text, attachment.filename)
             sent = await message.reply(view=_build_card(report, attachment.filename, url), mention_author=False)
+            self._collect(message, text, attachment.filename, report)
             await self._add_diagnosis(sent, message, report, attachment.filename, url, approved=True)
+
+    def _collect(self, message: discord.Message, text: str, filename: str, report: LogReport) -> None:
+        """Hands the analyzed log to the log corpus (cogs/log_corpus.py) in the background; never affects the card."""
+        try:
+            collector = self.bot.get_cog("LogCorpusCog")
+            if collector is not None:
+                kind = "ticket" if _in_ticket_channel(message.channel, self.bot.settings) else "public"
+                collector.collect_later(message, text, filename, report, channel_kind=kind)
+        except Exception:
+            log.exception("Could not hand %s to the log corpus", filename)
 
     async def _add_diagnosis(
         self,
@@ -568,6 +580,11 @@ class LogParserCog(commands.Cog):
             await log_ai_quota.purge()
         except Exception:
             log.exception("Purging old log AI uses failed")
+        try:
+            if expired := await log_corpus.purge_expired():
+                log.info("Purged %d expired log corpus entries", expired)
+        except Exception:
+            log.exception("Purging the log corpus failed")
 
     def cog_unload(self) -> None:
         self.purge_log_pages.cancel()

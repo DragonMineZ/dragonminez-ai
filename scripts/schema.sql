@@ -637,3 +637,27 @@ CREATE TABLE IF NOT EXISTS log_ai_uses (
 
 CREATE INDEX IF NOT EXISTS idx_log_ai_uses_user_used_at
     ON log_ai_uses (user_id, used_at);
+
+-- Log corpus (services/log_corpus.py): one row per analyzed log (message + stored file name). The redacted files
+-- live in data/log_corpus/ until a .zip download (bundled_at) or 60 days, when the log_parser cog's sweep deletes them.
+CREATE TABLE IF NOT EXISTS log_corpus_entries (
+    message_id         BIGINT NOT NULL,
+    filename           TEXT NOT NULL,
+    channel_id         BIGINT NOT NULL,
+    guild_id           BIGINT NOT NULL,
+    dmz_version        TEXT NOT NULL DEFAULT 'unknown',
+    notice_message_id  BIGINT,
+    excluded           BOOLEAN NOT NULL DEFAULT false,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    bundled_at         TIMESTAMPTZ,
+    PRIMARY KEY (message_id, filename)
+);
+
+CREATE INDEX IF NOT EXISTS idx_log_corpus_entries_pending
+    ON log_corpus_entries (dmz_version, created_at) WHERE bundled_at IS NULL;
+
+-- One row per DMZ version Bruno was already pinged for; a bundle of that version deletes it.
+CREATE TABLE IF NOT EXISTS log_corpus_pings (
+    dmz_version  TEXT PRIMARY KEY,
+    pinged_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);

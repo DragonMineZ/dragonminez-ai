@@ -98,6 +98,13 @@ Console actions are private to Bruno:
 
 - The AI diagnosis on log cards runs only in the main guild and never in tickets (the ticket AI already reads logs there). Per uploader per rolling 24h: members 3, patrons/testers 10, staff unlimited; admin-approved (🔍) logs don't count.
 
+## Log corpus
+
+- Every log the log parser analyzes in the main guild (tickets included) is kept to study and improve `utils/log_parser.py`: `services/log_corpus`, files in `data/log_corpus/` (gitignored, never committed).
+- Temporary and redacted: `log_pages.redact` plus the chat around it with @user/@role/#channel labels, no Discord ids or names in the files. Files are deleted once their .zip is posted, or after 60 days.
+- Only Bruno or admins download (the ping card's Download .zip); `/log-corpus` is Bruno-only. Only admins Exclude/Include. Bruno is the only one pinged, once per version at `log_corpus_ping_threshold`.
+- The .zip goes to Bruno's PC for Claude Code sessions; delete it there once the analyzer work is done.
+
 ## Patreon beta whitelist
 
 - `revoke_owner_access` never revokes: testers (`dev_jar_tester_role_ids`), anyone Patreon still reports active, or anyone whose lookup fails.

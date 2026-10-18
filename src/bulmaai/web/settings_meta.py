@@ -36,6 +36,8 @@ META: dict[str, tuple[str, str, str]] = {
     "log_ai_enabled": ("ai", "Crash-log AI diagnosis", "Adds an AI diagnosis to crash-log cards with errors (main server only, never in tickets)."),
     "log_ai_daily_limit": ("ai", "Crash-log AI: daily limit", "AI diagnoses one member gets per 24h; staff are unlimited and admin-approved (🔍) logs don't count."),
     "log_ai_patron_daily_limit": ("ai", "Crash-log AI: patron limit", "AI diagnoses per 24h for patrons and testers."),
+    "log_corpus_channel_id": ("ai", "Log corpus channel", "Staff channel where every analyzed main-server log is kept (redacted) for improving the log analyzer, with an admin Exclude button; empty turns the collector off."),
+    "log_corpus_ping_threshold": ("ai", "Log corpus: ping at", "Waiting logs for one DragonMineZ version before Bruno is pinged to download them as a .zip; 0 never pings."),
     # Tickets
     "ai_ticket_category_id": ("tickets", "Open tickets category", "Category that holds open tickets; the AI answers there and reopened tickets move back to it."),
     "ticket_closed_category_id": ("tickets", "Closed tickets category", "Category closed tickets are moved to."),

@@ -737,6 +737,7 @@ FORM = {
         {"label": "Mods", "type": "short", "required": False},
     ],
 }
+UPLOAD = {"kind": "file", "what": "log", "max_files": 2}
 
 
 def _ask_row(spec, *, requester_id: int = 42, language: str = "en", answered_at=None) -> ask_store.AskRow:
@@ -1163,6 +1164,270 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
         prompt.assert_awaited_once()
         sent, _ = await answer({**base, "reply": "El staff lo revisará.", "kind": "handoff", "ask": SELECT})
         self.assertIsNone(sent["ask"])
+
+    async def test_a_public_reply_never_offers_an_upload(self) -> None:
+        cog = self._cog()
+        channel = self._ticket_channel()  # in_ticket=False below: answered as a public ping
+        requester = types.SimpleNamespace(id=42, bot=False, name="goku", display_name="Goku")
+        stand_in = ai_tickets._ChoiceMessage(types.SimpleNamespace(user=requester, channel=channel, guild=None), "Sí", 55)
+        base = {"tool_results": [], "confidence": 0.9, "suggested_close": False, "language": "en", "kind": "clarify"}
+
+        async def sent_ask(ask):
+            with (
+                patch.object(cog, "_extract_image_context", AsyncMock(return_value={})),
+                patch.object(cog, "_build_history", AsyncMock(return_value=[])),
+                patch("bulmaai.cogs.ai_tickets.run_support_agent", AsyncMock(return_value={**base, "reply": "Which?", "ask": ask})),
+                patch("bulmaai.cogs.ai_tickets.can_post_publicly", return_value=True),
+                patch.object(cog, "_send_messages_with_typing", AsyncMock(return_value=True)) as send,
+            ):
+                await cog._answer_support(stand_in, in_ticket=False, in_dm=False, mention_request=True, member=None)
+            return send.await_args.kwargs["ask"]
+
+        self.assertIsNone(await sent_ask(UPLOAD))
+        self.assertEqual(await sent_ask(SELECT), SELECT)
+
+    async def test_upload_opens_its_modal_without_claiming_or_spending(self) -> None:
+        cog = self._cog()
+        interaction = self._interaction(self._ticket_channel(), user_id=42, spec=UPLOAD, custom_id="ai_ask:file:42:0")
+        with (
+            self._store(_ask_row(UPLOAD, language="es")) as store,
+            self._open_ticket(),
+            patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
+        ):
+            await cog.on_interaction(interaction)
+        modal = interaction.response.send_modal.await_args.args[0]
+        self.assertEqual((modal.custom_id, modal.title), ("ai_ask_file:55", "Sube tu log"))
+        self.assertIsInstance(modal.children[0].item, discord.ui.FileUpload)
+        store.claim.assert_not_called()
+        self.assertEqual(dict(cog._support_events), {})
+
+        interaction = self._interaction(self._ticket_channel(), user_id=7, spec=UPLOAD, custom_id="ai_ask:file:42:0")
+        with self._store(_ask_row(UPLOAD)):
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "not_yours"), ephemeral=True)
+        interaction.response.send_modal.assert_not_called()
+
+    async def test_where_is_it_answers_anyone_privately_and_claims_nothing(self) -> None:
+        cog = self._cog()
+        interaction = self._interaction(
+            self._ticket_channel(), user_id=7, spec=UPLOAD, custom_id="ai_ask:file:42:1", values=["mac"]
+        )
+        with self._store(_ask_row(UPLOAD, language="es")) as store:
+            await cog.on_interaction(interaction)
+        call = interaction.response.send_message.await_args
+        self.assertTrue(call.kwargs["ephemeral"])
+        shown = "\n".join(texts(call.kwargs["view"]))
+        self.assertIn("🍎 macOS (Cliente)", shown)
+        self.assertIn("~/Library/Application Support/minecraft/logs/latest.log", shown)
+        store.claim.assert_not_called()
+        interaction.response.edit_message.assert_not_called()
+        self.assertEqual(dict(cog._support_events), {})
+
+        interaction = self._interaction(
+            self._ticket_channel(), user_id=7, spec=UPLOAD, custom_id="ai_ask:file:42:1", values=["moon"]
+        )
+        with self._store(_ask_row(UPLOAD)):
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+
+    def _upload_submit(self, channel, user_id: int = 42, payloads=None, *, guild=None):
+        payloads = payloads if payloads is not None else [
+            {"id": "11", "filename": "latest.log", "size": 100, "url": "https://cdn/11", "content_type": "text/plain"},
+            {"id": "12", "filename": "my shot.png", "size": 200, "url": "https://cdn/12", "content_type": "image/png"},
+        ]
+        return types.SimpleNamespace(
+            type=discord.InteractionType.modal_submit,
+            channel=channel,
+            guild=guild,
+            user=types.SimpleNamespace(id=user_id, mention=f"<@{user_id}>"),
+            data={
+                "custom_id": "ai_ask_file:55",
+                "components": [
+                    {"type": 18, "component": {"type": 19, "custom_id": "files", "values": [p["id"] for p in payloads]}}
+                ],
+                "resolved": {"attachments": {p["id"]: p for p in payloads}},
+            },
+            message=None,
+            attachment_size_limit=None,
+            _state=types.SimpleNamespace(http=types.SimpleNamespace(get_from_cdn=AsyncMock(return_value=b"file bytes"))),
+            response=types.SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            followup=types.SimpleNamespace(send=AsyncMock()),
+        )
+
+    def _upload_channel(self, order: list):
+        channel = self._ticket_channel()
+        card = sent_message(self._card(UPLOAD), message_id=55, channel_id=13)
+        channel.fetch_message = AsyncMock(return_value=card)
+        reposted = types.SimpleNamespace(
+            id=60, guild=types.SimpleNamespace(id=1), attachments=[types.SimpleNamespace(id=61), types.SimpleNamespace(id=62)]
+        )
+        channel.send = AsyncMock(side_effect=lambda **kwargs: (order.append("repost"), reposted)[1])
+        return channel, card, reposted
+
+    async def test_upload_submit_reposts_records_analyzes_then_answers(self) -> None:
+        cog = self._cog()
+        order: list[str] = []
+        channel, card, reposted = self._upload_channel(order)
+        log_parser = types.SimpleNamespace(parse_upload=AsyncMock(side_effect=lambda *args: order.append("log card")))
+        dmzdebug = types.SimpleNamespace(post_cards=AsyncMock(side_effect=lambda *args: order.append("dump card")))
+        cog.bot.get_cog = {"LogParserCog": log_parser, "DmzDebugCog": dmzdebug}.get
+        interaction = self._upload_submit(channel)
+        with (
+            self._store(_ask_row(UPLOAD)) as store,
+            self._open_ticket(),
+            patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
+            patch("bulmaai.cogs.ai_tickets.note_ticket_message", AsyncMock()) as noted,
+            patch.object(cog, "_answer_support", AsyncMock(side_effect=lambda *a, **k: order.append("answer"))) as answer,
+        ):
+            await cog.on_interaction(interaction)
+            await cog._pending_tasks[(13, 0)]
+
+        store.claim.assert_awaited_once_with(55)
+        interaction.response.defer.assert_awaited_once_with(invisible=True)
+        self.assertEqual(order, ["repost", "log card", "dump card", "answer"])
+        repost = channel.send.await_args.kwargs
+        lines = ["-# ↳ <@42> uploaded **latest.log**", "-# ↳ <@42> uploaded **my_shot.png**"]
+        self.assertEqual(texts(repost["view"]), lines)
+        self.assertEqual([file.filename for file in repost["files"]], ["latest.log", "my_shot.png"])
+        self.assertEqual(repost["files"][0].fp.read(), b"file bytes")
+        (gallery,) = [item for item in walk(repost["view"]) if isinstance(item, discord.ui.MediaGallery)]
+        self.assertEqual([item.url for item in gallery.items], ["attachment://my_shot.png"])
+        self.assertEqual(repost["allowed_mentions"].to_dict()["parse"], [])
+        interaction._state.http.get_from_cdn.assert_any_await("https://cdn/12")
+
+        edit = card.edit.await_args.kwargs
+        self.assertEqual(texts(edit["view"]), ["What do you want to change?", *lines])
+        self.assertEqual([item for item in walk(edit["view"]) if isinstance(item, (discord.ui.Button, discord.ui.Select))], [])
+        self.assertEqual(edit["allowed_mentions"].to_dict()["parse"], [])
+
+        log_parser.parse_upload.assert_awaited_once_with(reposted, interaction.user)
+        dmzdebug.post_cards.assert_awaited_once_with(reposted)
+        noted.assert_awaited_once_with(13, 42)
+        stand_in = answer.await_args.args[0]
+        self.assertEqual(
+            (stand_in.content, stand_in.id, stand_in.attachments),
+            ("uploaded latest.log\nuploaded my_shot.png", 55, tuple(reposted.attachments)),
+        )
+        self.assertEqual(len(cog._support_events[(42, 0)]), 1)  # the submit counts toward the rate limit
+        interaction.followup.send.assert_not_called()
+
+    async def test_upload_refusals_and_a_failed_repost_reopen_the_question(self) -> None:
+        cog = self._cog()
+        cog.bot.get_cog = lambda name: None
+        channel, card, _ = self._upload_channel([])
+
+        @contextlib.contextmanager
+        def submitted(interaction, row, *, claimed: bool = True):
+            with (
+                self._store(row, claimed=claimed) as store,
+                self._open_ticket(),
+                patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
+            ):
+                yield store
+
+        interaction = self._upload_submit(channel, user_id=7)
+        with submitted(interaction, _ask_row(UPLOAD)) as store:
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "not_yours"), ephemeral=True)
+        store.claim.assert_not_called()
+
+        # Over the guild's upload limit in total (100 + 200 bytes): nothing is claimed.
+        interaction = self._upload_submit(channel, guild=types.SimpleNamespace(filesize_limit=250))
+        with submitted(interaction, _ask_row(UPLOAD, language="es")) as store:
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(
+            "Ese archivo es demasiado grande, comprímelo o escribe el error.", ephemeral=True
+        )
+        store.claim.assert_not_called()
+
+        interaction = self._upload_submit(channel, payloads=[])
+        with submitted(interaction, _ask_row(UPLOAD)) as store:
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+        store.claim.assert_not_called()
+
+        interaction = self._upload_submit(channel)
+        with submitted(interaction, _ask_row(UPLOAD), claimed=False):
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with("Already answered.", ephemeral=True)
+        interaction.response.defer.assert_not_called()
+
+        channel.send = AsyncMock(side_effect=RuntimeError("upload failed"))
+        interaction = self._upload_submit(channel)
+        with (
+            submitted(interaction, _ask_row(UPLOAD)) as store,
+            patch.object(cog, "_answer_support", AsyncMock()) as answer,
+            self.assertLogs(ai_tickets.log, "ERROR"),
+        ):
+            await cog.on_interaction(interaction)
+        store.release.assert_awaited_once_with(55)
+        interaction.followup.send.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+        card.edit.assert_not_called()
+        answer.assert_not_called()
+
+    async def test_an_upload_stand_in_gets_its_screenshots_analyzed(self) -> None:
+        cog = self._cog()
+        shot = types.SimpleNamespace(id=62, filename="shot.png", content_type="image/png", url="https://cdn/62")
+        log_file = types.SimpleNamespace(id=61, filename="latest.log", content_type="text/plain", url="https://cdn/61")
+        interaction = types.SimpleNamespace(user=types.SimpleNamespace(id=42), channel=types.SimpleNamespace(id=13), guild=None)
+        stand_in = ai_tickets._ChoiceMessage(interaction, "uploaded shot.png", 55, [log_file, shot])
+        with (
+            patch("bulmaai.cogs.ai_tickets.get_image_analyses", AsyncMock(return_value={})),
+            patch("bulmaai.cogs.ai_tickets.save_image_analysis", AsyncMock()) as saved,
+            patch.object(cog, "_extract_single_image_context", AsyncMock(return_value="A crash screen")) as vision,
+        ):
+            self.assertEqual(await cog._extract_image_context(stand_in), {62: "A crash screen"})
+        vision.assert_awaited_once_with("https://cdn/62")
+        saved.assert_awaited_once_with(attachment_id=62, channel_id=13, analysis="A crash screen")
+        self.assertEqual(ai_tickets._ChoiceMessage(interaction, "Stats", 55).attachments, ())
+
+    async def test_history_and_transcript_read_the_repost_as_the_uploaders_turn(self) -> None:
+        cog = self._cog()
+        requester = types.SimpleNamespace(id=42, bot=False, name="goku", display_name="Goku")
+        now = datetime.now(timezone.utc)
+        log_text = "[19:07:39] [main/INFO] [cp.mo.mo.Launcher/MODLAUNCHER]: ModLauncher running: args [--fml.forgeVersion, 47.4.10]\n"
+        question = types.SimpleNamespace(
+            id=1, author=requester, clean_content="My game crashes", attachments=[], created_at=now, reference=None, guild=None
+        )
+        lines = [ai_asks.upload_line(42, "latest.log")]
+        card = types.SimpleNamespace(
+            id=55, author=self.bot_user, clean_content="", attachments=[], created_at=now, reference=None, guild=None,
+            components=self._answered(lines).components, edited_at=now, mentions=[],
+        )
+        uploaded = types.SimpleNamespace(
+            id=9101, filename="latest.log", content_type="text/plain", size=len(log_text),
+            read=AsyncMock(return_value=log_text.encode()),
+        )
+        repost = types.SimpleNamespace(
+            id=60, author=self.bot_user, clean_content="", attachments=[uploaded], created_at=now, reference=None,
+            guild=None, components=sent_message(ai_asks.upload_card(42, ["latest.log"], [False])).components,
+            edited_at=None, mentions=[],
+        )
+
+        async def history(**kwargs):
+            for item in ([question, card, repost] if kwargs.get("oldest_first") else [repost, card, question]):
+                yield item
+
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 13
+        channel.history = history
+        with patch("bulmaai.cogs.ai_tickets.get_image_analyses", new_callable=AsyncMock, return_value={}):
+            turns = await cog._build_ticket_history(types.SimpleNamespace(channel=channel, author=requester), {})
+            cog.bot.get_cog = lambda name: None
+            transcript, _ = await cog._collect_transcript(channel, 42)
+
+        self.assertEqual(
+            [(turn["role"], turn["speaker_kind"]) for turn in turns],
+            [("user", "requester"), ("assistant", "assistant"), ("user", "requester")],
+        )
+        self.assertEqual(turns[1]["content"], "What do you want to change?")  # the card's record lines aren't a turn
+        self.assertTrue(turns[2]["content"].startswith("[Log analysis of latest.log]\nEnvironment:"))
+        self.assertIn("Forge 47.4.10", turns[2]["content"])
+        self.assertEqual(turns[2]["speaker_id"], "42")
+        self.assertEqual(
+            [(line.speaker_kind, line.content) for line in transcript],
+            [("requester", "My game crashes"), ("assistant", "What do you want to change?"), ("requester", "[Attachment] latest.log")],
+        )
 
 
 if __name__ == "__main__":

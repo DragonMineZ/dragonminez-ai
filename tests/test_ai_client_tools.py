@@ -71,7 +71,8 @@ class AIClientToolTests(unittest.IsolatedAsyncioTestCase):
         ask = schemas[-1]
         self.assertEqual(set(ask), {"name", "description", "input_schema"})
         self.assertEqual((ask["input_schema"]["required"], ask["input_schema"]["additionalProperties"]), (["kind"], False))
-        self.assertEqual(ask["input_schema"]["properties"]["kind"]["enum"], ["choices", "select", "form"])
+        self.assertEqual(ask["input_schema"]["properties"]["kind"]["enum"], ["choices", "select", "form", "file"])
+        self.assertEqual(ask["input_schema"]["properties"]["what"]["enum"], ["log", "screenshot", "any"])
         # The source schemas stay untouched.
         self.assertNotIn("required", tools_registry.TOOLS_SCHEMAS["get_patreon_status"]["parameters"])
 

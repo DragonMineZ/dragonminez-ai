@@ -813,6 +813,28 @@ class HookTests(unittest.IsolatedAsyncioTestCase):
         args, kwargs = collector.collect_later.call_args
         self.assertEqual((args[2], kwargs["channel_kind"]), ("mylog.txt", "public"))
 
+    async def test_a_reposted_upload_gets_its_card_credited_to_the_uploader_without_diagnosis(self):
+        collector = SimpleNamespace(collect_later=MagicMock())
+        cog = self.make_parser(collector)
+        repost = self.upload(category_id=TICKETS_CATEGORY)
+        repost.author = BOT
+        repost.content = ""
+        repost.attachments[0].filename = "my-log_2.txt"  # Bulma asked for it: no 🔍 approval for an unusual name
+        notes = SimpleNamespace(filename="notes.txt", size=5, url="https://cdn/n", read=AsyncMock(return_value=b"hello"))
+        repost.attachments.append(notes)
+
+        await cog.parse_upload(repost, UPLOADER)
+
+        repost.reply.assert_awaited_once()
+        cog._add_diagnosis.assert_not_awaited()
+        self.assertEqual(cog._pending, {})
+        (upload, text, filename, _report), kwargs = collector.collect_later.call_args
+        self.assertEqual(
+            (upload.id, upload.author, upload.channel, upload.guild, upload.created_at, upload.content),
+            (repost.id, UPLOADER, repost.channel, repost.guild, repost.created_at, ""),
+        )
+        self.assertEqual((text, filename, kwargs["channel_kind"]), (LOG, "my-log_2.txt", "ticket"))
+
 
 if __name__ == "__main__":
     unittest.main()

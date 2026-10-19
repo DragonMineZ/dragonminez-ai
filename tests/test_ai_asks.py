@@ -10,6 +10,7 @@ import discord
 
 from bulmaai.ui import ai_asks
 from bulmaai.ui.v2 import TEXT_LIMIT
+from v2_helpers import texts, walk
 
 SETTINGS = SimpleNamespace(
     moderation_banned_words=("slur*",),
@@ -195,11 +196,106 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ai_asks.read_answer(["Q?", ai_asks.pick_line(7, "Stats")]), (7, "Stats"))
         self.assertIsNone(ai_asks.read_answer(["Q?", "-# Bulma is AI"]))
 
+    def test_upload_lines_are_not_answers(self) -> None:
+        lines = [ai_asks.upload_line(42, "latest.log"), ai_asks.upload_line(42, "shot.png")]
+        self.assertEqual(lines[0], "-# ↳ <@42> uploaded **latest.log**")
+        self.assertIsNone(ai_asks.read_answer(["Send your log", *lines]))
+        self.assertEqual(ai_asks.read_upload(["Send your log", *lines]), (42, ["latest.log", "shot.png"]))
+        self.assertIsNone(ai_asks.read_upload(["Q?", ai_asks.pick_line(42, "Stats")]))
+
     def test_static_text_follows_the_language(self) -> None:
         self.assertEqual(ai_asks.text("pt", "answered"), "Já respondido.")
         self.assertEqual(ai_asks.text("de", "answered"), "Already answered.")
         self.assertEqual(ai_asks.text(None, "fill_in"), "Fill in")
         self.assertEqual({key for texts in ai_asks.TEXT.values() for key in texts}, set(ai_asks.TEXT["en"]))
+
+
+LOG_ASK = {"kind": "file", "what": "log", "max_files": 2, "label": "Upload latest.log"}
+
+
+class FileTests(unittest.IsolatedAsyncioTestCase):
+    def test_file_spec_defaults_and_limits(self) -> None:
+        self.assertEqual(validate(kind="file")["shown"], {"kind": "file", "what": "any", "max_files": 1})
+        out = validate(kind="file", what="log", label="Upload latest.log", max_files=3)
+        self.assertEqual(out["shown"], {"kind": "file", "what": "log", "max_files": 3, "label": "Upload latest.log"})
+        self.assertNotIn("dropped", out)  # "latest.log" only looks like a link: allowed in a label
+        for bad in (0, 4, "2", True, 1.5):
+            out = validate(kind="file", what="screenshot", max_files=bad)
+            self.assertEqual(out["shown"]["max_files"], 1, bad)
+            self.assertIn("max_files", out["dropped"][0])
+        out = validate(kind="file", label="see https://evil.example/x")
+        self.assertNotIn("label", out["shown"])
+        self.assertIn("label", out["dropped"][0])
+        self.assertIn("what", validate(kind="file", what="video")["error"])
+
+    async def test_log_card_has_upload_and_where_rows(self) -> None:
+        upload_row, where_row = ai_asks.ask_rows(LOG_ASK, 42, "es")
+        (upload,) = upload_row.children
+        self.assertEqual(
+            (upload.label, str(upload.emoji), upload.custom_id, upload.style),
+            ("Upload latest.log", "📎", "ai_ask:file:42:0", discord.ButtonStyle.secondary),
+        )
+        (where,) = where_row.children
+        self.assertEqual((where.custom_id, where.placeholder), ("ai_ask:file:42:1", "¿Dónde está?"))
+        self.assertEqual([o.value for o in where.options], ["windows", "mac", "linux", "server", "launchers"])
+        self.assertEqual(where.options[0].label, "🪟 Windows (Cliente)")
+        self.assertEqual(ai_asks.parse_custom_id(where.custom_id), ("file", 42, ai_asks.WHERE_INDEX))
+
+        (row,) = ai_asks.ask_rows({"kind": "file", "what": "screenshot", "max_files": 1}, 42, "pt")
+        (button,) = row.children
+        self.assertEqual(button.label, "Enviar")  # no "Where is it?" for a screenshot
+
+    async def test_where_card_shows_the_picked_place(self) -> None:
+        windows = "\n".join(texts(ai_asks.where_card("en", ["windows"])))
+        self.assertIn("**🪟 Windows (Client)**", windows)
+        self.assertIn("%APPDATA%\\.minecraft\\logs\\latest.log", windows)
+        launchers = "\n".join(texts(ai_asks.where_card("pt", ["launchers"])))
+        self.assertIn("CurseForge", launchers)
+        self.assertIn("clique com o botão direito", launchers)
+        self.assertIsNone(ai_asks.where_card("en", ["nope"]))
+        self.assertIsNone(ai_asks.where_card("en", None))
+
+    async def test_upload_modal_wraps_one_file_field(self) -> None:
+        modal = ai_asks.file_modal(LOG_ASK, 55, "en")
+        self.assertEqual((modal.custom_id, modal.title, modal._store), ("ai_ask_file:55", "Upload your log", False))
+        (label,) = modal.children
+        self.assertEqual(label.label, "latest.log or crash-report.txt")
+        self.assertIsInstance(label.item, discord.ui.FileUpload)
+        self.assertEqual((label.item.custom_id, label.item.min_values, label.item.max_values, label.item.required), ("files", 1, 2, True))
+        self.assertEqual(modal.to_dict()["components"][0]["component"]["type"], 19)
+        self.assertEqual(ai_asks.file_modal({"kind": "file", "what": "screenshot"}, 55, "es").title, "Sube una captura")
+        self.assertEqual(ai_asks.parse_file_modal_id(ai_asks.file_modal_id(55)), 55)
+        self.assertIsNone(ai_asks.parse_file_modal_id(ai_asks.form_modal_id(55)))
+        self.assertIsNone(ai_asks.parse_form_modal_id(ai_asks.file_modal_id(55)))
+
+    def test_submitted_attachment_ids_resolve_to_their_payloads(self) -> None:
+        log = {"id": "11", "filename": "latest.log", "size": 10, "url": "https://cdn/11"}
+        shot = {"id": "12", "filename": "shot.png", "size": 20, "url": "https://cdn/12"}
+        data = {
+            "custom_id": "ai_ask_file:55",
+            "components": [{"type": 18, "component": {"type": 19, "custom_id": "files", "values": ["11", "99", "12"]}}],
+            "resolved": {"attachments": {"11": log, "12": shot}},
+        }
+        self.assertEqual(ai_asks.uploaded(LOG_ASK, data), [log, shot])  # an unresolved id is skipped
+        self.assertEqual(ai_asks.uploaded({"kind": "file"}, data), [log])  # at most max_files
+        self.assertEqual(ai_asks.uploaded(LOG_ASK, {**data, "resolved": None}), [])
+        self.assertEqual(ai_asks.uploaded(LOG_ASK, {"components": None}), [])
+        self.assertEqual(ai_asks.uploaded(LOG_ASK, None), [])
+
+    def test_upload_names_are_plain_short_and_distinct(self) -> None:
+        names = ai_asks.upload_names(["latest.log", "latest.log", "my crash <@1> https://x.io.txt", "", "a" * 90 + ".log"])
+        self.assertEqual(names[:4], ["latest.log", "1_latest.log", "my_crash___1__https___x.io.txt", "file"])
+        self.assertEqual((len(names[4]), names[4][-4:]), (ai_asks.UPLOAD_NAME_LIMIT, ".log"))
+        self.assertEqual(ai_asks.upload_names(["2_x", "x", "x", "x"]), ["2_x", "x", "1_x", "3_x"])
+
+    async def test_upload_card_credits_the_requester_and_carries_the_files(self) -> None:
+        view = ai_asks.upload_card(42, ["latest.log", "shot.png"], [False, True], discord.Color.blue())
+        self.assertEqual(texts(view), ["-# ↳ <@42> uploaded **latest.log**", "-# ↳ <@42> uploaded **shot.png**"])
+        (gallery,) = [item for item in walk(view) if isinstance(item, discord.ui.MediaGallery)]
+        self.assertEqual([item.url for item in gallery.items], ["attachment://shot.png"])
+        (file,) = [item for item in walk(view) if isinstance(item, discord.ui.File)]
+        self.assertEqual(file.url, "attachment://latest.log")
+        self.assertEqual(ai_asks.read_upload(texts(view)), (42, ["latest.log", "shot.png"]))
 
 
 if __name__ == "__main__":

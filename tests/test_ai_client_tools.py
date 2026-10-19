@@ -10,7 +10,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services import ai_budget
-from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
+from bulmaai.services.ai_tools import ASK_TOOL, LOOKUP_TOOL_NAMES, SUPPORT_TOOL_NAMES
 from bulmaai.services.ai_client import (
     CONTINUE_TURN,
     FALLBACK_BETA,
@@ -26,7 +26,6 @@ from bulmaai.services.ai_client import (
     _split_confidence,
     _split_close,
     _split_kind,
-    _split_options,
     _append_source_links,
     get_schemas,
     run_support_agent,
@@ -60,13 +59,19 @@ class AIClientToolTests(unittest.IsolatedAsyncioTestCase):
     def test_tool_schemas_are_in_claude_format(self) -> None:
         schemas = get_schemas(SUPPORT_TOOL_NAMES)
         self.assertEqual([schema["name"] for schema in schemas], SUPPORT_TOOL_NAMES)
-        for schema in schemas:
+        self.assertEqual(SUPPORT_TOOL_NAMES, [*LOOKUP_TOOL_NAMES, ASK_TOOL])
+        for schema in schemas[:-1]:
             self.assertEqual(set(schema), {"name", "description", "input_schema", "strict"})
             self.assertTrue(schema["strict"])
             input_schema = schema["input_schema"]
             self.assertEqual(input_schema["type"], "object")
             self.assertIs(input_schema["additionalProperties"], False)
             self.assertEqual(input_schema["required"], list(input_schema["properties"]))
+        # ask_requester isn't strict: each kind fills only its own fields, and every call is validated in code.
+        ask = schemas[-1]
+        self.assertEqual(set(ask), {"name", "description", "input_schema"})
+        self.assertEqual((ask["input_schema"]["required"], ask["input_schema"]["additionalProperties"]), (["kind"], False))
+        self.assertEqual(ask["input_schema"]["properties"]["kind"]["enum"], ["choices", "select", "form"])
         # The source schemas stay untouched.
         self.assertNotIn("required", tools_registry.TOOLS_SCHEMAS["get_patreon_status"]["parameters"])
 
@@ -191,17 +196,6 @@ class MarkerAndRepeatTests(unittest.TestCase):
     def test_split_close_marker(self):
         self.assertEqual(_split_close("Done, the ticket can be closed.\n[close: Yes]"), ("Done, the ticket can be closed.", True))
         self.assertEqual(_split_close("Try reinstalling."), ("Try reinstalling.", False))
-
-    def test_split_options_marker(self) -> None:
-        self.assertEqual(
-            _split_options("What to change?\n[options: old | x]\n[Options= Stats | apariencia |  | STATS | Raza ]"),
-            ("What to change?", ["Stats", "apariencia", "Raza"]),
-        )
-        six = " | ".join(f"v{n}" for n in range(6))
-        self.assertEqual(_split_options(f"Q?\n[options: {'x' * 81} | {six}]")[1], ["v0", "v1", "v2", "v3", "v4"])
-        self.assertEqual(_split_options("No marker."), ("No marker.", []))
-        self.assertEqual(_split_options("[options: a | b]"), ("(no reply)", ["a", "b"]))
-        self.assertEqual(_split_options("Q? [options: a\n| b]"), ("Q? [options: a\n| b]", []))  # one line only
 
     def test_source_links_are_one_per_page_and_skip_non_urls(self) -> None:
         cited = [
@@ -482,15 +476,60 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             _, create_message, _ = await self._run([_message(text)])
             create_message.assert_awaited_once()
 
-    async def test_options_are_kept_only_for_a_clarify_question_and_screened_like_the_reply(self) -> None:
-        result, _, record_trace = await self._run(
-            [_message("Which file?\n[kind: clarify]\n[options: latest.log | <@1> | @everyone | crash report]\n[confidence: 0.9]")]
+    async def test_ask_requester_is_checked_locally_and_the_last_valid_call_goes_with_the_reply(self) -> None:
+        tool_turn = _message(
+            response_id="r_ask",
+            content=[
+                _thinking(),
+                _tool_use(ASK_TOOL, "toolu_a", {"kind": "choices", "choices": ["latest.log", "<@1>", "crash report"]}),
+                _tool_use(ASK_TOOL, "toolu_b", {"kind": "select", "options": [{"label": "1.20.1"}, {"label": "1.21"}]}),
+                _tool_use(ASK_TOOL, "toolu_c", {"kind": "choices", "choices": ["only one"]}),
+            ],
         )
-        self.assertEqual((result["reply"], result["options"]), ("Which file?", ["latest.log", "crash report"]))
-        self.assertNotIn("options", record_trace.await_args.args[0].reply_text)
+        result, create_message, _ = await self._run(
+            [tool_turn, _message("Which version do you play?\n[kind: clarify]\n[confidence: 0.9]", response_id="r_final")]
+        )
 
-        result, _, _ = await self._run([_message("Update GeckoLib.\n[kind: answer]\n[options: ok]\n[confidence: 0.95]")])
-        self.assertEqual((result["reply"], result["options"]), ("Update GeckoLib.", []))
+        self.assertEqual(create_message.await_count, 2)
+        results_turn = create_message.await_args_list[1].kwargs["messages"][-1]
+        outputs = {block["tool_use_id"]: json.loads(block["content"]) for block in results_turn["content"]}
+        self.assertEqual(outputs["toolu_a"]["shown"], {"kind": "choices", "choices": ["latest.log", "crash report"]})
+        self.assertEqual(len(outputs["toolu_a"]["dropped"]), 1)  # the ping
+        self.assertIn("write the reply", outputs["toolu_b"]["note"])
+        self.assertEqual(outputs["toolu_c"]["ok"], False)  # the model can fix it; an invalid last call never wins
+        self.assertFalse(any(block.get("is_error") for block in results_turn["content"]))
+        self.assertEqual(result["reply"], "Which version do you play?")
+        self.assertEqual(result["ask"], {"kind": "select", "options": [{"label": "1.20.1"}, {"label": "1.21"}]})
+        self.assertFalse(result["escalated"])
+
+    async def test_controls_go_only_with_a_sent_reply_that_is_not_a_handoff(self) -> None:
+        ask = _tool_use(ASK_TOOL, "toolu_a", {"kind": "choices", "choices": ["Yes", "No"]})
+        no_escalation = {"ai_daily_big_token_limit": 0, "ai_support_fast_effort": "high"}
+        result, _, _ = await self._run(
+            [_message(content=[ask]), _message("Staff will take a look.\n[kind: handoff]\n[confidence: 0.9]")],
+            **no_escalation,
+        )
+        self.assertEqual((result["kind"], result["ask"]), ("handoff", None))
+
+        result, _, _ = await self._run(
+            [_message(content=[ask]), _message("", stop_reason="refusal")], **no_escalation
+        )
+        self.assertEqual((result["reply"], result["ask"]), ("(no reply)", None))
+
+        result, _, _ = await self._run([_message("Plain answer.\n[kind: answer]\n[confidence: 0.95]")])
+        self.assertIsNone(result["ask"])
+
+    async def test_an_escalation_that_only_asked_keeps_the_first_answer(self) -> None:
+        ask = _tool_use(ASK_TOOL, "toolu_a", {"kind": "choices", "choices": ["Yes", "No"]})
+        result, create_message, _ = await self._run(
+            [
+                _message("Maybe reinstall.\n[kind: answer]\n[confidence: 0.3]"),
+                _message(content=[ask], model=SONNET),
+                _message("[kind: clarify]", response_id="r3", model=SONNET),
+            ]
+        )
+        self.assertEqual(create_message.await_count, 3)
+        self.assertEqual((result["reply"], result["ask"], result["escalated"]), ("Maybe reinstall.", None, False))
 
     async def test_second_clarify_in_a_row_escalates_and_hands_off_if_still_asking(self) -> None:
         messages = [

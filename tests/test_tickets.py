@@ -1054,9 +1054,17 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kwargs["ticket_conversation"])
         self.assertEqual(self.cog._ticket_owners[900], OWNER_ID)
         self.assertIn("requester: Steve roles staff (roles: patron; Discord roles: none)", kwargs["context_lines"])
-        self.cog._send_messages_with_typing.assert_awaited_once_with(self.channel, ["Try updating."], ai_answer=True)
+        self.cog._send_messages_with_typing.assert_awaited_once_with(
+            self.channel, ["Try updating."], ai_answer=True, options=[], requester_id=OWNER_ID
+        )
         self.cog._mark_ticket_escalated.assert_not_called()
         self.noted.assert_awaited_once_with(900, 9)  # our answer starts the owner's reply countdown
+
+    async def test_only_a_clarify_question_gets_answer_buttons(self):
+        await self.answer({"reply": "Which version?", "tool_results": [], "kind": "clarify", "options": ["1.20.1", "1.21"]})
+        self.assertEqual(self.cog._send_messages_with_typing.await_args.kwargs["options"], ["1.20.1", "1.21"])
+        await self.answer({"reply": "Try updating.", "tool_results": [], "kind": "answer", "options": ["1.20.1"]})
+        self.assertEqual(self.cog._send_messages_with_typing.await_args.kwargs["options"], [])
 
     async def test_answers_in_the_ticket_language(self):
         agent = await self.answer({"reply": "Prueba.", "tool_results": [], "kind": "answer"}, language="es")

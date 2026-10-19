@@ -31,7 +31,7 @@ from bulmaai.cogs.ai_tickets import (
 )
 from bulmaai.services.ticket_intake import owner_says_solved
 from bulmaai.ui.v2 import WORKING
-from v2_helpers import sent_message
+from v2_helpers import buttons, sent_message, texts
 from bulmaai.services.ticket_pages import StoredPage
 from bulmaai.services.ticket_transcripts import TicketSummary, TranscriptLine
 from bulmaai.services.support_intent import (
@@ -721,6 +721,183 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         ping = channel.send.await_args
         self.assertIn("<@&111> <@&222>", ping.args[0])
         self.assertTrue(ping.kwargs["allowed_mentions"].roles)
+
+
+class AnswerChoiceTests(unittest.IsolatedAsyncioTestCase):
+    def _cog(self, **settings) -> AITicketsCog:
+        values = dict(
+            ai_support_typing_lead_seconds=0,
+            ai_support_enabled=True,
+            ai_ticket_category_id=77,
+            ticket_closed_category_id=None,
+            ai_support_history_limit=10,
+            discord_staff_role_ids=(),
+        )
+        values.update(settings)
+        self.bot_user = types.SimpleNamespace(id=999, bot=True, name="BulmaAI", display_name="BulmaAI")
+        return AITicketsCog(types.SimpleNamespace(settings=types.SimpleNamespace(**values), user=self.bot_user, guilds=[]))
+
+    def _picked(self, user_id: int = 42, label: str = "Stats"):
+        card = ai_tickets._card(f"What do you want to change?\n\n{ai_tickets.AI_FOOTER}")
+        return sent_message(ai_tickets._picked_card(sent_message(card), user_id, label), message_id=55)
+
+    async def test_only_the_last_chunk_gets_the_answer_buttons(self) -> None:
+        cog = self._cog()
+        channel = types.SimpleNamespace(id=13, send=AsyncMock())
+        long_text = "word " * 1000  # two cards
+
+        self.assertTrue(
+            await cog._send_messages_with_typing(
+                channel, [long_text], ai_answer=True, options=["Stats", "Raza"], requester_id=42
+            )
+        )
+
+        first, last = (call.kwargs["view"] for call in channel.send.await_args_list)
+        self.assertEqual(buttons(first), [])
+        self.assertEqual(
+            [(b.label, b.custom_id, b.style) for b in buttons(last)],
+            [("Stats", "ai_choice:42:0", discord.ButtonStyle.secondary), ("Raza", "ai_choice:42:1", discord.ButtonStyle.secondary)],
+        )
+        self.assertIn(ai_tickets.AI_FOOTER, texts(last)[0])
+        channel.send.reset_mock()
+        await cog._send_messages_with_typing(channel, ["Which one?"], ai_answer=True, options=["Stats"])
+        self.assertEqual(buttons(channel.send.await_args.kwargs["view"]), [])  # no requester, no buttons
+
+    async def test_choice_custom_ids_round_trip(self) -> None:
+        row = ai_tickets._choice_row(42, ["a", "b"])
+        self.assertEqual([ai_tickets._parse_choice_custom_id(item.custom_id) for item in row.children], [42, 42])
+        self.assertIsNone(ai_tickets._parse_choice_custom_id("ai_choice:nope:0"))
+        self.assertIsNone(ai_tickets._parse_choice_custom_id("ticket_resolved:yes:42:en"))
+        message = sent_message(ai_tickets._card("Q?", ai_tickets.AI_CARD_COLOR, row))
+        self.assertEqual(ai_tickets._choice_label(message, "ai_choice:42:1"), "b")
+
+    async def test_the_picked_card_keeps_its_text_and_records_the_pick(self) -> None:
+        picked = self._picked()
+        self.assertEqual(ai_tickets._card_text(picked), "What do you want to change?")
+        self.assertEqual(ai_tickets._choice_pick(picked), (42, "Stats"))
+        self.assertEqual(ai_tickets._choice_pick(sent_message(ai_tickets._card("No pick."))), None)
+        view = discord.ui.DesignerView.from_message(picked)
+        self.assertEqual(buttons(view), [])
+        self.assertEqual(texts(view)[-1], "-# ↳ <@42>: **Stats**")
+
+    async def test_choice_turn_is_the_pickers_turn(self) -> None:
+        cog = self._cog()
+        guild = types.SimpleNamespace(get_member=lambda user_id: types.SimpleNamespace(display_name="Goku (roles: staff)"))
+        entry = types.SimpleNamespace(author=self.bot_user, components=self._picked().components, guild=guild, edited_at=None)
+        turn = cog._choice_turn(entry, 42)
+        self.assertEqual(
+            (turn["role"], turn["content"], turn["speaker_kind"], turn["speaker_id"], turn["speaker_name"]),
+            ("user", "Stats", "requester", "42", "Goku roles staff"),
+        )
+        self.assertEqual(cog._choice_turn(entry, 7)["speaker_kind"], "participant")
+        entry.guild = None
+        self.assertEqual(cog._choice_turn(entry, 42)["speaker_name"], "member")
+        entry.author = types.SimpleNamespace(id=1, bot=False)
+        self.assertIsNone(cog._choice_turn(entry, 42))  # only our own cards
+
+    async def test_history_and_transcript_read_the_pick_as_the_latest_requester_turn(self) -> None:
+        cog = self._cog()
+        requester = types.SimpleNamespace(id=42, bot=False, name="goku", display_name="Goku")
+        now = datetime.now(timezone.utc)
+        question = types.SimpleNamespace(
+            id=1, author=requester, clean_content="I want to change my character", attachments=[], created_at=now,
+            reference=None, guild=None,
+        )
+        card = types.SimpleNamespace(
+            id=55, author=self.bot_user, clean_content="", attachments=[], created_at=now, reference=None, guild=None,
+            components=self._picked().components, edited_at=now, mentions=[],
+        )
+
+        async def history(**kwargs):
+            for item in ([question, card] if kwargs.get("oldest_first") else [card, question]):
+                yield item
+
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 13
+        channel.history = history
+        with patch("bulmaai.cogs.ai_tickets.get_image_analyses", new_callable=AsyncMock, return_value={}):
+            turns = await cog._build_ticket_history(types.SimpleNamespace(channel=channel, author=requester), {})
+            cog.bot.get_cog = lambda name: None
+            lines, _ = await cog._collect_transcript(channel, 42)
+
+        self.assertEqual(
+            [(turn["role"], turn["content"]) for turn in turns],
+            [("user", "I want to change my character"), ("assistant", "What do you want to change?"), ("user", "Stats")],
+        )
+        self.assertEqual(turns[-1]["speaker_kind"], "requester")
+        self.assertEqual(
+            [(line.speaker_kind, line.content) for line in lines],
+            [("requester", "I want to change my character"), ("assistant", "What do you want to change?"), ("requester", "Stats")],
+        )
+
+    def _interaction(self, channel, user_id: int, custom_id: str = "ai_choice:42:1"):
+        row = ai_tickets._choice_row(42, ["Stats", "Raza"])
+        return types.SimpleNamespace(
+            channel=channel,
+            guild=None,
+            user=types.SimpleNamespace(id=user_id, mention=f"<@{user_id}>"),
+            data={"custom_id": custom_id},
+            message=sent_message(ai_tickets._card("What do you want to change?", ai_tickets.AI_CARD_COLOR, row), message_id=55),
+            response=types.SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()),
+            edit_original_response=AsyncMock(),
+            followup=types.SimpleNamespace(send=AsyncMock()),
+        )
+
+    def _ticket_channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 13
+        channel.category = types.SimpleNamespace(id=77)
+        return channel
+
+    async def test_only_the_asked_member_can_pick(self) -> None:
+        cog = self._cog()
+        interaction = self._interaction(self._ticket_channel(), user_id=7)
+        await cog.on_interaction(types.SimpleNamespace(type=discord.InteractionType.component, **vars(interaction)))
+        interaction.response.send_message.assert_awaited_once_with(ai_tickets.CHOICE_NOT_YOURS_TEXT, ephemeral=True)
+        interaction.response.edit_message.assert_not_called()
+
+    async def test_a_closed_or_ai_off_ticket_refuses_the_pick(self) -> None:
+        cog = self._cog()
+        interaction = self._interaction(self._ticket_channel(), user_id=42)
+        closed = types.SimpleNamespace(status="closed")
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=closed)):
+            await cog._handle_choice(interaction, requester_id=42)
+        interaction.response.send_message.assert_awaited_once_with(ai_tickets.TICKET_CLOSED_TEXT, ephemeral=True)
+
+        interaction = self._interaction(self._ticket_channel(), user_id=42)
+        cog._escalated_ticket_channels.add(13)
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=types.SimpleNamespace(status="open"))):
+            await cog._handle_choice(interaction, requester_id=42)
+        interaction.response.send_message.assert_awaited_once_with(ai_tickets.CHOICE_AI_OFF_TEXT, ephemeral=True)
+        interaction.response.edit_message.assert_not_called()
+
+    async def test_pick_records_on_the_card_and_answers_as_the_owners_turn(self) -> None:
+        cog = self._cog()
+        channel = self._ticket_channel()
+        interaction = self._interaction(channel, user_id=42)
+        with (
+            patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=types.SimpleNamespace(status="open"))),
+            patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
+            patch("bulmaai.cogs.ai_tickets.note_ticket_message", AsyncMock()) as noted,
+            patch.object(cog, "_answer_support", AsyncMock()) as answer,
+        ):
+            await cog._handle_choice(interaction, requester_id=42)
+            await cog._pending_tasks[(13, 0)]
+
+        busy = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertEqual([(b.label, b.disabled) for b in buttons(busy)], [("Stats", True), (WORKING, True)])
+        final = interaction.edit_original_response.await_args.kwargs
+        self.assertEqual(buttons(final["view"]), [])
+        self.assertEqual(texts(final["view"]), ["What do you want to change?", "-# ↳ <@42>: **Raza**"])
+        self.assertEqual(final["allowed_mentions"].to_dict()["parse"], [])
+        noted.assert_awaited_once_with(13, 42)  # the owner replied
+        stand_in = answer.await_args.args[0]
+        self.assertEqual((stand_in.content, stand_in.id, stand_in.author.id), ("Raza", 55, 42))
+        self.assertEqual(
+            answer.await_args.kwargs, {"in_ticket": True, "in_dm": False, "mention_request": False, "member": None}
+        )
+        self.assertEqual((cog._pending_tasks, cog._working), ({}, set()))
+        interaction.followup.send.assert_not_called()
 
 
 if __name__ == "__main__":

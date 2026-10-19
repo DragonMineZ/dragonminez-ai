@@ -26,6 +26,7 @@ from bulmaai.services.ai_client import (
     _split_confidence,
     _split_close,
     _split_kind,
+    _split_options,
     _append_source_links,
     get_schemas,
     run_support_agent,
@@ -190,6 +191,17 @@ class MarkerAndRepeatTests(unittest.TestCase):
     def test_split_close_marker(self):
         self.assertEqual(_split_close("Done, the ticket can be closed.\n[close: Yes]"), ("Done, the ticket can be closed.", True))
         self.assertEqual(_split_close("Try reinstalling."), ("Try reinstalling.", False))
+
+    def test_split_options_marker(self) -> None:
+        self.assertEqual(
+            _split_options("What to change?\n[options: old | x]\n[Options= Stats | apariencia |  | STATS | Raza ]"),
+            ("What to change?", ["Stats", "apariencia", "Raza"]),
+        )
+        six = " | ".join(f"v{n}" for n in range(6))
+        self.assertEqual(_split_options(f"Q?\n[options: {'x' * 81} | {six}]")[1], ["v0", "v1", "v2", "v3", "v4"])
+        self.assertEqual(_split_options("No marker."), ("No marker.", []))
+        self.assertEqual(_split_options("[options: a | b]"), ("(no reply)", ["a", "b"]))
+        self.assertEqual(_split_options("Q? [options: a\n| b]"), ("Q? [options: a\n| b]", []))  # one line only
 
     def test_source_links_are_one_per_page_and_skip_non_urls(self) -> None:
         cited = [
@@ -469,6 +481,16 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         for text in ("Which Minecraft version?\n[kind: clarify]\n[confidence: 0.4]", "Plain answer without markers."):
             _, create_message, _ = await self._run([_message(text)])
             create_message.assert_awaited_once()
+
+    async def test_options_are_kept_only_for_a_clarify_question_and_screened_like_the_reply(self) -> None:
+        result, _, record_trace = await self._run(
+            [_message("Which file?\n[kind: clarify]\n[options: latest.log | <@1> | @everyone | crash report]\n[confidence: 0.9]")]
+        )
+        self.assertEqual((result["reply"], result["options"]), ("Which file?", ["latest.log", "crash report"]))
+        self.assertNotIn("options", record_trace.await_args.args[0].reply_text)
+
+        result, _, _ = await self._run([_message("Update GeckoLib.\n[kind: answer]\n[options: ok]\n[confidence: 0.95]")])
+        self.assertEqual((result["reply"], result["options"]), ("Update GeckoLib.", []))
 
     async def test_second_clarify_in_a_row_escalates_and_hands_off_if_still_asking(self) -> None:
         messages = [

@@ -756,14 +756,19 @@ class PatreonWhitelistFlowCog(ReloadableCog):
 
     async def _handle_link_patreon_command(self, ctx: discord.ApplicationContext) -> None:
         await ctx.defer(ephemeral=True)
-        if not isinstance(ctx.author, discord.Member):
-            await ctx.followup.send(
+        await self.send_link_prompt(ctx.author, ctx.followup)
+
+    async def send_link_prompt(self, member: discord.abc.User, followup: discord.Webhook) -> None:
+        """What `/patreon link` answers, ephemerally through an interaction's followup. Bulma's link_patreon offer
+        (AITicketsCog) sends the same to the member who clicked it."""
+        if not isinstance(member, discord.Member):
+            await followup.send(
                 "Use `/patreon link` inside the DragonMineZ server.",
                 ephemeral=True,
             )
             return
-        if not has_patreon_access_role(ctx.author, settings=self.bot.settings):
-            await ctx.followup.send(
+        if not has_patreon_access_role(member, settings=self.bot.settings):
+            await followup.send(
                 "**Heads up:** You don't have a Patreon beta access role yet. "
                 "If you're a Patron, connect your Patreon account to Discord first so the role is granted automatically — "
                 "otherwise this link won't activate your beta access: "
@@ -771,7 +776,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 "If you've already done that and are still missing the role, you can proceed with linking below.",
                 ephemeral=True,
             )
-        await self._send_patreon_oauth_prompt(ctx.author, ctx.followup, ephemeral=True)
+        await self._send_patreon_oauth_prompt(member, followup, ephemeral=True)
 
     async def _handle_unlink_command(self, ctx: discord.ApplicationContext, user: discord.abc.User) -> None:
         """Staff unlink: drops the Patreon link plus the owner's self grant and every gift they handed out.

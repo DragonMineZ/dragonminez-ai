@@ -55,11 +55,13 @@ from bulmaai.services.ticket_transcripts import (
 from bulmaai.services.tickets import (
     STATUS_OPEN,
     ClosedGap,
+    get_open_tickets_by_owner,
     get_ticket_by_channel,
     hide_closed_messages,
     note_ticket_message,
 )
 from bulmaai.ui import ai_asks
+from bulmaai.ui.ticket_views import CATEGORIES, TicketModal, msg_already_open, panel_view
 from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -401,18 +403,38 @@ def _card_text(message: discord.Message) -> str:
 
 
 def _card_answer(message: discord.Message) -> tuple[int, str] | None:
-    """(user id, answer) given with the controls on this card, if any: a pick's label or a form's lines."""
-    return ai_asks.read_answer(_card_texts(message))
+    """(user id, answer) given with the controls on this card, if any: a pick's label, a form's lines, a steps
+    outcome, or the steps done so far on a steps card still in progress (read off its buttons)."""
+    return ai_asks.read_answer(_card_texts(message)) or ai_asks.read_progress(
+        [item.get("custom_id") for item in _component_dicts(message)]
+    )
 
 
-def _answered_card(message: discord.Message, lines: list[str]) -> discord.ui.DesignerView:
-    """The card as it was, without its controls, with the answer lines under it."""
+def _rebuilt(message: discord.Message, *items: discord.ui.Item) -> discord.ui.DesignerView:
+    """The card's own text (not the text that belongs to its controls), then items."""
+    own = [
+        item["content"]
+        for item in _component_dicts(message)
+        if item.get("type") == 10 and item.get("content") and item.get("id") != ai_asks.CONTROLS_TEXT_ID
+    ]
     return discord.ui.DesignerView(
-        discord.ui.Container(
-            *(discord.ui.TextDisplay(text) for text in [*_card_texts(message), *lines]), color=AI_CARD_COLOR
-        ),
+        discord.ui.Container(*(discord.ui.TextDisplay(text) for text in own), *items, color=AI_CARD_COLOR),
         timeout=None,
     )
+
+
+def _answered_card(
+    message: discord.Message, lines: list[str], *, controls_text: str | None = None, notes: Sequence[str] = ()
+) -> discord.ui.DesignerView:
+    """The card as it was, without its controls, with the answer lines under it. controls_text replaces the text that
+    belonged to the controls (a steps card's list, in its final state); notes go last (what an action did)."""
+    controls = [discord.ui.TextDisplay(controls_text, id=ai_asks.CONTROLS_TEXT_ID)] if controls_text else []
+    return _rebuilt(message, *controls, *(discord.ui.TextDisplay(text) for text in [*lines, *notes]))
+
+
+def _steps_card(message: discord.Message, row: ask_store.AskRow, progress: int) -> discord.ui.DesignerView:
+    """A steps card at step progress: its own text, then the list and that step's buttons."""
+    return _rebuilt(message, *ai_asks.steps_items(row.spec, row.requester_id, row.language, progress))
 
 
 # ponytail: only what the answer path reads off a discord.Message (and utils/forwards); add attributes as it grows.
@@ -717,12 +739,14 @@ class AITicketsCog(ReloadableCog):
         language: str | None = None,
     ) -> bool:
         """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one, and ask (an
-        ask_requester spec, ui/ai_asks) puts its controls on it for requester_id only, saved in ai_asks."""
+        ask_requester / offer_action spec, ui/ai_asks) puts its controls on it for requester_id only, saved in ai_asks.
+        Chunks leave room for the text the controls bring (a steps list and its outcome line)."""
+        limit = CARD_TEXT_LIMIT - ai_asks.reserved_text(ask)
         chunks = [
             chunk
             for message in messages
             if message
-            for chunk in _chunk_discord_message(message, CARD_TEXT_LIMIT)
+            for chunk in _chunk_discord_message(message, limit)
             if chunk.strip()
         ]
         if not chunks:
@@ -1136,6 +1160,7 @@ class AITicketsCog(ReloadableCog):
                 context_lines = self._support_context_lines(
                     message, member=member, in_ticket=in_ticket, in_dm=in_dm
                 )
+                channel_kind = "ticket" if in_ticket else "dm" if in_dm else "public"
                 language = await self._ticket_language(channel.id) if in_ticket else None
                 if language:
                     context_lines.append(_language_line(language))
@@ -1151,7 +1176,7 @@ class AITicketsCog(ReloadableCog):
                         settings=settings,
                         context_lines=context_lines,
                         requester_is_staff=member is not None and is_staff(member, settings=settings),
-                        channel_kind="ticket" if in_ticket else "dm" if in_dm else "public",
+                        channel_kind=channel_kind,
                     ))
             except asyncio.CancelledError:
                 raise
@@ -1218,8 +1243,8 @@ class AITicketsCog(ReloadableCog):
                 should_mark_escalated = in_ticket and kind == "handoff"
                 if kind != "handoff" and reply_text != PUBLIC_FALLBACK_TEXT:
                     ask = result.get("ask")  # controls only under the model's own reply
-                    if public and (ask or {}).get("kind") == "file":
-                        ask = None  # a repost is the bot's, so moderation never sees it: uploads only in tickets and DMs
+                    if ask and not ai_asks.allowed_in(ask, channel_kind):
+                        ask = None  # no uploads in public (moderation never sees a repost), actions only where they run
             else:
                 if in_ticket:
                     outgoing_messages.append(
@@ -1315,6 +1340,8 @@ class AITicketsCog(ReloadableCog):
         if not _is_ticket_channel(channel, settings=settings):
             return  # closed before the first answer was ready
         ask = result.get("ask") if result.get("kind") != "handoff" else None
+        if ask and not ai_asks.allowed_in(ask, "ticket"):
+            ask = None
         if not await self._send_messages_with_typing(
             channel, [reply], ai_answer=True, ask=ask, requester_id=member.id, language=language
         ):
@@ -1450,11 +1477,12 @@ class AITicketsCog(ReloadableCog):
         return row
 
     async def _ask_refusal(
-        self, interaction: discord.Interaction, row: ask_store.AskRow, *, spend: bool
+        self, interaction: discord.Interaction, row: ask_store.AskRow, *, spend: bool, ai: bool = True
     ) -> tuple[str | None, dict[str, Any]]:
         """(why this answer can't go through, as a ui/ai_asks.TEXT key, or None; the _answer_support arguments).
         The gates are the typed path's (see _process_support_message); spend: the answer runs the AI now, so it counts
-        toward the rate limit."""
+        toward the rate limit. ai=False (a click that never reaches the AI: a step done, an action): only the
+        requester, open-question and closed-ticket gates."""
         settings = self.bot.settings
         channel = interaction.channel
         user = interaction.user
@@ -1470,6 +1498,8 @@ class AITicketsCog(ReloadableCog):
             return "answered", context
         if not in_dm and await self._is_closed_ticket(channel):
             return "closed", context
+        if not ai:
+            return None, context
         member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
         context["member"] = member
         if (
@@ -1508,11 +1538,15 @@ class AITicketsCog(ReloadableCog):
     async def _handle_ask(self, interaction: discord.Interaction, *, kind: str, index: int) -> None:
         """A control on an answer card (ui/ai_asks). A pick goes on the card and is answered like a typed reply;
         "Fill in" and "Upload" open their modal (submits: _handle_ask_form, _handle_ask_file); "Where is it?" only
-        shows where the logs are."""
+        shows where the logs are; steps and action buttons: _handle_steps, _handle_action."""
         message = interaction.message
         if (row := await self._ask_row(interaction, message.id)) is None:
             return
         language = row.language
+        if kind == "steps":
+            return await self._handle_steps(interaction, row, index)
+        if kind == ai_asks.ACTION_KIND:
+            return await self._handle_action(interaction, row, index)
         if kind == "file" and index == ai_asks.WHERE_INDEX:
             # Just help, for anyone who opens it: it answers nothing and claims nothing.
             view = ai_asks.where_card(language, (interaction.data or {}).get("values"))
@@ -1549,6 +1583,172 @@ class AITicketsCog(ReloadableCog):
             await self._answer_recorded(interaction, message.id, label, context)
 
         await while_busy(interaction, self._working, pick, failed=ai_asks.text(language, "failed"))
+
+    async def _handle_steps(self, interaction: discord.Interaction, row: ask_store.AskRow, index: int) -> None:
+        """Done / Still broken on a steps card. Done before the last step moves the card on (no AI, no rate limit);
+        Still broken, or Done on the last step, records the outcome and the AI answers it. The row's progress is the
+        truth: a click on an outdated card only brings the card up to date."""
+        message, spec, language = interaction.message, row.spec, row.language
+        steps = spec.get("steps") or []
+        step, button = ai_asks.split_step_index(index)
+        if spec.get("kind") != "steps" or not 0 <= step < len(steps):
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        final = button == ai_asks.STEP_BROKEN or step == len(steps) - 1
+        refusal, context = await self._ask_refusal(interaction, row, spend=final, ai=final)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        no_pings = discord.AllowedMentions.none()
+        if step != row.progress:
+            await interaction.response.edit_message(view=_steps_card(message, row, row.progress), allowed_mentions=no_pings)
+            return await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+        failed = ai_asks.text(language, "failed")
+
+        if not final:
+            async def advance() -> bool | None:
+                if not await ask_store.move(message.id, step, step + 1):
+                    return False  # moved on meanwhile; the card comes back and the next click refreshes it
+                try:
+                    await interaction.edit_original_response(
+                        view=_steps_card(message, row, step + 1), allowed_mentions=no_pings
+                    )
+                except Exception:
+                    await ask_store.move(message.id, step + 1, step)
+                    raise
+                return None
+
+            return await while_busy(interaction, self._working, advance, failed=failed)
+
+        user = interaction.user
+        if button == ai_asks.STEP_BROKEN:
+            line = ai_asks.step_failed_line(user.id, step, steps[step], language)
+            outcome = ai_asks.steps_text(spec, step, failed=step)
+        else:
+            line = ai_asks.steps_done_line(user.id, len(steps), language)
+            outcome = ai_asks.steps_text(spec, len(steps))
+        _, content = ai_asks.read_answer([line])  # what the model reads back, in English
+
+        async def finish() -> None:
+            if await ask_store.claim(message.id) is None:
+                current = ai_asks.steps_text(spec, row.progress)
+                await interaction.edit_original_response(
+                    view=_answered_card(message, [], controls_text=current), allowed_mentions=no_pings
+                )
+                await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+                return
+            try:
+                await interaction.edit_original_response(
+                    view=_answered_card(message, [line], controls_text=outcome), allowed_mentions=no_pings
+                )
+            except Exception:
+                await ask_store.release(message.id)
+                raise
+            await self._answer_recorded(interaction, message.id, content, context)
+
+        await while_busy(interaction, self._working, finish, failed=failed)
+
+    async def _handle_action(self, interaction: discord.Interaction, row: ask_store.AskRow, index: int) -> None:
+        """An offer_action button. It runs an existing flow for the requester, never anything they couldn't start
+        themselves: get_staff is the "No, I still need help" button's escalation, open_ticket the ticket panel's
+        form, link_patreon /patreon link's answer. "No thanks" only records itself. None of them runs the AI."""
+        spec, language, user = row.spec, row.language, interaction.user
+        action = spec.get("action")
+        if spec.get("kind") != ai_asks.ACTION_KIND or index not in (ai_asks.ACTION_RUN, ai_asks.ACTION_DECLINE):
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        refusal, context = await self._ask_refusal(interaction, row, spend=False, ai=False)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        if index == ai_asks.ACTION_DECLINE:
+            return await self._run_action(interaction, row, ai_asks.text(language, "no_thanks"))
+        channel_kind = "ticket" if context["in_ticket"] else "dm" if context["in_dm"] else "public"
+        if not ai_asks.allowed_in(spec, channel_kind):
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        label = ai_asks.action_label(spec, language)
+        if action == "open_ticket":
+            return await self._offer_ticket(interaction, row, label)
+        if action == "get_staff":
+            channel = interaction.channel
+
+            async def get_staff() -> list[str]:
+                # AI already off: staff have the ticket (an earlier handoff, or they turned it off), so no new ping.
+                if self.is_ticket_ai_enabled(channel.id):
+                    await self._mark_ticket_escalated(channel.id)
+                    await self._ping_escalation_roles(channel, row.requester_id)
+                return [_resolve_text(await self._ticket_language(channel.id) or language)["escalated"]]
+
+            return await self._run_action(interaction, row, label, get_staff)
+        flow = self.bot.get_cog("PatreonWhitelistFlowCog")
+        if flow is None:
+            log.warning("Patreon cog isn't loaded; can't run a link_patreon offer", extra={"channel_id": row.channel_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+
+        async def link_patreon() -> list[str]:
+            member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
+            await flow.send_link_prompt(member or user, interaction.followup)
+            return []
+
+        await self._run_action(interaction, row, label, link_patreon)
+
+    async def _run_action(self, interaction: discord.Interaction, row: ask_store.AskRow, label: str, run=None) -> None:
+        """Claims the card (the first click wins), runs run (its notes go under the answer line), then records the click
+        on the card. A failure reopens the offer."""
+        message, language = interaction.message, row.language
+        no_pings = discord.AllowedMentions.none()
+
+        async def work() -> None:
+            if await ask_store.claim(message.id) is None:
+                await interaction.edit_original_response(view=_answered_card(message, []), allowed_mentions=no_pings)
+                await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+                return
+            try:
+                notes = await run() if run is not None else []
+                lines = [ai_asks.pick_line(interaction.user.id, label)]
+                await interaction.edit_original_response(
+                    view=_answered_card(message, lines, notes=notes), allowed_mentions=no_pings
+                )
+            except Exception:
+                await ask_store.release(message.id)
+                raise
+
+        await while_busy(interaction, self._working, work, failed=ai_asks.text(language, "failed"))
+
+    async def _offer_ticket(self, interaction: discord.Interaction, row: ask_store.AskRow, label: str) -> None:
+        """open_ticket: the ticket panel's own form for the offered category (its category select when none was
+        given), so TicketsCog.create_ticket opens the ticket as from the panel. One open ticket per member: someone
+        who has one gets its link instead. The form must be the click's first response, so no while_busy here."""
+        message, language, user = interaction.message, row.language, interaction.user
+        if self.bot.get_cog("TicketsCog") is None:
+            log.warning("Tickets cog isn't loaded; can't open a ticket from an offer", extra={"channel_id": row.channel_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        try:
+            open_tickets = await get_open_tickets_by_owner(user.id)
+            claimed = not open_tickets and await ask_store.claim(message.id) is not None
+        except Exception:
+            log.exception("Could not start a ticket from an offer", extra={"message_id": message.id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if open_tickets:
+            return await interaction.response.send_message(msg_already_open(open_tickets[0].channel_id), ephemeral=True)
+        if not claimed:
+            return await interaction.response.send_message(ai_asks.text(language, "answered"), ephemeral=True)
+        category = CATEGORIES.get(row.spec.get("category"))
+        try:
+            if category is not None:
+                await interaction.response.send_modal(TicketModal(category))
+            else:
+                await interaction.response.send_message(view=panel_view(), ephemeral=True)
+        except Exception:
+            log.exception("Could not show the ticket form of an offer", extra={"message_id": message.id})
+            try:
+                await ask_store.release(message.id)
+            except Exception:
+                log.exception("Could not reopen the ticket offer", extra={"message_id": message.id})
+            return
+        try:
+            await message.edit(
+                view=_answered_card(message, [ai_asks.pick_line(user.id, label)]),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            log.exception("Could not record a ticket offer on its card", extra={"message_id": message.id})
 
     async def _handle_ask_form(self, interaction: discord.Interaction, message_id: int) -> None:
         """A submitted "Fill in" form: one line per answered field goes on the card, then the AI answers them."""

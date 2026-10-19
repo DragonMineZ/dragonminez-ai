@@ -90,7 +90,7 @@ class AgentResult(TypedDict, total=False):
     paused: bool
     response_id: str
     guard_flags: frozenset[str]
-    ask: dict[str, Any] | None  # ask_requester's controls for the sent reply (ui/ai_asks spec)
+    ask: dict[str, Any] | None  # ask_requester / offer_action controls for the sent reply (ui/ai_asks spec)
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
@@ -326,10 +326,11 @@ def _split_close(reply_text: str) -> tuple[str, bool]:
 
 
 def _last_ask(tool_results: list[ToolCallResult]) -> dict[str, Any] | None:
-    """The controls of the last valid ask_requester call (its output is already validated, see ui/ai_asks)."""
+    """The controls of the last valid ask_requester or offer_action call (its output is already validated, see
+    ui/ai_asks): one set per reply."""
     for result in reversed(tool_results):
         output = result["output"]
-        if result["name"] == ai_tools.ASK_TOOL and isinstance(output, dict) and output.get("ok") is True:
+        if result["name"] in ai_tools.CONTROL_TOOLS and isinstance(output, dict) and output.get("ok") is True:
             return output.get("shown")
     return None
 
@@ -395,8 +396,11 @@ def _hydrate_tool_args(
     channel_kind: str | None = None,
 ) -> dict[str, Any]:
     """Identity comes from Discord, never from the model: other users' data only for staff in DMs,
-    so nothing personal is shown to bystanders in tickets or public channels."""
+    so nothing personal is shown to bystanders in tickets or public channels. offer_action learns where it is the
+    same way (which actions can run there)."""
     hydrated = dict(args)
+    if name == ai_tools.ACTION_TOOL:
+        hydrated["channel_kind"] = channel_kind
     if name in ai_tools.IDENTITY_TOOLS:
         requested = str(hydrated.get("discord_user_id") or "").strip()
         allowed = requester_is_staff and channel_kind == "dm" and requested.isdigit()
@@ -676,7 +680,7 @@ async def run_support_agent(
         await _record_traces(trace, draft_workflow=draft_workflow)
         return result
     if second["reply"] == "(no reply)" and not any(
-        call["name"] not in (SEARCH_KNOWLEDGE_TOOL, ai_tools.ASK_TOOL) for call in second["tool_results"]
+        call["name"] not in (SEARCH_KNOWLEDGE_TOOL, *ai_tools.CONTROL_TOOLS) for call in second["tool_results"]
     ):
         await _record_traces(trace, drafts=[second_trace], draft_workflow=draft_workflow)
         return result

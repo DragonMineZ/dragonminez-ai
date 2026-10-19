@@ -1,5 +1,6 @@
 """One row per answer card that carries Bulma's controls (ui/ai_asks, table ai_asks): the validated spec the card was
-built from, read by clicks and form opens (so they work after a restart), and claimed by the first answer.
+built from, read by clicks and form opens (so they work after a restart), and claimed by the first answer. A steps
+card also keeps its current step (progress) here.
 
 ponytail: rows are never purged; one small row per question card."""
 
@@ -20,6 +21,7 @@ class AskRow:
     language: str
     created_at: datetime
     answered_at: datetime | None
+    progress: int = 0  # a steps card's current step (0-based)
 
 
 def _row(record: Any) -> AskRow | None:
@@ -34,6 +36,7 @@ def _row(record: Any) -> AskRow | None:
         language=record["language"],
         created_at=record["created_at"],
         answered_at=record["answered_at"],
+        progress=record["progress"] or 0,
     )
 
 
@@ -73,3 +76,20 @@ async def release(message_id: int) -> None:
     """The claimed answer never made it onto the card: the question is open again."""
     pool = await get_pool()
     await pool.execute("UPDATE ai_asks SET answered_at = NULL WHERE message_id = $1", message_id)
+
+
+async def move(message_id: int, from_step: int, to_step: int) -> bool:
+    """A steps card goes from one step to another (Done advances, a failed edit rewinds). False when it wasn't at
+    from_step anymore, or was answered: the first click wins."""
+    pool = await get_pool()
+    moved = await pool.fetchval(
+        """
+        UPDATE ai_asks SET progress = $3
+        WHERE message_id = $1 AND answered_at IS NULL AND COALESCE(progress, 0) = $2
+        RETURNING message_id
+        """,
+        message_id,
+        from_step,
+        to_step,
+    )
+    return moved is not None

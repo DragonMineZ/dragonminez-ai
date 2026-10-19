@@ -1,4 +1,4 @@
-"""Read-only data the support AI can see, plus ask_requester (answer controls under the reply).
+"""Read-only data the support AI can see, plus ask_requester and offer_action (controls under the reply).
 
 The same handlers serve two paths:
 - support runs expose them as Claude client tools (the model decides what to look up);
@@ -30,11 +30,14 @@ from bulmaai.services.patreon_grants import (
     list_active_grants_for_owner,
 )
 from bulmaai.ui import ai_asks
+from bulmaai.ui.ticket_views import CATEGORIES
 from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role, is_admin
 
 log = logging.getLogger(__name__)
 
 ASK_TOOL = "ask_requester"
+ACTION_TOOL = "offer_action"
+CONTROL_TOOLS = (ASK_TOOL, ACTION_TOOL)  # local, no lookup: they only attach controls to the reply
 PATCH_NOTES_EXCERPT_CHARS = 1500
 IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports", "search_known_issues", "get_latest_releases"})
 ACCOUNT_TOPIC_RE = re.compile(
@@ -255,6 +258,12 @@ async def ask_requester(_bot_context: Any = None, **spec: Any) -> dict[str, Any]
     return ai_asks.validate_ask(spec, _settings(_bot_context))
 
 
+async def offer_action(_bot_context: Any = None, channel_kind: str | None = None, **spec: Any) -> dict[str, Any]:
+    """Local, no lookup: validates the button (ui/ai_asks.validate_action). channel_kind is set by
+    ai_client._hydrate_tool_args from Discord; nothing runs until the requester clicks."""
+    return ai_asks.validate_action(spec, _settings(_bot_context), channel_kind)
+
+
 def _function_schema(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
@@ -264,6 +273,11 @@ def _function_schema(name: str, description: str, properties: dict[str, Any]) ->
         "parameters": {"type": "object", "properties": properties, "additionalProperties": False},
     }
 
+
+# The ticket panel's categories, in English: "bug (Game-Breaking Bug: Crashes, corrupted worlds), ...".
+_TICKET_CATEGORIES = ", ".join(
+    f"{key} ({category.name}: {category.description.split(' | ')[0]})" for key, category in CATEGORIES.items()
+)
 
 _USER_ID_PROPERTY = {
     "type": ["string", "null"],
@@ -313,9 +327,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "lists (versions from get_latest_releases, launchers). kind form: a Fill in button that opens a form of "
             "1-5 fields, when you need 2+ details at once. kind file: an Upload button for their log or screenshot "
             "(instead of telling them to find the file and drag it in); with what log the card also shows where the "
-            "logs are per platform and launcher, and an uploaded log is analyzed before you see it. Labels in the "
-            "reply's language. Call it before writing your reply; the reply must still read fine without the "
-            "controls. One set per reply: the last call wins."
+            "logs are per platform and launcher, and an uploaded log is analyzed before you see it. kind steps: a fix "
+            "of 2-8 steps they try in order, shown one at a time with Done and Still broken buttons; you hear back "
+            "which step failed, or that all are done. Labels and steps in the reply's language. Call it before "
+            "writing your reply; the reply must still read fine without the controls. One set per reply: the last "
+            "ask_requester or offer_action call wins."
         ),
         "parameters": {
             "type": "object",
@@ -378,8 +394,51 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "maximum": ai_asks.MAX_FILES,
                     "description": f"kind file: how many files, 1-{ai_asks.MAX_FILES}. Default 1.",
                 },
+                "steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": f"kind steps: 2-{ai_asks.MAX_STEPS} steps in order, one short action each "
+                    f"(up to {ai_asks.STEP_LIMIT} characters).",
+                },
             },
             "required": ["kind"],
+            "additionalProperties": False,
+        },
+    },
+    # Not strict either: label, category and no_thanks are optional; ui/ai_asks validates every call.
+    ACTION_TOOL: {
+        "type": "function",
+        "name": ACTION_TOOL,
+        "description": (
+            "Show one button under your reply that runs something for the requester when they click it (only they "
+            "can). get_staff (tickets only): flags the ticket for staff and pings the helpers, like the ticket's "
+            "'No, I still need help' button; offer it with a fix that may not work, never with a handoff (a handoff "
+            "already calls staff). open_ticket (public channels only, never in tickets or DMs): opens the ticket form "
+            "of a category, or lets them pick one; for questions that need a private ticket. link_patreon: gives "
+            "them their Patreon link button, like /patreon link; when their Patreon isn't linked with the bot. "
+            "Call it before writing your reply, and say in the reply what the button does. One set per reply: the "
+            "last ask_requester or offer_action call wins."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(ai_asks.ACTIONS)},
+                "label": {
+                    "type": "string",
+                    "description": f"The button text in the reply's language, up to {ai_asks.BUTTON_LABEL_LIMIT} "
+                    "characters. Default: a plain name of the action.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": list(CATEGORIES),
+                    "description": f"open_ticket only: {_TICKET_CATEGORIES}. Leave it out when unsure: they pick one.",
+                },
+                "no_thanks": {
+                    "type": "boolean",
+                    "description": "Also show a No thanks button that only dismisses the offer. Default false.",
+                },
+            },
+            "required": ["action"],
             "additionalProperties": False,
         },
     },
@@ -390,10 +449,11 @@ TOOL_FUNCS = {
     "search_known_issues": search_known_issues,
     "get_latest_releases": get_latest_releases,
     ASK_TOOL: ask_requester,
+    ACTION_TOOL: offer_action,
 }
 SUPPORT_TOOL_NAMES = list(TOOL_SCHEMAS)
 # Runs whose reply can't carry controls (/ask) get only the lookups.
-LOOKUP_TOOL_NAMES = [name for name in SUPPORT_TOOL_NAMES if name != ASK_TOOL]
+LOOKUP_TOOL_NAMES = [name for name in SUPPORT_TOOL_NAMES if name not in CONTROL_TOOLS]
 
 
 async def _labeled(label: str, coro: Any) -> str | None:

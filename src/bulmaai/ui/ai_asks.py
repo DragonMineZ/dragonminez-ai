@@ -1,6 +1,7 @@
 """Bulma's answer controls. When her reply asks the requester something, the ask_requester tool attaches a control
-spec (validated here) and the answer card carries buttons, a select, a "Fill in" form or an "Upload" form for it. Only
-the requester may use them. The answer is recorded on the card as `-# ↳ ` lines, which history and transcripts read
+spec (validated here) and the answer card carries buttons, a select, a "Fill in" form, an "Upload" form or a steps
+checklist for it; the offer_action tool attaches one button that runs an existing flow for them instead. Only the
+requester may use them. The answer is recorded on the card as `-# ↳ ` lines, which history and transcripts read
 back as the requester's turn; the spec itself lives in the ai_asks table (services/ai_asks), so clicks work after a
 restart. Uploaded files are reposted on a card of their own whose `-# ↳ <@id> uploaded **name**` lines credit the
 requester, so the files read back as their turn.
@@ -15,9 +16,12 @@ import discord
 
 from bulmaai.services import ai_guard
 from bulmaai.ui.log_help_views import LOG_HELP_CONTENT
+from bulmaai.ui.ticket_views import CATEGORIES
 from bulmaai.ui.v2 import TEXT_LIMIT, card, fit
 
-KINDS = ("choices", "select", "form", "file")
+KINDS = ("choices", "select", "form", "file", "steps")  # ask_requester's
+ACTION_KIND = "action"  # offer_action's
+CONTROL_KINDS = (*KINDS, ACTION_KIND)
 FIELD_TYPES = ("short", "long", "select", "radio")
 FILE_WHATS = ("log", "screenshot", "any")
 MAX_FILES = 3
@@ -35,6 +39,16 @@ OPTION_LABEL_LIMIT = 100  # select/radio option labels and descriptions, placeho
 TITLE_LIMIT = 45  # the form's title and each field's label
 SHORT_VALUE_LIMIT = 200
 LONG_VALUE_LIMIT = 1000
+MAX_STEPS = 8
+STEP_LIMIT = 200
+STEP_DONE, STEP_BROKEN = 0, 1  # a steps button's index is step * 2 + this
+CONTROLS_TEXT_ID = 810  # the component id of the text that belongs to the controls (a steps card's list)
+ACTIONS = ("get_staff", "open_ticket", "link_patreon")
+# Where each action may go out (ai_client's channel kinds). get_staff is the ticket's "No, I still need help";
+# open_ticket is the ticket panel, which needs a server and makes no sense inside a ticket.
+ACTION_CHANNELS = {"get_staff": ("ticket",), "open_ticket": ("public",), "link_patreon": ("ticket", "dm", "public")}
+ACTION_WHERE = {"get_staff": "in tickets", "open_ticket": "in public channels", "link_patreon": "anywhere"}
+ACTION_RUN, ACTION_DECLINE = 0, 1  # an action card's buttons: the action, and "No thanks"
 ALLOWED_FLAGS = frozenset({"unknown_link"})  # a label is never a clickable link, so "latest.log" may stay
 
 CUSTOM_ID_PREFIX = "ai_ask:"  # ai_ask:{kind}:{requester_id}:{index}
@@ -48,6 +62,14 @@ UPLOAD_LINE_RE = re.compile(r"^-# ↳ <@!?(\d+)> uploaded \*\*(.+)\*\*$")
 SHOWN_NOTE = (
     "The requester sees this under your reply. Now write the reply itself: the question in full, so it reads fine "
     "without the controls."
+)
+STEPS_NOTE = (
+    "The requester sees these steps under your reply, one at a time, with Done and Still broken buttons; you hear "
+    "back when a step fails or all are done. Now write the reply itself: introduce the steps, don't list them again."
+)
+ACTION_NOTE = (
+    "The requester sees this button under your reply; it runs only when they click it. Now write the reply itself, "
+    "saying what the button does, so it reads fine without it."
 )
 
 TEXT: dict[str, dict[str, str]] = {
@@ -76,6 +98,14 @@ TEXT: dict[str, dict[str, str]] = {
         "launchers_value": "CurseForge app: right-click the profile → Open Folder → `logs`\n"
         "Modrinth App: right-click the instance → Open folder → `logs`\n"
         "Prism Launcher: select the instance → Folder → `.minecraft` (or `minecraft`) → `logs`",
+        "done": "Done",
+        "still_broken": "Still broken",
+        "step_failed": "Step {n} didn't work:",
+        "steps_done": "Did all the steps (1-{n})",
+        "no_thanks": "No thanks",
+        "action_get_staff": "Get a staff member",
+        "action_open_ticket": "Open a ticket",
+        "action_link_patreon": "Link Patreon",
     },
     "es": {
         "fill_in": "Rellenar",
@@ -102,6 +132,14 @@ TEXT: dict[str, dict[str, str]] = {
         "launchers_value": "App de CurseForge: clic derecho en el perfil → Open Folder → `logs`\n"
         "Modrinth App: clic derecho en la instancia → Open folder → `logs`\n"
         "Prism Launcher: selecciona la instancia → Folder → `.minecraft` (o `minecraft`) → `logs`",
+        "done": "Hecho",
+        "still_broken": "Sigue sin funcionar",
+        "step_failed": "El paso {n} no funcionó:",
+        "steps_done": "Hice todos los pasos (1-{n})",
+        "no_thanks": "No, gracias",
+        "action_get_staff": "Llamar al staff",
+        "action_open_ticket": "Abrir un ticket",
+        "action_link_patreon": "Vincular Patreon",
     },
     "pt": {
         "fill_in": "Preencher",
@@ -128,6 +166,14 @@ TEXT: dict[str, dict[str, str]] = {
         "launchers_value": "App do CurseForge: clique com o botão direito no perfil → Open Folder → `logs`\n"
         "Modrinth App: clique com o botão direito na instância → Open folder → `logs`\n"
         "Prism Launcher: selecione a instância → Folder → `.minecraft` (ou `minecraft`) → `logs`",
+        "done": "Feito",
+        "still_broken": "Ainda não funciona",
+        "step_failed": "O passo {n} não funcionou:",
+        "steps_done": "Fiz todos os passos (1-{n})",
+        "no_thanks": "Não, obrigado",
+        "action_get_staff": "Chamar a staff",
+        "action_open_ticket": "Abrir um ticket",
+        "action_link_patreon": "Vincular Patreon",
     },
 }
 
@@ -278,12 +324,21 @@ def _file(args: dict, settings: Any, dropped: list[str]) -> dict | str:
     return spec
 
 
-# One validator per kind; later kinds (steps) add theirs here.
+def _steps(args: dict, settings: Any, dropped: list[str]) -> dict | str:
+    steps = _labels(args.get("steps"), STEP_LIMIT, settings, dropped, "step")
+    steps = _capped(steps, MAX_STEPS, dropped, "steps")
+    if len(steps) < 2:
+        return f"steps needs 2-{MAX_STEPS} short steps in order (up to {STEP_LIMIT} characters each)"
+    return {"kind": "steps", "steps": steps}
+
+
+# One validator per kind.
 VALIDATORS: dict[str, Callable[[dict, Any, list[str]], dict | str]] = {
     "choices": _choices,
     "select": _select,
     "form": _form,
     "file": _file,
+    "steps": _steps,
 }
 
 
@@ -298,7 +353,55 @@ def validate_ask(args: dict, settings: Any) -> dict[str, Any]:
     extra = {"dropped": dropped} if dropped else {}
     if isinstance(spec, str):
         return {"ok": False, "error": spec, **extra}
-    return {"ok": True, "shown": spec, **extra, "note": SHOWN_NOTE}
+    return {"ok": True, "shown": spec, **extra, "note": STEPS_NOTE if spec["kind"] == "steps" else SHOWN_NOTE}
+
+
+def validate_action(args: dict, settings: Any, channel_kind: str | None = None) -> dict[str, Any]:
+    """The offer_action tool's output, shaped like validate_ask's. channel_kind (ticket, dm, public) comes from
+    Discord, never from the model: an action that can't run there is an error the model can fix."""
+    action = args.get("action")
+    if action not in ACTIONS:
+        return {"ok": False, "error": f"action must be one of: {', '.join(ACTIONS)}"}
+    if channel_kind is not None and channel_kind not in ACTION_CHANNELS[action]:
+        return {"ok": False, "error": f"{action} can only be offered {ACTION_WHERE[action]}, and this is a {channel_kind}"}
+    dropped: list[str] = []
+    spec: dict[str, Any] = {"kind": ACTION_KIND, "action": action}
+    if args.get("label"):
+        if label := _clean(args["label"], BUTTON_LABEL_LIMIT, settings):
+            spec["label"] = label
+        else:
+            dropped.append(f"label {_preview(args['label'])!r}: over {BUTTON_LABEL_LIMIT} characters or not allowed")
+    if args.get("category"):
+        if action != "open_ticket":
+            dropped.append("category: only for open_ticket")
+        elif args["category"] in CATEGORIES:
+            spec["category"] = args["category"]
+        else:
+            dropped.append(
+                f"category {_preview(args['category'])!r}: one of {', '.join(CATEGORIES)}; without it they pick one"
+            )
+    if args.get("no_thanks") is True:
+        spec["no_thanks"] = True
+    extra = {"dropped": dropped} if dropped else {}
+    return {"ok": True, "shown": spec, **extra, "note": ACTION_NOTE}
+
+
+def allowed_in(spec: dict, channel_kind: str) -> bool:
+    """Whether a card there may carry these controls. Uploads never go out in public (the bot reposts the files, so
+    moderation never sees them); an action only goes where it can run."""
+    kind = spec.get("kind")
+    if kind == "file":
+        return channel_kind != "public"
+    if kind == ACTION_KIND:
+        return channel_kind in ACTION_CHANNELS.get(spec.get("action"), ())
+    return True
+
+
+def reserved_text(spec: dict | None) -> int:
+    """Room the controls need on the answer's last card besides the answer: a steps card's list and its outcome line."""
+    if not spec or spec.get("kind") != "steps":
+        return 0
+    return sum(len(step) + 12 for step in spec.get("steps") or []) + 300
 
 
 # --- The card's controls ---
@@ -314,14 +417,85 @@ def parse_custom_id(value: str) -> tuple[str, int, int] | None:
         return None
     try:
         kind, requester_id, index = value.removeprefix(CUSTOM_ID_PREFIX).split(":")
-        return (kind, int(requester_id), int(index)) if kind in KINDS else None
+        return (kind, int(requester_id), int(index)) if kind in CONTROL_KINDS else None
     except ValueError:
         return None
 
 
-def ask_rows(spec: dict, requester_id: int, language: str | None) -> list[discord.ui.ActionRow]:
-    """The controls under the answer, handled by the cog's on_interaction via custom id (they survive restarts)."""
+def step_index(step: int, button: int) -> int:
+    """The custom id index of a steps button (STEP_DONE / STEP_BROKEN) for step (0-based)."""
+    return step * 2 + button
+
+
+def split_step_index(index: int) -> tuple[int, int]:
+    """(step, button) of a steps button's custom id index."""
+    return divmod(index, 2)
+
+
+def steps_text(spec: dict, progress: int, *, failed: int | None = None) -> str:
+    """The steps as a numbered list: done ones ✅, the current one (progress) bold, a failed one ❌. progress past the
+    last step: all done. The numbers are escaped so Discord doesn't turn the lines into its own list."""
+    lines = []
+    for index, step in enumerate(spec.get("steps") or []):
+        line = f"{index + 1}\\. {step}"
+        if index == failed:
+            line = f"❌ {line}"
+        elif index < progress:
+            line = f"✅ {line}"
+        elif index == progress and failed is None:
+            line = f"**{line}**"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def steps_items(spec: dict, requester_id: int, language: str | None, progress: int = 0) -> list[discord.ui.Item]:
+    """A steps card's controls at step progress: the list (CONTROLS_TEXT_ID, so a click can swap it) and the current
+    step's Done / Still broken. The custom ids carry the step, so a click on an outdated card is spotted."""
+    buttons = discord.ui.ActionRow(
+        discord.ui.Button(
+            label=text(language, "done"),
+            emoji="✅",
+            style=discord.ButtonStyle.secondary,
+            custom_id=custom_id("steps", requester_id, step_index(progress, STEP_DONE)),
+        ),
+        discord.ui.Button(
+            label=text(language, "still_broken"),
+            emoji="❌",
+            style=discord.ButtonStyle.secondary,
+            custom_id=custom_id("steps", requester_id, step_index(progress, STEP_BROKEN)),
+        ),
+    )
+    return [discord.ui.TextDisplay(steps_text(spec, progress), id=CONTROLS_TEXT_ID), buttons]
+
+
+def action_label(spec: dict, language: str | None) -> str:
+    """An action button's text: the model's label, else ours for that action."""
+    return spec.get("label") or text(language, f"action_{spec.get('action')}")
+
+
+def ask_rows(spec: dict, requester_id: int, language: str | None) -> list[discord.ui.Item]:
+    """The controls under the answer, handled by the cog's on_interaction via custom id (they survive restarts):
+    action rows, and for steps the list they belong to."""
     kind = spec.get("kind")
+    if kind == "steps":
+        return steps_items(spec, requester_id, language)
+    if kind == ACTION_KIND and spec.get("action") in ACTIONS:
+        buttons = [
+            discord.ui.Button(
+                label=action_label(spec, language),
+                style=discord.ButtonStyle.primary,
+                custom_id=custom_id(kind, requester_id, ACTION_RUN),
+            )
+        ]
+        if spec.get("no_thanks"):
+            buttons.append(
+                discord.ui.Button(
+                    label=text(language, "no_thanks"),
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=custom_id(kind, requester_id, ACTION_DECLINE),
+                )
+            )
+        return [discord.ui.ActionRow(*buttons)]
     if kind == "choices":
         return [
             discord.ui.ActionRow(
@@ -598,6 +772,48 @@ def upload_line(user_id: int, name: str) -> str:
     return f"{ANSWER_LINE_PREFIX}<@{user_id}> uploaded **{name}**"
 
 
+def step_failed_line(user_id: int, step: int, step_text: str, language: str | None) -> str:
+    """Still broken on step (0-based): "-# ↳ <@id>: **Step 2 didn't work:** Delete the config folder"."""
+    return f"{ANSWER_LINE_PREFIX}<@{user_id}>: **{text(language, 'step_failed').format(n=step + 1)}** {step_text}"
+
+
+def steps_done_line(user_id: int, count: int, language: str | None) -> str:
+    return f"{ANSWER_LINE_PREFIX}<@{user_id}>: **{text(language, 'steps_done').format(n=count)}**"
+
+
+def _step_pattern(key: str, language: str, tail: str) -> re.Pattern:
+    phrase = re.escape(TEXT[language][key]).replace(re.escape("{n}"), r"(\d+)")
+    return re.compile(rf"^-# ↳ <@!?(\d+)>: \*\*{phrase}\*\*{tail}$")
+
+
+# The steps outcome lines in every language, read back in English for the model: (pattern, readback).
+_STEP_LINES = [
+    *((_step_pattern("step_failed", language, r" (.+)"), "Step {n} didn't work: {step}") for language in TEXT),
+    *((_step_pattern("steps_done", language, ""), "I did all the steps (1-{n}).") for language in TEXT),
+]
+
+
+def _read_step_line(line: str) -> tuple[int, str] | None:
+    for pattern, readback in _STEP_LINES:
+        if match := pattern.match(line):
+            return int(match[1]), readback.format(n=match[2], step=match[3] if pattern.groups > 2 else "")
+    return None
+
+
+def read_progress(custom_ids: list[str | None]) -> tuple[int, str] | None:
+    """(requester id, the steps they did) of a steps card still in progress, read off its buttons' custom ids; None
+    when it isn't one or no step is done yet."""
+    for value in custom_ids:
+        parsed = parse_custom_id(value or "")
+        if parsed is None or parsed[0] != "steps":
+            continue
+        done = split_step_index(parsed[2])[0]
+        if done <= 0:
+            return None
+        return parsed[1], "I did step 1." if done == 1 else f"I did steps 1-{done}."
+    return None
+
+
 def read_upload(texts: list[str]) -> tuple[int, list[str]] | None:
     """(uploader id, file names) of a card's upload lines; None when it has none."""
     user_id: int | None = None
@@ -610,11 +826,13 @@ def read_upload(texts: list[str]) -> tuple[int, list[str]] | None:
 
 
 def read_answer(texts: list[str]) -> tuple[int, str] | None:
-    """(user id, answer) recorded on a card: a pick's label, or a form's "label: value" lines. Upload lines aren't
-    answers: the repost that carries the files is the uploader's turn (read_upload)."""
+    """(user id, answer) recorded on a card: a pick's label, a form's "label: value" lines, or a steps outcome (in
+    English). Upload lines aren't answers: the repost that carries the files is the uploader's turn (read_upload)."""
     user_id: int | None = None
     parts: list[str] = []
     for line in texts:
+        if (step := _read_step_line(line or "")) is not None:
+            return step
         if match := ANSWER_LINE_RE.match(line or ""):
             user_id = user_id if user_id is not None else int(match[1])
             parts.append(f"{match[2]}: {match[3]}" if match[2] else match[3])

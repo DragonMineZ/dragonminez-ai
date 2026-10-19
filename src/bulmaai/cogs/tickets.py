@@ -634,9 +634,11 @@ class TicketsCog(ReloadableCog):
         if category is None:
             return await interaction.response.send_message(MSG["failed"], ephemeral=True)
         await interaction.response.send_modal(TicketModal(category))
-        if interaction.message is not None:
+        # An ephemeral copy (Bulma's open_ticket offer) can't be edited through the channel, and only its viewer sees it.
+        message = interaction.message
+        if message is not None and not getattr(getattr(message, "flags", None), "ephemeral", False):
             # Re-sending the card clears the option the dropdown still shows as picked.
-            await self._safely(interaction.message.edit(view=panel_view()), interaction.channel)
+            await self._safely(message.edit(view=panel_view()), interaction.channel)
 
     async def on_close(self, interaction: discord.Interaction) -> None:
         if await self._gate(interaction, Rank.OWNER) is None:

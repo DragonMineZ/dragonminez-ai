@@ -673,3 +673,5 @@ CREATE TABLE IF NOT EXISTS ai_asks (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     answered_at   TIMESTAMPTZ
 );
+-- A steps card's current step (0-based; NULL = 0): Done moves it on (WHERE progress = the clicked step).
+ALTER TABLE ai_asks ADD COLUMN IF NOT EXISTS progress INT;

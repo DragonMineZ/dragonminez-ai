@@ -486,6 +486,8 @@ class Settings:
     # to download them as a .zip (0 = never ping).
     log_corpus_channel_id: int | None = 1350534736795275357
     log_corpus_ping_threshold: int = 20
+    # 👍/👎 under the support AI's plain answers outside tickets (ui/ai_feedback); counted in the weekly report.
+    ai_answer_feedback_enabled: bool = True
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"

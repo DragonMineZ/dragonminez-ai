@@ -675,3 +675,17 @@ CREATE TABLE IF NOT EXISTS ai_asks (
 );
 -- A steps card's current step (0-based; NULL = 0): Done moves it on (WHERE progress = the clicked step).
 ALTER TABLE ai_asks ADD COLUMN IF NOT EXISTS progress INT;
+
+-- Thumbs up/down under Bulma's answers (ui/ai_feedback, services/ai_feedback): one row per answer card with the buttons,
+-- saved with helpful NULL; the requester's first click sets it (WHERE helpful IS NULL). The weekly report counts them.
+CREATE TABLE IF NOT EXISTS ai_feedback (
+    message_id    BIGINT PRIMARY KEY,
+    channel_id    BIGINT NOT NULL,
+    requester_id  BIGINT NOT NULL,
+    response_id   TEXT,
+    helpful       BOOLEAN,
+    language      TEXT NOT NULL DEFAULT 'en',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_feedback_created_at ON ai_feedback (created_at);

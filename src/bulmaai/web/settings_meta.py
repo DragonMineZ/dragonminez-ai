@@ -33,6 +33,7 @@ META: dict[str, tuple[str, str, str]] = {
     "ask_allowed_channel_ids": ("ai", "/ask channels", "Channels where /ask can be used; empty = nowhere."),
     "ask_rate_limit_window_seconds": ("ai", "/ask rate limit: window", "Length in seconds of the window for the per-person /ask limit."),
     "ask_rate_limit_max_calls": ("ai", "/ask rate limit: calls", "How many /ask uses one person gets per window."),
+    "ai_answer_feedback_enabled": ("ai", "Answer feedback", "Puts 👍/👎 buttons under the AI's answers outside tickets (and public /ask answers); the weekly support report counts them."),
     "log_ai_enabled": ("ai", "Crash-log AI diagnosis", "Adds an AI diagnosis to crash-log cards with errors (main server only, never in tickets)."),
     "log_ai_daily_limit": ("ai", "Crash-log AI: daily limit", "AI diagnoses one member gets per 24h; staff are unlimited and admin-approved (🔍) logs don't count."),
     "log_ai_patron_daily_limit": ("ai", "Crash-log AI: patron limit", "AI diagnoses per 24h for patrons and testers."),

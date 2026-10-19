@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -90,10 +91,20 @@ class ReportData:
     handoffs: int = 0
     handoff_questions: list[str] = field(default_factory=list)
     usage: list[ModelUsage] = field(default_factory=list)
+    helpful: int = 0  # answers rated thumbs up (ai_feedback)
+    not_helpful: int = 0
 
     @property
     def tickets_unresolved(self) -> int:
         return self.tickets_closed - self.tickets_resolved
+
+    @property
+    def ratings(self) -> int:
+        return self.helpful + self.not_helpful
+
+    @property
+    def helpful_percent(self) -> int | None:
+        return round(100 * self.helpful / self.ratings) if self.ratings else None
 
     @property
     def ai_replies(self) -> int:
@@ -154,7 +165,9 @@ def aggregate(
     *,
     since: datetime,
     until: datetime,
+    feedback_rows: Sequence[Any] = (),
 ) -> ReportData:
+    """feedback_rows: (helpful, n) counts of the week's rated answers."""
     data = ReportData(since=since, until=until)
     tags: Counter[str] = Counter()
     for row in ticket_rows:
@@ -193,6 +206,13 @@ def aggregate(
 
     questions = (handoff_question(row) for row in handoff_rows)
     data.handoff_questions = [question for question in questions if question][:MAX_HANDOFFS]
+
+    for row in feedback_rows:
+        count = int(_get(row, "n", 0))
+        if _get(row, "helpful") is True:
+            data.helpful += count
+        elif _get(row, "helpful") is False:
+            data.not_helpful += count
     return data
 
 
@@ -227,7 +247,18 @@ async def collect(since: datetime, until: datetime, *, pool: Any | None = None) 
         list(SENT_WORKFLOWS),
         MAX_HANDOFFS,
     )
-    return aggregate(list(tickets), list(traces), list(handoffs), since=since, until=until)
+    # Answers sent this week that their requester rated (thumbs up/down under the card).
+    feedback = await resolved_pool.fetch(
+        """
+        SELECT helpful, count(*) AS n FROM ai_feedback
+        WHERE created_at >= $1 AND created_at < $2 AND helpful IS NOT NULL GROUP BY helpful
+        """,
+        since,
+        until,
+    )
+    return aggregate(
+        list(tickets), list(traces), list(handoffs), since=since, until=until, feedback_rows=list(feedback)
+    )
 
 
 # ---- AI part ----------------------------------------------------------------------------------------------------

@@ -17,6 +17,7 @@ from bulmaai.cogs import dmzdebug as dmzdebug_cog
 from bulmaai.cogs import log_parser as log_parser_cog
 from bulmaai.services import ai_asks as ask_store
 from bulmaai.services import ai_budget
+from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services.ai_oneshot import response_text
 from bulmaai.services.ai_guard import can_post_publicly, defuse_mentions, safe_name, strip_links
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
@@ -60,7 +61,7 @@ from bulmaai.services.tickets import (
     hide_closed_messages,
     note_ticket_message,
 )
-from bulmaai.ui import ai_asks
+from bulmaai.ui import ai_asks, ai_feedback
 from bulmaai.ui.ticket_views import CATEGORIES, TicketModal, msg_already_open, panel_view
 from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
@@ -392,12 +393,12 @@ def _card_texts(message: discord.Message) -> list[str]:
 
 
 def _card_text(message: discord.Message) -> str:
-    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer and a recorded answer
-    (that is the requester's turn, see _card_answer)."""
+    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer, a recorded answer
+    (that is the requester's turn, see _card_answer) and the thanks for a rating (ui/ai_feedback)."""
     lines = [
         text.replace(AI_FOOTER, "")
         for text in _card_texts(message)
-        if not text.startswith(ai_asks.ANSWER_LINE_PREFIX)
+        if not text.startswith(ai_asks.ANSWER_LINE_PREFIX) and text not in ai_feedback.THANKS_LINES
     ]
     return "\n".join(line.strip() for line in lines if line.strip())
 
@@ -458,14 +459,30 @@ class _ChoiceMessage:
         self.attachments = tuple(attachments)
 
 
+class _AskedMessage(_ChoiceMessage):
+    """Stands in for the requester asking Bulma about a message (the target) with the "Ask Bulma" command: the target
+    quoted as their turn, with its files (forwarded ones too), so screenshots and logs get analyzed as if they posted
+    them. Its id is the target's: _build_history skips the target's own place in the channel and puts this turn last."""
+
+    def __init__(self, interaction: discord.Interaction, target: discord.Message) -> None:
+        author = target.author
+        content = ai_asks.asked_content(getattr(author, "display_name", author.name), _message_text(target))
+        super().__init__(interaction, content, target.id, full_attachments(target))
+        self.target_author_id = author.id
+        self.reply_to = target  # the answer replies to it, so the channel sees what it is about
+
+
+def _message_text(message: discord.Message) -> str:
+    """A message's text: its own, a card's, and what it forwards (no attachments)."""
+    return "\n".join(p for p in (message.clean_content.strip(), _card_text(message), forwarded_content(message)) if p)
+
+
 def _message_content(
     message: discord.Message,
     image_analyses: dict[int, str] | None = None,
 ) -> str:
     """Text plus attachment markers. Images only show as text when analyzed before; never re-processed."""
-    content = "\n".join(
-        p for p in (message.clean_content.strip(), _card_text(message), forwarded_content(message)) if p
-    )
+    content = _message_text(message)
     attachment_lines: list[str] = []
     for attachment in full_attachments(message):
         analysis = (image_analyses or {}).get(getattr(attachment, "id", None))
@@ -672,6 +689,67 @@ class AITicketsCog(ReloadableCog):
         await self.set_ticket_ai_enabled(channel.id, enable)
         await ctx.respond(f"AI support is now **{'on' if enable else 'off'}** in this channel.")
 
+    @discord.message_command(
+        name="Ask Bulma", contexts={discord.InteractionContextType.guild, discord.InteractionContextType.bot_dm}
+    )
+    async def ask_bulma(self, ctx: discord.ApplicationContext, message: discord.Message) -> None:
+        """Right-click a message → Apps → Ask Bulma: the invoker asks Bulma about it (_AskedMessage). Past the gates
+        the click gets an ephemeral "On it…" at once, and the answer is posted in the channel like a typed one's."""
+        interaction = ctx.interaction
+        refusal, language, context = await self._ask_bulma_gate(interaction, message)
+        if refusal:
+            return await ctx.respond(ai_asks.text(language, refusal), ephemeral=True)
+        await ctx.respond(ai_asks.text(language, "on_it"), ephemeral=True)
+        self._answer_pick(_AskedMessage(interaction, message), **context)
+
+    async def _ask_bulma_gate(
+        self, interaction: discord.Interaction, target: discord.Message
+    ) -> tuple[str | None, str, dict[str, Any]]:
+        """(why Ask Bulma can't answer, as a ui/ai_asks.TEXT key, or None; the language to say it in: the ticket's, else
+        English; the _answer_support arguments). The gates are a typed request's (_process_support_message): a ping's
+        in public channels, the ticket's in tickets (AI on, still open), DM support's in DMs. Our own cards may be
+        asked about, other bots' messages not."""
+        settings = self.bot.settings
+        channel, user = interaction.channel, interaction.user
+        in_dm = isinstance(channel, discord.DMChannel)
+        in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
+        language = (await self._ticket_language(channel.id) or "en") if in_ticket else "en"
+        context: dict[str, Any] = {
+            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": not (in_ticket or in_dm), "member": None
+        }
+
+        def refuse(key: str) -> tuple[str, str, dict[str, Any]]:
+            return key, language, context
+
+        # Like a ping: only text channels of our servers (no threads), or a DM.
+        in_our_server = isinstance(channel, discord.TextChannel) and is_allowed_guild_id(
+            getattr(interaction, "guild_id", None), settings
+        )
+        if not settings.ai_support_enabled or not (in_dm or in_our_server):
+            return refuse("ask_off")
+        if (target.author.bot or getattr(target, "webhook_id", None)) and target.author.id != getattr(
+            self.bot.user, "id", None
+        ):
+            return refuse("ask_bot")
+        if not _message_text(target) and not full_attachments(target):
+            return refuse("ask_empty")
+        if in_ticket and not self.is_ticket_ai_enabled(channel.id):
+            return refuse("ask_off")
+        if not (in_ticket or in_dm) and await self._is_closed_ticket(channel):
+            return refuse("closed")
+        member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
+        context["member"] = member
+        if not in_ticket and not (member is not None and can_use_ai_support(member, settings=settings)):
+            return refuse("ask_no_access")
+        if ai_budget.is_paused(settings):
+            return refuse("paused")
+        events = self._rate_limit_state.record(
+            self._support_events, (user.id, 0), time.monotonic(), SUPPORT_RATE_LIMIT_WINDOW_SECONDS
+        )
+        if len(events) > SUPPORT_RATE_LIMIT_CALLS:
+            return refuse("rate_limited")
+        return None, language, context
+
     async def _resolve_member_for_user(self, user: discord.abc.User) -> discord.Member | None:
         guilds = [g for g in self.bot.guilds if is_allowed_guild_id(g.id, self.bot.settings)]
         for guild in guilds:
@@ -737,10 +815,14 @@ class AITicketsCog(ReloadableCog):
         ask: dict[str, Any] | None = None,
         requester_id: int | None = None,
         language: str | None = None,
+        feedback: bool = False,
+        response_id: str | None = None,
+        reply_to: discord.Message | None = None,
     ) -> bool:
         """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one, and ask (an
         ask_requester / offer_action spec, ui/ai_asks) puts its controls on it for requester_id only, saved in ai_asks.
-        Chunks leave room for the text the controls bring (a steps list and its outcome line)."""
+        Chunks leave room for the text the controls bring (a steps list and its outcome line). feedback (without ask)
+        puts the 👍/👎 row there instead, saved in ai_feedback with the reply's response_id."""
         limit = CARD_TEXT_LIMIT - ai_asks.reserved_text(ask)
         chunks = [
             chunk
@@ -755,19 +837,24 @@ class AITicketsCog(ReloadableCog):
         if ai_answer:
             chunks[-1] = _with_footer(chunks[-1])
         views = [_card(chunk) for chunk in chunks]
+        feedback = feedback and not ask and requester_id is not None
         if ask and requester_id is not None:
             views[-1] = _card(chunks[-1], AI_CARD_COLOR, *ai_asks.ask_rows(ask, requester_id, language))
+        elif feedback:
+            views[-1] = _card(chunks[-1], AI_CARD_COLOR, ai_feedback.feedback_row(requester_id))
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
-        allowed_mentions = discord.AllowedMentions.none()
+        allowed_mentions = discord.AllowedMentions.none()  # none(): a reply doesn't ping its author either
+        # Only the first card replies (reply_to); a deleted target just sends it unreplied.
+        references = [reply_to.to_reference(fail_if_not_exists=False) if reply_to else None] + [None] * (len(views) - 1)
         try:
             if typing_lead_seconds <= 0:
-                for view in views:
-                    sent = await channel.send(view=view, allowed_mentions=allowed_mentions)
+                for view, reference in zip(views, references):
+                    sent = await channel.send(view=view, allowed_mentions=allowed_mentions, reference=reference)
             else:
                 async with channel.typing():
                     await asyncio.sleep(typing_lead_seconds)
-                    for view in views:
-                        sent = await channel.send(view=view, allowed_mentions=allowed_mentions)
+                    for view, reference in zip(views, references):
+                        sent = await channel.send(view=view, allowed_mentions=allowed_mentions, reference=reference)
         except discord.HTTPException:
             log.exception(
                 "Failed to send AI support response",
@@ -791,6 +878,18 @@ class AITicketsCog(ReloadableCog):
                 )
             except Exception:
                 log.exception("Could not save answer controls", extra={"channel_id": channel.id, "message_id": sent.id})
+        elif feedback:
+            try:
+                # Without it a rating still counts (feedback_store.rate), only the response id is lost.
+                await feedback_store.save(
+                    message_id=sent.id,
+                    channel_id=channel.id,
+                    requester_id=requester_id,
+                    response_id=response_id,
+                    language=language or "en",
+                )
+            except Exception:
+                log.exception("Could not save answer feedback", extra={"channel_id": channel.id, "message_id": sent.id})
         return True
 
     def _speaker_kind(self, message: discord.Message, requester_id: int | None) -> str:
@@ -893,6 +992,7 @@ class AITicketsCog(ReloadableCog):
         self,
         message: discord.Message,
         image_analyses: dict[int, str],
+        skip_id: int | None = None,
     ) -> list[ConversationMessage]:
         channel = message.channel
         if not isinstance(channel, discord.TextChannel):
@@ -900,7 +1000,9 @@ class AITicketsCog(ReloadableCog):
 
         # Newest N, then oldest first: history(oldest_first=True) would return the ticket's FIRST N.
         messages = [
-            entry async for entry in channel.history(limit=self.bot.settings.ai_support_history_limit)
+            entry
+            async for entry in channel.history(limit=self.bot.settings.ai_support_history_limit)
+            if entry.id != skip_id
         ]
         messages.reverse()
         requester_id = message.author.id
@@ -919,6 +1021,7 @@ class AITicketsCog(ReloadableCog):
         self,
         message: discord.Message,
         image_analyses: dict[int, str],
+        skip_id: int | None = None,
     ) -> list[ConversationMessage]:
         channel = message.channel
         if not hasattr(channel, "history"):
@@ -929,7 +1032,7 @@ class AITicketsCog(ReloadableCog):
         relevant_messages = [
             entry
             async for entry in channel.history(limit=GENERAL_CONTEXT_MESSAGE_LIMIT)
-            if entry.id == message.id or entry.created_at >= cutoff
+            if entry.id != skip_id and (entry.id == message.id or entry.created_at >= cutoff)
         ]
         relevant_messages.reverse()
         analyses = {
@@ -965,9 +1068,18 @@ class AITicketsCog(ReloadableCog):
         in_ticket: bool,
         image_analyses: dict[int, str] | None = None,
     ) -> list[ConversationMessage]:
-        if in_ticket:
-            return await self._build_ticket_history(message, image_analyses or {})
-        return await self._build_general_history(message, image_analyses or {})
+        analyses = image_analyses or {}
+        build = self._build_ticket_history if in_ticket else self._build_general_history
+        if not isinstance(message, _AskedMessage):
+            return await build(message, analyses)
+        # Ask Bulma: the target is quoted in the requester's turn, which goes last (it is what they ask now); its own
+        # place in the channel is skipped, so the model doesn't read it twice.
+        history = await build(message, analyses, skip_id=message.id)
+        analyses = {**await self._cached_image_analyses([message]), **await _log_analyses([message]), **analyses}
+        asked = self._serialize_message(message, requester_id=message.author.id, image_analyses=analyses)
+        if asked is not None:
+            history.append(asked)
+        return history
 
     async def _extract_image_context(self, message: discord.Message) -> dict[int, str]:
         """Analyze up to 2 new screenshots; reuse cached analyses so an image is only processed once."""
@@ -1043,17 +1155,22 @@ class AITicketsCog(ReloadableCog):
     ) -> list[str]:
         settings = self.bot.settings
         channel = message.channel
+        asked = isinstance(message, _AskedMessage)
         if in_ticket:
             where = "support ticket"
         elif in_dm:
             where = "direct message"
         else:
-            where = f"public channel #{getattr(channel, 'name', '?')} (you were pinged; answer only the requester)"
+            how = "they used Ask Bulma on a message" if asked else "you were pinged"
+            where = f"public channel #{getattr(channel, 'name', '?')} ({how}; answer only the requester)"
         name = safe_name(getattr(message.author, "display_name", message.author.name))
         lines = [f"channel: {where}", f"requester: {name} (roles: {_member_roles(member, settings)})"]
         opened = _relative_age(getattr(channel, "created_at", None)) if in_ticket else None
         if opened:
             lines.append(f"ticket opened: {opened}")
+        if asked and message.target_author_id != message.author.id:
+            own_answer = message.target_author_id == getattr(self.bot.user, "id", None)
+            lines.append(ai_asks.asked_context_line(own_answer=own_answer))
         return lines
 
     async def _send_paused_notice(self, channel: discord.abc.Messageable) -> None:
@@ -1227,6 +1344,7 @@ class AITicketsCog(ReloadableCog):
 
             outgoing_messages: list[str] = []
             ask: dict[str, Any] | None = None
+            feedback = False
             should_mark_escalated = False
             kind = result.get("kind")
             if in_ticket and _asks_for_human(full_content(message)):
@@ -1245,6 +1363,8 @@ class AITicketsCog(ReloadableCog):
                     ask = result.get("ask")  # controls only under the model's own reply
                     if ask and not ai_asks.allowed_in(ask, channel_kind):
                         ask = None  # no uploads in public (moderation never sees a repost), actions only where they run
+                    # 👍/👎 under a plain answer; tickets have the "solved?" prompt and staff instead.
+                    feedback = not in_ticket and not ask and ai_feedback.wanted(settings, kind)
             else:
                 if in_ticket:
                     outgoing_messages.append(
@@ -1263,6 +1383,9 @@ class AITicketsCog(ReloadableCog):
                 ask=ask,
                 requester_id=message.author.id,
                 language=language or result.get("language"),
+                feedback=feedback,
+                response_id=result.get("response_id"),
+                reply_to=getattr(message, "reply_to", None),
             )
             if sent and in_ticket and not should_mark_escalated:
                 await self._awaiting_owner(channel.id)
@@ -1858,6 +1981,31 @@ class AITicketsCog(ReloadableCog):
             except Exception:
                 log.exception("Could not analyze a reposted upload", extra={"message_id": message.id, "cog": cog_name})
 
+    async def _handle_feedback(self, interaction: discord.Interaction, requester_id: int, helpful: bool) -> None:
+        """👍/👎 under an answer (ui/ai_feedback): only the requester's first rating counts; the card then swaps the
+        buttons for a thanks line in the answer's language."""
+        message = interaction.message
+        try:
+            row = await feedback_store.get(message.id)
+        except Exception:
+            log.exception("Could not load answer feedback", extra={"message_id": message.id})
+            return await interaction.response.send_message(ai_asks.text("en", "failed"), ephemeral=True)
+        language = row.language if row is not None else "en"
+        if interaction.user.id != requester_id:
+            return await interaction.response.send_message(ai_feedback.text(language, "not_yours"), ephemeral=True)
+
+        async def rate() -> None:
+            # A second rating (a race, or a click after a failed edit) changes nothing; the card still says thanks.
+            await feedback_store.rate(
+                message_id=message.id, channel_id=message.channel.id, requester_id=requester_id, helpful=helpful
+            )
+            await interaction.edit_original_response(
+                view=_rebuilt(message, discord.ui.TextDisplay(ai_feedback.text(language, "thanks"))),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        await while_busy(interaction, self._working, rate, failed=ai_asks.text(language, "failed"))
+
     def _answer_pick(self, message: _ChoiceMessage, *, in_ticket: bool, **kwargs: Any) -> None:
         """Answers in the background, so a failing AI run never brings the buttons back (it reports its own errors).
         It is the pending answer of the ticket (or of the member elsewhere), as a typed message's is: a newer message,
@@ -2154,6 +2302,8 @@ class AITicketsCog(ReloadableCog):
         if (ask := ai_asks.parse_custom_id(custom_id)) is not None:
             kind, _requester_id, index = ask  # the row says whose question it is
             return await self._handle_ask(interaction, kind=kind, index=index)
+        if (rating := ai_feedback.parse_custom_id(custom_id)) is not None:
+            return await self._handle_feedback(interaction, *rating)
         parsed = _parse_resolve_custom_id(custom_id)
         if parsed is None:
             return

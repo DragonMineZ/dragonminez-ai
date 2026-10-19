@@ -8,12 +8,14 @@ import discord
 from discord.ext import commands
 
 from bulmaai.cogs.ai_tickets import (
+    AI_CARD_COLOR,
     CARD_TEXT_LIMIT,
     _card,
     _chunk_discord_message,
     _with_footer,
     remember_ask_question,
 )
+from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, can_post_publicly, safe_name, screen_question
 from bulmaai.services.ai_tools import LOOKUP_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
@@ -22,6 +24,7 @@ from bulmaai.services.ai_client import (
     is_transient_ai_error,
     run_support_agent,
 )
+from bulmaai.ui import ai_feedback
 from bulmaai.utils.permissions import has_patreon_access_role, is_staff
 
 log = logging.getLogger(__name__)
@@ -169,21 +172,43 @@ class AskCog(commands.Cog):
             return
 
         reply_text = result["reply"].strip()
-        if not reply_text or reply_text == "(no reply)":
+        answered = bool(reply_text) and reply_text != "(no reply)"
+        if not answered:
             reply_text = "I couldn't find a confident knowledge-backed answer for that."
 
         private = not public or not can_post_publicly(result)
+        # 👍/👎 under a public answer, as under a ping's (ui/ai_feedback); private answers go without.
+        feedback = answered and not private and ai_feedback.wanted(settings, result.get("kind"))
         if public and private:
             # The first followup inherits the public defer, so it can't carry the answer itself.
             await ctx.followup.send("-# I sent this answer to you privately.", allowed_mentions=discord.AllowedMentions.none())
         chunks = _chunk_discord_message(reply_text, CARD_TEXT_LIMIT)
         chunks[-1] = _with_footer(chunks[-1])
         for index, chunk in enumerate(chunks):
+            rows = [ai_feedback.feedback_row(ctx.author.id)] if feedback and index == len(chunks) - 1 else []
             sent = await ctx.followup.send(
-                view=_card(chunk), ephemeral=private, allowed_mentions=discord.AllowedMentions.none()
+                view=_card(chunk, AI_CARD_COLOR, *rows),
+                ephemeral=private,
+                allowed_mentions=discord.AllowedMentions.none(),
             )
             if index == 0 and not private:
                 remember_ask_question(sent.id, ctx.author.id, messages[0]["speaker_name"], question)
+            if rows:
+                await self._save_feedback(sent.id, channel_id, ctx.author.id, result)
+
+    async def _save_feedback(self, message_id: int, channel_id: int, requester_id: int, result) -> None:
+        """The answer's ai_feedback row; without it a rating still counts, only the response id is lost."""
+        try:
+            await feedback_store.save(
+                message_id=message_id,
+                channel_id=channel_id,
+                requester_id=requester_id,
+                response_id=result.get("response_id"),
+                language=result.get("language") or "en",
+            )
+        except Exception:
+            extra = {"channel_id": channel_id, "message_id": message_id}
+            log.exception("Could not save /ask answer feedback", extra=extra)
 
 
 def setup(bot: discord.Bot):

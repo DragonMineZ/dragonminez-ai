@@ -106,6 +106,11 @@ TEXT: dict[str, dict[str, str]] = {
         "action_get_staff": "Get a staff member",
         "action_open_ticket": "Open a ticket",
         "action_link_patreon": "Link Patreon",
+        "on_it": "On it…",
+        "ask_off": "Bulma isn't answering here right now.",
+        "ask_no_access": "You can't ask Bulma here. Try `/ask`, or open a ticket.",
+        "ask_bot": "Bulma can't help with another bot's message.",
+        "ask_empty": "That message has nothing Bulma can read.",
     },
     "es": {
         "fill_in": "Rellenar",
@@ -140,6 +145,11 @@ TEXT: dict[str, dict[str, str]] = {
         "action_get_staff": "Llamar al staff",
         "action_open_ticket": "Abrir un ticket",
         "action_link_patreon": "Vincular Patreon",
+        "on_it": "Estoy en ello…",
+        "ask_off": "Bulma no está respondiendo aquí ahora mismo.",
+        "ask_no_access": "No puedes preguntarle a Bulma aquí. Prueba `/ask` o abre un ticket.",
+        "ask_bot": "Bulma no puede ayudar con el mensaje de otro bot.",
+        "ask_empty": "Ese mensaje no tiene nada que Bulma pueda leer.",
     },
     "pt": {
         "fill_in": "Preencher",
@@ -174,6 +184,11 @@ TEXT: dict[str, dict[str, str]] = {
         "action_get_staff": "Chamar a staff",
         "action_open_ticket": "Abrir um ticket",
         "action_link_patreon": "Vincular Patreon",
+        "on_it": "Estou nisso…",
+        "ask_off": "A Bulma não está respondendo aqui agora.",
+        "ask_no_access": "Você não pode perguntar à Bulma aqui. Tente `/ask` ou abra um ticket.",
+        "ask_bot": "A Bulma não pode ajudar com a mensagem de outro bot.",
+        "ask_empty": "Essa mensagem não tem nada que a Bulma possa ler.",
     },
 }
 
@@ -837,3 +852,22 @@ def read_answer(texts: list[str]) -> tuple[int, str] | None:
             user_id = user_id if user_id is not None else int(match[1])
             parts.append(f"{match[2]}: {match[3]}" if match[2] else match[3])
     return (user_id, "\n".join(parts)) if user_id is not None else None
+
+
+# --- Ask Bulma (the message command) ---
+
+
+def asked_content(author_name: str, text: str) -> str:
+    """The requester's turn when they Ask Bulma about a message: that message quoted as what they want help with."""
+    head = f"Help me with this message from {ai_guard.safe_name(author_name)}:"
+    return f"{head}\n{text}" if text else head
+
+
+def asked_context_line(*, own_answer: bool) -> str:
+    """The context line for Ask Bulma on someone else's message (the requester's own needs none)."""
+    if own_answer:
+        return "Ask Bulma: the requester asked you about one of your earlier messages, quoted in their last turn."
+    return (
+        "Ask Bulma: the requester asked you about a message another member wrote, quoted in their last turn. "
+        "Help the requester with it."
+    )

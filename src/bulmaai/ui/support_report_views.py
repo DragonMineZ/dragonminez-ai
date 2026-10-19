@@ -32,6 +32,9 @@ def support_report_card(data: ReportData, insights: Insights | None) -> discord.
         facts(("AI replies", data.ai_replies), ("Escalations", data.escalations), ("Handoffs", data.handoffs), ("Crash-log diagnoses", data.log_diagnoses)),
         facts(("Support AI spend (est.)", _spend(data))),
     ]
+    if data.ratings:  # 👍/👎 under the week's answers; no line without any
+        rated = f"👍 {data.helpful} · 👎 {data.not_helpful} ({data.helpful_percent}% helpful)"
+        numbers.insert(2, facts(("Answer feedback", rated)))
     if data.top_tags:
         numbers.append("**Top tags** " + ", ".join(f"{defuse_mentions(tag)} ({count})" for tag, count in data.top_tags))
     parts = ["\n".join(numbers), SPEND_NOTE]

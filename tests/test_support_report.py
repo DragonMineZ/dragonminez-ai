@@ -94,11 +94,33 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(len(capped.handoff_questions), report.MAX_HANDOFFS)
         self.assertTrue(all(len(q) == report.QUESTION_MAX for q in capped.handoff_questions))
 
+    def test_answer_feedback_counts_and_percent(self) -> None:
+        rows = [dict(helpful=True, n=3), dict(helpful=False, n=1)]
+        data = report.aggregate([], [], [], since=SINCE, until=MONDAY, feedback_rows=rows)
+        self.assertEqual((data.helpful, data.not_helpful, data.ratings, data.helpful_percent), (3, 1, 4, 75))
+        self.assertIsNone(sample_data().helpful_percent)
+
     def test_none_token_columns_count_as_zero(self) -> None:
         row = trace(inp=None, out=None, cached=None, kind=None)
         data = report.aggregate([], [row], [], since=SINCE, until=MONDAY)
         self.assertEqual(data.spend, 0.0)
         self.assertEqual(data.ai_replies, 1)
+
+
+class CollectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_collect_counts_the_weeks_rated_answers(self) -> None:
+        pool = MagicMock()
+
+        async def fetch(sql, *args):
+            if "FROM ai_feedback" in sql:
+                self.assertEqual(args, (SINCE, MONDAY))
+                self.assertIn("helpful IS NOT NULL", sql)
+                return [dict(helpful=False, n=2), dict(helpful=True, n=6)]
+            return []
+
+        pool.fetch = fetch
+        data = await report.collect(SINCE, MONDAY, pool=pool)
+        self.assertEqual((data.helpful, data.not_helpful, data.helpful_percent), (6, 2, 75))
 
 
 class ScheduleTests(unittest.TestCase):
@@ -158,6 +180,13 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         out = text(support_report_card(sample_data(), None))
         self.assertIn("Tickets closed", out)
         self.assertIn("No AI summary", out)
+
+    async def test_answer_feedback_line_only_when_answers_were_rated(self) -> None:
+        self.assertNotIn("Answer feedback", text(support_report_card(sample_data(), None)))
+        rated = report.aggregate(
+            tickets(), [], [], since=SINCE, until=MONDAY, feedback_rows=[dict(helpful=True, n=4), dict(helpful=False, n=1)]
+        )
+        self.assertIn("**Answer feedback** 👍 4 · 👎 1 (80% helpful)", text(support_report_card(rated, None)))
 
 
 def settings(**overrides):

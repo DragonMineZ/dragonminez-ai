@@ -789,6 +789,17 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
         ):
             yield types.SimpleNamespace(get=get, claim=claim, release=release)
 
+    async def test_only_the_first_card_replies_to_the_asked_about_message(self) -> None:
+        cog = self._cog()
+        channel = types.SimpleNamespace(id=13, send=AsyncMock(return_value=types.SimpleNamespace(id=1)))
+        target = MagicMock()
+        target.to_reference.return_value = "ref"
+
+        await cog._send_messages_with_typing(channel, ["word " * 1000], ai_answer=True, reply_to=target)
+        self.assertEqual([call.kwargs["reference"] for call in channel.send.await_args_list], ["ref", None])
+        target.to_reference.assert_called_once_with(fail_if_not_exists=False)
+        self.assertFalse(channel.send.await_args.kwargs["allowed_mentions"].replied_user)
+
     async def test_only_the_last_chunk_gets_the_controls_and_its_spec_is_saved(self) -> None:
         cog = self._cog()
         channel = types.SimpleNamespace(

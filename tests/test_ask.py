@@ -96,3 +96,15 @@ class CardTextTests(unittest.TestCase):
         }
         message = SimpleNamespace(components=[SimpleNamespace(to_dict=lambda: card)])
         self.assertEqual(ai_tickets._card_text(message), f"Use Alt + F.\n{ai_tickets.AI_FOOTER}".split("\n")[0])
+
+
+class AnswerFooterTests(unittest.TestCase):
+    def test_footer_sits_after_blank_line_and_wiki_links_join_it(self) -> None:
+        from bulmaai.cogs import ai_tickets
+
+        footer = ai_tickets.AI_FOOTER
+        self.assertEqual(ai_tickets._with_footer("Press G."), f"Press G.\n\n{footer}")
+        self.assertEqual(
+            ai_tickets._with_footer("Press G.\n-# 📖 [Keys](<https://x>)"),
+            f"Press G.\n\n-# 📖 [Keys](<https://x>)\n{footer}",
+        )

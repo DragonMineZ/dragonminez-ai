@@ -149,6 +149,14 @@ RESOLVE_PROMPT_TEXT: dict[str, dict[str, str]] = {
 }
 
 
+def _with_footer(text: str) -> str:
+    """The answer, then a blank line, then the small-text block: wiki links (if any) and the AI footer."""
+    body, _, last = text.rstrip().rpartition("\n")
+    if body and last.startswith("-# 📖 "):
+        return f"{body}\n\n{last}\n{AI_FOOTER}"
+    return f"{text.rstrip()}\n\n{AI_FOOTER}"
+
+
 def _chunk_discord_message(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -647,7 +655,7 @@ class AITicketsCog(ReloadableCog):
             return True
 
         if ai_answer:
-            chunks[-1] = f"{chunks[-1]}\n{AI_FOOTER}"
+            chunks[-1] = _with_footer(chunks[-1])
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
         allowed_mentions = discord.AllowedMentions.none()
         try:

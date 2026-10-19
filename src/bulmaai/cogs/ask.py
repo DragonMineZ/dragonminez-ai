@@ -15,7 +15,7 @@ from bulmaai.cogs.ai_tickets import (
     remember_ask_question,
 )
 from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, can_post_publicly, safe_name, screen_question
-from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
+from bulmaai.services.ai_tools import LOOKUP_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.ai_client import (
     ConversationMessage,
@@ -128,7 +128,7 @@ class AskCog(commands.Cog):
         try:
             result = await run_support_agent(
                 messages=messages,
-                enabled_tools=SUPPORT_TOOL_NAMES,
+                enabled_tools=LOOKUP_TOOL_NAMES,  # a /ask answer carries no controls
                 language_hint=None,
                 user_id=ctx.author.id,
                 channel_id=channel_id,

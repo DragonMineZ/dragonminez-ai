@@ -90,7 +90,7 @@ class AgentResult(TypedDict, total=False):
     paused: bool
     response_id: str
     guard_flags: frozenset[str]
-    options: list[str]  # answers to a clarify question, shown as buttons
+    ask: dict[str, Any] | None  # ask_requester's controls for the sent reply (ui/ai_asks spec)
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
@@ -298,9 +298,6 @@ MAX_WIKI_SOURCE_LINKS = 3
 CONFIDENCE_MARKER_RE = re.compile(r"\[\s*confidence\s*[:=]\s*([0-9]*\.?[0-9]+)\s*\]", re.IGNORECASE)
 KIND_MARKER_RE = re.compile(r"\[\s*kind\s*[:=]\s*(answer|clarify|handoff|offtopic)\s*\]", re.IGNORECASE)
 CLOSE_MARKER_RE = re.compile(r"\[\s*close\s*[:=]\s*yes\s*\]", re.IGNORECASE)
-OPTIONS_MARKER_RE = re.compile(r"\[\s*options\s*[:=]([^\]\n]*)\]", re.IGNORECASE)
-MAX_OPTIONS = 5  # one row of buttons
-OPTION_LABEL_LIMIT = 80  # Discord's button label limit
 
 
 def _split_confidence(reply_text: str) -> tuple[str, float | None]:
@@ -328,17 +325,13 @@ def _split_close(reply_text: str) -> tuple[str, bool]:
     return CLOSE_MARKER_RE.sub("", reply_text).strip() or "(no reply)", True
 
 
-def _split_options(reply_text: str) -> tuple[str, list[str]]:
-    """Strip every `[options: A | B]` marker; the last one wins. The answers the requester can pick as buttons:
-    distinct (ignoring case), at most 5, each short enough for a button label."""
-    matches = OPTIONS_MARKER_RE.findall(reply_text)
-    if not matches:
-        return reply_text, []
-    options: list[str] = []
-    for label in (part.strip() for part in matches[-1].split("|")):
-        if label and len(label) <= OPTION_LABEL_LIMIT and label.casefold() not in {o.casefold() for o in options}:
-            options.append(label)
-    return OPTIONS_MARKER_RE.sub("", reply_text).strip() or "(no reply)", options[:MAX_OPTIONS]
+def _last_ask(tool_results: list[ToolCallResult]) -> dict[str, Any] | None:
+    """The controls of the last valid ask_requester call (its output is already validated, see ui/ai_asks)."""
+    for result in reversed(tool_results):
+        output = result["output"]
+        if result["name"] == ai_tools.ASK_TOOL and isinstance(output, dict) and output.get("ok") is True:
+            return output.get("shown")
+    return None
 
 
 def _normalize_for_repeat(text: str) -> str:
@@ -683,7 +676,7 @@ async def run_support_agent(
         await _record_traces(trace, draft_workflow=draft_workflow)
         return result
     if second["reply"] == "(no reply)" and not any(
-        call["name"] != SEARCH_KNOWLEDGE_TOOL for call in second["tool_results"]
+        call["name"] not in (SEARCH_KNOWLEDGE_TOOL, ai_tools.ASK_TOOL) for call in second["tool_results"]
     ):
         await _record_traces(trace, drafts=[second_trace], draft_workflow=draft_workflow)
         return result
@@ -694,6 +687,8 @@ async def run_support_agent(
         second["kind"] = result.get("kind")
     if _is_repeat(second["reply"], previous_replies) or _is_clarify_loop(second, previous_replies):
         second["kind"] = "handoff"
+    if second["kind"] == "handoff":
+        second["ask"] = None
     await _record_traces(second_trace, drafts=[trace], draft_workflow=draft_workflow)
     return second
 
@@ -846,14 +841,10 @@ async def _run_once(
     reply_text, confidence = _split_confidence(raw_text)
     reply_text, kind = _split_kind(reply_text)
     reply_text, suggested_close = _split_close(reply_text)
-    reply_text, options = _split_options(reply_text)
     # Before the wiki links are appended: those are ours, everything above them is model output.
     reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings, staff_links)
-    # Buttons only answer a question that is actually sent; each label passes the same guard as the reply.
-    if kind != "clarify" or reply_text == "(no reply)" or guard_flags & ai_guard.BLOCKING_FLAGS:
-        options = []
-    # A label is never a clickable link, so "latest.log" (an unknown_link hit) may stay.
-    options = [label for label in options if not ai_guard.screen_reply(label, settings, staff_links)[1] - {"unknown_link"}]
+    # Controls only go with a reply that is actually sent (a blocked one is "(no reply)"), never with a handoff.
+    ask = None if kind == "handoff" or reply_text == "(no reply)" else _last_ask(tool_results)
     if guard_flags - {"unknown_link"}:
         log.warning(
             "AI reply tripped guardrails (%s)%s",
@@ -904,7 +895,7 @@ async def _run_once(
         kind=kind,
         model=model,
         guard_flags=guard_flags,
-        options=options,
+        ask=ask,
     )
     if response_id:
         result["response_id"] = response_id

@@ -1,4 +1,4 @@
-"""Read-only data the support AI can see.
+"""Read-only data the support AI can see, plus ask_requester (answer controls under the reply).
 
 The same handlers serve two paths:
 - support runs expose them as Claude client tools (the model decides what to look up);
@@ -29,10 +29,12 @@ from bulmaai.services.patreon_grants import (
     list_active_gifts_for_beneficiary,
     list_active_grants_for_owner,
 )
+from bulmaai.ui import ai_asks
 from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role, is_admin
 
 log = logging.getLogger(__name__)
 
+ASK_TOOL = "ask_requester"
 PATCH_NOTES_EXCERPT_CHARS = 1500
 IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports", "search_known_issues", "get_latest_releases"})
 ACCOUNT_TOPIC_RE = re.compile(
@@ -247,6 +249,12 @@ async def get_latest_releases(
     return result
 
 
+async def ask_requester(_bot_context: Any = None, **spec: Any) -> dict[str, Any]:
+    """Local, no lookup: validates the controls (ui/ai_asks.validate_ask). ai_client hands the last valid spec to the
+    reply that gets sent; it never suppresses the reply."""
+    return ai_asks.validate_ask(spec, _settings(_bot_context))
+
+
 def _function_schema(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
@@ -295,14 +303,78 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "discord_user_id": _USER_ID_PROPERTY,
         },
     ),
+    # Not strict: each kind fills only its own fields; ui/ai_asks validates every call (errors go back to the model).
+    ASK_TOOL: {
+        "type": "function",
+        "name": ASK_TOOL,
+        "description": (
+            "Show answer controls under your reply, so the requester answers your question with a click instead of "
+            "typing. kind choices: 2-5 short answers as buttons. kind select: one dropdown of 2-25 options, for longer "
+            "lists (versions from get_latest_releases, launchers). kind form: a Fill in button that opens a form of "
+            "1-5 fields, when you need 2+ details at once. Labels in the reply's language. Call it before writing your "
+            "reply; the reply must still read fine without the controls. One set per reply: the last call wins."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": list(ai_asks.KINDS)},
+                "choices": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "kind choices: 2-5 short answers, up to 80 characters each.",
+                },
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"label": {"type": "string"}, "description": {"type": "string"}},
+                        "required": ["label"],
+                        "additionalProperties": False,
+                    },
+                    "description": "kind select: 2-25 options; label and optional description up to 100 characters.",
+                },
+                "placeholder": {"type": "string", "description": "kind select: hint text, up to 100 characters."},
+                "title": {"type": "string", "description": "kind form: the form's title, up to 45 characters."},
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string", "description": "Up to 45 characters."},
+                            "type": {
+                                "type": "string",
+                                "enum": list(ai_asks.FIELD_TYPES),
+                                "description": "short or long text, select (2-25 options), radio (2-10 options).",
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "select and radio only.",
+                            },
+                            "placeholder": {"type": "string", "description": "Text and select fields only."},
+                            "required": {"type": "boolean", "description": "Default true."},
+                        },
+                        "required": ["label", "type"],
+                        "additionalProperties": False,
+                    },
+                    "description": "kind form: 1-5 fields.",
+                },
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+    },
 }
 TOOL_FUNCS = {
     "get_patreon_status": get_patreon_status,
     "get_user_bug_reports": get_user_bug_reports,
     "search_known_issues": search_known_issues,
     "get_latest_releases": get_latest_releases,
+    ASK_TOOL: ask_requester,
 }
 SUPPORT_TOOL_NAMES = list(TOOL_SCHEMAS)
+# Runs whose reply can't carry controls (/ask) get only the lookups.
+LOOKUP_TOOL_NAMES = [name for name in SUPPORT_TOOL_NAMES if name != ASK_TOOL]
 
 
 async def _labeled(label: str, coro: Any) -> str | None:

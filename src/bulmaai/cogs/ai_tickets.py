@@ -13,6 +13,7 @@ from discord.ext import commands
 
 from bulmaai.cogs import dmzdebug as dmzdebug_cog
 from bulmaai.cogs import log_parser as log_parser_cog
+from bulmaai.services import ai_asks as ask_store
 from bulmaai.services import ai_budget
 from bulmaai.services.ai_oneshot import response_text
 from bulmaai.services.ai_guard import can_post_publicly, defuse_mentions, safe_name, strip_links
@@ -56,6 +57,7 @@ from bulmaai.services.tickets import (
     hide_closed_messages,
     note_ticket_message,
 )
+from bulmaai.ui import ai_asks
 from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -95,14 +97,6 @@ def remember_ask_question(answer_id: int, user_id: int, name: str, question: str
 # ponytail: hard cap on transcript size; page through history if tickets ever exceed it.
 TRANSCRIPT_MESSAGE_LIMIT = 1000
 RESOLVE_BUTTON_PREFIX = "ticket_resolved:"
-# Answer buttons on a clarify question: ai_choice:{requester_id}:{index}; the label is read back from the message.
-CHOICE_BUTTON_PREFIX = "ai_choice:"
-# The pick, recorded under the question on the card; history and transcripts read it back as the clicker's turn.
-CHOICE_LINE_PREFIX = "-# ↳ "
-CHOICE_LINE_RE = re.compile(r"^-# ↳ <@!?(\d+)>: \*\*(.+)\*\*$", re.DOTALL)
-CHOICE_NOT_YOURS_TEXT = "Only the person Bulma asked can pick an answer."
-CHOICE_AI_OFF_TEXT = "Bulma isn't answering here right now. Type your answer in the chat instead."
-TICKET_CLOSED_TEXT = "This ticket is no longer open."
 USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
 # ponytail: EN|ES phrase list; misses odd phrasings, the model's [kind: handoff] still covers those.
 HUMAN_REQUEST_RE = re.compile(
@@ -379,63 +373,31 @@ def _component_dicts(message: discord.Message) -> list[dict]:
     return out
 
 
+def _card_texts(message: discord.Message) -> list[str]:
+    return [item["content"] for item in _component_dicts(message) if item.get("type") == 10 and item.get("content")]
+
+
 def _card_text(message: discord.Message) -> str:
-    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer and a recorded pick
-    (that is the clicker's turn, see _choice_pick)."""
+    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer and a recorded answer
+    (that is the requester's turn, see _card_answer)."""
     lines = [
-        item["content"].replace(AI_FOOTER, "")
-        for item in _component_dicts(message)
-        if item.get("type") == 10 and item.get("content") and not item["content"].startswith(CHOICE_LINE_PREFIX)
+        text.replace(AI_FOOTER, "")
+        for text in _card_texts(message)
+        if not text.startswith(ai_asks.ANSWER_LINE_PREFIX)
     ]
     return "\n".join(line.strip() for line in lines if line.strip())
 
 
-def _choice_row(requester_id: int, options: list[str] | tuple[str, ...]) -> discord.ui.ActionRow:
-    """One button per suggested answer, handled by the cog's on_interaction via custom_id (survives restarts)."""
-    return discord.ui.ActionRow(
-        *(
-            discord.ui.Button(
-                label=label, style=discord.ButtonStyle.secondary, custom_id=f"{CHOICE_BUTTON_PREFIX}{requester_id}:{index}"
-            )
-            for index, label in enumerate(options[:5])
-        )
-    )
+def _card_answer(message: discord.Message) -> tuple[int, str] | None:
+    """(user id, answer) given with the controls on this card, if any: a pick's label or a form's lines."""
+    return ai_asks.read_answer(_card_texts(message))
 
 
-def _parse_choice_custom_id(custom_id: str) -> int | None:
-    """The requester an answer button belongs to."""
-    if not custom_id.startswith(CHOICE_BUTTON_PREFIX):
-        return None
-    try:
-        requester_id, _index = custom_id.removeprefix(CHOICE_BUTTON_PREFIX).split(":")
-        return int(requester_id)
-    except ValueError:
-        return None
-
-
-def _choice_label(message: discord.Message, custom_id: str) -> str | None:
-    return next(
-        (item.get("label") for item in _component_dicts(message) if item.get("type") == 2 and item.get("custom_id") == custom_id),
-        None,
-    )
-
-
-def _choice_pick(message: discord.Message) -> tuple[int, str] | None:
-    """(user id, label) of the answer picked on this card, if any."""
-    for item in _component_dicts(message):
-        if item.get("type") == 10 and (match := CHOICE_LINE_RE.match(item.get("content") or "")):
-            return int(match[1]), match[2]
-    return None
-
-
-def _picked_card(message: discord.Message, user_id: int, label: str) -> discord.ui.DesignerView:
-    """The card as it was, without its buttons, with the pick on a line of its own."""
-    texts = [item["content"] for item in _component_dicts(message) if item.get("type") == 10 and item.get("content")]
+def _answered_card(message: discord.Message, lines: list[str]) -> discord.ui.DesignerView:
+    """The card as it was, without its controls, with the answer lines under it."""
     return discord.ui.DesignerView(
         discord.ui.Container(
-            *(discord.ui.TextDisplay(text) for text in texts),
-            discord.ui.TextDisplay(f"{CHOICE_LINE_PREFIX}<@{user_id}>: **{label}**"),
-            color=AI_CARD_COLOR,
+            *(discord.ui.TextDisplay(text) for text in [*_card_texts(message), *lines]), color=AI_CARD_COLOR
         ),
         timeout=None,
     )
@@ -443,18 +405,18 @@ def _picked_card(message: discord.Message, user_id: int, label: str) -> discord.
 
 # ponytail: only what the answer path reads off a discord.Message (and utils/forwards); add attributes as it grows.
 class _ChoiceMessage:
-    """Stands in for the message an answer pick replaces. Its id is the card's, so the general history, which always
-    keeps the triggering message, keeps the card and the pick on it."""
+    """Stands in for the message an answer on a card (a pick or a submitted form) replaces. Its id is the card's, so
+    the general history, which always keeps the triggering message, keeps the card and the answer on it."""
 
     attachments = snapshots = mentions = ()
     reference = None
 
-    def __init__(self, interaction: discord.Interaction, label: str) -> None:
+    def __init__(self, interaction: discord.Interaction, content: str, message_id: int) -> None:
         self.author = interaction.user
         self.channel = interaction.channel
         self.guild = interaction.guild
-        self.id = interaction.message.id
-        self.content = self.clean_content = label
+        self.id = message_id
+        self.content = self.clean_content = content
         self.created_at = datetime.now(timezone.utc)
 
 
@@ -734,11 +696,12 @@ class AITicketsCog(ReloadableCog):
         messages: list[str],
         *,
         ai_answer: bool = False,
-        options: list[str] | tuple[str, ...] = (),
+        ask: dict[str, Any] | None = None,
         requester_id: int | None = None,
+        language: str | None = None,
     ) -> bool:
-        """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one, and options
-        (answers to its question) become buttons on it that only requester_id may pick."""
+        """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one, and ask (an
+        ask_requester spec, ui/ai_asks) puts its controls on it for requester_id only, saved in ai_asks."""
         chunks = [
             chunk
             for message in messages
@@ -752,21 +715,19 @@ class AITicketsCog(ReloadableCog):
         if ai_answer:
             chunks[-1] = _with_footer(chunks[-1])
         views = [_card(chunk) for chunk in chunks]
-        if options and requester_id is not None:
-            views[-1] = _card(chunks[-1], AI_CARD_COLOR, _choice_row(requester_id, options))
+        if ask and requester_id is not None:
+            views[-1] = _card(chunks[-1], AI_CARD_COLOR, *ai_asks.ask_rows(ask, requester_id, language))
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
         allowed_mentions = discord.AllowedMentions.none()
         try:
             if typing_lead_seconds <= 0:
                 for view in views:
-                    await channel.send(view=view, allowed_mentions=allowed_mentions)
-                return True
-
-            async with channel.typing():
-                await asyncio.sleep(typing_lead_seconds)
-                for view in views:
-                    await channel.send(view=view, allowed_mentions=allowed_mentions)
-            return True
+                    sent = await channel.send(view=view, allowed_mentions=allowed_mentions)
+            else:
+                async with channel.typing():
+                    await asyncio.sleep(typing_lead_seconds)
+                    for view in views:
+                        sent = await channel.send(view=view, allowed_mentions=allowed_mentions)
         except discord.HTTPException:
             log.exception(
                 "Failed to send AI support response",
@@ -778,6 +739,19 @@ class AITicketsCog(ReloadableCog):
                 },
             )
             return False
+        if ask and requester_id is not None:
+            try:
+                # Clicks read the spec from this row; without it they answer that the question expired.
+                await ask_store.save(
+                    message_id=sent.id,
+                    channel_id=channel.id,
+                    requester_id=requester_id,
+                    spec=ask,
+                    language=language or "en",
+                )
+            except Exception:
+                log.exception("Could not save answer controls", extra={"channel_id": channel.id, "message_id": sent.id})
+        return True
 
     def _speaker_kind(self, message: discord.Message, requester_id: int | None) -> str:
         if message.author == self.bot.user:
@@ -822,10 +796,11 @@ class AITicketsCog(ReloadableCog):
         return serialized
 
     def _choice_turn(self, entry: discord.Message, requester_id: int | None) -> ConversationMessage | None:
-        """The answer picked on one of our cards, as the picker's turn right after the card's question."""
-        if entry.author != self.bot.user or (pick := _choice_pick(entry)) is None:
+        """The answer given on one of our cards (a pick, or a form's "label: value" lines), as the answerer's turn
+        right after the card's question."""
+        if entry.author != self.bot.user or (answer := _card_answer(entry)) is None:
             return None
-        user_id, label = pick
+        user_id, label = answer
         guild = getattr(entry, "guild", None)
         member = guild.get_member(user_id) if guild is not None else None
         turn = ConversationMessage(
@@ -1190,7 +1165,7 @@ class AITicketsCog(ReloadableCog):
                 return
 
             outgoing_messages: list[str] = []
-            options: list[str] = []
+            ask: dict[str, Any] | None = None
             should_mark_escalated = False
             kind = result.get("kind")
             if in_ticket and _asks_for_human(full_content(message)):
@@ -1205,8 +1180,8 @@ class AITicketsCog(ReloadableCog):
             if reply_text and reply_text != "(no reply)":
                 outgoing_messages.append(reply_text)
                 should_mark_escalated = in_ticket and kind == "handoff"
-                if kind == "clarify" and reply_text != PUBLIC_FALLBACK_TEXT:
-                    options = result.get("options") or []  # buttons only on the model's own question
+                if kind != "handoff" and reply_text != PUBLIC_FALLBACK_TEXT:
+                    ask = result.get("ask")  # controls only under the model's own reply
             else:
                 if in_ticket:
                     outgoing_messages.append(
@@ -1219,7 +1194,12 @@ class AITicketsCog(ReloadableCog):
                     )
 
             sent = await self._send_messages_with_typing(
-                channel, outgoing_messages, ai_answer=True, options=options, requester_id=message.author.id
+                channel,
+                outgoing_messages,
+                ai_answer=True,
+                ask=ask,
+                requester_id=message.author.id,
+                language=language or result.get("language"),
             )
             if sent and in_ticket and not should_mark_escalated:
                 await self._awaiting_owner(channel.id)
@@ -1227,7 +1207,13 @@ class AITicketsCog(ReloadableCog):
                 await self._mark_ticket_escalated(channel.id)
                 if kind == "handoff":
                     await self._ping_escalation_roles(channel, message.author.id)
-            elif sent and in_ticket and kind in (None, "answer") and await self._is_ticket_owner(channel, message.author.id):
+            elif (
+                sent
+                and in_ticket
+                and kind in (None, "answer")
+                and not ask  # still asking, so not "solved?" yet
+                and await self._is_ticket_owner(channel, message.author.id)
+            ):
                 await self._maybe_prompt_resolution(
                     channel,
                     requester_id=message.author.id,
@@ -1290,9 +1276,9 @@ class AITicketsCog(ReloadableCog):
             return
         if not _is_ticket_channel(channel, settings=settings):
             return  # closed before the first answer was ready
-        options = (result.get("options") or []) if result.get("kind") == "clarify" else []
+        ask = result.get("ask") if result.get("kind") != "handoff" else None
         if not await self._send_messages_with_typing(
-            channel, [reply], ai_answer=True, options=options, requester_id=member.id
+            channel, [reply], ai_answer=True, ask=ask, requester_id=member.id, language=language
         ):
             return
         if result.get("kind") == "handoff":
@@ -1408,62 +1394,143 @@ class AITicketsCog(ReloadableCog):
         try:
             ticket = await get_ticket_by_channel(channel.id)
         except Exception:
-            log.exception("Could not look up the ticket behind an answer pick", extra={"channel_id": channel.id})
+            log.exception("Could not look up the ticket behind an answer card", extra={"channel_id": channel.id})
             closed_category_id = self.bot.settings.ticket_closed_category_id
             return closed_category_id is not None and getattr(channel, "category_id", None) == closed_category_id
         return ticket is not None and ticket.status != STATUS_OPEN
 
-    async def _handle_choice(self, interaction: discord.Interaction, *, requester_id: int) -> None:
-        """An answer button on a clarify question: the card records the pick, then the AI answers it like a typed
-        reply. The gates are the typed path's (see _process_support_message)."""
+    async def _ask_row(self, interaction: discord.Interaction, message_id: int) -> ask_store.AskRow | None:
+        """The answer card's ai_asks row; None (after telling the clicker) when it is missing or unreadable."""
+        try:
+            row = await ask_store.get(message_id)
+        except Exception:
+            log.exception("Could not load answer controls", extra={"message_id": message_id})
+            await interaction.response.send_message(ai_asks.text("en", "failed"), ephemeral=True)
+            return None
+        if row is None:
+            await interaction.response.send_message(ai_asks.text("en", "expired"), ephemeral=True)
+        return row
+
+    async def _ask_refusal(
+        self, interaction: discord.Interaction, row: ask_store.AskRow, *, spend: bool
+    ) -> tuple[str | None, dict[str, Any]]:
+        """(why this answer can't go through, as a ui/ai_asks.TEXT key, or None; the _answer_support arguments).
+        The gates are the typed path's (see _process_support_message); spend: the answer runs the AI now, so it counts
+        toward the rate limit."""
         settings = self.bot.settings
         channel = interaction.channel
         user = interaction.user
-        custom_id = (interaction.data or {}).get("custom_id", "")
-        if user.id != requester_id:
-            return await interaction.response.send_message(CHOICE_NOT_YOURS_TEXT, ephemeral=True)
-        label = _choice_label(interaction.message, custom_id)
-        if not label:
-            return await interaction.response.send_message(RESOLVE_FAILED_TEXT, ephemeral=True)
         in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
         in_dm = isinstance(channel, discord.DMChannel)
+        # mention_request: outside tickets and DMs the card answered a ping.
+        context: dict[str, Any] = {
+            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": not (in_ticket or in_dm), "member": None
+        }
+        if user.id != row.requester_id:
+            return "not_yours", context
+        if row.answered_at is not None:
+            return "answered", context
         if not in_dm and await self._is_closed_ticket(channel):
-            return await interaction.response.send_message(TICKET_CLOSED_TEXT, ephemeral=True)
+            return "closed", context
         member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
+        context["member"] = member
         if (
             not settings.ai_support_enabled
             or (in_ticket and not self.is_ticket_ai_enabled(channel.id))
             or (not in_ticket and not (member is not None and can_use_ai_support(member, settings=settings)))
         ):
-            return await interaction.response.send_message(CHOICE_AI_OFF_TEXT, ephemeral=True)
+            return "ai_off", context
         if ai_budget.is_paused(settings):
-            return await interaction.response.send_message(AI_PAUSED_TEXT, ephemeral=True)
-        events = self._rate_limit_state.record(
-            self._support_events, (user.id, 0), time.monotonic(), SUPPORT_RATE_LIMIT_WINDOW_SECONDS
-        )
-        if len(events) > SUPPORT_RATE_LIMIT_CALLS:
-            return await interaction.response.send_message(RATE_LIMITED_TEXT, ephemeral=True)
+            return "paused", context
+        if spend:
+            events = self._rate_limit_state.record(
+                self._support_events, (user.id, 0), time.monotonic(), SUPPORT_RATE_LIMIT_WINDOW_SECONDS
+            )
+            if len(events) > SUPPORT_RATE_LIMIT_CALLS:
+                return "rate_limited", context
+        return None, context
+
+    async def _answer_recorded(
+        self, interaction: discord.Interaction, message_id: int, content: str, context: dict[str, Any]
+    ) -> None:
+        """The answer is on the card: it is the requester's reply in the ticket, and the AI answers it like a typed
+        one."""
+        if context["in_ticket"]:
+            try:
+                await note_ticket_message(interaction.channel.id, interaction.user.id)  # as TicketsCog.on_message does
+            except Exception:
+                log.exception("Could not track ticket reply", extra={"channel_id": interaction.channel.id})
+        self._answer_pick(_ChoiceMessage(interaction, content, message_id), **context)
+
+    async def _handle_ask(self, interaction: discord.Interaction, *, kind: str, index: int) -> None:
+        """A control on an answer card (ui/ai_asks). A pick goes on the card and is answered like a typed reply;
+        "Fill in" opens the form (its submit is _handle_ask_form)."""
+        message = interaction.message
+        if (row := await self._ask_row(interaction, message.id)) is None:
+            return
+        language = row.language
+        refusal, context = await self._ask_refusal(interaction, row, spend=kind != "form")
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        if kind == "form":
+            # A modal must be the first response, so no while_busy here; the submit claims the row.
+            return await interaction.response.send_modal(ai_asks.form_modal(row.spec, message.id))
+        label = ai_asks.picked_label(row.spec, kind, index, (interaction.data or {}).get("values"))
+        if not label:
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        user = interaction.user
+        no_pings = discord.AllowedMentions.none()  # edits never ping; none() keeps it that way should that change
 
         async def pick() -> None:
-            # Edits never ping; none() keeps it that way should that ever change.
-            await interaction.edit_original_response(
-                view=_picked_card(interaction.message, user.id, label), allowed_mentions=discord.AllowedMentions.none()
-            )
-            if in_ticket:
-                try:
-                    # The pick is a reply in the ticket, like a typed one (TicketsCog.on_message).
-                    await note_ticket_message(channel.id, user.id)
-                except Exception:
-                    log.exception("Could not track ticket reply", extra={"channel_id": channel.id})
-            self._answer_pick(
-                _ChoiceMessage(interaction, label),
-                in_ticket=in_ticket,
-                in_dm=in_dm,
-                mention_request=not (in_ticket or in_dm),  # the card answered a ping
-                member=member,
-            )
+            if await ask_store.claim(message.id) is None:
+                # Answered meanwhile: only the controls go.
+                await interaction.edit_original_response(view=_answered_card(message, []), allowed_mentions=no_pings)
+                await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+                return
+            try:
+                await interaction.edit_original_response(
+                    view=_answered_card(message, [ai_asks.pick_line(user.id, label)]), allowed_mentions=no_pings
+                )
+            except Exception:
+                await ask_store.release(message.id)
+                raise
+            await self._answer_recorded(interaction, message.id, label, context)
 
-        await while_busy(interaction, self._working, pick, failed=RESOLVE_FAILED_TEXT)
+        await while_busy(interaction, self._working, pick, failed=ai_asks.text(language, "failed"))
+
+    async def _handle_ask_form(self, interaction: discord.Interaction, message_id: int) -> None:
+        """A submitted "Fill in" form: one line per answered field goes on the card, then the AI answers them."""
+        if (row := await self._ask_row(interaction, message_id)) is None:
+            return
+        language = row.language
+        refusal, context = await self._ask_refusal(interaction, row, spend=True)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        answers = ai_asks.form_answers(row.spec, (interaction.data or {}).get("components"))
+        try:
+            claimed = bool(answers) and await ask_store.claim(message_id) is not None
+        except Exception:
+            log.exception("Could not claim a form answer", extra={"message_id": message_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if not claimed:
+            reason = "answered" if answers else "failed"
+            return await interaction.response.send_message(ai_asks.text(language, reason), ephemeral=True)
+        await interaction.response.defer(invisible=True)
+        try:
+            message = interaction.message
+            if getattr(message, "id", None) != message_id:  # a modal submit may come without its message
+                message = await interaction.channel.fetch_message(message_id)
+            lines = ai_asks.form_lines(interaction.user.id, answers, used=sum(map(len, _card_texts(message))))
+            await message.edit(view=_answered_card(message, lines), allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            log.exception("Could not record a form answer on its card", extra={"message_id": message_id})
+            try:
+                await ask_store.release(message_id)
+            except Exception:
+                log.exception("Could not reopen the form", extra={"message_id": message_id})
+            return await interaction.followup.send(ai_asks.text(language, "failed"), ephemeral=True)
+        content = "\n".join(f"{label}: {value}" for label, value in answers)
+        await self._answer_recorded(interaction, message_id, content, context)
 
     def _answer_pick(self, message: _ChoiceMessage, *, in_ticket: bool, **kwargs: Any) -> None:
         """Answers in the background, so a failing AI run never brings the buttons back (it reports its own errors).
@@ -1742,11 +1809,16 @@ class AITicketsCog(ReloadableCog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if interaction.type == discord.InteractionType.modal_submit:
+            if (form_message_id := ai_asks.parse_form_modal_id(custom_id)) is not None:
+                await self._handle_ask_form(interaction, form_message_id)
+            return
         if interaction.type != discord.InteractionType.component:
             return
-        custom_id = (interaction.data or {}).get("custom_id", "")
-        if (choice_requester_id := _parse_choice_custom_id(custom_id)) is not None:
-            return await self._handle_choice(interaction, requester_id=choice_requester_id)
+        if (ask := ai_asks.parse_custom_id(custom_id)) is not None:
+            kind, _requester_id, index = ask  # the row says whose question it is
+            return await self._handle_ask(interaction, kind=kind, index=index)
         parsed = _parse_resolve_custom_id(custom_id)
         if parsed is None:
             return

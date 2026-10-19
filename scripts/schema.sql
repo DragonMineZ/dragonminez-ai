@@ -661,3 +661,15 @@ CREATE TABLE IF NOT EXISTS log_corpus_pings (
     dmz_version  TEXT PRIMARY KEY,
     pinged_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Bulma's answer controls (ui/ai_asks, services/ai_asks): one row per answer card that carries them. Clicks and form
+-- opens read the spec from here (they work after a restart); the first answer sets answered_at (WHERE answered_at IS NULL).
+CREATE TABLE IF NOT EXISTS ai_asks (
+    message_id    BIGINT PRIMARY KEY,
+    channel_id    BIGINT NOT NULL,
+    requester_id  BIGINT NOT NULL,
+    spec          JSONB NOT NULL,
+    language      TEXT NOT NULL DEFAULT 'en',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    answered_at   TIMESTAMPTZ
+);

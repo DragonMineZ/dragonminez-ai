@@ -33,7 +33,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 - Alerts about deleted messages never show "Jump to message". Quote the captured text instead.
 - Handled alerts collapse (`alert_card` in `ui/mod_cards.py`).
 - Card buttons that do slow work run through `ui/v2.while_busy`: the click disables the row and shows "⏳ Working…" at once, and a second click gets "Already working on it.". No silent `defer()` on buttons.
-- Bulma's answer controls (`ask_requester`): only the requester can use them, through the same gates as typing. The edited card is the record of the answer (history and transcripts read it back). Specs live in the `ai_asks` table and modal submits are routed by custom id, never by in-memory callbacks.
+- Bulma's answer controls (`ask_requester`): only the requester can use them, through the same gates as typing. The edited card is the record of the answer (history and transcripts read it back). Specs live in the `ai_asks` table and modal submits are routed by custom id, never by in-memory callbacks. Upload asks (kind `file`) only go out in tickets and DMs: the bot reposts the files, so moderation never sees them.
 
 ## Moderation
 

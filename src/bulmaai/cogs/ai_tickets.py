@@ -1,9 +1,11 @@
 import asyncio
+import io
 import logging
 import random
 import re
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -75,6 +77,7 @@ log = logging.getLogger(__name__)
 
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+DM_UPLOAD_LIMIT = 25 * 1024 * 1024  # when a DM interaction doesn't say what the bot may upload there
 DISCORD_MESSAGE_LIMIT = 1900
 # V2 cards allow 4000 characters of text per message; leave room for the footer.
 CARD_TEXT_LIMIT = 3500
@@ -333,6 +336,15 @@ def _is_image_attachment(attachment: discord.Attachment) -> bool:
     return attachment.filename.lower().endswith(IMAGE_ATTACHMENT_EXTENSIONS)
 
 
+def _upload_limit(interaction: discord.Interaction) -> int:
+    """How many bytes the bot may post in one message where this interaction happened: the guild's upload limit; in
+    DMs what Discord says for this interaction, else DM_UPLOAD_LIMIT."""
+    if (guild := getattr(interaction, "guild", None)) is not None:
+        return guild.filesize_limit
+    limit = getattr(interaction, "attachment_size_limit", None)
+    return limit if isinstance(limit, int) and limit > 0 else DM_UPLOAD_LIMIT
+
+
 def _has_user_visible_tool_result(tool_results: list[Any]) -> bool:
     for entry in tool_results:
         output = entry.get("output")
@@ -405,19 +417,23 @@ def _answered_card(message: discord.Message, lines: list[str]) -> discord.ui.Des
 
 # ponytail: only what the answer path reads off a discord.Message (and utils/forwards); add attributes as it grows.
 class _ChoiceMessage:
-    """Stands in for the message an answer on a card (a pick or a submitted form) replaces. Its id is the card's, so
-    the general history, which always keeps the triggering message, keeps the card and the answer on it."""
+    """Stands in for the message an answer on a card (a pick, a submitted form or an upload) replaces. Its id is the
+    card's, so the general history, which always keeps the triggering message, keeps the card and the answer on it.
+    attachments: an upload's files as reposted, so their screenshots get analyzed like a typed upload's."""
 
     attachments = snapshots = mentions = ()
     reference = None
 
-    def __init__(self, interaction: discord.Interaction, content: str, message_id: int) -> None:
+    def __init__(
+        self, interaction: discord.Interaction, content: str, message_id: int, attachments: Sequence[Any] = ()
+    ) -> None:
         self.author = interaction.user
         self.channel = interaction.channel
         self.guild = interaction.guild
         self.id = message_id
         self.content = self.clean_content = content
         self.created_at = datetime.now(timezone.utc)
+        self.attachments = tuple(attachments)
 
 
 def _message_content(
@@ -771,6 +787,8 @@ class AITicketsCog(ReloadableCog):
     ) -> ConversationMessage | None:
         if message.author.bot and message.author != self.bot.user:
             return None
+        if (uploaded := self._upload_turn(message, requester_id, image_analyses)) is not None:
+            return uploaded
 
         content = _message_content(message, image_analyses)
         if not content:
@@ -801,16 +819,34 @@ class AITicketsCog(ReloadableCog):
         if entry.author != self.bot.user or (answer := _card_answer(entry)) is None:
             return None
         user_id, label = answer
+        return self._member_turn(entry, user_id, requester_id, label, getattr(entry, "edited_at", None))
+
+    def _upload_turn(
+        self, entry: discord.Message, requester_id: int | None, analyses: dict[int, str] | None = None
+    ) -> ConversationMessage | None:
+        """Files a member uploaded with an Upload button, reposted on our card (_handle_ask_file): their turn, the
+        files rendered as _message_content renders a typed upload's (log and screenshot analyses)."""
+        if entry.author != self.bot.user or not full_attachments(entry):
+            return None
+        if (upload := ai_asks.read_upload(_card_texts(entry))) is None:
+            return None
+        content = _message_content(entry, analyses)
+        return self._member_turn(entry, upload[0], requester_id, content, getattr(entry, "created_at", None))
+
+    def _member_turn(
+        self, entry: discord.Message, user_id: int, requester_id: int | None, content: str, at: datetime | None
+    ) -> ConversationMessage:
+        """A member's answer recorded on one of our cards, as their turn."""
         guild = getattr(entry, "guild", None)
         member = guild.get_member(user_id) if guild is not None else None
         turn = ConversationMessage(
             role="user",
-            content=label,
+            content=content,
             speaker_name=safe_name(member.display_name) if member is not None else "member",
             speaker_id=str(user_id),
             speaker_kind="requester" if user_id == requester_id else "participant",
         )
-        if age := _relative_age(getattr(entry, "edited_at", None)):
+        if age := _relative_age(at):
             turn["age"] = age
         return turn
 
@@ -1182,6 +1218,8 @@ class AITicketsCog(ReloadableCog):
                 should_mark_escalated = in_ticket and kind == "handoff"
                 if kind != "handoff" and reply_text != PUBLIC_FALLBACK_TEXT:
                     ask = result.get("ask")  # controls only under the model's own reply
+                    if public and (ask or {}).get("kind") == "file":
+                        ask = None  # a repost is the bot's, so moderation never sees it: uploads only in tickets and DMs
             else:
                 if in_ticket:
                     outgoing_messages.append(
@@ -1451,7 +1489,12 @@ class AITicketsCog(ReloadableCog):
         return None, context
 
     async def _answer_recorded(
-        self, interaction: discord.Interaction, message_id: int, content: str, context: dict[str, Any]
+        self,
+        interaction: discord.Interaction,
+        message_id: int,
+        content: str,
+        context: dict[str, Any],
+        attachments: Sequence[Any] = (),
     ) -> None:
         """The answer is on the card: it is the requester's reply in the ticket, and the AI answers it like a typed
         one."""
@@ -1460,21 +1503,30 @@ class AITicketsCog(ReloadableCog):
                 await note_ticket_message(interaction.channel.id, interaction.user.id)  # as TicketsCog.on_message does
             except Exception:
                 log.exception("Could not track ticket reply", extra={"channel_id": interaction.channel.id})
-        self._answer_pick(_ChoiceMessage(interaction, content, message_id), **context)
+        self._answer_pick(_ChoiceMessage(interaction, content, message_id, attachments), **context)
 
     async def _handle_ask(self, interaction: discord.Interaction, *, kind: str, index: int) -> None:
         """A control on an answer card (ui/ai_asks). A pick goes on the card and is answered like a typed reply;
-        "Fill in" opens the form (its submit is _handle_ask_form)."""
+        "Fill in" and "Upload" open their modal (submits: _handle_ask_form, _handle_ask_file); "Where is it?" only
+        shows where the logs are."""
         message = interaction.message
         if (row := await self._ask_row(interaction, message.id)) is None:
             return
         language = row.language
-        refusal, context = await self._ask_refusal(interaction, row, spend=kind != "form")
+        if kind == "file" and index == ai_asks.WHERE_INDEX:
+            # Just help, for anyone who opens it: it answers nothing and claims nothing.
+            view = ai_asks.where_card(language, (interaction.data or {}).get("values"))
+            if view is None:
+                return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+            return await interaction.response.send_message(view=view, ephemeral=True)
+        refusal, context = await self._ask_refusal(interaction, row, spend=kind not in ("form", "file"))
         if refusal:
             return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        # A modal must be the first response, so no while_busy here; the submit claims the row.
         if kind == "form":
-            # A modal must be the first response, so no while_busy here; the submit claims the row.
             return await interaction.response.send_modal(ai_asks.form_modal(row.spec, message.id))
+        if kind == "file":
+            return await interaction.response.send_modal(ai_asks.file_modal(row.spec, message.id, language))
         label = ai_asks.picked_label(row.spec, kind, index, (interaction.data or {}).get("values"))
         if not label:
             return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
@@ -1531,6 +1583,80 @@ class AITicketsCog(ReloadableCog):
             return await interaction.followup.send(ai_asks.text(language, "failed"), ephemeral=True)
         content = "\n".join(f"{label}: {value}" for label, value in answers)
         await self._answer_recorded(interaction, message_id, content, context)
+
+    async def _handle_ask_file(self, interaction: discord.Interaction, message_id: int) -> None:
+        """A submitted "Upload": the files are reposted on a card credited to the requester (history and transcripts
+        read it as their turn), the question card records them, logs get their analysis card, then the AI answers
+        (screenshots analyzed on the way), so its history already holds the analyses."""
+        if (row := await self._ask_row(interaction, message_id)) is None:
+            return
+        language = row.language
+        refusal, context = await self._ask_refusal(interaction, row, spend=True)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        try:
+            state = getattr(interaction, "_state", None)
+            uploads = [discord.Attachment(data=data, state=state) for data in ai_asks.uploaded(row.spec, interaction.data)]
+        except Exception:
+            log.exception("Could not read an upload", extra={"message_id": message_id})
+            uploads = []
+        if not uploads:
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if sum(upload.size or 0 for upload in uploads) > _upload_limit(interaction):  # one message carries them all
+            return await interaction.response.send_message(ai_asks.text(language, "too_big"), ephemeral=True)
+        try:
+            claimed = await ask_store.claim(message_id) is not None
+        except Exception:
+            log.exception("Could not claim an upload", extra={"message_id": message_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if not claimed:
+            return await interaction.response.send_message(ai_asks.text(language, "answered"), ephemeral=True)
+        await interaction.response.defer(invisible=True)
+        user = interaction.user
+        no_pings = discord.AllowedMentions.none()
+        names = ai_asks.upload_names([upload.filename for upload in uploads])
+        try:
+            files = [
+                discord.File(io.BytesIO(await upload.read()), filename=name) for upload, name in zip(uploads, names)
+            ]
+            view = ai_asks.upload_card(user.id, names, [_is_image_attachment(u) for u in uploads], AI_CARD_COLOR)
+            reposted = await interaction.channel.send(view=view, files=files, allowed_mentions=no_pings)
+        except Exception:
+            log.exception("Could not repost an upload", extra={"message_id": message_id})
+            try:
+                await ask_store.release(message_id)
+            except Exception:
+                log.exception("Could not reopen the upload", extra={"message_id": message_id})
+            return await interaction.followup.send(ai_asks.text(language, "failed"), ephemeral=True)
+        try:
+            message = interaction.message
+            if getattr(message, "id", None) != message_id:  # a modal submit may come without its message
+                message = await interaction.channel.fetch_message(message_id)
+            lines = [ai_asks.upload_line(user.id, name) for name in names]
+            await message.edit(view=_answered_card(message, lines), allowed_mentions=no_pings)
+        except Exception:
+            # The repost is the record the AI and transcripts read; the files are in, so the answer goes on.
+            log.exception("Could not record an upload on its card", extra={"message_id": message_id})
+        await self._show_upload_cards(reposted, user)
+        content = "\n".join(f"uploaded {name}" for name in names)
+        await self._answer_recorded(interaction, message_id, content, context, attachments=reposted.attachments)
+
+    async def _show_upload_cards(self, message: discord.Message, uploader: discord.abc.User) -> None:
+        """The log / dmzdebug cards for a reposted upload, as a typed upload gets them (not in DMs, like those).
+        LogParserCog.parse_upload never adds its AI diagnosis, since the support AI answers next. Failures never stop
+        the answer."""
+        if getattr(message, "guild", None) is None:
+            return
+        for cog_name, post in (
+            ("LogParserCog", lambda cog: cog.parse_upload(message, uploader)),
+            ("DmzDebugCog", lambda cog: cog.post_cards(message)),
+        ):
+            if (cog := self.bot.get_cog(cog_name)) is None:
+                continue
+            try:
+                await post(cog)
+            except Exception:
+                log.exception("Could not analyze a reposted upload", extra={"message_id": message.id, "cog": cog_name})
 
     def _answer_pick(self, message: _ChoiceMessage, *, in_ticket: bool, **kwargs: Any) -> None:
         """Answers in the background, so a failing AI run never brings the buttons back (it reports its own errors).
@@ -1628,6 +1754,13 @@ class AITicketsCog(ReloadableCog):
                 lines.append(TranscriptLine(entry.created_at, "system", "System", entry.notice))
                 continue
             if entry.author.bot and entry.author != self.bot.user:
+                continue
+            if (uploaded := self._upload_turn(entry, requester_id, analyses)) is not None:
+                lines.append(
+                    TranscriptLine(
+                        entry.created_at, uploaded["speaker_kind"], uploaded["speaker_name"], uploaded["content"]
+                    )
+                )
                 continue
             content = _message_content(entry, analyses)
             if not content:
@@ -1813,6 +1946,8 @@ class AITicketsCog(ReloadableCog):
         if interaction.type == discord.InteractionType.modal_submit:
             if (form_message_id := ai_asks.parse_form_modal_id(custom_id)) is not None:
                 await self._handle_ask_form(interaction, form_message_id)
+            elif (file_message_id := ai_asks.parse_file_modal_id(custom_id)) is not None:
+                await self._handle_ask_file(interaction, file_message_id)
             return
         if interaction.type != discord.InteractionType.component:
             return

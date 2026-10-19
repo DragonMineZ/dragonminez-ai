@@ -311,8 +311,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "Show answer controls under your reply, so the requester answers your question with a click instead of "
             "typing. kind choices: 2-5 short answers as buttons. kind select: one dropdown of 2-25 options, for longer "
             "lists (versions from get_latest_releases, launchers). kind form: a Fill in button that opens a form of "
-            "1-5 fields, when you need 2+ details at once. Labels in the reply's language. Call it before writing your "
-            "reply; the reply must still read fine without the controls. One set per reply: the last call wins."
+            "1-5 fields, when you need 2+ details at once. kind file: an Upload button for their log or screenshot "
+            "(instead of telling them to find the file and drag it in); with what log the card also shows where the "
+            "logs are per platform and launcher, and an uploaded log is analyzed before you see it. Labels in the "
+            "reply's language. Call it before writing your reply; the reply must still read fine without the "
+            "controls. One set per reply: the last call wins."
         ),
         "parameters": {
             "type": "object",
@@ -358,6 +361,22 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                         "additionalProperties": False,
                     },
                     "description": "kind form: 1-5 fields.",
+                },
+                "what": {
+                    "type": "string",
+                    "enum": list(ai_asks.FILE_WHATS),
+                    "description": "kind file: log (latest.log or crash-report.txt), screenshot, or any. Default any.",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "kind file: the button text, up to 80 characters (e.g. Upload latest.log). "
+                    "Default: Upload.",
+                },
+                "max_files": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": ai_asks.MAX_FILES,
+                    "description": f"kind file: how many files, 1-{ai_asks.MAX_FILES}. Default 1.",
                 },
             },
             "required": ["kind"],

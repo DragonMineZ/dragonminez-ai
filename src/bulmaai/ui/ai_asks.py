@@ -1,9 +1,11 @@
 """Bulma's answer controls. When her reply asks the requester something, the ask_requester tool attaches a control
-spec (validated here) and the answer card carries buttons, a select or a "Fill in" form for it. Only the requester
-may use them. The answer is recorded on the card as `-# ↳ ` lines, which history and transcripts read back as the
-requester's turn; the spec itself lives in the ai_asks table (services/ai_asks), so clicks work after a restart.
+spec (validated here) and the answer card carries buttons, a select, a "Fill in" form or an "Upload" form for it. Only
+the requester may use them. The answer is recorded on the card as `-# ↳ ` lines, which history and transcripts read
+back as the requester's turn; the spec itself lives in the ai_asks table (services/ai_asks), so clicks work after a
+restart. Uploaded files are reposted on a card of their own whose `-# ↳ <@id> uploaded **name**` lines credit the
+requester, so the files read back as their turn.
 
-Pure helpers only (spec validation, the card's controls, custom ids, the form modal, answer lines, readback); the
+Pure helpers only (spec validation, the card's controls, custom ids, the modals, answer lines, readback); the
 Discord wiring is in cogs/ai_tickets.py."""
 
 import re
@@ -12,10 +14,18 @@ from typing import Any, Callable
 import discord
 
 from bulmaai.services import ai_guard
-from bulmaai.ui.v2 import TEXT_LIMIT, fit
+from bulmaai.ui.log_help_views import LOG_HELP_CONTENT
+from bulmaai.ui.v2 import TEXT_LIMIT, card, fit
 
-KINDS = ("choices", "select", "form")
+KINDS = ("choices", "select", "form", "file")
 FIELD_TYPES = ("short", "long", "select", "radio")
+FILE_WHATS = ("log", "screenshot", "any")
+MAX_FILES = 3
+UPLOAD_INDEX, WHERE_INDEX = 0, 1  # the file kind's controls: the Upload button and the "Where is it?" select
+UPLOAD_FIELD_ID = "files"
+UPLOAD_NAME_LIMIT = 60  # three upload lines still fit under a long answer card
+PLACES = ("windows", "mac", "linux", "server")  # ui/log_help_views keys; the launchers line is ours (TEXT)
+HELP_COLOR = discord.Color.from_rgb(88, 101, 242)  # /loghelp's
 MAX_CHOICES = 5  # one row of buttons
 MAX_SELECT_OPTIONS = 25
 MAX_RADIO_OPTIONS = 10
@@ -29,9 +39,12 @@ ALLOWED_FLAGS = frozenset({"unknown_link"})  # a label is never a clickable link
 
 CUSTOM_ID_PREFIX = "ai_ask:"  # ai_ask:{kind}:{requester_id}:{index}
 FORM_MODAL_PREFIX = "ai_ask_form:"  # ai_ask_form:{card message id}
+FILE_MODAL_PREFIX = "ai_ask_file:"  # ai_ask_file:{card message id}
 ANSWER_LINE_PREFIX = "-# ↳ "
 # A pick: "-# ↳ <@id>: **label**". A form field: "-# ↳ <@id> · Field label: **value**".
 ANSWER_LINE_RE = re.compile(r"^-# ↳ <@!?(\d+)>(?: · (.+?))?: \*\*(.+)\*\*$", re.DOTALL)
+# An uploaded file, on the question card and on the repost that carries it: "-# ↳ <@id> uploaded **name**".
+UPLOAD_LINE_RE = re.compile(r"^-# ↳ <@!?(\d+)> uploaded \*\*(.+)\*\*$")
 SHOWN_NOTE = (
     "The requester sees this under your reply. Now write the reply itself: the question in full, so it reads fine "
     "without the controls."
@@ -50,6 +63,19 @@ TEXT: dict[str, dict[str, str]] = {
         "A staff member will help you in the meantime.",
         "rate_limited": "You're sending messages faster than I can keep up, so I'll pause for a few minutes. "
         "Staff can still see this.",
+        "upload": "Upload",
+        "upload_title_log": "Upload your log",
+        "upload_title_screenshot": "Upload a screenshot",
+        "upload_title_any": "Upload a file",
+        "upload_field_log": "latest.log or crash-report.txt",
+        "upload_field_screenshot": "Screenshot",
+        "upload_field_any": "File",
+        "too_big": "That file is too big, zip it or type the error instead.",
+        "where": "Where is it?",
+        "launchers_title": "🚀 Launchers",
+        "launchers_value": "CurseForge app: right-click the profile → Open Folder → `logs`\n"
+        "Modrinth App: right-click the instance → Open folder → `logs`\n"
+        "Prism Launcher: select the instance → Folder → `.minecraft` (or `minecraft`) → `logs`",
     },
     "es": {
         "fill_in": "Rellenar",
@@ -63,6 +89,19 @@ TEXT: dict[str, dict[str, str]] = {
         "Un miembro del staff te ayudará mientras tanto.",
         "rate_limited": "Estás enviando mensajes más rápido de lo que puedo seguir, así que pausaré unos minutos. "
         "El staff aún puede ver esto.",
+        "upload": "Subir",
+        "upload_title_log": "Sube tu log",
+        "upload_title_screenshot": "Sube una captura",
+        "upload_title_any": "Sube un archivo",
+        "upload_field_log": "latest.log o crash-report.txt",
+        "upload_field_screenshot": "Captura de pantalla",
+        "upload_field_any": "Archivo",
+        "too_big": "Ese archivo es demasiado grande, comprímelo o escribe el error.",
+        "where": "¿Dónde está?",
+        "launchers_title": "🚀 Launchers",
+        "launchers_value": "App de CurseForge: clic derecho en el perfil → Open Folder → `logs`\n"
+        "Modrinth App: clic derecho en la instancia → Open folder → `logs`\n"
+        "Prism Launcher: selecciona la instancia → Folder → `.minecraft` (o `minecraft`) → `logs`",
     },
     "pt": {
         "fill_in": "Preencher",
@@ -76,6 +115,19 @@ TEXT: dict[str, dict[str, str]] = {
         "Um membro da staff vai te ajudar enquanto isso.",
         "rate_limited": "Você está enviando mensagens mais rápido do que consigo acompanhar, então vou pausar por "
         "alguns minutos. A staff ainda pode ver isto.",
+        "upload": "Enviar",
+        "upload_title_log": "Envie seu log",
+        "upload_title_screenshot": "Envie uma captura de tela",
+        "upload_title_any": "Envie um arquivo",
+        "upload_field_log": "latest.log ou crash-report.txt",
+        "upload_field_screenshot": "Captura de tela",
+        "upload_field_any": "Arquivo",
+        "too_big": "Esse arquivo é grande demais, compacte-o ou escreva o erro.",
+        "where": "Onde fica?",
+        "launchers_title": "🚀 Launchers",
+        "launchers_value": "App do CurseForge: clique com o botão direito no perfil → Open Folder → `logs`\n"
+        "Modrinth App: clique com o botão direito na instância → Open folder → `logs`\n"
+        "Prism Launcher: selecione a instância → Folder → `.minecraft` (ou `minecraft`) → `logs`",
     },
 }
 
@@ -207,11 +259,31 @@ def _form(args: dict, settings: Any, dropped: list[str]) -> dict | str:
     return {"kind": "form", "title": title, "fields": fields}
 
 
-# One validator per kind; later kinds (file, steps) add theirs here.
+def _file(args: dict, settings: Any, dropped: list[str]) -> dict | str:
+    what = args.get("what") or "any"
+    if what not in FILE_WHATS:
+        return f"file needs what: one of {', '.join(FILE_WHATS)}"
+    spec: dict[str, Any] = {"kind": "file", "what": what, "max_files": 1}
+    max_files = args.get("max_files")
+    if max_files is not None:
+        if isinstance(max_files, int) and not isinstance(max_files, bool) and 1 <= max_files <= MAX_FILES:
+            spec["max_files"] = max_files
+        else:
+            dropped.append(f"max_files {_preview(max_files)!r}: must be 1-{MAX_FILES}")
+    if args.get("label"):
+        if label := _clean(args["label"], BUTTON_LABEL_LIMIT, settings):
+            spec["label"] = label
+        else:
+            dropped.append(f"label {_preview(args['label'])!r}: over {BUTTON_LABEL_LIMIT} characters or not allowed")
+    return spec
+
+
+# One validator per kind; later kinds (steps) add theirs here.
 VALIDATORS: dict[str, Callable[[dict, Any, list[str]], dict | str]] = {
     "choices": _choices,
     "select": _select,
     "form": _form,
+    "file": _file,
 }
 
 
@@ -281,6 +353,24 @@ def ask_rows(spec: dict, requester_id: int, language: str | None) -> list[discor
             custom_id=custom_id(kind, requester_id),
         )
         return [discord.ui.ActionRow(button)]
+    if kind == "file":
+        upload = discord.ui.Button(
+            label=spec.get("label") or text(language, "upload"),
+            emoji="📎",
+            style=discord.ButtonStyle.secondary,
+            custom_id=custom_id(kind, requester_id, UPLOAD_INDEX),
+        )
+        rows = [discord.ui.ActionRow(upload)]
+        if spec.get("what") == "log":
+            where = discord.ui.Select(
+                custom_id=custom_id(kind, requester_id, WHERE_INDEX),
+                placeholder=text(language, "where"),
+                options=[discord.SelectOption(label=title, value=key) for key, title, _ in _places(language)],
+                min_values=1,
+                max_values=1,
+            )
+            rows.append(discord.ui.ActionRow(where))
+        return rows
     return []
 
 
@@ -298,7 +388,34 @@ def picked_label(spec: dict, kind: str, index: int, values: list | None = None) 
     return None
 
 
-# --- The form ---
+def _places(language: str | None) -> list[tuple[str, str, str]]:
+    """(key, title, where the logs are) for the "Where is it?" select: /loghelp's platforms, then the launchers."""
+    data = LOG_HELP_CONTENT.get(language or "en", LOG_HELP_CONTENT["en"])
+    return [
+        *((key, data[f"{key}_title"], data[f"{key}_value"]) for key in PLACES),
+        ("launchers", text(language, "launchers_title"), text(language, "launchers_value")),
+    ]
+
+
+def where_card(language: str | None, values: list | None) -> discord.ui.DesignerView | None:
+    """The ephemeral answer to a "Where is it?" pick: that platform's log folders. None for an unknown value."""
+    picked = (values or [None])[0]
+    for key, title, where in _places(language):
+        if key == picked:
+            return card(f"**{title}**\n{where}", color=HELP_COLOR)
+    return None
+
+
+# --- The modals (form, upload) ---
+
+
+def _modal_message_id(prefix: str, value: str) -> int | None:
+    if not value.startswith(prefix):
+        return None
+    try:
+        return int(value.removeprefix(prefix))
+    except ValueError:
+        return None
 
 
 def form_modal_id(message_id: int) -> str:
@@ -307,12 +424,16 @@ def form_modal_id(message_id: int) -> str:
 
 def parse_form_modal_id(value: str) -> int | None:
     """The answer card a submitted form belongs to."""
-    if not value.startswith(FORM_MODAL_PREFIX):
-        return None
-    try:
-        return int(value.removeprefix(FORM_MODAL_PREFIX))
-    except ValueError:
-        return None
+    return _modal_message_id(FORM_MODAL_PREFIX, value)
+
+
+def file_modal_id(message_id: int) -> str:
+    return f"{FILE_MODAL_PREFIX}{message_id}"
+
+
+def parse_file_modal_id(value: str) -> int | None:
+    """The answer card a submitted upload belongs to."""
+    return _modal_message_id(FILE_MODAL_PREFIX, value)
 
 
 def _field_item(field: dict, custom_id_: str) -> discord.ui.ModalItem:
@@ -396,6 +517,67 @@ def form_answers(spec: dict, components: Any) -> list[tuple[str, str]]:
     return answers
 
 
+def file_modal(spec: dict, message_id: int, language: str | None) -> discord.ui.DesignerModal:
+    """The upload behind "Upload": one file field of up to the spec's max_files. Routed by custom id like the form
+    (store=False)."""
+    what = spec.get("what") if spec.get("what") in FILE_WHATS else "any"
+    upload = discord.ui.FileUpload(
+        custom_id=UPLOAD_FIELD_ID, min_values=1, max_values=spec.get("max_files") or 1, required=True
+    )
+    return discord.ui.DesignerModal(
+        discord.ui.Label(text(language, f"upload_field_{what}"), upload),
+        title=text(language, f"upload_title_{what}"),
+        custom_id=file_modal_id(message_id),
+        store=False,
+    )
+
+
+def uploaded(spec: dict, data: Any) -> list[dict]:
+    """The attachment payloads of a submitted upload, in upload order, at most the spec's max_files. The file field
+    submits attachment ids; Discord sends the attachments themselves under resolved.attachments (as
+    discord.ui.FileUpload.refresh_from_modal reads them)."""
+    data = data if isinstance(data, dict) else {}
+    ids = _submitted(data.get("components")).get(UPLOAD_FIELD_ID)
+    resolved = (data.get("resolved") or {}).get("attachments") if isinstance(data.get("resolved"), dict) else None
+    if not isinstance(ids, list) or not isinstance(resolved, dict):
+        return []
+    payloads = [resolved[str(item)] for item in ids if isinstance(resolved.get(str(item)), dict)]
+    return payloads[: spec.get("max_files") or 1]
+
+
+def upload_names(filenames: list[str]) -> list[str]:
+    """The names the files are reposted under: plain enough for attachment:// URLs and the card (letters, digits,
+    . _ -; no pings, links or markdown), short, and distinct. The end is kept, so is the extension."""
+    names: list[str] = []
+    for filename in filenames:
+        base = re.sub(r"[^A-Za-z0-9._-]", "_", filename or "").strip("_") or "file"
+        name, n = base[-UPLOAD_NAME_LIMIT:], 0
+        while name in names:
+            n += 1
+            name = f"{n}_{base[-(UPLOAD_NAME_LIMIT - 3):]}"
+        names.append(name)
+    return names
+
+
+def upload_card(
+    user_id: int, names: list[str], images: list[bool], color: discord.Colour | None = None
+) -> discord.ui.DesignerView:
+    """The requester's files, reposted by the bot: one line per file credits them (the record history, transcripts
+    and the log parser read back), then screenshots in a gallery and other files as file components. The files go
+    with the message as discord.File under the same names."""
+    files = list(zip(names, images))
+    gallery = [discord.MediaGalleryItem(f"attachment://{name}") for name, image in files if image]
+    return discord.ui.DesignerView(
+        discord.ui.Container(
+            *(discord.ui.TextDisplay(upload_line(user_id, name)) for name in names),
+            *([discord.ui.MediaGallery(*gallery)] if gallery else []),
+            *(discord.ui.File(f"attachment://{name}") for name, image in files if not image),
+            color=color,
+        ),
+        timeout=None,
+    )
+
+
 # --- The answer on the card, and reading it back ---
 
 
@@ -412,8 +594,24 @@ def form_lines(user_id: int, answers: list[tuple[str, str]], used: int = 0) -> l
     return [f"{head}{value}**" for head, value in zip(heads, values)]
 
 
+def upload_line(user_id: int, name: str) -> str:
+    return f"{ANSWER_LINE_PREFIX}<@{user_id}> uploaded **{name}**"
+
+
+def read_upload(texts: list[str]) -> tuple[int, list[str]] | None:
+    """(uploader id, file names) of a card's upload lines; None when it has none."""
+    user_id: int | None = None
+    names: list[str] = []
+    for line in texts:
+        if match := UPLOAD_LINE_RE.match(line or ""):
+            user_id = user_id if user_id is not None else int(match[1])
+            names.append(match[2])
+    return (user_id, names) if user_id is not None else None
+
+
 def read_answer(texts: list[str]) -> tuple[int, str] | None:
-    """(user id, answer) recorded on a card: a pick's label, or a form's "label: value" lines."""
+    """(user id, answer) recorded on a card: a pick's label, or a form's "label: value" lines. Upload lines aren't
+    answers: the repost that carries the files is the uploader's turn (read_upload)."""
     user_id: int | None = None
     parts: list[str] = []
     for line in texts:

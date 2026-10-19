@@ -49,7 +49,13 @@ from bulmaai.services.ticket_transcripts import (
     summarize_ticket,
     ticket_knowledge_filename,
 )
-from bulmaai.services.tickets import ClosedGap, get_ticket_by_channel, hide_closed_messages, note_ticket_message
+from bulmaai.services.tickets import (
+    STATUS_OPEN,
+    ClosedGap,
+    get_ticket_by_channel,
+    hide_closed_messages,
+    note_ticket_message,
+)
 from bulmaai.ui.v2 import while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -89,6 +95,14 @@ def remember_ask_question(answer_id: int, user_id: int, name: str, question: str
 # ponytail: hard cap on transcript size; page through history if tickets ever exceed it.
 TRANSCRIPT_MESSAGE_LIMIT = 1000
 RESOLVE_BUTTON_PREFIX = "ticket_resolved:"
+# Answer buttons on a clarify question: ai_choice:{requester_id}:{index}; the label is read back from the message.
+CHOICE_BUTTON_PREFIX = "ai_choice:"
+# The pick, recorded under the question on the card; history and transcripts read it back as the clicker's turn.
+CHOICE_LINE_PREFIX = "-# ↳ "
+CHOICE_LINE_RE = re.compile(r"^-# ↳ <@!?(\d+)>: \*\*(.+)\*\*$", re.DOTALL)
+CHOICE_NOT_YOURS_TEXT = "Only the person Bulma asked can pick an answer."
+CHOICE_AI_OFF_TEXT = "Bulma isn't answering here right now. Type your answer in the chat instead."
+TICKET_CLOSED_TEXT = "This ticket is no longer open."
 USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
 # ponytail: EN|ES phrase list; misses odd phrasings, the model's [kind: handoff] still covers those.
 HUMAN_REQUEST_RE = re.compile(
@@ -352,18 +366,96 @@ def _is_staff_ticket_message(
     )
 
 
-def _card_text(message: discord.Message) -> str:
-    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer."""
-    lines: list[str] = []
+def _component_dicts(message: discord.Message) -> list[dict]:
+    """Every component of a message, nested ones included, as Discord payload dicts."""
+    out: list[dict] = []
 
     def walk(items) -> None:
         for item in items or ():
-            if item.get("type") == 10 and item.get("content"):
-                lines.append(item["content"].replace(AI_FOOTER, ""))
+            out.append(item)
             walk(item.get("components"))
 
     walk([component.to_dict() for component in getattr(message, "components", None) or ()])
+    return out
+
+
+def _card_text(message: discord.Message) -> str:
+    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer and a recorded pick
+    (that is the clicker's turn, see _choice_pick)."""
+    lines = [
+        item["content"].replace(AI_FOOTER, "")
+        for item in _component_dicts(message)
+        if item.get("type") == 10 and item.get("content") and not item["content"].startswith(CHOICE_LINE_PREFIX)
+    ]
     return "\n".join(line.strip() for line in lines if line.strip())
+
+
+def _choice_row(requester_id: int, options: list[str] | tuple[str, ...]) -> discord.ui.ActionRow:
+    """One button per suggested answer, handled by the cog's on_interaction via custom_id (survives restarts)."""
+    return discord.ui.ActionRow(
+        *(
+            discord.ui.Button(
+                label=label, style=discord.ButtonStyle.secondary, custom_id=f"{CHOICE_BUTTON_PREFIX}{requester_id}:{index}"
+            )
+            for index, label in enumerate(options[:5])
+        )
+    )
+
+
+def _parse_choice_custom_id(custom_id: str) -> int | None:
+    """The requester an answer button belongs to."""
+    if not custom_id.startswith(CHOICE_BUTTON_PREFIX):
+        return None
+    try:
+        requester_id, _index = custom_id.removeprefix(CHOICE_BUTTON_PREFIX).split(":")
+        return int(requester_id)
+    except ValueError:
+        return None
+
+
+def _choice_label(message: discord.Message, custom_id: str) -> str | None:
+    return next(
+        (item.get("label") for item in _component_dicts(message) if item.get("type") == 2 and item.get("custom_id") == custom_id),
+        None,
+    )
+
+
+def _choice_pick(message: discord.Message) -> tuple[int, str] | None:
+    """(user id, label) of the answer picked on this card, if any."""
+    for item in _component_dicts(message):
+        if item.get("type") == 10 and (match := CHOICE_LINE_RE.match(item.get("content") or "")):
+            return int(match[1]), match[2]
+    return None
+
+
+def _picked_card(message: discord.Message, user_id: int, label: str) -> discord.ui.DesignerView:
+    """The card as it was, without its buttons, with the pick on a line of its own."""
+    texts = [item["content"] for item in _component_dicts(message) if item.get("type") == 10 and item.get("content")]
+    return discord.ui.DesignerView(
+        discord.ui.Container(
+            *(discord.ui.TextDisplay(text) for text in texts),
+            discord.ui.TextDisplay(f"{CHOICE_LINE_PREFIX}<@{user_id}>: **{label}**"),
+            color=AI_CARD_COLOR,
+        ),
+        timeout=None,
+    )
+
+
+# ponytail: only what the answer path reads off a discord.Message (and utils/forwards); add attributes as it grows.
+class _ChoiceMessage:
+    """Stands in for the message an answer pick replaces. Its id is the card's, so the general history, which always
+    keeps the triggering message, keeps the card and the pick on it."""
+
+    attachments = snapshots = mentions = ()
+    reference = None
+
+    def __init__(self, interaction: discord.Interaction, label: str) -> None:
+        self.author = interaction.user
+        self.channel = interaction.channel
+        self.guild = interaction.guild
+        self.id = interaction.message.id
+        self.content = self.clean_content = label
+        self.created_at = datetime.now(timezone.utc)
 
 
 def _message_content(
@@ -642,8 +734,11 @@ class AITicketsCog(ReloadableCog):
         messages: list[str],
         *,
         ai_answer: bool = False,
+        options: list[str] | tuple[str, ...] = (),
+        requester_id: int | None = None,
     ) -> bool:
-        """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one."""
+        """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one, and options
+        (answers to its question) become buttons on it that only requester_id may pick."""
         chunks = [
             chunk
             for message in messages
@@ -656,18 +751,21 @@ class AITicketsCog(ReloadableCog):
 
         if ai_answer:
             chunks[-1] = _with_footer(chunks[-1])
+        views = [_card(chunk) for chunk in chunks]
+        if options and requester_id is not None:
+            views[-1] = _card(chunks[-1], AI_CARD_COLOR, _choice_row(requester_id, options))
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
         allowed_mentions = discord.AllowedMentions.none()
         try:
             if typing_lead_seconds <= 0:
-                for chunk in chunks:
-                    await channel.send(view=_card(chunk), allowed_mentions=allowed_mentions)
+                for view in views:
+                    await channel.send(view=view, allowed_mentions=allowed_mentions)
                 return True
 
             async with channel.typing():
                 await asyncio.sleep(typing_lead_seconds)
-                for chunk in chunks:
-                    await channel.send(view=_card(chunk), allowed_mentions=allowed_mentions)
+                for view in views:
+                    await channel.send(view=view, allowed_mentions=allowed_mentions)
             return True
         except discord.HTTPException:
             log.exception(
@@ -723,6 +821,24 @@ class AITicketsCog(ReloadableCog):
             serialized["reply_to"] = f'{author_name}: "{preview}"'
         return serialized
 
+    def _choice_turn(self, entry: discord.Message, requester_id: int | None) -> ConversationMessage | None:
+        """The answer picked on one of our cards, as the picker's turn right after the card's question."""
+        if entry.author != self.bot.user or (pick := _choice_pick(entry)) is None:
+            return None
+        user_id, label = pick
+        guild = getattr(entry, "guild", None)
+        member = guild.get_member(user_id) if guild is not None else None
+        turn = ConversationMessage(
+            role="user",
+            content=label,
+            speaker_name=safe_name(member.display_name) if member is not None else "member",
+            speaker_id=str(user_id),
+            speaker_kind="requester" if user_id == requester_id else "participant",
+        )
+        if age := _relative_age(getattr(entry, "edited_at", None)):
+            turn["age"] = age
+        return turn
+
     async def _cached_image_analyses(self, messages: list[discord.Message]) -> dict[int, str]:
         attachment_ids = [
             attachment.id
@@ -760,6 +876,8 @@ class AITicketsCog(ReloadableCog):
             serialized = self._serialize_message(entry, requester_id=requester_id, image_analyses=analyses)
             if serialized is not None:
                 history.append(serialized)
+            if (picked := self._choice_turn(entry, requester_id)) is not None:
+                history.append(picked)
         return history
 
     async def _build_general_history(
@@ -801,6 +919,8 @@ class AITicketsCog(ReloadableCog):
             serialized = self._serialize_message(entry, requester_id=author_id, image_analyses=analyses)
             if serialized is not None:
                 history.append(serialized)
+            if (picked := self._choice_turn(entry, author_id)) is not None:
+                history.append(picked)
         return history
 
     async def _build_history(
@@ -974,7 +1094,22 @@ class AITicketsCog(ReloadableCog):
             if len(events) == SUPPORT_RATE_LIMIT_CALLS + 1 and (in_ticket or in_dm):
                 await self._send_messages_with_typing(channel, [RATE_LIMITED_TEXT])
             return
+        await self._answer_support(
+            message, in_ticket=in_ticket, in_dm=in_dm, mention_request=mention_request, member=member
+        )
 
+    async def _answer_support(
+        self,
+        message: discord.Message | _ChoiceMessage,
+        *,
+        in_ticket: bool,
+        in_dm: bool,
+        mention_request: bool,
+        member: discord.Member | None,
+    ) -> None:
+        """The model's answer to message, once it passed the gates (typed messages, and answer picks on a card)."""
+        channel = message.channel
+        settings = self.bot.settings
         async with self._channel_locks[channel.id]:
             try:
                 # Analyses are rendered inline on the triggering message, so the question text and
@@ -1055,6 +1190,7 @@ class AITicketsCog(ReloadableCog):
                 return
 
             outgoing_messages: list[str] = []
+            options: list[str] = []
             should_mark_escalated = False
             kind = result.get("kind")
             if in_ticket and _asks_for_human(full_content(message)):
@@ -1069,6 +1205,8 @@ class AITicketsCog(ReloadableCog):
             if reply_text and reply_text != "(no reply)":
                 outgoing_messages.append(reply_text)
                 should_mark_escalated = in_ticket and kind == "handoff"
+                if kind == "clarify" and reply_text != PUBLIC_FALLBACK_TEXT:
+                    options = result.get("options") or []  # buttons only on the model's own question
             else:
                 if in_ticket:
                     outgoing_messages.append(
@@ -1080,7 +1218,9 @@ class AITicketsCog(ReloadableCog):
                         "I couldn't find a confident knowledge-backed answer for that. Please open a ticket if it needs follow-up."
                     )
 
-            sent = await self._send_messages_with_typing(channel, outgoing_messages, ai_answer=True)
+            sent = await self._send_messages_with_typing(
+                channel, outgoing_messages, ai_answer=True, options=options, requester_id=message.author.id
+            )
             if sent and in_ticket and not should_mark_escalated:
                 await self._awaiting_owner(channel.id)
             if sent and should_mark_escalated:
@@ -1150,7 +1290,10 @@ class AITicketsCog(ReloadableCog):
             return
         if not _is_ticket_channel(channel, settings=settings):
             return  # closed before the first answer was ready
-        if not await self._send_messages_with_typing(channel, [reply], ai_answer=True):
+        options = (result.get("options") or []) if result.get("kind") == "clarify" else []
+        if not await self._send_messages_with_typing(
+            channel, [reply], ai_answer=True, options=options, requester_id=member.id
+        ):
             return
         if result.get("kind") == "handoff":
             await self._mark_ticket_escalated(channel.id)
@@ -1260,6 +1403,86 @@ class AITicketsCog(ReloadableCog):
 
         await while_busy(interaction, self._working, answer, failed=RESOLVE_FAILED_TEXT)
 
+    async def _is_closed_ticket(self, channel: Any) -> bool:
+        """Closing moves a ticket out of the open category, so it looks like any channel; its tickets row tells."""
+        try:
+            ticket = await get_ticket_by_channel(channel.id)
+        except Exception:
+            log.exception("Could not look up the ticket behind an answer pick", extra={"channel_id": channel.id})
+            closed_category_id = self.bot.settings.ticket_closed_category_id
+            return closed_category_id is not None and getattr(channel, "category_id", None) == closed_category_id
+        return ticket is not None and ticket.status != STATUS_OPEN
+
+    async def _handle_choice(self, interaction: discord.Interaction, *, requester_id: int) -> None:
+        """An answer button on a clarify question: the card records the pick, then the AI answers it like a typed
+        reply. The gates are the typed path's (see _process_support_message)."""
+        settings = self.bot.settings
+        channel = interaction.channel
+        user = interaction.user
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if user.id != requester_id:
+            return await interaction.response.send_message(CHOICE_NOT_YOURS_TEXT, ephemeral=True)
+        label = _choice_label(interaction.message, custom_id)
+        if not label:
+            return await interaction.response.send_message(RESOLVE_FAILED_TEXT, ephemeral=True)
+        in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
+        in_dm = isinstance(channel, discord.DMChannel)
+        if not in_dm and await self._is_closed_ticket(channel):
+            return await interaction.response.send_message(TICKET_CLOSED_TEXT, ephemeral=True)
+        member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
+        if (
+            not settings.ai_support_enabled
+            or (in_ticket and not self.is_ticket_ai_enabled(channel.id))
+            or (not in_ticket and not (member is not None and can_use_ai_support(member, settings=settings)))
+        ):
+            return await interaction.response.send_message(CHOICE_AI_OFF_TEXT, ephemeral=True)
+        if ai_budget.is_paused(settings):
+            return await interaction.response.send_message(AI_PAUSED_TEXT, ephemeral=True)
+        events = self._rate_limit_state.record(
+            self._support_events, (user.id, 0), time.monotonic(), SUPPORT_RATE_LIMIT_WINDOW_SECONDS
+        )
+        if len(events) > SUPPORT_RATE_LIMIT_CALLS:
+            return await interaction.response.send_message(RATE_LIMITED_TEXT, ephemeral=True)
+
+        async def pick() -> None:
+            # Edits never ping; none() keeps it that way should that ever change.
+            await interaction.edit_original_response(
+                view=_picked_card(interaction.message, user.id, label), allowed_mentions=discord.AllowedMentions.none()
+            )
+            if in_ticket:
+                try:
+                    # The pick is a reply in the ticket, like a typed one (TicketsCog.on_message).
+                    await note_ticket_message(channel.id, user.id)
+                except Exception:
+                    log.exception("Could not track ticket reply", extra={"channel_id": channel.id})
+            self._answer_pick(
+                _ChoiceMessage(interaction, label),
+                in_ticket=in_ticket,
+                in_dm=in_dm,
+                mention_request=not (in_ticket or in_dm),  # the card answered a ping
+                member=member,
+            )
+
+        await while_busy(interaction, self._working, pick, failed=RESOLVE_FAILED_TEXT)
+
+    def _answer_pick(self, message: _ChoiceMessage, *, in_ticket: bool, **kwargs: Any) -> None:
+        """Answers in the background, so a failing AI run never brings the buttons back (it reports its own errors).
+        It is the pending answer of the ticket (or of the member elsewhere), as a typed message's is: a newer message,
+        an escalation or a close cancels it."""
+        pending_key = _pending_key(message, in_ticket=in_ticket)
+        self._cancel_pending_task(pending_key)
+
+        async def answer() -> None:
+            try:
+                await self._answer_support(message, in_ticket=in_ticket, **kwargs)
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._pending_tasks.get(pending_key) is asyncio.current_task():
+                    self._pending_tasks.pop(pending_key, None)
+
+        self._pending_tasks[pending_key] = asyncio.create_task(answer())
+
     async def _maybe_close_solved(self, channel: discord.TextChannel, message: discord.Message) -> None:
         """The AI is off here; the owner saying it's solved closes the ticket like the "Yes" button
         (TicketsCog.solve_ticket)."""
@@ -1350,6 +1573,15 @@ class AITicketsCog(ReloadableCog):
                     content=content,
                 )
             )
+            if (picked := self._choice_turn(entry, requester_id)) is not None:
+                lines.append(
+                    TranscriptLine(
+                        getattr(entry, "edited_at", None) or entry.created_at,
+                        picked["speaker_kind"],
+                        picked["speaker_name"],
+                        picked["content"],
+                    )
+                )
         return lines, requester_id
 
     def forget_archived(self, channel_id: int) -> None:
@@ -1512,7 +1744,10 @@ class AITicketsCog(ReloadableCog):
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type != discord.InteractionType.component:
             return
-        parsed = _parse_resolve_custom_id((interaction.data or {}).get("custom_id", ""))
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if (choice_requester_id := _parse_choice_custom_id(custom_id)) is not None:
+            return await self._handle_choice(interaction, requester_id=choice_requester_id)
+        parsed = _parse_resolve_custom_id(custom_id)
         if parsed is None:
             return
         solved, requester_id, language = parsed

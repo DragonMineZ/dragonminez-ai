@@ -90,6 +90,7 @@ class AgentResult(TypedDict, total=False):
     paused: bool
     response_id: str
     guard_flags: frozenset[str]
+    options: list[str]  # answers to a clarify question, shown as buttons
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
@@ -297,6 +298,9 @@ MAX_WIKI_SOURCE_LINKS = 3
 CONFIDENCE_MARKER_RE = re.compile(r"\[\s*confidence\s*[:=]\s*([0-9]*\.?[0-9]+)\s*\]", re.IGNORECASE)
 KIND_MARKER_RE = re.compile(r"\[\s*kind\s*[:=]\s*(answer|clarify|handoff|offtopic)\s*\]", re.IGNORECASE)
 CLOSE_MARKER_RE = re.compile(r"\[\s*close\s*[:=]\s*yes\s*\]", re.IGNORECASE)
+OPTIONS_MARKER_RE = re.compile(r"\[\s*options\s*[:=]([^\]\n]*)\]", re.IGNORECASE)
+MAX_OPTIONS = 5  # one row of buttons
+OPTION_LABEL_LIMIT = 80  # Discord's button label limit
 
 
 def _split_confidence(reply_text: str) -> tuple[str, float | None]:
@@ -322,6 +326,19 @@ def _split_close(reply_text: str) -> tuple[str, bool]:
     if not CLOSE_MARKER_RE.search(reply_text):
         return reply_text, False
     return CLOSE_MARKER_RE.sub("", reply_text).strip() or "(no reply)", True
+
+
+def _split_options(reply_text: str) -> tuple[str, list[str]]:
+    """Strip every `[options: A | B]` marker; the last one wins. The answers the requester can pick as buttons:
+    distinct (ignoring case), at most 5, each short enough for a button label."""
+    matches = OPTIONS_MARKER_RE.findall(reply_text)
+    if not matches:
+        return reply_text, []
+    options: list[str] = []
+    for label in (part.strip() for part in matches[-1].split("|")):
+        if label and len(label) <= OPTION_LABEL_LIMIT and label.casefold() not in {o.casefold() for o in options}:
+            options.append(label)
+    return OPTIONS_MARKER_RE.sub("", reply_text).strip() or "(no reply)", options[:MAX_OPTIONS]
 
 
 def _normalize_for_repeat(text: str) -> str:
@@ -829,8 +846,14 @@ async def _run_once(
     reply_text, confidence = _split_confidence(raw_text)
     reply_text, kind = _split_kind(reply_text)
     reply_text, suggested_close = _split_close(reply_text)
+    reply_text, options = _split_options(reply_text)
     # Before the wiki links are appended: those are ours, everything above them is model output.
     reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings, staff_links)
+    # Buttons only answer a question that is actually sent; each label passes the same guard as the reply.
+    if kind != "clarify" or reply_text == "(no reply)" or guard_flags & ai_guard.BLOCKING_FLAGS:
+        options = []
+    # A label is never a clickable link, so "latest.log" (an unknown_link hit) may stay.
+    options = [label for label in options if not ai_guard.screen_reply(label, settings, staff_links)[1] - {"unknown_link"}]
     if guard_flags - {"unknown_link"}:
         log.warning(
             "AI reply tripped guardrails (%s)%s",
@@ -881,6 +904,7 @@ async def _run_once(
         kind=kind,
         model=model,
         guard_flags=guard_flags,
+        options=options,
     )
     if response_id:
         result["response_id"] = response_id

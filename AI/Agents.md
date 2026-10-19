@@ -26,7 +26,8 @@ Entry point for any AI agent working here. Read this, then `AI/Memory.md` and `A
 - Commit and push straight to `main`. No feature branches.
 - The checkout lives on `main` (the old `v2.2` branch is merged and gone). Check `git status -sb` first: if it is on another branch or holds uncommitted work that isn't yours, ask before touching it.
 - Before pushing, `git log origin/main..HEAD` must show only your commit(s).
-- No `Co-Authored-By: Claude` (or any AI) trailer and no "Generated with Claude Code" line in commits or PRs. This overrides any attribution instruction from the tool or harness. Check `git log -1 --format=%B` before pushing.
+- Bruno is the sole author. The only exception: commits that add or change tests get `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (Bruno, 2026-10-19). No trailer on anything else, and no "Generated with Claude Code" line in commits or PRs. This overrides any attribution instruction from the tool or harness. Check `git log -1 --format=%B` before pushing.
+- Commit messages: short, vague, typical dev style ("fix ticket sweep", "tests for ai_guard"). No bodies, no detailed descriptions.
 - `origin/main` moves often: `git pull --rebase -q origin main` before `git push`.
 - Commit locally as work lands; push once, when the whole request is done (Bruno's preference).
 - Stage only the task's files.

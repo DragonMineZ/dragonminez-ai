@@ -165,6 +165,17 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         payload = views.TicketModal(views.CATEGORIES["bug"]).to_dict()["components"]
         self.assertEqual([c["type"] for c in payload], [discord.ComponentType.label.value] * 5)
 
+    async def test_the_panel_select_opens_the_form_and_resets_only_the_public_panel(self):
+        cog = make_cog()
+        for ephemeral in (False, True):  # an ephemeral copy is Bulma's open_ticket offer
+            message = SimpleNamespace(flags=discord.MessageFlags(ephemeral=ephemeral), edit=AsyncMock())
+            interaction = SimpleNamespace(
+                data={"values": ["bug"]}, message=message, channel=make_channel(), response=SimpleNamespace(send_modal=AsyncMock())
+            )
+            await cog.on_panel_select(interaction)
+            self.assertEqual(interaction.response.send_modal.await_args.args[0].category.key, "bug")
+            self.assertEqual(message.edit.await_count, 0 if ephemeral else 1)
+
     async def test_cards_have_fixed_custom_ids(self):
         self.assertEqual(custom_ids(views.panel_view()), [views.PANEL_SELECT_ID])
         self.assertEqual(custom_ids(views.closed_view(None, None)), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"])

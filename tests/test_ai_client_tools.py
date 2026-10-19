@@ -10,7 +10,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services import ai_budget
-from bulmaai.services.ai_tools import ASK_TOOL, LOOKUP_TOOL_NAMES, SUPPORT_TOOL_NAMES
+from bulmaai.services.ai_tools import ACTION_TOOL, ASK_TOOL, LOOKUP_TOOL_NAMES, SUPPORT_TOOL_NAMES
 from bulmaai.services.ai_client import (
     CONTINUE_TURN,
     FALLBACK_BETA,
@@ -59,20 +59,27 @@ class AIClientToolTests(unittest.IsolatedAsyncioTestCase):
     def test_tool_schemas_are_in_claude_format(self) -> None:
         schemas = get_schemas(SUPPORT_TOOL_NAMES)
         self.assertEqual([schema["name"] for schema in schemas], SUPPORT_TOOL_NAMES)
-        self.assertEqual(SUPPORT_TOOL_NAMES, [*LOOKUP_TOOL_NAMES, ASK_TOOL])
-        for schema in schemas[:-1]:
+        self.assertEqual(SUPPORT_TOOL_NAMES, [*LOOKUP_TOOL_NAMES, ASK_TOOL, ACTION_TOOL])
+        for schema in schemas[:-2]:
             self.assertEqual(set(schema), {"name", "description", "input_schema", "strict"})
             self.assertTrue(schema["strict"])
             input_schema = schema["input_schema"]
             self.assertEqual(input_schema["type"], "object")
             self.assertIs(input_schema["additionalProperties"], False)
             self.assertEqual(input_schema["required"], list(input_schema["properties"]))
-        # ask_requester isn't strict: each kind fills only its own fields, and every call is validated in code.
-        ask = schemas[-1]
+        # ask_requester and offer_action aren't strict: optional fields, and every call is validated in code.
+        ask, action = schemas[-2:]
         self.assertEqual(set(ask), {"name", "description", "input_schema"})
         self.assertEqual((ask["input_schema"]["required"], ask["input_schema"]["additionalProperties"]), (["kind"], False))
-        self.assertEqual(ask["input_schema"]["properties"]["kind"]["enum"], ["choices", "select", "form", "file"])
+        self.assertEqual(ask["input_schema"]["properties"]["kind"]["enum"], ["choices", "select", "form", "file", "steps"])
         self.assertEqual(ask["input_schema"]["properties"]["what"]["enum"], ["log", "screenshot", "any"])
+        self.assertEqual(set(action), {"name", "description", "input_schema"})
+        properties = action["input_schema"]["properties"]
+        self.assertEqual((action["input_schema"]["required"], set(properties)), (["action"], {"action", "label", "category", "no_thanks"}))
+        self.assertEqual(properties["action"]["enum"], ["get_staff", "open_ticket", "link_patreon"])
+        self.assertEqual(properties["category"]["enum"], ["bug", "contribute", "other"])
+        self.assertIn("bug (Game-Breaking Bug: Crashes, corrupted worlds)", properties["category"]["description"])
+        self.assertNotIn("channel_kind", properties)  # set from Discord, never by the model
         # The source schemas stay untouched.
         self.assertNotIn("required", tools_registry.TOOLS_SCHEMAS["get_patreon_status"]["parameters"])
 
@@ -136,6 +143,14 @@ class AIClientToolTests(unittest.IsolatedAsyncioTestCase):
             _hydrate_tool_args(name="not_an_identity_tool", args={"include_patch_notes": True}, user_id=1),
             {"include_patch_notes": True},
         )
+
+    def test_hydrate_tells_offer_action_where_it_is(self) -> None:
+        args = {"action": "get_staff", "channel_kind": "ticket"}  # the model can't pick the channel
+        self.assertEqual(
+            _hydrate_tool_args(name=ACTION_TOOL, args=args, user_id=1, channel_kind="public"),
+            {"action": "get_staff", "channel_kind": "public"},
+        )
+        self.assertNotIn("channel_kind", _hydrate_tool_args(name=ASK_TOOL, args={"kind": "file"}, user_id=1, channel_kind="dm"))
 
     def test_hydrate_forces_requester_for_known_issues(self) -> None:
         args = {"query": "x", "discord_user_id": "555"}
@@ -294,7 +309,15 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         ]
 
     async def _run(
-        self, responses, *, messages=None, knowledge=None, search_hits=None, workflow_prefix=None, **settings_overrides
+        self,
+        responses,
+        *,
+        messages=None,
+        knowledge=None,
+        search_hits=None,
+        workflow_prefix=None,
+        channel_kind=None,
+        **settings_overrides,
     ):
         with (
             patch(
@@ -325,6 +348,7 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
                 settings=_settings(**settings_overrides),
                 context_lines=["channel: support ticket"],
                 workflow_prefix=workflow_prefix,
+                channel_kind=channel_kind,
             )
         self.knowledge_search = knowledge_search
         return result, create_message, record_trace
@@ -502,6 +526,31 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reply"], "Which version do you play?")
         self.assertEqual(result["ask"], {"kind": "select", "options": [{"label": "1.20.1"}, {"label": "1.21"}]})
         self.assertFalse(result["escalated"])
+
+    async def test_offer_action_is_checked_where_the_reply_goes_and_shares_the_last_call_rule(self) -> None:
+        tool_turn = _message(
+            response_id="r_offer",
+            content=[
+                _thinking(),
+                _tool_use(ASK_TOOL, "toolu_a", {"kind": "steps", "steps": ["Close the game", "Delete config/dmz"]}),
+                _tool_use(ACTION_TOOL, "toolu_b", {"action": "open_ticket", "channel_kind": "public"}),
+                _tool_use(ACTION_TOOL, "toolu_c", {"action": "get_staff", "label": "Call a human", "no_thanks": True}),
+            ],
+        )
+        result, create_message, _ = await self._run(
+            [tool_turn, _message("Try deleting the config.\n[kind: answer]\n[confidence: 0.9]", response_id="r_final")],
+            channel_kind="ticket",
+        )
+        outputs = {
+            block["tool_use_id"]: json.loads(block["content"])
+            for block in create_message.await_args_list[1].kwargs["messages"][-1]["content"]
+        }
+        self.assertEqual(outputs["toolu_a"]["shown"]["kind"], "steps")
+        self.assertIn("only be offered in public channels", outputs["toolu_b"]["error"])  # this is a ticket
+        self.assertEqual(result["tool_results"][1]["arguments"]["channel_kind"], "ticket")
+        self.assertEqual(
+            result["ask"], {"kind": "action", "action": "get_staff", "label": "Call a human", "no_thanks": True}
+        )
 
     async def test_controls_go_only_with_a_sent_reply_that_is_not_a_handoff(self) -> None:
         ask = _tool_use(ASK_TOOL, "toolu_a", {"kind": "choices", "choices": ["Yes", "No"]})

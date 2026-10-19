@@ -38,7 +38,8 @@ class ValidateAskTests(unittest.TestCase):
     def test_nothing_usable_is_an_error_the_model_can_fix(self) -> None:
         self.assertEqual(validate(kind="choices", choices=["Only one"])["ok"], False)
         self.assertIn("2-5", validate(kind="choices", choices=["Only one"])["error"])
-        self.assertIn("kind must be", validate(kind="steps")["error"])
+        self.assertIn("kind must be", validate(kind="video")["error"])
+        self.assertIn("kind must be", validate(kind="action", action="get_staff")["error"])  # offer_action's own kind
         self.assertIn("kind must be", validate()["error"])
         self.assertFalse(validate(kind="select", options="1.20.1")["ok"])
 
@@ -109,14 +110,15 @@ class ControlsTests(unittest.IsolatedAsyncioTestCase):
         (row,) = ai_asks.ask_rows({"kind": "form", "title": "T", "fields": []}, 42, "es")
         (button,) = row.children
         self.assertEqual((button.label, str(button.emoji), button.custom_id), ("Rellenar", "📝", "ai_ask:form:42:0"))
-        self.assertEqual(ai_asks.ask_rows({"kind": "steps"}, 42, "en"), [])
+        self.assertEqual(ai_asks.ask_rows({"kind": "video"}, 42, "en"), [])
+        self.assertEqual(ai_asks.ask_rows({"kind": "action", "action": "nope"}, 42, "en"), [])
 
     def test_custom_ids_round_trip(self) -> None:
-        for kind in ai_asks.KINDS:
-            value = ai_asks.custom_id(kind, 123456789012345678, 4)
+        for kind in ai_asks.CONTROL_KINDS:
+            value = ai_asks.custom_id(kind, 123456789012345678, 15)
             self.assertLessEqual(len(value), 100)
-            self.assertEqual(ai_asks.parse_custom_id(value), (kind, 123456789012345678, 4))
-        for bad in ("ai_ask:steps:42:0", "ai_ask:choices:x:0", "ai_ask:choices:42", "ticket_resolved:yes:42:en"):
+            self.assertEqual(ai_asks.parse_custom_id(value), (kind, 123456789012345678, 15))
+        for bad in ("ai_ask:video:42:0", "ai_ask:choices:x:0", "ai_ask:choices:42", "ticket_resolved:yes:42:en"):
             self.assertIsNone(ai_asks.parse_custom_id(bad))
         self.assertEqual(ai_asks.parse_form_modal_id(ai_asks.form_modal_id(55)), 55)
         self.assertIsNone(ai_asks.parse_form_modal_id("ai_ask_form:x"))
@@ -296,6 +298,124 @@ class FileTests(unittest.IsolatedAsyncioTestCase):
         (file,) = [item for item in walk(view) if isinstance(item, discord.ui.File)]
         self.assertEqual(file.url, "attachment://latest.log")
         self.assertEqual(ai_asks.read_upload(texts(view)), (42, ["latest.log", "shot.png"]))
+
+
+STEPS = {"kind": "steps", "steps": ["Close Minecraft", "Delete the config folder", "Start the game"]}
+
+
+class StepsTests(unittest.IsolatedAsyncioTestCase):
+    def test_steps_keep_up_to_eight_distinct_screened_steps(self) -> None:
+        out = validate(kind="steps", steps=["Close Minecraft", "close minecraft", "<@1>", "x" * 201, *(f"Step {n}" for n in range(9))])
+        self.assertEqual(out["shown"], {"kind": "steps", "steps": ["Close Minecraft", *(f"Step {n}" for n in range(7))]})
+        self.assertEqual(len(out["dropped"]), 4)  # duplicate, ping, too long, the steps after the eighth
+        self.assertIn("don't list them again", out["note"])
+        self.assertIn("2-8", validate(kind="steps", steps=["Only one"])["error"])
+        self.assertIn("2-8", validate(kind="steps", steps="Close it, then open it")["error"])
+
+    async def test_the_card_shows_the_list_and_the_current_steps_buttons(self) -> None:
+        text, row = ai_asks.ask_rows(STEPS, 42, "es")
+        self.assertIsInstance(text, discord.ui.TextDisplay)
+        self.assertEqual(text.id, ai_asks.CONTROLS_TEXT_ID)
+        self.assertEqual(text.content, "**1\\. Close Minecraft**\n2\\. Delete the config folder\n3\\. Start the game")
+        self.assertEqual(
+            [(b.label, str(b.emoji), b.custom_id) for b in row.children],
+            [("Hecho", "✅", "ai_ask:steps:42:0"), ("Sigue sin funcionar", "❌", "ai_ask:steps:42:1")],
+        )
+
+        text, row = ai_asks.steps_items(STEPS, 42, "pt", progress=2)
+        self.assertEqual(text.content, "✅ 1\\. Close Minecraft\n✅ 2\\. Delete the config folder\n**3\\. Start the game**")
+        self.assertEqual([(b.label, b.custom_id) for b in row.children], [("Feito", "ai_ask:steps:42:4"), ("Ainda não funciona", "ai_ask:steps:42:5")])
+        self.assertEqual([ai_asks.split_step_index(ai_asks.parse_custom_id(b.custom_id)[2]) for b in row.children], [(2, 0), (2, 1)])
+
+    def test_final_lists(self) -> None:
+        self.assertEqual(
+            ai_asks.steps_text(STEPS, 1, failed=1),
+            "✅ 1\\. Close Minecraft\n❌ 2\\. Delete the config folder\n3\\. Start the game",
+        )
+        self.assertEqual(ai_asks.steps_text(STEPS, 3).count("✅"), 3)
+        self.assertNotIn("**", ai_asks.steps_text(STEPS, 3))
+
+    def test_outcome_lines_read_back_in_english_in_every_language(self) -> None:
+        self.assertEqual(
+            ai_asks.step_failed_line(42, 1, "Delete the config folder", "en"),
+            "-# ↳ <@42>: **Step 2 didn't work:** Delete the config folder",
+        )
+        self.assertEqual(ai_asks.steps_done_line(42, 3, "en"), "-# ↳ <@42>: **Did all the steps (1-3)**")
+        for language in ("en", "es", "pt"):
+            failed = ai_asks.step_failed_line(42, 1, "Delete **config**", language)
+            self.assertEqual(ai_asks.read_answer(["Try these", failed]), (42, "Step 2 didn't work: Delete **config**"))
+            done = ai_asks.steps_done_line(42, 3, language)
+            self.assertEqual(ai_asks.read_answer(["Try these", done]), (42, "I did all the steps (1-3)."))
+        self.assertIn("El paso 2 no funcionó:", ai_asks.step_failed_line(42, 1, "x", "es"))
+        self.assertEqual(ai_asks.read_answer([ai_asks.pick_line(42, "Step 2 didn't work:")]), (42, "Step 2 didn't work:"))
+
+    async def test_progress_reads_back_off_the_buttons(self) -> None:
+        def ids(progress):
+            return [b.custom_id for b in ai_asks.steps_items(STEPS, 42, "en", progress)[1].children]
+
+        self.assertIsNone(ai_asks.read_progress(ids(0)))
+        self.assertEqual(ai_asks.read_progress([None, *ids(1)]), (42, "I did step 1."))
+        self.assertEqual(ai_asks.read_progress(ids(2)), (42, "I did steps 1-2."))
+        self.assertIsNone(ai_asks.read_progress(["ai_ask:choices:42:3", "ticket_btn_close"]))
+
+    def test_room_for_the_steps_and_where_controls_may_go(self) -> None:
+        self.assertEqual(ai_asks.reserved_text(None), 0)
+        self.assertEqual(ai_asks.reserved_text({"kind": "choices", "choices": ["a", "b"]}), 0)
+        longest = max(len(ai_asks.steps_text(STEPS, p)) for p in range(4))
+        line = ai_asks.step_failed_line(123456789012345678, 7, "x" * ai_asks.STEP_LIMIT, "pt")
+        eight = {"kind": "steps", "steps": ["x" * ai_asks.STEP_LIMIT] * 8}
+        self.assertGreaterEqual(ai_asks.reserved_text(STEPS), longest + len(line) - ai_asks.STEP_LIMIT)
+        self.assertGreaterEqual(ai_asks.reserved_text(eight), len(ai_asks.steps_text(eight, 0)) + len(line))
+
+        self.assertFalse(ai_asks.allowed_in({"kind": "file"}, "public"))
+        self.assertTrue(ai_asks.allowed_in({"kind": "file"}, "dm"))
+        self.assertTrue(ai_asks.allowed_in(STEPS, "public"))
+        self.assertTrue(ai_asks.allowed_in({"kind": "action", "action": "get_staff"}, "ticket"))
+        self.assertFalse(ai_asks.allowed_in({"kind": "action", "action": "get_staff"}, "dm"))
+        self.assertFalse(ai_asks.allowed_in({"kind": "action", "action": "open_ticket"}, "ticket"))
+        self.assertFalse(ai_asks.allowed_in({"kind": "action", "action": "open_ticket"}, "dm"))
+        self.assertTrue(ai_asks.allowed_in({"kind": "action", "action": "open_ticket"}, "public"))
+        self.assertFalse(ai_asks.allowed_in({"kind": "action", "action": "nope"}, "public"))
+
+
+def offer(channel_kind=None, **args):
+    return ai_asks.validate_action(args, SETTINGS, channel_kind)
+
+
+class ActionTests(unittest.IsolatedAsyncioTestCase):
+    def test_actions_only_where_they_can_run(self) -> None:
+        self.assertIn("action must be", offer(action="ban")["error"])
+        self.assertIn("in tickets", offer("dm", action="get_staff")["error"])
+        self.assertIn("in public channels", offer("ticket", action="open_ticket")["error"])
+        self.assertFalse(offer("dm", action="open_ticket")["ok"])
+        for where in ("ticket", "dm", "public", None):
+            self.assertEqual(offer(where, action="link_patreon")["shown"], {"kind": "action", "action": "link_patreon"})
+        self.assertEqual(offer(action="get_staff")["shown"]["action"], "get_staff")  # unknown channel: the cog checks
+        self.assertIn("runs only when they click", offer("ticket", action="get_staff")["note"])
+
+    def test_label_category_and_no_thanks(self) -> None:
+        out = offer("public", action="open_ticket", label="Abrir ticket", category="bug", no_thanks=True)
+        self.assertEqual(
+            out["shown"], {"kind": "action", "action": "open_ticket", "label": "Abrir ticket", "category": "bug", "no_thanks": True}
+        )
+        self.assertNotIn("dropped", out)
+        out = offer("public", action="open_ticket", label="see https://evil.example/x", category="refunds", no_thanks="yes")
+        self.assertEqual(out["shown"], {"kind": "action", "action": "open_ticket"})
+        self.assertEqual(len(out["dropped"]), 2)
+        out = offer("ticket", action="get_staff", category="bug")
+        self.assertEqual(out["shown"], {"kind": "action", "action": "get_staff"})
+        self.assertIn("only for open_ticket", out["dropped"][0])
+
+    async def test_one_primary_button_and_an_optional_no_thanks(self) -> None:
+        (row,) = ai_asks.ask_rows({"kind": "action", "action": "get_staff"}, 42, "es")
+        (button,) = row.children
+        self.assertEqual((button.label, button.style, button.custom_id), ("Llamar al staff", discord.ButtonStyle.primary, "ai_ask:action:42:0"))
+        (row,) = ai_asks.ask_rows({"kind": "action", "action": "link_patreon", "label": "Link it", "no_thanks": True}, 42, "pt")
+        self.assertEqual(
+            [(b.label, b.style, b.custom_id) for b in row.children],
+            [("Link it", discord.ButtonStyle.primary, "ai_ask:action:42:0"), ("Não, obrigado", discord.ButtonStyle.secondary, "ai_ask:action:42:1")],
+        )
+        self.assertEqual(ai_asks.action_label({"action": "open_ticket"}, "en"), "Open a ticket")
 
 
 if __name__ == "__main__":

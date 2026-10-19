@@ -33,7 +33,8 @@ from bulmaai.cogs.ai_tickets import (
 from bulmaai.services import ai_asks as ask_store
 from bulmaai.services.ticket_intake import owner_says_solved
 from bulmaai.ui import ai_asks
-from bulmaai.ui.v2 import WORKING
+from bulmaai.ui import ticket_views
+from bulmaai.ui.v2 import TEXT_LIMIT, WORKING
 from v2_helpers import buttons, sent_message, texts, walk
 from bulmaai.services.ticket_pages import StoredPage
 from bulmaai.services.ticket_transcripts import TicketSummary, TranscriptLine
@@ -738,9 +739,11 @@ FORM = {
     ],
 }
 UPLOAD = {"kind": "file", "what": "log", "max_files": 2}
+STEPS = {"kind": "steps", "steps": ["Close Minecraft", "Delete the config folder", "Start the game"]}
+GET_STAFF = {"kind": "action", "action": "get_staff"}
 
 
-def _ask_row(spec, *, requester_id: int = 42, language: str = "en", answered_at=None) -> ask_store.AskRow:
+def _ask_row(spec, *, requester_id: int = 42, language: str = "en", answered_at=None, progress: int = 0) -> ask_store.AskRow:
     return ask_store.AskRow(
         message_id=55,
         channel_id=13,
@@ -749,6 +752,7 @@ def _ask_row(spec, *, requester_id: int = 42, language: str = "en", answered_at=
         language=language,
         created_at=datetime.now(timezone.utc),
         answered_at=answered_at,
+        progress=progress,
     )
 
 
@@ -1428,6 +1432,365 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
             [(line.speaker_kind, line.content) for line in transcript],
             [("requester", "My game crashes"), ("assistant", "What do you want to change?"), ("requester", "[Attachment] latest.log")],
         )
+
+    # --- steps ---
+
+    def _steps_at(self, progress: int):
+        """The steps card as posted, then moved on to progress."""
+        return sent_message(
+            ai_tickets._steps_card(sent_message(self._card(STEPS)), _ask_row(STEPS), progress), message_id=55, channel_id=13
+        )
+
+    def _click(self, index: int, *, progress: int = 0, card_progress: int | None = None, user_id: int = 42, channel=None):
+        interaction = self._interaction(
+            channel or self._ticket_channel(), user_id, spec=STEPS, custom_id=f"ai_ask:steps:42:{index}"
+        )
+        interaction.message = self._steps_at(progress if card_progress is None else card_progress)
+        return interaction
+
+    async def test_a_steps_card_is_sent_with_its_list_and_room_for_it(self) -> None:
+        cog = self._cog()
+        channel = types.SimpleNamespace(id=13, send=AsyncMock(return_value=types.SimpleNamespace(id=2)))
+        with patch.object(ai_tickets.ask_store, "save", AsyncMock()) as save:
+            await cog._send_messages_with_typing(channel, ["word " * 700], ai_answer=True, ask=STEPS, requester_id=42)
+        views = [call.kwargs["view"] for call in channel.send.await_args_list]
+        self.assertEqual(len(views), 2)  # 3500 characters fit one plain card, not one that also carries the steps
+        for view in views:
+            self.assertLessEqual(sum(map(len, texts(view))) + 300, TEXT_LIMIT)
+        last = views[-1]
+        self.assertEqual(texts(last)[-1], ai_asks.steps_text(STEPS, 0))
+        self.assertIn(ai_tickets.AI_FOOTER, texts(last)[0])
+        self.assertEqual([b.custom_id for b in buttons(last)], ["ai_ask:steps:42:0", "ai_ask:steps:42:1"])
+        save.assert_awaited_once_with(message_id=2, channel_id=13, requester_id=42, spec=STEPS, language="en")
+
+    async def test_done_moves_the_card_on_without_the_ai(self) -> None:
+        cog = self._cog()
+        cog._escalated_ticket_channels.add(13)  # AI off: a step done still moves on, only the outcome needs the AI
+        interaction = self._click(0)
+        with (
+            self._store(_ask_row(STEPS)) as store,
+            self._open_ticket(),
+            patch.object(ai_tickets.ask_store, "move", AsyncMock(return_value=True)) as move,
+            patch.object(cog, "_answer_support", AsyncMock()) as answer,
+        ):
+            await cog.on_interaction(interaction)
+
+        busy = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertEqual([(b.label, b.disabled) for b in buttons(busy)], [(WORKING, True), ("Still broken", True)])
+        move.assert_awaited_once_with(55, 0, 1)
+        final = interaction.edit_original_response.await_args.kwargs
+        self.assertEqual(texts(final["view"]), ["What do you want to change?", ai_asks.steps_text(STEPS, 1)])
+        self.assertEqual([b.custom_id for b in buttons(final["view"])], ["ai_ask:steps:42:2", "ai_ask:steps:42:3"])
+        self.assertEqual(final["allowed_mentions"].to_dict()["parse"], [])
+        store.claim.assert_not_called()
+        answer.assert_not_called()
+        self.assertEqual((dict(cog._support_events), cog._pending_tasks, cog._working), ({}, {}, set()))
+        interaction.followup.send.assert_not_called()
+
+    async def test_a_failed_edit_rewinds_the_step(self) -> None:
+        cog = self._cog()
+        interaction = self._click(2, progress=1)
+        interaction.edit_original_response = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        with (
+            self._store(_ask_row(STEPS, progress=1)),
+            self._open_ticket(),
+            patch.object(ai_tickets.ask_store, "move", AsyncMock(return_value=True)) as move,
+            self.assertLogs("bulmaai.ui.v2", "ERROR"),
+        ):
+            await cog.on_interaction(interaction)
+        self.assertEqual([call.args for call in move.await_args_list], [(55, 1, 2), (55, 2, 1)])
+        interaction.followup.send.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+
+    async def test_a_click_on_an_outdated_card_brings_it_up_to_date(self) -> None:
+        cog = self._cog()
+        interaction = self._click(1, progress=2, card_progress=0)  # "Still broken" on step 1, but they're on step 3
+        with (
+            self._store(_ask_row(STEPS, progress=2)) as store,
+            self._open_ticket(),
+            patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
+            patch.object(ai_tickets.ask_store, "move", AsyncMock()) as move,
+            patch.object(cog, "_answer_support", AsyncMock()) as answer,
+        ):
+            await cog.on_interaction(interaction)
+        view = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertEqual(texts(view), ["What do you want to change?", ai_asks.steps_text(STEPS, 2)])
+        self.assertEqual([b.custom_id for b in buttons(view)], ["ai_ask:steps:42:4", "ai_ask:steps:42:5"])
+        interaction.followup.send.assert_awaited_once_with("Already answered.", ephemeral=True)
+        move.assert_not_called()
+        store.claim.assert_not_called()
+        answer.assert_not_called()
+
+    async def _finish_steps(self, interaction, row):
+        cog = self._cog()
+        with (
+            self._store(row) as store,
+            self._open_ticket(),
+            patch("bulmaai.cogs.ai_tickets.ai_budget.is_paused", return_value=False),
+            patch("bulmaai.cogs.ai_tickets.note_ticket_message", AsyncMock()) as noted,
+            patch.object(cog, "_answer_support", AsyncMock()) as answer,
+        ):
+            await cog.on_interaction(interaction)
+            await cog._pending_tasks[(13, 0)]
+        store.claim.assert_awaited_once_with(55)
+        noted.assert_awaited_once_with(13, 42)
+        self.assertEqual(len(cog._support_events[(42, 0)]), 1)  # the outcome runs the AI, so it counts
+        final = interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertEqual(buttons(final), [])
+        return texts(final), answer.await_args.args[0]
+
+    async def test_still_broken_records_the_step_and_hands_back_to_the_ai(self) -> None:
+        shown, stand_in = await self._finish_steps(self._click(3, progress=1), _ask_row(STEPS, progress=1))
+        self.assertEqual(
+            shown,
+            [
+                "What do you want to change?",
+                ai_asks.steps_text(STEPS, 1, failed=1),
+                "-# ↳ <@42>: **Step 2 didn't work:** Delete the config folder",
+            ],
+        )
+        self.assertEqual((stand_in.content, stand_in.id), ("Step 2 didn't work: Delete the config folder", 55))
+
+    async def test_done_on_the_last_step_records_all_of_them(self) -> None:
+        shown, stand_in = await self._finish_steps(self._click(4, progress=2), _ask_row(STEPS, language="es", progress=2))
+        self.assertEqual(shown[1:], [ai_asks.steps_text(STEPS, 3), "-# ↳ <@42>: **Hice todos los pasos (1-3)**"])
+        self.assertEqual(stand_in.content, "I did all the steps (1-3).")
+
+    async def test_step_clicks_are_the_requesters_and_the_outcome_passes_the_ai_gates(self) -> None:
+        cog = self._cog()
+        interaction = self._click(0, user_id=7)
+        with self._store(_ask_row(STEPS, language="pt")) as store:
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("pt", "not_yours"), ephemeral=True)
+
+        cog._escalated_ticket_channels.add(13)
+        interaction = self._click(1)
+        with self._store(_ask_row(STEPS)) as store, self._open_ticket():
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "ai_off"), ephemeral=True)
+        store.claim.assert_not_called()
+
+        interaction = self._click(7)  # step 4 of 3
+        with self._store(_ask_row(STEPS)):
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+
+    async def test_history_reads_the_steps_done_and_the_outcome_as_the_requesters_turn(self) -> None:
+        cog = self._cog()
+        requester = types.SimpleNamespace(id=42, bot=False, name="goku", display_name="Goku")
+        now = datetime.now(timezone.utc)
+        question = types.SimpleNamespace(
+            id=1, author=requester, clean_content="It crashes", attachments=[], created_at=now, reference=None, guild=None
+        )
+        card = types.SimpleNamespace(
+            id=55, author=self.bot_user, clean_content="", attachments=[], created_at=now, reference=None, guild=None,
+            components=self._steps_at(2).components, edited_at=now, mentions=[],
+        )
+
+        async def history(**kwargs):
+            for item in ([question, card] if kwargs.get("oldest_first") else [card, question]):
+                yield item
+
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 13
+        channel.history = history
+        with patch("bulmaai.cogs.ai_tickets.get_image_analyses", new_callable=AsyncMock, return_value={}):
+            turns = await cog._build_ticket_history(types.SimpleNamespace(channel=channel, author=requester), {})
+            cog.bot.get_cog = lambda name: None
+            lines, _ = await cog._collect_transcript(channel, 42)
+        steps = ai_asks.steps_text(STEPS, 2)
+        self.assertEqual(
+            [(turn["role"], turn["content"]) for turn in turns],
+            [("user", "It crashes"), ("assistant", f"What do you want to change?\n{steps}"), ("user", "I did steps 1-2.")],
+        )
+        self.assertEqual(turns[-1]["speaker_kind"], "requester")
+        self.assertEqual([line.content for line in lines][-1], "I did steps 1-2.")
+
+        line = ai_asks.step_failed_line(42, 2, "Start the game", "es")
+        card.components = self._answered([line]).components
+        self.assertEqual(cog._choice_turn(card, 42)["content"], "Step 3 didn't work: Start the game")
+
+    # --- actions ---
+
+    def _offer(self, spec, *, index: int = 0, channel=None, user_id: int = 42):
+        interaction = self._interaction(
+            channel or self._ticket_channel(), user_id, spec=spec, custom_id=f"ai_ask:action:42:{index}"
+        )
+        interaction.message = sent_message(self._card(spec), message_id=55, channel_id=13)
+        return interaction
+
+    async def test_get_staff_escalates_like_the_no_button_and_records_it(self) -> None:
+        cog = self._cog()
+        channel = self._ticket_channel()
+        interaction = self._offer(GET_STAFF, channel=channel)
+        with (
+            self._store(_ask_row(GET_STAFF, language="es")) as store,
+            self._open_ticket(),
+            patch.object(cog, "_ticket_language", AsyncMock(return_value="pt")),
+            patch.object(cog, "_mark_ticket_escalated", AsyncMock()) as escalate,
+            patch.object(cog, "_ping_escalation_roles", AsyncMock()) as ping,
+            patch.object(cog, "_answer_support", AsyncMock()) as answer,
+        ):
+            await cog.on_interaction(interaction)
+        store.claim.assert_awaited_once_with(55)
+        escalate.assert_awaited_once_with(13)
+        ping.assert_awaited_once_with(channel, 42)
+        final = interaction.edit_original_response.await_args.kwargs
+        self.assertEqual(
+            texts(final["view"]),
+            ["What do you want to change?", "-# ↳ <@42>: **Llamar al staff**", ai_tickets.RESOLVE_PROMPT_TEXT["pt"]["escalated"]],
+        )
+        self.assertEqual((buttons(final["view"]), final["allowed_mentions"].to_dict()["parse"]), ([], []))
+        answer.assert_not_called()
+        self.assertEqual(dict(cog._support_events), {})
+
+        # Staff already have it (the AI is off): recorded, but nobody is pinged again.
+        cog._escalated_ticket_channels.add(13)
+        interaction = self._offer(GET_STAFF, channel=channel)
+        with (
+            self._store(_ask_row(GET_STAFF)) as store,
+            self._open_ticket(),
+            patch.object(cog, "_ticket_language", AsyncMock(return_value="en")),
+            patch.object(cog, "_ping_escalation_roles", AsyncMock()) as ping,
+        ):
+            await cog.on_interaction(interaction)
+        store.claim.assert_awaited_once_with(55)
+        ping.assert_not_called()
+        self.assertIn("-# ↳ <@42>: **Get a staff member**", texts(interaction.edit_original_response.await_args.kwargs["view"]))
+
+    async def test_actions_are_the_requesters_and_only_run_where_they_belong(self) -> None:
+        cog = self._cog()
+        interaction = self._offer(GET_STAFF, user_id=7)
+        with self._store(_ask_row(GET_STAFF)) as store:
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "not_yours"), ephemeral=True)
+
+        interaction = self._offer(GET_STAFF)
+        closed = types.SimpleNamespace(status="closed")
+        with self._store(_ask_row(GET_STAFF)) as store, patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=closed)):
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "closed"), ephemeral=True)
+
+        interaction = self._offer(GET_STAFF, channel=MagicMock(spec=discord.DMChannel))  # not a ticket
+        with self._store(_ask_row(GET_STAFF)) as store:
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+        store.claim.assert_not_called()
+
+    async def test_no_thanks_only_takes_the_offer_off(self) -> None:
+        spec = {"kind": "action", "action": "link_patreon", "no_thanks": True}
+        cog = self._cog()
+        flow = types.SimpleNamespace(send_link_prompt=AsyncMock())
+        cog.bot.get_cog = lambda name: flow
+        interaction = self._offer(spec, index=1)
+        with self._store(_ask_row(spec, language="es")) as store, self._open_ticket():
+            await cog.on_interaction(interaction)
+        store.claim.assert_awaited_once_with(55)
+        final = interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertEqual((texts(final), buttons(final)), (["What do you want to change?", "-# ↳ <@42>: **No, gracias**"], []))
+        flow.send_link_prompt.assert_not_called()
+
+    async def test_link_patreon_sends_what_the_command_sends(self) -> None:
+        spec = {"kind": "action", "action": "link_patreon", "label": "Link my Patreon"}
+        cog = self._cog()
+        flow = types.SimpleNamespace(send_link_prompt=AsyncMock())
+        cog.bot.get_cog = lambda name: flow if name == "PatreonWhitelistFlowCog" else None
+        interaction = self._offer(spec, channel=MagicMock(spec=discord.DMChannel))
+        with self._store(_ask_row(spec)) as store:
+            await cog.on_interaction(interaction)
+        store.claim.assert_awaited_once_with(55)
+        flow.send_link_prompt.assert_awaited_once_with(interaction.user, interaction.followup)
+        self.assertEqual(texts(interaction.edit_original_response.await_args.kwargs["view"])[-1], "-# ↳ <@42>: **Link my Patreon**")
+
+        flow.send_link_prompt = AsyncMock(side_effect=RuntimeError("boom"))
+        interaction = self._offer(spec, channel=MagicMock(spec=discord.DMChannel))
+        interaction.edit_original_response = AsyncMock()
+        with self._store(_ask_row(spec)) as store, self.assertLogs("bulmaai.ui.v2", "ERROR"):
+            await cog.on_interaction(interaction)
+        store.release.assert_awaited_once_with(55)  # the offer stays open
+        interaction.followup.send.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+
+    def _public_channel(self) -> MagicMock:
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 13
+        channel.category = types.SimpleNamespace(id=5)  # not the tickets category
+        return channel
+
+    async def test_open_ticket_opens_the_panels_form_or_its_select(self) -> None:
+        cog = self._cog()
+        cog.bot.get_cog = lambda name: object() if name == "TicketsCog" else None
+        spec = {"kind": "action", "action": "open_ticket", "category": "bug"}
+
+        @contextlib.contextmanager
+        def offered(row, open_tickets=()):
+            with (
+                self._store(row) as store,
+                patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=None)),
+                patch("bulmaai.cogs.ai_tickets.get_open_tickets_by_owner", AsyncMock(return_value=list(open_tickets))),
+            ):
+                yield store
+
+        interaction = self._offer(spec, channel=self._public_channel())
+        with offered(_ask_row(spec, language="es")) as store:
+            await cog.on_interaction(interaction)
+        store.claim.assert_awaited_once_with(55)
+        modal = interaction.response.send_modal.await_args.args[0]
+        self.assertIsInstance(modal, ticket_views.TicketModal)
+        self.assertEqual(modal.category.key, "bug")
+        edit = interaction.message.edit.await_args.kwargs
+        self.assertEqual(texts(edit["view"])[-1], "-# ↳ <@42>: **Abrir un ticket**")
+        self.assertEqual((buttons(edit["view"]), edit["allowed_mentions"].to_dict()["parse"]), ([], []))
+
+        no_category = {"kind": "action", "action": "open_ticket"}
+        interaction = self._offer(no_category, channel=self._public_channel())
+        with offered(_ask_row(no_category)):
+            await cog.on_interaction(interaction)
+        call = interaction.response.send_message.await_args
+        self.assertTrue(call.kwargs["ephemeral"])
+        (select,) = [item for item in walk(call.kwargs["view"]) if isinstance(item, discord.ui.Select)]
+        self.assertEqual(select.custom_id, ticket_views.PANEL_SELECT_ID)  # routed by TicketsCog like the panel's
+        interaction.response.send_modal.assert_not_called()
+
+        interaction = self._offer(spec, channel=self._public_channel())
+        with offered(_ask_row(spec), open_tickets=[types.SimpleNamespace(channel_id=77)]) as store:
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ticket_views.msg_already_open(77), ephemeral=True)
+        store.claim.assert_not_called()
+        interaction.message.edit.assert_not_called()
+
+        interaction = self._offer(spec)  # inside a ticket
+        with self._store(_ask_row(spec)) as store, self._open_ticket():
+            await cog.on_interaction(interaction)
+        interaction.response.send_message.assert_awaited_once_with(ai_asks.text("en", "failed"), ephemeral=True)
+        store.claim.assert_not_called()
+
+    async def test_replies_carry_an_action_only_where_it_runs(self) -> None:
+        cog = self._cog()
+        requester = types.SimpleNamespace(id=42, bot=False, name="goku", display_name="Goku")
+        base = {"tool_results": [], "confidence": 0.9, "suggested_close": False, "language": "en", "kind": "answer"}
+
+        async def sent_ask(ask, *, in_ticket: bool):
+            channel = self._ticket_channel() if in_ticket else self._public_channel()
+            channel.created_at = datetime.now(timezone.utc)
+            stand_in = ai_tickets._ChoiceMessage(types.SimpleNamespace(user=requester, channel=channel, guild=None), "Hi", 55)
+            with (
+                patch.object(cog, "_extract_image_context", AsyncMock(return_value={})),
+                patch.object(cog, "_build_history", AsyncMock(return_value=[])),
+                patch.object(cog, "_ticket_language", AsyncMock(return_value="en")),
+                patch("bulmaai.cogs.ai_tickets.run_support_agent", AsyncMock(return_value={**base, "reply": "Try this.", "ask": ask})) as run,
+                patch("bulmaai.cogs.ai_tickets.can_post_publicly", return_value=True),
+                patch.object(cog, "_send_messages_with_typing", AsyncMock(return_value=True)) as send,
+                patch.object(cog, "_awaiting_owner", AsyncMock()),
+                patch.object(cog, "_is_ticket_owner", AsyncMock(return_value=False)),
+            ):
+                await cog._answer_support(stand_in, in_ticket=in_ticket, in_dm=False, mention_request=not in_ticket, member=None)
+            self.assertEqual(run.await_args.kwargs["channel_kind"], "ticket" if in_ticket else "public")
+            return send.await_args.kwargs["ask"]
+
+        open_ticket = {"kind": "action", "action": "open_ticket"}
+        self.assertEqual(await sent_ask(GET_STAFF, in_ticket=True), GET_STAFF)
+        self.assertIsNone(await sent_ask(GET_STAFF, in_ticket=False))
+        self.assertIsNone(await sent_ask(open_ticket, in_ticket=True))
+        self.assertEqual(await sent_ask(open_ticket, in_ticket=False), open_ticket)
 
 
 if __name__ == "__main__":

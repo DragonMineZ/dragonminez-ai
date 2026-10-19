@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
@@ -83,6 +84,26 @@ class PatreonWelcomeVerifyButtonTests(unittest.IsolatedAsyncioTestCase):
         await cog.on_interaction(interaction)
 
         self.assertEqual(len(sent_modals), 1)
+
+    async def test_link_command_and_bulmas_offer_send_the_same_answer(self) -> None:
+        cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)
+        ctx = SimpleNamespace(
+            defer=AsyncMock(), author=SimpleNamespace(id=1), followup=SimpleNamespace(send=AsyncMock())
+        )
+        await cog._handle_link_patreon_command(ctx)
+        ctx.defer.assert_awaited_once_with(ephemeral=True)
+        ctx.followup.send.assert_awaited_once_with("Use `/patreon link` inside the DragonMineZ server.", ephemeral=True)
+
+        cog.bot = SimpleNamespace(settings=SimpleNamespace())
+        member = MagicMock(spec=discord.Member)
+        followup = SimpleNamespace(send=AsyncMock())
+        with (
+            patch("bulmaai.cogs.patreon_whitelist_flow.has_patreon_access_role", return_value=True),
+            patch.object(PatreonWhitelistFlowCog, "_send_patreon_oauth_prompt", AsyncMock()) as prompt,
+        ):
+            await cog.send_link_prompt(member, followup)
+        prompt.assert_awaited_once_with(member, followup, ephemeral=True)
+        followup.send.assert_not_called()
 
     async def test_other_component_interactions_are_ignored(self) -> None:
         cog = PatreonWhitelistFlowCog.__new__(PatreonWhitelistFlowCog)

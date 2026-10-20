@@ -498,7 +498,7 @@ class AskCommandFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.sends = ctx.followup.send.await_args_list
         return ctx.followup.send.await_args.kwargs["view"], save
 
-    async def test_answers_get_the_buttons_unless_off_or_unpostable(self) -> None:
+    async def test_answers_get_the_buttons_unless_off(self) -> None:
         view, save = await self._ask(self._cog())
         self.assertEqual([b.custom_id for b in buttons(view)], ["ai_fb:42:up", "ai_fb:42:down"])
         save.assert_awaited_once_with(message_id=100, channel_id=13, requester_id=42, response_id="msg_9", language="en")
@@ -507,24 +507,22 @@ class AskCommandFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buttons(view), [])
         save.assert_not_called()
 
-        self.assertEqual([call.kwargs["ephemeral"] for call in self.sends], [False])
-
-    async def test_unpostable_answers_go_only_to_the_asker_in_their_own_words(self) -> None:
-        for kind, flags in (("offtopic", frozenset()), ("handoff", frozenset()), (None, frozenset()), ("answer", frozenset({"mention"}))):
+    async def test_every_reply_is_posted_publicly_as_written(self) -> None:
+        for kind, flags in (("offtopic", frozenset()), ("handoff", frozenset()), ("answer", frozenset({"mention"}))):
             view, save = await self._ask(self._cog(), kind=kind, flags=flags)
-            self.assertEqual(buttons(view), [])
-            save.assert_not_called()
             self.assertIn("Update Java.", "\n".join(texts(view)))
-            self.assertEqual(self.sends[0].args, (ask_cog.PRIVATE_NOTE,))
-            self.assertTrue(self.sends[1].kwargs["ephemeral"])
+            self.assertEqual(len(self.sends), 1)
+            self.assertNotIn("ephemeral", self.sends[0].kwargs)
+            if kind != "answer":
+                self.assertEqual(buttons(view), [])
+                save.assert_not_called()
 
-    async def test_unknown_links_alone_still_post_publicly_without_clickable_links(self) -> None:
+    async def test_links_that_arent_ours_go_out_unclickable(self) -> None:
         reply = "Get it at https://evil.example/mod and read https://wiki.dragonminez.com/Forms."
         view, save = await self._ask(self._cog(wiki_base_url="https://wiki.dragonminez.com"), reply=reply, flags=frozenset({"unknown_link"}))
         text = "\n".join(texts(view))
         self.assertIn("https:​//evil.example/mod", text)
         self.assertIn("https://wiki.dragonminez.com/Forms", text)
-        self.assertEqual([call.kwargs["ephemeral"] for call in self.sends], [False])
         save.assert_awaited_once()
 
 

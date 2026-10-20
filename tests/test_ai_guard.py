@@ -7,7 +7,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs.ai_ann_translation import translated_role_mentions
-from bulmaai.cogs.ask import can_post_publicly
+from bulmaai.services.ai_guard import can_post_publicly
 from bulmaai.services.ai_guard import NO_REPLY, link_targets, screen_question, screen_reply
 
 SETTINGS = SimpleNamespace(

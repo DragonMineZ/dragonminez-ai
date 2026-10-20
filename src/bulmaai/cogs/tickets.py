@@ -894,7 +894,7 @@ class TicketsCog(ReloadableCog):
             return await interaction.response.send_message(ALREADY_WORKING, ephemeral=True)
         self._copilot_working.add(key)
         try:
-            await interaction.response.defer(ephemeral=True, thinking=True)
+            await interaction.response.defer(ephemeral=True, invisible=False)
             try:
                 view = await build(ai, ticket)
             except Exception:

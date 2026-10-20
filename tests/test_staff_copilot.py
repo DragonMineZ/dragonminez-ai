@@ -240,7 +240,7 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         ai.ticket_summary.assert_awaited_once()
         self.assertIs(ai.ticket_summary.await_args.args[0], interaction.channel)
         # Only the clicker sees it working; the welcome card (the owner's Close, Solved) is never locked.
-        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True, invisible=False)
         interaction.response.edit_message.assert_not_called()
         interaction.edit_original_response.assert_not_called()
         sent = interaction.followup.send.await_args.kwargs
@@ -378,7 +378,7 @@ class DraftTests(unittest.IsolatedAsyncioTestCase):
             await cog.on_draft(interaction)
         channel, ticket, staff = ai.draft_reply.await_args.args
         self.assertEqual((channel, ticket.ticket_id, staff), (interaction.channel, 42, STAFF))
-        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True, invisible=False)
         sent = interaction.followup.send.await_args.kwargs
         self.assertTrue(sent["ephemeral"])
         self.assertEqual(texts(sent["view"]), ["Prueba esto."])

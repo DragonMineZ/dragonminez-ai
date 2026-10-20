@@ -42,16 +42,19 @@ def _normalize_text(text: str) -> str:
     return "".join(char for char in decomposed if not unicodedata.combining(char))
 
 
+def marker_counts(text: str) -> dict[LangCode, int]:
+    """How many of each language's marker words text has (accents ignored)."""
+    words = set(re.findall(r"[a-z0-9_]{2,}", _normalize_text(text)))
+    return {code: len(words & markers) for code, markers in LANGUAGE_MARKERS.items()}
+
+
 def detect_language_from_text(text: str) -> LangCode:
     if not text or len(text.strip()) < 3:
         return "en"
 
     text_lower = text.lower()
-    words = set(re.findall(r"[a-z0-9_]{2,}", _normalize_text(text)))
-
-    pt_score = len(words & LANGUAGE_MARKERS["pt"])
-    es_score = len(words & LANGUAGE_MARKERS["es"])
-    en_score = len(words & LANGUAGE_MARKERS["en"])
+    counts = marker_counts(text)
+    pt_score, es_score, en_score = counts["pt"], counts["es"], counts["en"]
 
     if any(char in text_lower for char in LANGUAGE_HINTS["pt"]):
         pt_score += 4

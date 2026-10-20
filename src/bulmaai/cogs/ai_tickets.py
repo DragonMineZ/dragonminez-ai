@@ -24,11 +24,18 @@ from bulmaai.services.ai_guard import (
     BLOCKING_FLAGS,
     can_post_publicly,
     defuse_mentions,
+    link_targets,
     safe_name,
     screen_reply,
     strip_links,
 )
-from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
+from bulmaai.services.ai_tools import LOOKUP_TOOL_NAMES, SUPPORT_TOOL_NAMES
+from bulmaai.services.staff_copilot import (
+    TicketSoFar,
+    summarize_so_far,
+    translate_staff_text,
+    translation_wanted,
+)
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.ai_client import (
     ConversationMessage,
@@ -69,9 +76,9 @@ from bulmaai.services.tickets import (
     hide_closed_messages,
     note_ticket_message,
 )
-from bulmaai.ui import ai_asks, ai_feedback
+from bulmaai.ui import ai_asks, ai_feedback, staff_copilot
 from bulmaai.ui.ticket_views import CATEGORIES, TicketModal, msg_already_open, panel_view
-from bulmaai.ui.v2 import while_busy
+from bulmaai.ui.v2 import trim, while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content
@@ -459,11 +466,16 @@ def _card_texts(message: discord.Message) -> list[str]:
 
 def _card_text(message: discord.Message) -> str:
     """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer, a recorded answer
-    (that is the requester's turn, see _card_answer) and the thanks for a rating (ui/ai_feedback)."""
+    (that is the requester's turn, see _card_answer), the thanks for a rating (ui/ai_feedback) and a posted draft's
+    signature (who it is from, see _signed_turn)."""
     lines = [
-        text.replace(AI_FOOTER, "")
-        for text in _card_texts(message)
-        if not text.startswith(ai_asks.ANSWER_LINE_PREFIX) and text not in ai_feedback.THANKS_LINES
+        item["content"].replace(AI_FOOTER, "")
+        for item in _component_dicts(message)
+        if item.get("type") == 10
+        and item.get("content")
+        and item.get("id") != staff_copilot.SIGNED_TEXT_ID
+        and not item["content"].startswith(ai_asks.ANSWER_LINE_PREFIX)
+        and item["content"] not in ai_feedback.THANKS_LINES
     ]
     return "\n".join(line.strip() for line in lines if line.strip())
 
@@ -676,6 +688,7 @@ class AITicketsCog(ReloadableCog):
         self._ticket_languages: dict[int, str | None] = {}
         # Bulma's thread → the member it is for (None: not a help thread); see _help_thread_requester.
         self._thread_requesters: dict[int, int | None] = {}
+        self._translations: set[asyncio.Task[None]] = set()  # staff messages being translated (kept so none is GC'd)
 
     async def on_startup(self) -> None:
         try:
@@ -994,8 +1007,12 @@ class AITicketsCog(ReloadableCog):
     ) -> ConversationMessage | None:
         if message.author.bot and message.author != self.bot.user:
             return None
+        if self._is_translation(message):
+            return None  # it repeats the staff message it replies to
         if (uploaded := self._upload_turn(message, requester_id, image_analyses)) is not None:
             return uploaded
+        if (signed := self._signed_turn(message, requester_id, image_analyses)) is not None:
+            return signed
 
         content = _message_content(message, image_analyses)
         if not content:
@@ -1040,18 +1057,40 @@ class AITicketsCog(ReloadableCog):
         content = _message_content(entry, analyses)
         return self._member_turn(entry, upload[0], requester_id, content, getattr(entry, "created_at", None))
 
+    def _signed_turn(
+        self, entry: discord.Message, requester_id: int | None, analyses: dict[int, str] | None = None
+    ) -> ConversationMessage | None:
+        """A reply staff wrote with Draft reply and posted (ui/staff_copilot.posted_card): their turn, not Bulma's,
+        though the card is hers. Its signature line says whose it is."""
+        if entry.author != self.bot.user or (staff_id := staff_copilot.signed_by(entry)) is None:
+            return None
+        if not (content := _message_content(entry, analyses)):
+            return None
+        return self._member_turn(entry, staff_id, requester_id, content, getattr(entry, "created_at", None), "staff")
+
+    def _is_translation(self, entry: discord.Message) -> bool:
+        """Bulma's translation of a staff message (ui/staff_copilot.translation_card)."""
+        return entry.author == self.bot.user and staff_copilot.is_translation(entry)
+
     def _member_turn(
-        self, entry: discord.Message, user_id: int, requester_id: int | None, content: str, at: datetime | None
+        self,
+        entry: discord.Message,
+        user_id: int,
+        requester_id: int | None,
+        content: str,
+        at: datetime | None,
+        kind: str | None = None,
     ) -> ConversationMessage:
-        """A member's answer recorded on one of our cards, as their turn."""
+        """Someone's words recorded on one of our cards (a member's answer, a staff member's posted draft), as their
+        turn. kind: their speaker kind when the card says it (staff); else requester or participant."""
         guild = getattr(entry, "guild", None)
         member = guild.get_member(user_id) if guild is not None else None
         turn = ConversationMessage(
             role="user",
             content=content,
-            speaker_name=safe_name(member.display_name) if member is not None else "member",
+            speaker_name=safe_name(member.display_name) if member is not None else kind or "member",
             speaker_id=str(user_id),
-            speaker_kind="requester" if user_id == requester_id else "participant",
+            speaker_kind=kind or ("requester" if user_id == requester_id else "participant"),
         )
         if age := _relative_age(at):
             turn["age"] = age
@@ -1078,7 +1117,16 @@ class AITicketsCog(ReloadableCog):
         image_analyses: dict[int, str],
         skip_id: int | None = None,
     ) -> list[ConversationMessage]:
-        channel = message.channel
+        return await self._ticket_history(message.channel, message.author.id, image_analyses, skip_id)
+
+    async def _ticket_history(
+        self,
+        channel: Any,
+        requester_id: int,
+        image_analyses: dict[int, str],
+        skip_id: int | None = None,
+    ) -> list[ConversationMessage]:
+        """A ticket's newest messages as turns, requester_id's as the requester's."""
         if not isinstance(channel, discord.TextChannel):
             return []
 
@@ -1089,7 +1137,6 @@ class AITicketsCog(ReloadableCog):
             if entry.id != skip_id
         ]
         messages.reverse()
-        requester_id = message.author.id
         analyses = {**await self._cached_image_analyses(messages), **await _log_analyses(messages), **image_analyses}
 
         history: list[ConversationMessage] = []
@@ -1734,6 +1781,106 @@ class AITicketsCog(ReloadableCog):
             await self._ping_escalation_roles(channel, member.id)
         else:
             await self._awaiting_owner(channel.id)
+
+    # ---- staff copilot (the welcome card's Summary / Draft reply, translations of staff messages) -------------
+
+    async def ticket_summary(self, channel: discord.TextChannel, ticket: Any) -> TicketSoFar | None:
+        """📋 Summary: the open ticket so far for staff (problem, tried, current state, next step), from the same
+        transcript lines a close archives. Raises when the model call fails."""
+        settings = self.bot.settings
+        lines, _ = await self._collect_transcript(channel, ticket.owner_id)
+        return await summarize_so_far(
+            lines, model=settings.ai_ticket_summary_model, timeout_seconds=settings.ai_support_timeout_seconds
+        )
+
+    async def draft_reply(self, channel: discord.TextChannel, ticket: Any, staff: discord.abc.User) -> str | None:
+        """✍️ Draft reply: the support agent writes staff's next reply to the owner, in the ticket's language, from the
+        ticket's history (lookup tools only, no controls; traces staff_draft*). The reply passed ai_guard in
+        ai_client. None when there is nothing to post; raises when the model call fails."""
+        settings = self.bot.settings
+        owner_id = ticket.owner_id
+        language = ticket.language or "en"
+        history = await self._ticket_history(channel, owner_id, {})
+        owner = channel.guild.get_member(owner_id)
+        name = safe_name(owner.display_name) if owner is not None else "unknown"
+        context_lines = [
+            "channel: support ticket",
+            f"requester: {name} (roles: {_member_roles(owner, settings)})",
+            *([f"ticket opened: {opened}"] if (opened := _relative_age(getattr(channel, "created_at", None))) else []),
+            _language_line(language),
+            f"a staff member ({safe_name(getattr(staff, 'display_name', staff.name))}) asked you to draft their next "
+            f"reply to the requester: write it as their reply, in {LANGUAGE_NAMES.get(language, 'English')}, ready to "
+            "post under their name (don't introduce yourself, don't say you are an AI, never hand off to staff: they "
+            "are staff); no buttons or controls",
+        ]
+        result = await run_support_agent(
+            messages=history,
+            enabled_tools=LOOKUP_TOOL_NAMES,
+            language_hint=language,
+            user_id=owner_id,
+            channel_id=channel.id,
+            ticket_conversation=True,
+            bot=self.bot,
+            settings=settings,
+            context_lines=context_lines,
+            requester_is_staff=False,
+            channel_kind="ticket",
+            workflow_prefix="staff_draft",
+        )
+        reply = (result.get("reply") or "").strip()
+        if result.get("paused") or reply in ("", "(no reply)"):
+            return None
+        return trim(reply, staff_copilot.POST_LIMIT)
+
+    def staff_replied(self, channel_id: int) -> None:
+        """A draft staff posted (TicketsCog) is them speaking: like a typed staff message, it drops the AI answer
+        still pending in the ticket."""
+        self._cancel_pending_task((channel_id, 0))
+
+    def _schedule_translation(self, message: discord.Message) -> None:
+        """In the background, so on_message never waits on the model; one per message (edits aren't translated)."""
+        task = asyncio.create_task(self._translate_staff_message(message))
+        self._translations.add(task)
+        task.add_done_callback(self._translations.discard)
+
+    async def _translate_staff_message(self, message: discord.Message) -> None:
+        """A staff message in an open ticket, written in another language than the ticket's: Bulma replies to it with
+        its translation (ui/staff_copilot.translation_card, no ping), so the owner can read it. Off with
+        ai_ticket_translate_staff or a paused budget; skipped when translation_wanted finds no clear other language,
+        when the model finds it in the ticket's language, or when the guard blocks the text."""
+        settings = self.bot.settings
+        channel = message.channel
+        if not getattr(settings, "ai_ticket_translate_staff", False) or ai_budget.is_paused(settings):
+            return
+        text = message.clean_content.strip()
+        language = await self._ticket_language(channel.id)
+        if language is None or not translation_wanted(text, language):
+            return
+        try:
+            translated = await translate_staff_text(
+                text,
+                language,
+                model=settings.ai_translation_model,
+                timeout_seconds=settings.ai_support_timeout_seconds,
+            )
+        except Exception:
+            log.exception("Staff message translation failed", extra={"channel_id": channel.id, "message_id": message.id})
+            return
+        if translated is None:
+            return
+        source, translation = translated
+        # The staff member's own links are theirs to keep, so they count as ours.
+        translation, flags = screen_reply(translation, settings, link_targets(text))
+        if flags & BLOCKING_FLAGS or not translation.strip() or not _is_ticket_channel(channel, settings=settings):
+            return
+        try:
+            await channel.send(
+                view=staff_copilot.translation_card(translation, source, language),
+                reference=message.to_reference(fail_if_not_exists=False),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            log.info("Couldn't post a staff message's translation", exc_info=True, extra={"channel_id": channel.id})
 
     async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
         """The tickets cog's welcome message mentions the owner; only they may get the "solved?" buttons."""
@@ -2551,14 +2698,11 @@ class AITicketsCog(ReloadableCog):
             if isinstance(entry, ClosedGap):
                 lines.append(TranscriptLine(entry.created_at, "system", "System", entry.notice))
                 continue
-            if entry.author.bot and entry.author != self.bot.user:
-                continue
-            if (uploaded := self._upload_turn(entry, requester_id, analyses)) is not None:
-                lines.append(
-                    TranscriptLine(
-                        entry.created_at, uploaded["speaker_kind"], uploaded["speaker_name"], uploaded["content"]
-                    )
-                )
+            if (entry.author.bot and entry.author != self.bot.user) or self._is_translation(entry):
+                continue  # other bots; our translations repeat the staff message they reply to
+            turn = self._upload_turn(entry, requester_id, analyses) or self._signed_turn(entry, requester_id, analyses)
+            if turn is not None:
+                lines.append(TranscriptLine(entry.created_at, turn["speaker_kind"], turn["speaker_name"], turn["content"]))
                 continue
             content = _message_content(entry, analyses)
             if not content:
@@ -2809,6 +2953,7 @@ class AITicketsCog(ReloadableCog):
         if message.author.bot or not isinstance(message.author, discord.Member):
             return
         if _is_staff_ticket_message(message, in_ticket=in_ticket, settings=settings):
+            self._schedule_translation(message)  # the AI never answers staff; it may translate them for the owner
             return
         if in_ticket and channel.id in self._escalated_ticket_channels:
             await self._maybe_close_solved(channel, message)

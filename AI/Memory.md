@@ -18,6 +18,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 - Models: Claude Sonnet 5.5 and Haiku 5.5 only. No Opus (Bruno, 2026-10-17).
 - No OpenAI code paths are kept.
 - `support_ai_traces` / `support_sessions` / `ticket_transcripts.openai_file_id` keep their OpenAI-era names as history. Don't rename them.
+- The mod source tools (`list_mod_files` / `read_mod_file`) read only the allowlist in `services/mod_source.AREAS` (config classes, shipped configs and quests, commands and permissions, `en_us.json`) on `mod_source_branch` (default `v2.2`, Bruno's pick). The AI quotes keys, values and commands from them and never pastes code.
 
 ## Discord UI: Components V2 only
 
@@ -96,6 +97,7 @@ Console actions are private to Bruno:
 ## Support info
 
 - Nothing the AI suggests goes live without a staff click (Approve / Edit & approve on the review card, or the panel). Approved temporary suggestions without an expiry expire after 7 days.
+- The weekly "Answers to fix" cards (the week's 👎 answers, posted after the weekly report only, never by `/support-report`): what staff write there goes live at once as active support info with source `feedback`, since staff wrote it. The first staff Write or Skip claims the answer; a text that doesn't validate gives it back.
 - Suggestions come only from tickets staff closed with Solved (the click is enough; staff needn't have typed). They keep the links/file names staff gave, and the AI may repeat links that appear in approved entries (`ai_guard.link_targets`).
 - The daily post shows active temporary entries only, replaces the previous post, and skips the day when none are active.
 - Managing entries is staff-level (`/info`, panel HELPER tier).

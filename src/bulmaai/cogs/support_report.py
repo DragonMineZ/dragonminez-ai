@@ -1,6 +1,7 @@
 """Weekly staff support report: posted on Mondays from 09:00 UTC to support_report_channel_id, and on demand with
 /support-report. The schedule lives in the DB (support_report_posts.posted_at), so restarts neither skip nor repeat
-a week; claim_post makes sure only one loop posts."""
+a week; claim_post makes sure only one loop posts. Right after the weekly post (same claim, never on demand) come the
+"Answers to fix" cards: the week's 👎 answers, handled in cogs/support_info.py."""
 
 import logging
 from datetime import datetime, timezone
@@ -8,7 +9,9 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import tasks
 
+from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services import support_report as report
+from bulmaai.ui import feedback_fix
 from bulmaai.ui.support_report_views import support_report_card
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import in_main_guild, is_staff
@@ -17,6 +20,7 @@ log = logging.getLogger(__name__)
 
 STAFF_ONLY_MSG = "Only staff can use this."
 FAILED_MSG = "Couldn't build the report. Try again."
+MAX_ANSWERS_TO_FIX = 10
 
 
 def _is_staff_member(user, settings) -> bool:
@@ -72,10 +76,30 @@ class SupportReportCog(ReloadableCog):
             await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
         except (discord.Forbidden, discord.NotFound):
             # Retrying every hour would only repeat the AI call; the week is skipped.
-            self._warn_once(f"Weekly support report: can't post in channel {channel_id}; skipping this week")
+            return self._warn_once(f"Weekly support report: can't post in channel {channel_id}; skipping this week")
         except BaseException:
             await report.release_claim(previous)
             raise
+        await self._post_answers_to_fix(channel, now)
+
+    def _where(self, channel_id: int) -> str:
+        channel = self.bot.get_channel(channel_id)
+        return "DM" if isinstance(channel, discord.abc.PrivateChannel) else f"<#{channel_id}>"
+
+    async def _post_answers_to_fix(self, channel, now: datetime) -> None:
+        """The week's 👎 answers nobody reviewed (newest first, up to MAX_ANSWERS_TO_FIX): a header card, then one card
+        per answer. Nothing when there are none. The report is out already, so a failure here is only logged: it
+        must never release the claim and post the report twice."""
+        try:
+            items = await feedback_store.answers_to_fix(now - report.WINDOW, now, limit=MAX_ANSWERS_TO_FIX)
+            if not items:
+                return
+            none = discord.AllowedMentions.none()
+            await channel.send(view=feedback_fix.header_card(len(items)), allowed_mentions=none)
+            for item in items:
+                await channel.send(view=feedback_fix.item_card(item, self._where(item.channel_id)), allowed_mentions=none)
+        except Exception:
+            log.exception("Answers to fix failed")
 
     @discord.slash_command(name="support-report", description="Staff: the support report for the last 7 days")
     async def support_report(self, ctx: discord.ApplicationContext):

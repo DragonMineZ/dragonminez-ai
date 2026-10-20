@@ -35,6 +35,7 @@ META: dict[str, tuple[str, str, str]] = {
     "ask_rate_limit_max_calls": ("ai", "/ask rate limit: calls", "How many /ask uses one person gets per window."),
     "ai_answer_feedback_enabled": ("ai", "Answer feedback", "Puts 👍/👎 buttons under the AI's answers outside tickets (and public /ask answers); the weekly support report counts them."),
     "ai_ticket_translate_staff": ("ai", "Translate staff in tickets", "When staff write in a ticket in another language than the ticket's, the AI replies with a translation into the ticket's language."),
+    "mod_source_branch": ("ai", "Mod source branch", "Branch of the mod repository the AI reads config files, commands and the lang file from when it answers technical questions."),
     "log_ai_enabled": ("ai", "Crash-log AI diagnosis", "Adds an AI diagnosis to crash-log cards with errors (main server only, never in tickets)."),
     "log_ai_daily_limit": ("ai", "Crash-log AI: daily limit", "AI diagnoses one member gets per 24h; staff are unlimited and admin-approved (🔍) logs don't count."),
     "log_ai_patron_daily_limit": ("ai", "Crash-log AI: patron limit", "AI diagnoses per 24h for patrons and testers."),

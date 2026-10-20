@@ -18,6 +18,7 @@ from typing import Any
 from bulmaai.config import load_settings
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
+from bulmaai.services import mod_source
 from bulmaai.services.bug_reports import list_bug_reports_by_reporter
 from bulmaai.services.curseforge_state import get_curseforge_project_state
 from bulmaai.services.dev_jar_download_records import has_completed_dev_jar_download
@@ -252,6 +253,18 @@ async def get_latest_releases(
     return result
 
 
+async def list_mod_files(area: str = "", folder: str | None = None, _bot_context: Any = None) -> dict[str, Any]:
+    """The mod's own allowlisted files of one area (services/mod_source), on mod_source_branch."""
+    return await mod_source.list_files(_settings(_bot_context), area, folder)
+
+
+async def read_mod_file(
+    path: str = "", query: str | None = None, start_line: int | None = None, _bot_context: Any = None
+) -> dict[str, Any]:
+    """Numbered lines of one allowlisted mod file: around query's matches, or from start_line."""
+    return await mod_source.read_file(_settings(_bot_context), path, query, start_line)
+
+
 async def ask_requester(_bot_context: Any = None, **spec: Any) -> dict[str, Any]:
     """Local, no lookup: validates the controls (ui/ai_asks.validate_ask). ai_client hands the last valid spec to the
     reply that gets sent; it never suppresses the reply."""
@@ -315,6 +328,46 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "include_patch_notes": {"type": "boolean", "description": "Include a patch notes excerpt."},
             "discord_user_id": _USER_ID_PROPERTY,
+        },
+    ),
+    "list_mod_files": _function_schema(
+        "list_mod_files",
+        "List DragonMineZ's own source files that read_mod_file can read. Areas: config (the Java config classes: "
+        "every option with its current default; ConfigManager says which file each class is saved to), "
+        "defaults (the config JSON files the mod ships as its upgrade baseline: the same files, layout and keys as a "
+        "player's config/dragonminez/<file>.json, e.g. general-server.json, combat.json, races/<race>/stats.json, "
+        "forms/*.json; values can be a version old, the config classes hold the current defaults), commands (the "
+        "server commands with their syntax, DMZPermissions with every permission node, DMZServer), lang (en_us.json: "
+        "every in-game text and message by key), quests (the quest, saga and side-quest JSON files as shipped, in "
+        "the layout of a world's dragonminez folder). A listing that is cut short shows folders with their file "
+        "counts: pass one as folder to list it.",
+        {
+            "area": {"type": "string", "enum": list(mod_source.AREAS)},
+            "folder": {
+                "type": ["string", "null"],
+                "description": "Null for the whole area, or a folder from a cut-short listing's folders.",
+            },
+        },
+    ),
+    "read_mod_file": _function_schema(
+        "read_mod_file",
+        "Read one DragonMineZ source file from list_mod_files (no other paths), as numbered lines. With query: "
+        f"only the lines containing it (case-insensitive) with {mod_source.CONTEXT_LINES} lines around each; "
+        "without: the file from start_line. About 6000 characters at most; truncated means there is more (read on "
+        "from a later start_line, or narrow the query). A player's config/dragonminez/<file>.json path reads the "
+        "shipped file of the same name. Use it for technical config, command and permission questions instead of "
+        "guessing, and quote the exact key, value, command or permission node; never paste code.",
+        {
+            "path": {"type": "string", "description": "A path exactly as list_mod_files gave it."},
+            "query": {
+                "type": ["string", "null"],
+                "description": f"A config key, command, permission or text to find, up to {mod_source.QUERY_MAX} "
+                "characters; null reads a window.",
+            },
+            "start_line": {
+                "type": ["integer", "null"],
+                "description": "Without query: the first line to read (1 = the top). Null: 1.",
+            },
         },
     ),
     # Not strict: each kind fills only its own fields; ui/ai_asks validates every call (errors go back to the model).
@@ -473,6 +526,8 @@ TOOL_FUNCS = {
     "get_user_bug_reports": get_user_bug_reports,
     "search_known_issues": search_known_issues,
     "get_latest_releases": get_latest_releases,
+    "list_mod_files": list_mod_files,
+    "read_mod_file": read_mod_file,
     ASK_TOOL: ask_requester,
     ACTION_TOOL: offer_action,
 }

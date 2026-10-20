@@ -600,7 +600,7 @@ CREATE TABLE IF NOT EXISTS support_info (
     title              TEXT NOT NULL,
     body               TEXT NOT NULL,
     status             TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('suggested', 'active', 'discarded', 'removed')),
-    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
+    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai', 'feedback')),
     ticket_id          BIGINT,
     expires_at         TIMESTAMPTZ,
     created_by         BIGINT,
@@ -610,6 +610,10 @@ CREATE TABLE IF NOT EXISTS support_info (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 'feedback': staff wrote it from the weekly "Answers to fix" card (a 👎 answer, cogs/support_info.py).
+ALTER TABLE support_info DROP CONSTRAINT IF EXISTS support_info_source_check;
+ALTER TABLE support_info ADD CONSTRAINT support_info_source_check CHECK (source IN ('manual', 'ai', 'feedback'));
 
 CREATE INDEX IF NOT EXISTS idx_support_info_status
     ON support_info (status, created_at DESC);
@@ -689,3 +693,8 @@ CREATE TABLE IF NOT EXISTS ai_feedback (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_feedback_created_at ON ai_feedback (created_at);
+-- The weekly "Answers to fix" review of 👎 answers (cogs/support_info.py): the first staff click claims the row
+-- (WHERE reviewed_at IS NULL); info_id is the support info written from it (NULL when skipped).
+ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS reviewed_by BIGINT;
+ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS info_id BIGINT;

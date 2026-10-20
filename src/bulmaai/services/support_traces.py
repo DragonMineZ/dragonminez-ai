@@ -199,6 +199,37 @@ async def list_support_eval_trace_rows(
     return list(rows)
 
 
+def _decoded(value: Any) -> Any:
+    """asyncpg hands jsonb back as text unless a codec is set."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return []
+    return value
+
+
+async def get_reply_traces(response_ids: Sequence[str], *, pool: Any | None = None) -> dict[str, dict[str, Any]]:
+    """response id -> the trace of the reply people got with it (support_question / support_escalation; replaced
+    drafts never count), input_json decoded. Ids without such a trace are left out."""
+    ids = sorted({response_id for response_id in response_ids if response_id})
+    if not ids:
+        return {}
+    resolved_pool = pool or await get_pool()
+    async with resolved_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (response_id) id, created_at, response_id, workflow, language, channel_id, user_id,
+                   reply_text, input_json
+            FROM support_ai_traces
+            WHERE response_id = ANY($1::text[]) AND workflow IN ('support_question', 'support_escalation')
+            ORDER BY response_id, created_at DESC
+            """,
+            ids,
+        )
+    return {row["response_id"]: {**dict(row), "input_json": _decoded(row["input_json"])} for row in rows}
+
+
 def support_trace_to_eval_row(row: Any) -> dict[str, Any]:
     trace_id = int(row["id"])
     input_json = row["input_json"] or []

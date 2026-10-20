@@ -232,7 +232,7 @@ async def get_reply_traces(response_ids: Sequence[str], *, pool: Any | None = No
 
 def support_trace_to_eval_row(row: Any) -> dict[str, Any]:
     trace_id = int(row["id"])
-    input_json = row["input_json"] or []
+    input_json = _decoded(row["input_json"]) or []
     return {
         "custom_id": f"support-trace-{trace_id}",
         "input": input_json,

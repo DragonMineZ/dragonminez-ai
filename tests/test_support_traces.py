@@ -178,6 +178,22 @@ class SupportTraceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(json.loads(lines[0])["custom_id"], "support-trace-7")
 
+    def test_support_trace_to_eval_row_decodes_jsonb_text(self) -> None:
+        row = {
+            "id": 8,
+            "created_at": "2026-05-08T12:00:00Z",
+            "response_id": "resp_8",
+            "model": "claude-haiku-5-5",
+            "language": "en",
+            "channel_id": None,
+            "user_id": None,
+            "tool_names": None,
+            "reply_text": "Use the form key.",
+            "input_json": json.dumps([{"role": "user", "content": "How do I transform?"}]),
+        }
+
+        self.assertEqual(support_trace_to_eval_row(row)["input"], [{"role": "user", "content": "How do I transform?"}])
+
 
 if __name__ == "__main__":
     unittest.main()

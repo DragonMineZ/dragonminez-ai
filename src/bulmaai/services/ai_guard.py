@@ -103,6 +103,17 @@ def _link_is_ours(url: str, wiki_host: str | None, staff_links: frozenset[str] =
     return any(target == prefix or target.startswith(prefix + "/") for prefix in AI_LINK_PREFIXES)
 
 
+def defang_unknown_links(text: str, settings: object) -> str:
+    """Links that aren't our own pages stay readable but can't be clicked (zero-width space after the scheme)."""
+    wiki_host = urlsplit(str(getattr(settings, "wiki_base_url", "") or "")).hostname
+
+    def defang_url(match: re.Match) -> str:
+        url = match.group(0)
+        return url if _link_is_ours(url, wiki_host) else url.replace("://", ":​//", 1)
+
+    return _SCHEME_URL_RE.sub(defang_url, text)
+
+
 def can_post_publicly(result: dict) -> bool:
     """Only clean, on-topic answers go public; anything the guard touched or the model flagged stays private."""
     return result.get("kind") in PUBLIC_KINDS and not result.get("guard_flags")

@@ -16,7 +16,13 @@ from bulmaai.cogs.ai_tickets import (
     remember_ask_question,
 )
 from bulmaai.services import ai_feedback as feedback_store
-from bulmaai.services.ai_guard import ASK_MAX_QUESTION_LENGTH, can_post_publicly, safe_name, screen_question
+from bulmaai.services.ai_guard import (
+    ASK_MAX_QUESTION_LENGTH,
+    can_post_publicly,
+    defang_unknown_links,
+    safe_name,
+    screen_question,
+)
 from bulmaai.services.ai_tools import LOOKUP_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.ai_client import (
@@ -33,7 +39,7 @@ REFUSAL_TEXT = (
     "I only answer DragonMineZ questions, in my own words: I won't repeat text, ping anyone or change my rules. "
     "Ask your question plainly, or open a ticket."
 )
-UNPOSTABLE_TEXT = "I can't answer that one here. Open a ticket and staff will help."
+PRIVATE_NOTE = "-# I sent this answer to you privately."
 
 
 def is_ask_channel_allowed(channel_id: int, allowed_channel_ids: Sequence[int]) -> bool:
@@ -166,11 +172,15 @@ class AskCog(commands.Cog):
         if not answered:
             reply_text = "I couldn't find a confident knowledge-backed answer for that."
 
-        # An answer the guard won't post publicly becomes a fallback text, as in ai_tickets' public replies.
-        postable = can_post_publicly(result)
+        # Links to pages that aren't ours don't keep an answer private: they go out unclickable.
+        flags = result.get("guard_flags") or frozenset()
+        postable = can_post_publicly({**result, "guard_flags": flags - {"unknown_link"}})
+        if postable and "unknown_link" in flags:
+            reply_text = defang_unknown_links(reply_text, settings)
         if not postable:
-            reply_text = UNPOSTABLE_TEXT
-        # 👍/👎 under a real answer, as under a ping's (ui/ai_feedback).
+            # The first followup inherits the public defer, so it can't carry the private answer itself.
+            await ctx.followup.send(PRIVATE_NOTE, allowed_mentions=discord.AllowedMentions.none())
+        # 👍/👎 under a public answer, as under a ping's (ui/ai_feedback); private answers go without.
         feedback = answered and postable and ai_feedback.wanted(settings, result.get("kind"))
         chunks = _chunk_discord_message(reply_text, CARD_TEXT_LIMIT)
         chunks[-1] = _with_footer(chunks[-1])
@@ -179,6 +189,7 @@ class AskCog(commands.Cog):
             sent = await ctx.followup.send(
                 view=_card(chunk, AI_CARD_COLOR, *rows),
                 allowed_mentions=discord.AllowedMentions.none(),
+                ephemeral=not postable,
             )
             if index == 0 and postable:
                 remember_ask_question(sent.id, ctx.author.id, messages[0]["speaker_name"], question)

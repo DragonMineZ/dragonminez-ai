@@ -475,7 +475,7 @@ class AskCommandFeedbackTests(unittest.IsolatedAsyncioTestCase):
         )
         return ask_cog.AskCog(types.SimpleNamespace(settings=settings))
 
-    async def _ask(self, cog, *, kind: str = "answer"):
+    async def _ask(self, cog, *, kind: str = "answer", reply: str = "Update Java.", flags: frozenset = frozenset()):
         author = _member(42, 3)
         followup_ids = iter(range(100, 110))
         ctx = types.SimpleNamespace(
@@ -486,14 +486,16 @@ class AskCommandFeedbackTests(unittest.IsolatedAsyncioTestCase):
             defer=AsyncMock(),
             followup=types.SimpleNamespace(send=AsyncMock(side_effect=lambda *a, **k: types.SimpleNamespace(id=next(followup_ids)))),
         )
-        result = {"reply": "Update Java.", "kind": kind, "language": "en", "response_id": "msg_9", "tool_results": []}
+        result = {
+            "reply": reply, "kind": kind, "language": "en", "response_id": "msg_9", "tool_results": [], "guard_flags": flags,
+        }
         with (
             patch.object(ask_cog, "run_support_agent", AsyncMock(return_value=result)),
             patch.object(feedback_store, "save", AsyncMock()) as save,
         ):
             await ask_cog.AskCog.ask.callback(cog, ctx, "How do I fix my crash?")
         ctx.defer.assert_awaited_once_with()
-        self.assertTrue(all("ephemeral" not in call.kwargs for call in ctx.followup.send.await_args_list))
+        self.sends = ctx.followup.send.await_args_list
         return ctx.followup.send.await_args.kwargs["view"], save
 
     async def test_answers_get_the_buttons_unless_off_or_unpostable(self) -> None:
@@ -505,10 +507,25 @@ class AskCommandFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buttons(view), [])
         save.assert_not_called()
 
-        view, save = await self._ask(self._cog(), kind="offtopic")
-        self.assertEqual(buttons(view), [])
-        save.assert_not_called()
-        self.assertIn(ask_cog.UNPOSTABLE_TEXT, "\n".join(texts(view)))
+        self.assertEqual([call.kwargs["ephemeral"] for call in self.sends], [False])
+
+    async def test_unpostable_answers_go_only_to_the_asker_in_their_own_words(self) -> None:
+        for kind, flags in (("offtopic", frozenset()), ("handoff", frozenset()), (None, frozenset()), ("answer", frozenset({"mention"}))):
+            view, save = await self._ask(self._cog(), kind=kind, flags=flags)
+            self.assertEqual(buttons(view), [])
+            save.assert_not_called()
+            self.assertIn("Update Java.", "\n".join(texts(view)))
+            self.assertEqual(self.sends[0].args, (ask_cog.PRIVATE_NOTE,))
+            self.assertTrue(self.sends[1].kwargs["ephemeral"])
+
+    async def test_unknown_links_alone_still_post_publicly_without_clickable_links(self) -> None:
+        reply = "Get it at https://evil.example/mod and read https://wiki.dragonminez.com/Forms."
+        view, save = await self._ask(self._cog(wiki_base_url="https://wiki.dragonminez.com"), reply=reply, flags=frozenset({"unknown_link"}))
+        text = "\n".join(texts(view))
+        self.assertIn("https:​//evil.example/mod", text)
+        self.assertIn("https://wiki.dragonminez.com/Forms", text)
+        self.assertEqual([call.kwargs["ephemeral"] for call in self.sends], [False])
+        save.assert_awaited_once()
 
 
 if __name__ == "__main__":

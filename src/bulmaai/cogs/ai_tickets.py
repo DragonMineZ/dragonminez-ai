@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import io
 import logging
 import random
@@ -19,7 +20,14 @@ from bulmaai.services import ai_asks as ask_store
 from bulmaai.services import ai_budget
 from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services.ai_oneshot import response_text
-from bulmaai.services.ai_guard import can_post_publicly, defuse_mentions, safe_name, strip_links
+from bulmaai.services.ai_guard import (
+    BLOCKING_FLAGS,
+    can_post_publicly,
+    defuse_mentions,
+    safe_name,
+    screen_reply,
+    strip_links,
+)
 from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.ai_client import (
@@ -124,6 +132,15 @@ SOLVED_CLOSE_TEXT = {
 LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "pt": "Portuguese"}
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
+# ponytail: a thread is one conversation, so no age cutoff there; its newest N messages plus what led into it.
+THREAD_CONTEXT_MESSAGE_LIMIT = 30
+THREAD_NAME_LIMIT = 90
+HELP_THREAD_ARCHIVE_MINUTES = 1440
+_THREAD_NAME_JUNK_RE = re.compile(
+    r"<a?:\w+:\d+>|<[@#][!&]?\d+>|<t:\d+(?::\w)?>|(?i:\b[a-z][a-z0-9+.-]*://\S+)|[*_~`|>#\[\]()\\]+"
+)
+# ponytail: who each of Bulma's help threads is for, read off its starter once; a restart reads it again.
+_THREAD_REQUESTERS_SIZE = 512
 # ponytail: in-memory per-user window (a restart resets it); stops one member draining the shared daily AI budget.
 SUPPORT_RATE_LIMIT_CALLS = 8
 SUPPORT_RATE_LIMIT_WINDOW_SECONDS = 600
@@ -205,6 +222,51 @@ def _is_ticket_channel(
         and settings.ai_ticket_category_id is not None
         and channel.category.id == settings.ai_ticket_category_id
     )
+
+
+def _channel_kind(channel: Any, *, settings) -> str:
+    """Where an answer goes out, as ai_client's channel kinds: ticket, dm or public. Threads are never tickets."""
+    if isinstance(channel, discord.DMChannel):
+        return "dm"
+    if _is_ticket_channel(channel, settings=settings):
+        return "ticket"
+    return "public"
+
+
+def _is_support_thread(channel: Any, *, settings) -> bool:
+    """A public thread of our servers (forum posts count) that Bulma answers in like a public channel. Private threads
+    the bug-report forum's posts (cogs/bug_reports owns those) and threads inside tickets are left alone."""
+    ticket_categories = {getattr(settings, "ai_ticket_category_id", None), getattr(settings, "ticket_closed_category_id", None)}
+    return (
+        isinstance(channel, discord.Thread)
+        and channel.type == discord.ChannelType.public_thread
+        and is_allowed_guild_id(getattr(getattr(channel, "guild", None), "id", None), settings)
+        and channel.parent_id != getattr(settings, "bug_report_forum_channel_id", None)
+        and getattr(getattr(channel, "parent", None), "category_id", None) not in ticket_categories - {None}
+    )
+
+
+async def _thread_starter(thread: discord.Thread) -> discord.Message | None:
+    """The message a thread was started from (it has the thread's id): a forum post's first message, in the thread,
+    or the text-channel message the thread was made off. None when it was deleted; other fetch errors raise."""
+    if (cached := getattr(thread, "starting_message", None)) is not None:
+        return cached
+    parent = thread.parent
+    source = parent if isinstance(parent, discord.TextChannel) else thread
+    try:
+        return await source.fetch_message(thread.id)
+    except discord.NotFound:
+        return None
+
+
+def _thread_name(text: str, settings: Any) -> str:
+    """A help thread's name from member text: one line without mentions, emoji codes, links or markdown, at most
+    THREAD_NAME_LIMIT characters. "" when nothing is left or the text trips the reply guard (a banned word)."""
+    name = " ".join(_THREAD_NAME_JUNK_RE.sub(" ", text or "").split())
+    if len(name) > THREAD_NAME_LIMIT:
+        name = name[: THREAD_NAME_LIMIT - 1].rstrip() + "…"
+    screened, flags = screen_reply(name, settings)
+    return "" if flags & BLOCKING_FLAGS else screened
 
 
 def _is_pinging_bot(message: discord.Message, bot_user: discord.ClientUser | None) -> bool:
@@ -411,6 +473,17 @@ def _card_answer(message: discord.Message) -> tuple[int, str] | None:
     )
 
 
+def _is_answer_card(message: Any, bot_user: discord.ClientUser | None) -> bool:
+    """One of Bulma's support answers (a typed one's, Ask Bulma's, /ask's): her card with the AI footer, which only an
+    answer's last card carries."""
+    author_id = getattr(getattr(message, "author", None), "id", None)
+    return (
+        bot_user is not None
+        and author_id == bot_user.id
+        and any(AI_FOOTER in text for text in _card_texts(message))
+    )
+
+
 def _rebuilt(message: discord.Message, *items: discord.ui.Item) -> discord.ui.DesignerView:
     """The card's own text (not the text that belongs to its controls), then items."""
     own = [
@@ -442,13 +515,19 @@ def _steps_card(message: discord.Message, row: ask_store.AskRow, progress: int) 
 class _ChoiceMessage:
     """Stands in for the message an answer on a card (a pick, a submitted form or an upload) replaces. Its id is the
     card's, so the general history, which always keeps the triggering message, keeps the card and the answer on it.
-    attachments: an upload's files as reposted, so their screenshots get analyzed like a typed upload's."""
+    attachments: an upload's files as reposted, so their screenshots get analyzed like a typed upload's. card: the
+    answer card itself, which a follow-up in a text channel moves into a thread off (_open_help_thread)."""
 
     attachments = snapshots = mentions = ()
     reference = None
 
     def __init__(
-        self, interaction: discord.Interaction, content: str, message_id: int, attachments: Sequence[Any] = ()
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        message_id: int,
+        attachments: Sequence[Any] = (),
+        card: discord.Message | None = None,
     ) -> None:
         self.author = interaction.user
         self.channel = interaction.channel
@@ -457,6 +536,7 @@ class _ChoiceMessage:
         self.content = self.clean_content = content
         self.created_at = datetime.now(timezone.utc)
         self.attachments = tuple(attachments)
+        self.card = card
 
 
 class _AskedMessage(_ChoiceMessage):
@@ -591,6 +671,8 @@ class AITicketsCog(ReloadableCog):
         self._ticket_owners: dict[int, int | None] = {}
         # Ticket channel → its support language (None: no tickets row); TicketsCog drops an entry when it changes.
         self._ticket_languages: dict[int, str | None] = {}
+        # Bulma's thread → the member it is for (None: not a help thread); see _help_thread_requester.
+        self._thread_requesters: dict[int, int | None] = {}
 
     async def on_startup(self) -> None:
         try:
@@ -707,24 +789,23 @@ class AITicketsCog(ReloadableCog):
     ) -> tuple[str | None, str, dict[str, Any]]:
         """(why Ask Bulma can't answer, as a ui/ai_asks.TEXT key, or None; the language to say it in: the ticket's, else
         English; the _answer_support arguments). The gates are a typed request's (_process_support_message): a ping's
-        in public channels, the ticket's in tickets (AI on, still open), DM support's in DMs. Our own cards may be
-        asked about, other bots' messages not."""
+        in public channels and threads, the ticket's in tickets (AI on, still open), DM support's in DMs. Our own cards
+        may be asked about, other bots' messages not."""
         settings = self.bot.settings
         channel, user = interaction.channel, interaction.user
-        in_dm = isinstance(channel, discord.DMChannel)
-        in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
+        kind = _channel_kind(channel, settings=settings)
+        in_ticket, in_dm = kind == "ticket", kind == "dm"
         language = (await self._ticket_language(channel.id) or "en") if in_ticket else "en"
         context: dict[str, Any] = {
-            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": not (in_ticket or in_dm), "member": None
+            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": kind == "public", "member": None
         }
 
         def refuse(key: str) -> tuple[str, str, dict[str, Any]]:
             return key, language, context
 
-        # Like a ping: only text channels of our servers (no threads), or a DM.
-        in_our_server = isinstance(channel, discord.TextChannel) and is_allowed_guild_id(
-            getattr(interaction, "guild_id", None), settings
-        )
+        # Like a ping: only text channels and public threads (not the bug forum's) of our servers, or a DM.
+        answerable = isinstance(channel, discord.TextChannel) or _is_support_thread(channel, settings=settings)
+        in_our_server = answerable and is_allowed_guild_id(getattr(interaction, "guild_id", None), settings)
         if not settings.ai_support_enabled or not (in_dm or in_our_server):
             return refuse("ask_off")
         if (target.author.bot or getattr(target, "webhook_id", None)) and target.author.id != getattr(
@@ -1028,13 +1109,16 @@ class AITicketsCog(ReloadableCog):
             return []
 
         author_id = message.author.id
-        cutoff = datetime.now(timezone.utc) - GENERAL_CONTEXT_MAX_AGE
-        relevant_messages = [
-            entry
-            async for entry in channel.history(limit=GENERAL_CONTEXT_MESSAGE_LIMIT)
-            if entry.id != skip_id and (entry.id == message.id or entry.created_at >= cutoff)
-        ]
-        relevant_messages.reverse()
+        if isinstance(channel, discord.Thread):
+            relevant_messages = await self._thread_context(channel, skip_id)
+        else:
+            cutoff = datetime.now(timezone.utc) - GENERAL_CONTEXT_MAX_AGE
+            relevant_messages = [
+                entry
+                async for entry in channel.history(limit=GENERAL_CONTEXT_MESSAGE_LIMIT)
+                if entry.id != skip_id and (entry.id == message.id or entry.created_at >= cutoff)
+            ]
+            relevant_messages.reverse()
         analyses = {
             **await self._cached_image_analyses(relevant_messages),
             **await _log_analyses(relevant_messages),
@@ -1060,6 +1144,148 @@ class AITicketsCog(ReloadableCog):
             if (picked := self._choice_turn(entry, author_id)) is not None:
                 history.append(picked)
         return history
+
+    async def _thread_context(self, thread: discord.Thread, skip_id: int | None = None) -> list[discord.Message]:
+        """A thread's messages for the model, oldest first, with no age cutoff: what led into it (_thread_lead), then
+        its newest THREAD_CONTEXT_MESSAGE_LIMIT messages. A forum post's starter is the thread's first message, so it
+        is only fetched when the thread outgrew the window."""
+        own = [entry async for entry in thread.history(limit=THREAD_CONTEXT_MESSAGE_LIMIT)]
+        own.reverse()
+        lead = [] if any(entry.id == thread.id for entry in own) else await self._thread_lead(thread)
+        return [entry for entry in (*lead, *own) if entry.id != skip_id]
+
+    async def _thread_lead(self, thread: discord.Thread) -> list[discord.Message]:
+        """What a thread was started from, oldest first: a forum post's first message; the text-channel message it was
+        made off; for a help thread Bulma opened, the channel's conversation up to that message too (public context
+        window, counted back from it), so the question and her earlier answer stay in view after the move."""
+        parent = thread.parent
+        try:
+            if not isinstance(parent, discord.TextChannel):
+                starter = await _thread_starter(thread)
+                return [starter] if starter is not None else []
+            help_thread = self._is_help_thread(thread)
+            # before the thread's id + 1: the message it was made off (same id) is the newest one returned.
+            entries = [
+                entry
+                async for entry in parent.history(
+                    limit=GENERAL_CONTEXT_MESSAGE_LIMIT if help_thread else 1, before=discord.Object(id=thread.id + 1)
+                )
+            ]
+        except discord.HTTPException:
+            log.info("Couldn't read what a thread was started from", exc_info=True, extra={"channel_id": thread.id})
+            return []
+        started = next((entry.created_at for entry in entries if entry.id == thread.id), None)
+        cutoff = (started or discord.utils.snowflake_time(thread.id)) - GENERAL_CONTEXT_MAX_AGE
+        return [
+            entry
+            for entry in reversed(entries)
+            if entry.id == thread.id or (help_thread and entry.created_at >= cutoff)
+        ]
+
+    def _is_help_thread(self, channel: Any) -> bool:
+        """A thread Bulma made off a message in a text channel: a help thread (_open_help_thread) or, say, a dev jar
+        build's feedback thread; _help_thread_requester tells them apart."""
+        return (
+            isinstance(channel, discord.Thread)
+            and channel.owner_id == getattr(self.bot.user, "id", None)
+            and isinstance(channel.parent, discord.TextChannel)
+        )
+
+    def _remember_thread_requester(self, thread_id: int, requester_id: int | None) -> None:
+        self._thread_requesters[thread_id] = requester_id
+        if len(self._thread_requesters) > _THREAD_REQUESTERS_SIZE:
+            self._thread_requesters.pop(next(iter(self._thread_requesters)))
+
+    def _starter_requester(self, starter: discord.Message | None) -> int | None:
+        """Who a help thread is for, read off the message it was made off: the member whose reply to Bulma's answer it
+        was, or, for her answer card, whoever answered on it (the pick, form or steps line). None for anything else."""
+        if starter is None:
+            return None
+        author = starter.author
+        if author.id == getattr(self.bot.user, "id", None):
+            answer = _card_answer(starter) if _is_answer_card(starter, self.bot.user) else None
+            return answer[0] if answer is not None else None
+        if author.bot or not _is_reply_to_bot(starter, self.bot.user):
+            return None
+        return author.id
+
+    async def _help_thread_requester(self, channel: Any) -> int | None:
+        """The member a help thread of Bulma's is for (they're answered there without a ping, as in a ticket); None
+        anywhere else. It comes from Discord (the thread's starter), so it survives a restart; cached per thread."""
+        if not self._is_help_thread(channel):
+            return None
+        if channel.id not in self._thread_requesters:
+            try:
+                starter = await _thread_starter(channel)
+            except discord.HTTPException:
+                log.info("Couldn't read a help thread's starter", exc_info=True, extra={"channel_id": channel.id})
+                return None  # not cached: the next message tries again
+            self._remember_thread_requester(channel.id, self._starter_requester(starter))
+        return self._thread_requesters[channel.id]
+
+    def _follow_up_source(self, message: discord.Message | _ChoiceMessage) -> tuple[Any, Any]:
+        """(the message a follow-up's thread is made off, Bulma's earlier answer card) when message continues a
+        conversation with her in a public text channel; (None, None) otherwise. A pick, form or steps outcome on her
+        answer card: the card, which records it. A typed reply to her answer: the reply. Either way the thread starts
+        at the end of the channel's conversation, so _thread_lead finds all of it before the starter."""
+        channel = message.channel
+        if (
+            not isinstance(channel, discord.TextChannel)
+            or _is_ticket_channel(channel, settings=self.bot.settings)
+            or isinstance(message, _AskedMessage)
+        ):
+            return None, None
+        if isinstance(message, _ChoiceMessage):
+            return (message.card, message.card) if message.card is not None else (None, None)
+        reference = getattr(message, "reference", None)
+        card = getattr(reference, "resolved", None) or getattr(reference, "cached_message", None)
+        return (message, card) if _is_answer_card(card, self.bot.user) else (None, None)
+
+    async def _answered_question(self, channel: discord.TextChannel, card: Any, requester_id: int) -> str | None:
+        """The question an answer card answered: a /ask question, the message an Ask Bulma answer replies to, else the
+        requester's latest message before the card within the public context window."""
+        if asked := _ASK_QUESTIONS.get(card.id):
+            return asked[2]
+        target = getattr(getattr(card, "reference", None), "resolved", None)
+        if target is not None and hasattr(target, "clean_content"):
+            return _message_text(target)
+        cutoff = card.created_at - GENERAL_CONTEXT_MAX_AGE
+        try:
+            async for entry in channel.history(limit=GENERAL_CONTEXT_MESSAGE_LIMIT, before=card):
+                if entry.created_at < cutoff:
+                    break
+                if entry.author.id == requester_id:
+                    return _message_text(entry)
+        except discord.HTTPException:
+            log.info("Couldn't read the question behind an answer", exc_info=True, extra={"channel_id": channel.id})
+        return None
+
+    async def _open_help_thread(self, message: discord.Message | _ChoiceMessage) -> discord.Thread | None:
+        """A follow-up in a public text channel (a reply to Bulma's answer, an answer on its card) is answered in a new
+        thread made off _follow_up_source's message and named after the question. None (answer in the channel, as
+        before) when it isn't a follow-up or the thread can't be made (no permission, the message has one already)."""
+        source, card = self._follow_up_source(message)
+        if source is None:
+            return None
+        settings = self.bot.settings
+        question = await self._answered_question(message.channel, card, message.author.id)
+        typed = None if isinstance(message, _ChoiceMessage) else _message_text(message)
+        name = ""
+        for text in (question, typed):
+            if text and (name := _thread_name(text, settings)):
+                break
+        name = name or safe_name(getattr(message.author, "display_name", message.author.name))
+        try:
+            thread = await source.create_thread(name=name, auto_archive_duration=HELP_THREAD_ARCHIVE_MINUTES)
+        except (discord.HTTPException, discord.InvalidArgument):
+            # INFO: a channel where Bulma may not make threads would warn staff on every follow-up.
+            log.info("Couldn't open a help thread", exc_info=True, extra={"channel_id": message.channel.id})
+            return None
+        except Exception:
+            log.exception("Opening a help thread failed", extra={"channel_id": message.channel.id})
+            return None
+        self._remember_thread_requester(thread.id, message.author.id)
+        return thread
 
     async def _build_history(
         self,
@@ -1161,8 +1387,19 @@ class AITicketsCog(ReloadableCog):
         elif in_dm:
             where = "direct message"
         else:
-            how = "they used Ask Bulma on a message" if asked else "you were pinged"
-            where = f"public channel #{getattr(channel, 'name', '?')} ({how}; answer only the requester)"
+            if asked:
+                how = "they used Ask Bulma on a message"
+            elif self._thread_requesters.get(channel.id) == message.author.id:
+                how = "you opened this thread to help them, so they needn't ping you"
+            else:
+                how = "you were pinged"
+            if isinstance(channel, discord.Thread):
+                # Members name threads (and forum posts), so the name is cleaned like a display name.
+                parent = getattr(getattr(channel, "parent", None), "name", "?")
+                thread_name = safe_name(getattr(channel, "name", None))
+                where = f"public thread #{thread_name} in #{parent} ({how}; answer only the requester)"
+            else:
+                where = f"public channel #{getattr(channel, 'name', '?')} ({how}; answer only the requester)"
         name = safe_name(getattr(message.author, "display_name", message.author.name))
         lines = [f"channel: {where}", f"requester: {name} (roles: {_member_roles(member, settings)})"]
         opened = _relative_age(getattr(channel, "created_at", None)) if in_ticket else None
@@ -1201,15 +1438,24 @@ class AITicketsCog(ReloadableCog):
             return
 
         settings = self.bot.settings
-        in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
-        in_dm = isinstance(channel, discord.DMChannel)
+        kind = _channel_kind(channel, settings=settings)
+        in_ticket, in_dm = kind == "ticket", kind == "dm"
         if in_ticket and _is_staff_ticket_message(message, in_ticket=True, settings=settings):
             return
         bot_pinged = _is_pinging_bot(message, self.bot.user)
-        mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
-        dm_request = in_dm and _has_support_request_content(message, self.bot.user)
+        has_content = _has_support_request_content(message, self.bot.user)
+        mention_request = bot_pinged and has_content
+        dm_request = in_dm and has_content
+        # The member a help thread of Bulma's is for needs no ping there, as in a ticket.
+        help_request = (
+            kind == "public"
+            and not mention_request
+            and has_content
+            and await self._help_thread_requester(channel) == message.author.id
+        )
+        public_request = mention_request or help_request
 
-        if not in_ticket and not mention_request and not dm_request:
+        if not in_ticket and not public_request and not dm_request:
             return
         member = (
             message.author
@@ -1217,13 +1463,13 @@ class AITicketsCog(ReloadableCog):
             else await self._resolve_member_for_user(message.author)
         )
         author_has_support_access = member is not None and can_use_ai_support(member, settings=settings)
-        if (mention_request or dm_request) and not in_ticket and not author_has_support_access:
+        if (public_request or dm_request) and not in_ticket and not author_has_support_access:
             return
 
         if in_ticket and channel.id in self._escalated_ticket_channels:
             return
         has_image = any(_is_image_attachment(attachment) for attachment in full_attachments(message))
-        if in_ticket or _is_reply_to_bot(message, self.bot.user):
+        if in_ticket or help_request or _is_reply_to_bot(message, self.bot.user):
             # Follow-ups ("still broken", "1.20.1") must reach the model; only pure acks are skipped.
             if not has_image and _is_ack_message(_strip_bot_mentions(full_content(message), self.bot.user)):
                 return
@@ -1247,7 +1493,7 @@ class AITicketsCog(ReloadableCog):
                 await self._send_messages_with_typing(channel, [RATE_LIMITED_TEXT])
             return
         await self._answer_support(
-            message, in_ticket=in_ticket, in_dm=in_dm, mention_request=mention_request, member=member
+            message, in_ticket=in_ticket, in_dm=in_dm, mention_request=public_request, member=member
         )
 
     async def _answer_support(
@@ -1259,9 +1505,11 @@ class AITicketsCog(ReloadableCog):
         mention_request: bool,
         member: discord.Member | None,
     ) -> None:
-        """The model's answer to message, once it passed the gates (typed messages, and answer picks on a card)."""
+        """The model's answer to message, once it passed the gates (typed messages, and answer picks on a card). A
+        follow-up in a public text channel gets its answer in a new thread (_open_help_thread)."""
         channel = message.channel
         settings = self.bot.settings
+        channel_kind = _channel_kind(channel, settings=settings)
         async with self._channel_locks[channel.id]:
             try:
                 # Analyses are rendered inline on the triggering message, so the question text and
@@ -1277,7 +1525,6 @@ class AITicketsCog(ReloadableCog):
                 context_lines = self._support_context_lines(
                     message, member=member, in_ticket=in_ticket, in_dm=in_dm
                 )
-                channel_kind = "ticket" if in_ticket else "dm" if in_dm else "public"
                 language = await self._ticket_language(channel.id) if in_ticket else None
                 if language:
                     context_lines.append(_language_line(language))
@@ -1376,17 +1623,27 @@ class AITicketsCog(ReloadableCog):
                         "I couldn't find a confident knowledge-backed answer for that. Please open a ticket if it needs follow-up."
                     )
 
-            sent = await self._send_messages_with_typing(
-                channel,
-                outgoing_messages,
-                ai_answer=True,
-                ask=ask,
-                requester_id=message.author.id,
-                language=language or result.get("language"),
-                feedback=feedback,
-                response_id=result.get("response_id"),
-                reply_to=getattr(message, "reply_to", None),
-            )
+            async def send(where: discord.abc.Messageable) -> bool:
+                return await self._send_messages_with_typing(
+                    where,
+                    outgoing_messages,
+                    ai_answer=True,
+                    ask=ask,
+                    requester_id=message.author.id,
+                    language=language or result.get("language"),
+                    feedback=feedback,
+                    response_id=result.get("response_id"),
+                    reply_to=getattr(message, "reply_to", None),
+                )
+
+            # Only a real answer moves (not our fallback texts); its controls and 👍/👎 rows are saved with the thread.
+            moving = public and bool(outgoing_messages) and reply_text not in ("", "(no reply)", PUBLIC_FALLBACK_TEXT)
+            thread = await self._open_help_thread(message) if moving else None
+            # The thread's lock: a message there waits for this answer, so its history has it.
+            async with self._channel_locks[thread.id] if thread is not None else contextlib.nullcontext():
+                sent = await send(thread or channel)
+            if not sent and thread is not None:
+                sent = await send(channel)  # the thread is there, but the answer still reaches the requester
             if sent and in_ticket and not should_mark_escalated:
                 await self._awaiting_owner(channel.id)
             if sent and should_mark_escalated:
@@ -1609,11 +1866,11 @@ class AITicketsCog(ReloadableCog):
         settings = self.bot.settings
         channel = interaction.channel
         user = interaction.user
-        in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
-        in_dm = isinstance(channel, discord.DMChannel)
-        # mention_request: outside tickets and DMs the card answered a ping.
+        kind = _channel_kind(channel, settings=settings)
+        in_ticket, in_dm = kind == "ticket", kind == "dm"
+        # mention_request: outside tickets and DMs the card answered a ping (or its help thread's requester).
         context: dict[str, Any] = {
-            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": not (in_ticket or in_dm), "member": None
+            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": kind == "public", "member": None
         }
         if user.id != row.requester_id:
             return "not_yours", context
@@ -1648,15 +1905,16 @@ class AITicketsCog(ReloadableCog):
         content: str,
         context: dict[str, Any],
         attachments: Sequence[Any] = (),
+        card: discord.Message | None = None,
     ) -> None:
         """The answer is on the card: it is the requester's reply in the ticket, and the AI answers it like a typed
-        one."""
+        one. card: the answer card, which a follow-up in a public text channel moves into a thread off."""
         if context["in_ticket"]:
             try:
                 await note_ticket_message(interaction.channel.id, interaction.user.id)  # as TicketsCog.on_message does
             except Exception:
                 log.exception("Could not track ticket reply", extra={"channel_id": interaction.channel.id})
-        self._answer_pick(_ChoiceMessage(interaction, content, message_id, attachments), **context)
+        self._answer_pick(_ChoiceMessage(interaction, content, message_id, attachments, card=card), **context)
 
     async def _handle_ask(self, interaction: discord.Interaction, *, kind: str, index: int) -> None:
         """A control on an answer card (ui/ai_asks). A pick goes on the card and is answered like a typed reply;
@@ -1703,7 +1961,7 @@ class AITicketsCog(ReloadableCog):
             except Exception:
                 await ask_store.release(message.id)
                 raise
-            await self._answer_recorded(interaction, message.id, label, context)
+            await self._answer_recorded(interaction, message.id, label, context, card=message)
 
         await while_busy(interaction, self._working, pick, failed=ai_asks.text(language, "failed"))
 
@@ -1765,7 +2023,7 @@ class AITicketsCog(ReloadableCog):
             except Exception:
                 await ask_store.release(message.id)
                 raise
-            await self._answer_recorded(interaction, message.id, content, context)
+            await self._answer_recorded(interaction, message.id, content, context, card=message)
 
         await while_busy(interaction, self._working, finish, failed=failed)
 
@@ -1782,8 +2040,7 @@ class AITicketsCog(ReloadableCog):
             return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
         if index == ai_asks.ACTION_DECLINE:
             return await self._run_action(interaction, row, ai_asks.text(language, "no_thanks"))
-        channel_kind = "ticket" if context["in_ticket"] else "dm" if context["in_dm"] else "public"
-        if not ai_asks.allowed_in(spec, channel_kind):
+        if not ai_asks.allowed_in(spec, _channel_kind(interaction.channel, settings=self.bot.settings)):
             return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
         label = ai_asks.action_label(spec, language)
         if action == "open_ticket":
@@ -1905,7 +2162,7 @@ class AITicketsCog(ReloadableCog):
                 log.exception("Could not reopen the form", extra={"message_id": message_id})
             return await interaction.followup.send(ai_asks.text(language, "failed"), ephemeral=True)
         content = "\n".join(f"{label}: {value}" for label, value in answers)
-        await self._answer_recorded(interaction, message_id, content, context)
+        await self._answer_recorded(interaction, message_id, content, context, card=message)
 
     async def _handle_ask_file(self, interaction: discord.Interaction, message_id: int) -> None:
         """A submitted "Upload": the files are reposted on a card credited to the requester (history and transcripts
@@ -2009,7 +2266,9 @@ class AITicketsCog(ReloadableCog):
     def _answer_pick(self, message: _ChoiceMessage, *, in_ticket: bool, **kwargs: Any) -> None:
         """Answers in the background, so a failing AI run never brings the buttons back (it reports its own errors).
         It is the pending answer of the ticket (or of the member elsewhere), as a typed message's is: a newer message,
-        an escalation or a close cancels it."""
+        an escalation or a close cancels it. It stays keyed by the card's channel when the answer moves into a new
+        thread: the thread only exists once the answer is ready, and a message there waits on the thread's lock until
+        the answer is in (_answer_support)."""
         pending_key = _pending_key(message, in_ticket=in_ticket)
         self._cancel_pending_task(pending_key)
 
@@ -2332,16 +2591,23 @@ class AITicketsCog(ReloadableCog):
             self._schedule_support_response(message, in_ticket=False)
             return
 
-        if not message.guild or not isinstance(channel, discord.TextChannel):
+        if not message.guild or not (
+            isinstance(channel, discord.TextChannel) or _is_support_thread(channel, settings=settings)
+        ):
             return
 
-        in_ticket = _is_ticket_channel(channel, settings=settings)
+        in_ticket = _channel_kind(channel, settings=settings) == "ticket"
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
+        # In a help thread of Bulma's, the member it is for needs no ping; everyone else still pings her.
+        help_request = (
+            not (in_ticket or mention_request or message.author.bot)
+            and await self._help_thread_requester(channel) == message.author.id
+        )
         author_has_support_access = await self._can_use_support_from_message(message, settings=settings)
-        if not in_ticket and not mention_request:
+        if not in_ticket and not mention_request and not help_request:
             return
-        if mention_request and not in_ticket and not author_has_support_access:
+        if (mention_request or help_request) and not in_ticket and not author_has_support_access:
             return
 
         if not message.author.bot and isinstance(message.author, discord.Member):

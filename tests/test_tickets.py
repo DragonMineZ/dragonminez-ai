@@ -1395,7 +1395,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             reserve=reserve.await_args.kwargs["language"],
             attach=attach.await_args.kwargs["language"],
-            answer=ai_cog.answer_new_ticket.await_args.kwargs["language"],
+            answer=(call := ai_cog.answer_new_ticket.await_args) and call.kwargs["language"],
             sends=channel.send.await_args_list,
             dm=texts(owner.send.await_args.kwargs["view"]),
             owner=owner,
@@ -1415,7 +1415,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_several_language_roles_get_a_picker_that_pings_the_owner(self):
         made = await self.create(PT_ROLE, EN_ROLE)
-        self.assertEqual((made.attach, made.answer), ("pt", "pt"))  # the form's language until they pick
+        self.assertEqual((made.attach, made.answer), ("pt", None))  # the form's language; the answer waits for the pick
         picker = made.sends[1].kwargs
         self.assertEqual(custom_ids(picker["view"]), ["ticket_lang:en", "ticket_lang:pt"])
         self.assertIn("<@100>", texts(picker["view"]))
@@ -1429,7 +1429,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         cog, channel = make_cog(), make_channel()
         welcome = self.welcome_message()
         channel.fetch_message = AsyncMock(return_value=welcome)
-        ai_cog = SimpleNamespace(forget_ticket_language=MagicMock())
+        ai_cog = SimpleNamespace(forget_ticket_language=MagicMock(), answer_picked_ticket=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
         card = views.language_picker("<@100>", ["en", "es"]) if custom_id != views.LANG_SELECT_ID else None
         interaction = click(user, custom_id, card) if card else SimpleNamespace(
@@ -1464,6 +1464,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         notice = done.channel.send.await_args.kwargs
         self.assertIn("🌐 Idioma de soporte cambiado a Español por <@100>.", texts(notice["view"]))
         self.assertEqual(notice["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+        done.ai_cog.answer_picked_ticket.assert_not_awaited()  # only the new-ticket picker holds the first answer
 
     async def test_staff_picks_from_the_picker_and_it_turns_into_a_confirmation(self):
         staff = SimpleNamespace(id=STAFF_ID, roles=[SimpleNamespace(id=HELPER_ROLE)])
@@ -1473,6 +1474,10 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(texts(confirmation), "🌐 Idioma do suporte: Português.")
         self.assertIn("Olá <@100>!", texts(done.welcome.edit.await_args.kwargs["view"]))  # fetched and rewritten
         done.channel.send.assert_not_awaited()  # the confirmation is the only notice
+        done.ai_cog.answer_picked_ticket.assert_awaited_once_with(
+            done.channel, OWNER_ID, category_label=views.CATEGORIES["bug"].name, form_text="-# No details given.",
+            language="pt",
+        )
 
     async def test_others_cannot_change_the_language(self):
         done = await self.change(member(555), views.LANG_SELECT_ID, ["es"])

@@ -1804,5 +1804,37 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await sent_ask(open_ticket, in_ticket=False), open_ticket)
 
 
+class PickedTicketAnswerTests(unittest.IsolatedAsyncioTestCase):
+    """A new ticket with a language picker gets its first answer once the owner picks, unless Bulma already answered."""
+
+    async def answer(self, history=(), *, escalated=False):
+        bot_user = types.SimpleNamespace(id=999, bot=True)
+        cog = AITicketsCog(types.SimpleNamespace(settings=types.SimpleNamespace(), user=bot_user, guilds=[]))
+        if escalated:
+            cog._escalated_ticket_channels.add(900)
+        owner = types.SimpleNamespace(id=100)
+
+        async def channel_history(**kwargs):
+            for entry in history:
+                yield entry
+
+        channel = types.SimpleNamespace(id=900, history=channel_history, guild=types.SimpleNamespace(get_member=lambda _id: owner))
+        with patch.object(cog, "answer_new_ticket", AsyncMock()) as first:
+            await cog.answer_picked_ticket(channel, 100, category_label="Bug", form_text="boom", language="es")
+        return first, channel, owner, bot_user
+
+    async def test_the_pick_starts_the_first_answer_in_its_language(self):
+        first, channel, owner, _ = await self.answer()
+        first.assert_awaited_once_with(channel, owner, category_label="Bug", form_text="boom", language="es")
+
+    async def test_no_second_answer_when_bulma_already_answered_or_ai_is_off(self):
+        bot_user = types.SimpleNamespace(id=999, bot=True)
+        answered = types.SimpleNamespace(author=bot_user, components=sent_message(ai_tickets._card(f"Hi\n\n{ai_tickets.AI_FOOTER}")).components)
+        first, *_ = await self.answer([answered])
+        first.assert_not_awaited()
+        first, *_ = await self.answer(escalated=True)
+        first.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

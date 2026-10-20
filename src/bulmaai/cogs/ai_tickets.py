@@ -1782,6 +1782,30 @@ class AITicketsCog(ReloadableCog):
         else:
             await self._awaiting_owner(channel.id)
 
+    async def answer_picked_ticket(
+        self,
+        channel: discord.TextChannel,
+        owner_id: int,
+        *,
+        category_label: str,
+        form_text: str,
+        language: str,
+    ) -> None:
+        """A new ticket's first answer, held until its owner picked a language on the picker. Skipped when the AI is
+        off for the ticket, or when they typed meanwhile (Bulma answered, or is about to)."""
+        if channel.id in self._escalated_ticket_channels or (channel.id, 0) in self._pending_tasks:
+            return
+        try:
+            if any([_is_answer_card(entry, self.bot.user) async for entry in channel.history(limit=50)]):
+                return
+            member = channel.guild.get_member(owner_id) or await channel.guild.fetch_member(owner_id)
+        except discord.HTTPException:
+            log.info("Couldn't start a picked ticket's first answer", exc_info=True, extra={"channel_id": channel.id})
+            return
+        await self.answer_new_ticket(
+            channel, member, category_label=category_label, form_text=form_text, language=language
+        )
+
     # ---- staff copilot (the welcome card's Summary / Draft reply, translations of staff messages) -------------
 
     async def ticket_summary(self, channel: discord.TextChannel, ticket: Any) -> TicketSoFar | None:

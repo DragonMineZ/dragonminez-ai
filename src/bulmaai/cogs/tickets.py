@@ -478,8 +478,9 @@ class TicketsCog(ReloadableCog):
                 await channel.send(files=files)
             except discord.HTTPException:
                 log.warning("Could not post carried-over files", extra={"ticket_id": ticket.ticket_id})
+        picker = None
         if len(role_langs) > 1:
-            await self._safely(
+            picker = await self._safely(
                 channel.send(
                     view=language_picker(member.mention, role_langs),
                     allowed_mentions=discord.AllowedMentions(users=[member]),
@@ -492,8 +493,9 @@ class TicketsCog(ReloadableCog):
         except discord.HTTPException:
             pass  # DMs closed; the ephemeral message above already has the link
 
+        # With a picker the first answer waits for the pick (on_language), so it comes in the chosen language.
         ai_cog = self.bot.get_cog(AI_COG)
-        if ai_cog is not None and category.ai_reply:
+        if ai_cog is not None and category.ai_reply and picker is None:
             await ai_cog.answer_new_ticket(
                 channel, member, category_label=category.name, form_text=form_text, language=language
             )
@@ -714,9 +716,20 @@ class TicketsCog(ReloadableCog):
         if (ai_cog := self.bot.get_cog(AI_COG)) is not None:
             ai_cog.forget_ticket_language(interaction.channel_id)
         channel = interaction.channel
-        await self._relanguage_welcome(channel, ticket, None if picker else interaction.message)
+        welcome = await self._relanguage_welcome(channel, ticket, None if picker else interaction.message)
         if picker:  # the picker itself becomes the public confirmation
-            return await interaction.edit_original_response(view=language_set(language))
+            await interaction.edit_original_response(view=language_set(language))
+            category = CATEGORIES.get(ticket.category)
+            if ai_cog is not None and welcome is not None and category is not None and category.ai_reply:
+                # The first answer waited for this pick; the request is read back off the welcome card.
+                await ai_cog.answer_picked_ticket(
+                    channel,
+                    ticket.owner_id,
+                    category_label=category.name,
+                    form_text=welcome.children[1].items[0].content,
+                    language=language,
+                )
+            return
         await self._safely(
             channel.send(
                 view=language_changed(language, interaction.user.mention), allowed_mentions=discord.AllowedMentions.none()
@@ -726,9 +739,9 @@ class TicketsCog(ReloadableCog):
 
     async def _relanguage_welcome(
         self, channel: discord.TextChannel, ticket: Ticket, message: discord.Message | None = None
-    ) -> None:
+    ) -> discord.ui.DesignerView | None:
         """The welcome card's greeting and language select follow the ticket's language. message: the welcome card,
-        when the caller has it already."""
+        when the caller has it already. Returns the card as rewritten, None when it's gone."""
         category = CATEGORIES.get(ticket.category)
         if category is None or ticket.control_message_id is None:
             return
@@ -745,6 +758,7 @@ class TicketsCog(ReloadableCog):
             language=ticket.language,
         )
         await self._safely(message.edit(view=view, allowed_mentions=discord.AllowedMentions.none()), channel)
+        return view
 
     async def on_transcript(self, interaction: discord.Interaction) -> None:
         """Retry on a closed card whose archive failed, and the Transcript button old closed cards still carry:

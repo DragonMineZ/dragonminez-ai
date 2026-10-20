@@ -251,10 +251,11 @@ class AskBulmaCommandTests(unittest.IsolatedAsyncioTestCase):
         bulma_card = sent_message(ai_tickets._card(ANSWER_CARD_TEXT))
         thread = MagicMock(spec=discord.Thread)
         thread.id = 13
+        thread.type = discord.ChannelType.private_thread
         cases = [
             ("ask_off", dict(settings=dict(ai_support_enabled=False))),
             ("ask_off", dict(guild_id=555)),  # a server that isn't ours
-            ("ask_off", dict(channel=thread)),  # pings aren't answered in threads either
+            ("ask_off", dict(channel=thread)),  # nor are pings in private threads (tests/test_ai_threads: public ones)
             ("ask_bot", dict(target=_target(author=_author(8, "OtherBot", bot=True)))),
             ("ask_bot", dict(target=_target(author=_author(9, "Hook"), webhook_id=9))),
             ("ask_empty", dict(target=_target(content=""))),

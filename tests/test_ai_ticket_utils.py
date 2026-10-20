@@ -1182,7 +1182,7 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_public_reply_never_offers_an_upload(self) -> None:
         cog = self._cog()
-        channel = self._ticket_channel()  # in_ticket=False below: answered as a public ping
+        channel = self._public_channel()
         requester = types.SimpleNamespace(id=42, bot=False, name="goku", display_name="Goku")
         stand_in = ai_tickets._ChoiceMessage(types.SimpleNamespace(user=requester, channel=channel, guild=None), "Sí", 55)
         base = {"tool_results": [], "confidence": 0.9, "suggested_close": False, "language": "en", "kind": "clarify"}

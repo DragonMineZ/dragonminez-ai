@@ -418,5 +418,119 @@ class ActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ai_asks.action_label({"action": "open_ticket"}, "en"), "Open a ticket")
 
 
+BUG = {
+    "kind": "action",
+    "action": "report_bug",
+    "title": "Crash when transforming",
+    "what_happened": "The game closes\nwhen I go Super Saiyan",
+    "steps": "1. Load a world\n2. Transform",
+    "version": "DragonMineZ 2.1.3, Minecraft 1.20.1",
+}
+
+
+def _bug_submit(**values):
+    return [{"type": 18, "component": {"type": 4, "custom_id": key, "value": value}} for key, value in values.items()]
+
+
+class ReportBugTests(unittest.IsolatedAsyncioTestCase):
+    def test_only_outside_tickets(self) -> None:
+        self.assertIn("in public channels and DMs", offer("ticket", action="report_bug")["error"])
+        for where in ("public", "dm"):
+            self.assertEqual(offer(where, action="report_bug")["shown"], {"kind": "action", "action": "report_bug"})
+        self.assertFalse(ai_asks.allowed_in({"kind": "action", "action": "report_bug"}, "ticket"))
+        self.assertTrue(ai_asks.allowed_in({"kind": "action", "action": "report_bug"}, "dm"))
+        self.assertTrue(ai_asks.allowed_in({"kind": "action", "action": "report_bug"}, "public"))
+
+    def test_prefill_is_screened_and_keeps_the_long_fields_lines(self) -> None:
+        out = offer(
+            "public",
+            action="report_bug",
+            title="  Crash   when transforming ",
+            what_happened="The game closes  \n  when I go Super Saiyan",
+            steps="1. Load a world\n2. Transform",
+            version="DragonMineZ 2.1.3, Minecraft 1.20.1",
+        )
+        self.assertEqual(out["shown"], BUG)
+        self.assertNotIn("dropped", out)
+
+        out = offer(
+            "public",
+            action="report_bug",
+            title="x" * 101,
+            what_happened="Get the fix at https://evil.example/fix.jar",
+            steps="ping <@1> and @everyone",
+            version="slurs everywhere",
+        )
+        self.assertEqual(out["shown"], {"kind": "action", "action": "report_bug"})
+        self.assertEqual(len(out["dropped"]), 4)
+        out = offer("public", action="report_bug", what_happened="x" * 1001, steps=["not", "text"])
+        self.assertEqual(out["shown"], {"kind": "action", "action": "report_bug"})
+        self.assertIn("over 1000 characters", out["dropped"][0])
+
+        out = offer("public", action="open_ticket", title="Crash", steps="1. Load")
+        self.assertEqual(out["shown"], {"kind": "action", "action": "open_ticket"})
+        self.assertEqual(out["dropped"], ["title: only for report_bug", "steps: only for report_bug"])
+
+    async def test_the_button_and_its_prefilled_form(self) -> None:
+        (row,) = ai_asks.ask_rows(BUG, 42, "es")
+        (button,) = row.children
+        self.assertEqual((button.label, button.custom_id), ("Reportar este bug", "ai_ask:action:42:0"))
+
+        modal = ai_asks.bug_modal(BUG, 55, "es")
+        self.assertEqual((modal.custom_id, modal.title, modal._store), ("ai_ask_bug:55", "Reportar un bug", False))
+        self.assertEqual(ai_asks.parse_bug_modal_id(modal.custom_id), 55)
+        self.assertIsNone(ai_asks.parse_bug_modal_id("ai_ask_form:55"))
+        self.assertEqual([child.label for child in modal.children], ["Título", "Qué pasó", "Pasos para reproducirlo", "Versión"])
+        self.assertEqual(
+            [(c.item.custom_id, c.item.style, c.item.required, c.item.max_length, c.item.value) for c in modal.children],
+            [
+                ("title", discord.InputTextStyle.short, True, 100, BUG["title"]),
+                ("what_happened", discord.InputTextStyle.long, True, 1000, BUG["what_happened"]),
+                ("steps", discord.InputTextStyle.long, False, 1000, BUG["steps"]),
+                ("version", discord.InputTextStyle.short, False, 100, BUG["version"]),
+            ],
+        )
+        self.assertEqual([part["type"] for part in modal.to_dict()["components"]], [18, 18, 18, 18])
+        empty = ai_asks.bug_modal({"kind": "action", "action": "report_bug"}, 55, "en")
+        self.assertEqual([c.item.value for c in empty.children], [None, None, None, None])
+        self.assertEqual(empty.title, "Report a bug")
+
+    def test_submitted_fields(self) -> None:
+        answers = ai_asks.bug_answers(
+            _bug_submit(title="  Crash \n on load ", what_happened=" It crashes\n\nat start ", steps="  ", version="2.1.3")
+        )
+        self.assertEqual(answers, {"title": "Crash on load", "what_happened": "It crashes\n\nat start", "version": "2.1.3"})
+        self.assertEqual(ai_asks.bug_answers(None), {})
+
+    def test_the_post_credits_the_reporter_and_is_safe_to_repost(self) -> None:
+        body = ai_asks.bug_post(
+            42, {"title": "Crash", "what_happened": "Boom <@1> @everyone [hotfix](https://x.io)", "version": "2.1.3"}
+        )
+        self.assertTrue(body.startswith("Reported by <@42> with Bulma\n\n**What happened**\nBoom "))
+        self.assertTrue(body.endswith("\n\n**Version**\n2.1.3"))
+        self.assertNotIn("**Steps**", body)
+        self.assertNotIn("<@1>", body)
+        self.assertNotIn("@everyone", body)
+        self.assertNotIn("](", body)
+        self.assertNotIn("https://", body)
+        self.assertNotIn("Crash", body)  # the title is the post's name
+
+        long = ai_asks.bug_post(42, {"what_happened": "word " * 300, "steps": "step " * 200, "version": "2.1.3"})
+        self.assertLessEqual(len(long), ai_asks.BUG_POST_LIMIT)
+        self.assertIn("**Steps**\nstep", long)
+        self.assertTrue(long.endswith("**Version**\n2.1.3"))
+
+    def test_the_outcome_line_reads_back_without_the_link(self) -> None:
+        link = "https://discord.com/channels/1/777"
+        line = ai_asks.bug_line(42, link, "en")
+        self.assertEqual(line, f"-# ↳ <@42>: **Reported the bug** → {link}")
+        for language in ai_asks.TEXT:
+            self.assertEqual(
+                ai_asks.read_answer(["This looks like a bug.", ai_asks.bug_line(42, link, language)]),
+                (42, "I reported the bug in the bug-report forum."),
+            )
+        self.assertEqual(ai_asks.read_answer(["Q?", ai_asks.pick_line(7, "Reported the bug")]), (7, "Reported the bug"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -250,6 +250,68 @@ class BugReportCogTests(unittest.IsolatedAsyncioTestCase):
         thread.delete.assert_not_awaited()
 
 
+class BugReportIngestionTests(unittest.IsolatedAsyncioTestCase):
+    def _cog(self):
+        cog = BugReportsCog.__new__(BugReportsCog)
+        cog.bot = SimpleNamespace()
+        cog.settings = SimpleNamespace(
+            bug_reports_enabled=True, bug_report_forum_channel_id=500, ai_bugreport_model="claude-test", bug_report_repo=None
+        )
+        cog.client = object()
+        return cog
+
+    def _thread(self, starter):
+        return SimpleNamespace(
+            id=9, name="Crash on transform", parent_id=500, owner_id=42, starting_message=starter,
+            guild=SimpleNamespace(id=1), send=AsyncMock(return_value=SimpleNamespace(id=1234)),
+        )
+
+    async def test_a_members_post_is_triaged_with_them_as_reporter(self) -> None:
+        log_file = SimpleNamespace(filename="latest.log")
+        starter = SimpleNamespace(content="It crashes when I transform", author=SimpleNamespace(id=42, bot=False), attachments=[log_file])
+        thread = self._thread(starter)
+        cog = self._cog()
+        triage = _coerce_triage({"is_bug": True, "title": "Crash on transform"}, fallback_title="x")
+        with patch.object(bug_cog, "get_bug_report", AsyncMock(return_value=None)), \
+                patch.object(bug_cog, "analyze_bug_report", AsyncMock(return_value=triage)) as analyze, \
+                patch.object(bug_cog, "upsert_triage", AsyncMock()) as upsert, \
+                patch.object(cog, "_log_digest", AsyncMock(return_value="digest")) as digest:
+            await cog.on_thread_create(thread)
+        digest.assert_awaited_once_with([log_file])
+        kwargs = analyze.await_args.kwargs
+        self.assertEqual(
+            (kwargs["report_text"], kwargs["attachments"], kwargs["fallback_title"], kwargs["log_digest"]),
+            ("Crash on transform\n\nIt crashes when I transform", ["latest.log"], "Crash on transform", "digest"),
+        )
+        self.assertEqual(thread.send.await_args.kwargs["allowed_mentions"].to_dict()["parse"], [])
+        upsert.assert_awaited_once_with(
+            thread_id=9, guild_id=1, reporter_id=42, triage_message_id=1234, ai_title="Crash on transform", ai_summary=""
+        )
+
+    async def test_posts_by_a_bot_or_already_triaged_are_left_alone(self) -> None:
+        cog = self._cog()
+        bot_starter = SimpleNamespace(content="Reported by <@42> with Bulma", author=SimpleNamespace(id=999, bot=True), attachments=[])
+        with patch.object(bug_cog, "get_bug_report", AsyncMock(return_value=None)), \
+                patch.object(cog, "triage_thread", AsyncMock()) as triage:
+            await cog.on_thread_create(self._thread(bot_starter))  # Bulma's report_bug post: AITicketsCog triages it
+            triage.assert_not_called()
+        with patch.object(bug_cog, "get_bug_report", AsyncMock(return_value=SimpleNamespace())), \
+                patch.object(cog, "triage_thread", AsyncMock()) as triage:
+            await cog.on_thread_create(self._thread(SimpleNamespace(author=SimpleNamespace(id=42, bot=False))))
+            triage.assert_not_called()
+
+    async def test_triage_thread_takes_the_reporter_it_is_given(self) -> None:
+        cog = self._cog()
+        thread = self._thread(None)
+        triage = _coerce_triage({"is_bug": False, "title": "Crash"}, fallback_title="x")
+        with patch.object(bug_cog, "analyze_bug_report", AsyncMock(return_value=triage)) as analyze, \
+                patch.object(bug_cog, "upsert_triage", AsyncMock()) as upsert:
+            await cog.triage_thread(thread, text="Crash on transform\n\nReported by <@7> with Bulma", reporter_id=7, attachments=[])
+        self.assertEqual((analyze.await_args.kwargs["attachments"], analyze.await_args.kwargs["log_digest"]), ([], ""))
+        self.assertEqual(upsert.await_args.kwargs["reporter_id"], 7)
+        self.assertEqual(upsert.await_args.kwargs["thread_id"], 9)
+
+
 def _claude_json(text: str, stop_reason: str = "end_turn"):
     return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)], stop_reason=stop_reason)
 

@@ -38,3 +38,24 @@ def test_inline_forwards_leaves_plain_messages_alone():
     message = SimpleNamespace(content="hi", attachments=[])
     inline_forwards(message)
     assert message.content == "hi"
+
+
+def test_v2_card_files_come_from_its_components():
+    """Discord leaves a V2 card's attachments empty: the files are read off its File / gallery components."""
+    from discord.components import _component_factory
+
+    state = SimpleNamespace(http=None)
+    card = _component_factory({"type": 17, "components": [
+        {"type": 10, "content": "-# ↳ <@42> uploaded **latest.log**"},
+        {"type": 13, "name": "latest.log", "size": 345000,
+         "file": {"url": "https://cdn.discordapp.com/attachments/1/222/latest.log?ex=1", "attachment_id": "222"}},
+        {"type": 12, "items": [
+            {"media": {"url": "https://cdn.discordapp.com/attachments/1/333/shot.png", "content_type": "image/png"}},
+            {"media": {"url": "https://example.com/not-ours.png"}},
+        ]},
+    ]}, state=state)
+    message = SimpleNamespace(content="", attachments=[], components=[card], _state=state)
+    assert [(a.id, a.filename, a.size) for a in full_attachments(message)] == [(222, "latest.log", 345000), (333, "shot.png", 0)]
+    inline_forwards(message)
+    assert message.content == ""
+    assert [a.filename for a in message.attachments] == ["latest.log", "shot.png"]

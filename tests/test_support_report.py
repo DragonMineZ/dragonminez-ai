@@ -13,10 +13,11 @@ import discord
 
 from bulmaai.cogs import support_report as cog_module
 from bulmaai.services import ai_budget
+from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services import support_report as report
 from bulmaai.ui.support_report_views import support_report_card
 from bulmaai.ui.v2 import TEXT_LIMIT
-from v2_helpers import text, texts
+from v2_helpers import buttons, text, texts
 
 MONDAY = datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)
 SINCE = MONDAY - timedelta(days=7)
@@ -267,14 +268,16 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         ai_budget.reset()
 
-    async def tick(self, cog, *, last=None, claim=(True, None), ai_fails=False, now=MONDAY):
+    async def tick(self, cog, *, last=None, claim=(True, None), ai_fails=False, now=MONDAY, fixes=None):
         insights = None if ai_fails else report.Insights(["Crashes"], [], "")
+        fixes = fixes if isinstance(fixes, AsyncMock) else AsyncMock(return_value=fixes or [])
         with (
             patch.object(report, "last_posted", AsyncMock(return_value=last)),
             patch.object(report, "claim_post", AsyncMock(return_value=claim)) as claim_mock,
             patch.object(report, "release_claim", AsyncMock()) as release_mock,
             patch.object(report, "collect", AsyncMock(return_value=sample_data())),
             patch.object(report, "generate_insights", AsyncMock(return_value=insights)),
+            patch.object(feedback_store, "answers_to_fix", fixes),
         ):
             await cog._post_tick(now)
         return claim_mock, release_mock
@@ -319,6 +322,46 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(discord.HTTPException):
             _, release = await self.tick(cog, claim=(True, MONDAY - timedelta(days=7)))
 
+    async def test_answers_to_fix_follow_the_report_in_the_same_claim(self) -> None:
+        cog, channel = make_cog()
+        fixes = [
+            feedback_store.AnswerToFix(55, 900, "es", MONDAY - timedelta(days=1), "How to fly?", "Press V."),
+            feedback_store.AnswerToFix(56, 901, "en", MONDAY - timedelta(days=2), "What is ki?", "Energy."),
+        ]
+        lookup = AsyncMock(return_value=fixes)
+        claim, release = await self.tick(cog, fixes=lookup)
+        claim.assert_awaited_once()
+        release.assert_not_awaited()
+        lookup.assert_awaited_once_with(SINCE, MONDAY, limit=10)
+        views = [call.kwargs["view"] for call in channel.send.await_args_list]
+        self.assertEqual(len(views), 4)  # the report, the header, one card per answer
+        self.assertIn("Weekly support report", text(views[0]))
+        self.assertIn("2 answers rated 👎", text(views[1]))
+        self.assertIn("How to fly?", text(views[2]))
+        self.assertEqual([b.custom_id for b in buttons(views[3])], ["fbfix:write:56", "fbfix:skip:56"])
+        for call in channel.send.await_args_list:
+            allowed = call.kwargs["allowed_mentions"]
+            self.assertFalse(allowed.everyone or allowed.users or allowed.roles)
+
+    async def test_no_answers_to_fix_posts_only_the_report(self) -> None:
+        cog, channel = make_cog()
+        await self.tick(cog)
+        channel.send.assert_awaited_once()
+
+    async def test_a_failing_review_never_reposts_the_report(self) -> None:
+        cog, channel = make_cog()
+        with self.assertLogs(cog_module.log, level="ERROR"):
+            _, release = await self.tick(cog, fixes=AsyncMock(side_effect=RuntimeError("db down")))
+        release.assert_not_awaited()
+        channel.send.assert_awaited_once()
+
+    async def test_no_review_when_the_report_could_not_be_posted(self) -> None:
+        cog, channel = make_cog()
+        channel.send.side_effect = discord.Forbidden(MagicMock(status=403), "no")
+        lookup = AsyncMock(return_value=[])
+        await self.tick(cog, fixes=lookup)
+        lookup.assert_not_awaited()
+
     async def test_command_is_staff_only(self) -> None:
         cog, _ = make_cog()
         command = cog_module.SupportReportCog.support_report.callback
@@ -342,11 +385,14 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
             patch.object(report, "collect", AsyncMock(return_value=sample_data())),
             patch.object(report, "generate_insights", AsyncMock(return_value=None)),
             patch.object(report, "claim_post", AsyncMock()) as claim,
+            patch.object(feedback_store, "answers_to_fix", AsyncMock(return_value=[])) as fixes,
         ):
             await cog_module.SupportReportCog.support_report.callback(cog, ctx)
         ctx.defer.assert_awaited_once_with(ephemeral=True)
         self.assertTrue(ctx.followup.send.call_args.kwargs["ephemeral"])
+        ctx.followup.send.assert_awaited_once()
         claim.assert_not_called()
+        fixes.assert_not_awaited()  # the review cards only come with the weekly post
 
 
 if __name__ == "__main__":

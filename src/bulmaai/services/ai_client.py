@@ -90,6 +90,7 @@ class AgentResult(TypedDict, total=False):
     paused: bool
     response_id: str
     guard_flags: frozenset[str]
+    ask: dict[str, Any] | None  # ask_requester / offer_action controls for the sent reply (ui/ai_asks spec)
 
 
 def get_schemas(enabled_tools: list[str]) -> list[dict]:
@@ -324,6 +325,16 @@ def _split_close(reply_text: str) -> tuple[str, bool]:
     return CLOSE_MARKER_RE.sub("", reply_text).strip() or "(no reply)", True
 
 
+def _last_ask(tool_results: list[ToolCallResult]) -> dict[str, Any] | None:
+    """The controls of the last valid ask_requester or offer_action call (its output is already validated, see
+    ui/ai_asks): one set per reply."""
+    for result in reversed(tool_results):
+        output = result["output"]
+        if result["name"] in ai_tools.CONTROL_TOOLS and isinstance(output, dict) and output.get("ok") is True:
+            return output.get("shown")
+    return None
+
+
 def _normalize_for_repeat(text: str) -> str:
     lines = [line for line in text.splitlines() if not line.startswith("-# 📖")]
     return " ".join(" ".join(lines).lower().split())
@@ -385,8 +396,11 @@ def _hydrate_tool_args(
     channel_kind: str | None = None,
 ) -> dict[str, Any]:
     """Identity comes from Discord, never from the model: other users' data only for staff in DMs,
-    so nothing personal is shown to bystanders in tickets or public channels."""
+    so nothing personal is shown to bystanders in tickets or public channels. offer_action learns where it is the
+    same way (which actions can run there)."""
     hydrated = dict(args)
+    if name == ai_tools.ACTION_TOOL:
+        hydrated["channel_kind"] = channel_kind
     if name in ai_tools.IDENTITY_TOOLS:
         requested = str(hydrated.get("discord_user_id") or "").strip()
         allowed = requester_is_staff and channel_kind == "dm" and requested.isdigit()
@@ -666,7 +680,7 @@ async def run_support_agent(
         await _record_traces(trace, draft_workflow=draft_workflow)
         return result
     if second["reply"] == "(no reply)" and not any(
-        call["name"] != SEARCH_KNOWLEDGE_TOOL for call in second["tool_results"]
+        call["name"] not in (SEARCH_KNOWLEDGE_TOOL, *ai_tools.CONTROL_TOOLS) for call in second["tool_results"]
     ):
         await _record_traces(trace, drafts=[second_trace], draft_workflow=draft_workflow)
         return result
@@ -677,6 +691,8 @@ async def run_support_agent(
         second["kind"] = result.get("kind")
     if _is_repeat(second["reply"], previous_replies) or _is_clarify_loop(second, previous_replies):
         second["kind"] = "handoff"
+    if second["kind"] == "handoff":
+        second["ask"] = None
     await _record_traces(second_trace, drafts=[trace], draft_workflow=draft_workflow)
     return second
 
@@ -831,6 +847,8 @@ async def _run_once(
     reply_text, suggested_close = _split_close(reply_text)
     # Before the wiki links are appended: those are ours, everything above them is model output.
     reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings, staff_links)
+    # Controls only go with a reply that is actually sent (a blocked one is "(no reply)"), never with a handoff.
+    ask = None if kind == "handoff" or reply_text == "(no reply)" else _last_ask(tool_results)
     if guard_flags - {"unknown_link"}:
         log.warning(
             "AI reply tripped guardrails (%s)%s",
@@ -881,6 +899,7 @@ async def _run_once(
         kind=kind,
         model=model,
         guard_flags=guard_flags,
+        ask=ask,
     )
     if response_id:
         result["response_id"] = response_id

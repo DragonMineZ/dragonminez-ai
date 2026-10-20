@@ -1,4 +1,4 @@
-"""Read-only data the support AI can see.
+"""Read-only data the support AI can see, plus ask_requester and offer_action (controls under the reply).
 
 The same handlers serve two paths:
 - support runs expose them as Claude client tools (the model decides what to look up);
@@ -18,6 +18,7 @@ from typing import Any
 from bulmaai.config import load_settings
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
+from bulmaai.services import mod_source
 from bulmaai.services.bug_reports import list_bug_reports_by_reporter
 from bulmaai.services.curseforge_state import get_curseforge_project_state
 from bulmaai.services.dev_jar_download_records import has_completed_dev_jar_download
@@ -29,10 +30,15 @@ from bulmaai.services.patreon_grants import (
     list_active_gifts_for_beneficiary,
     list_active_grants_for_owner,
 )
+from bulmaai.ui import ai_asks
+from bulmaai.ui.ticket_views import CATEGORIES
 from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role, is_admin
 
 log = logging.getLogger(__name__)
 
+ASK_TOOL = "ask_requester"
+ACTION_TOOL = "offer_action"
+CONTROL_TOOLS = (ASK_TOOL, ACTION_TOOL)  # local, no lookup: they only attach controls to the reply
 PATCH_NOTES_EXCERPT_CHARS = 1500
 IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports", "search_known_issues", "get_latest_releases"})
 ACCOUNT_TOPIC_RE = re.compile(
@@ -247,6 +253,30 @@ async def get_latest_releases(
     return result
 
 
+async def list_mod_files(area: str = "", folder: str | None = None, _bot_context: Any = None) -> dict[str, Any]:
+    """The mod's own allowlisted files of one area (services/mod_source), on mod_source_branch."""
+    return await mod_source.list_files(_settings(_bot_context), area, folder)
+
+
+async def read_mod_file(
+    path: str = "", query: str | None = None, start_line: int | None = None, _bot_context: Any = None
+) -> dict[str, Any]:
+    """Numbered lines of one allowlisted mod file: around query's matches, or from start_line."""
+    return await mod_source.read_file(_settings(_bot_context), path, query, start_line)
+
+
+async def ask_requester(_bot_context: Any = None, **spec: Any) -> dict[str, Any]:
+    """Local, no lookup: validates the controls (ui/ai_asks.validate_ask). ai_client hands the last valid spec to the
+    reply that gets sent; it never suppresses the reply."""
+    return ai_asks.validate_ask(spec, _settings(_bot_context))
+
+
+async def offer_action(_bot_context: Any = None, channel_kind: str | None = None, **spec: Any) -> dict[str, Any]:
+    """Local, no lookup: validates the button (ui/ai_asks.validate_action). channel_kind is set by
+    ai_client._hydrate_tool_args from Discord; nothing runs until the requester clicks."""
+    return ai_asks.validate_action(spec, _settings(_bot_context), channel_kind)
+
+
 def _function_schema(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
@@ -256,6 +286,11 @@ def _function_schema(name: str, description: str, properties: dict[str, Any]) ->
         "parameters": {"type": "object", "properties": properties, "additionalProperties": False},
     }
 
+
+# The ticket panel's categories, in English: "bug (Game-Breaking Bug: Crashes, corrupted worlds), ...".
+_TICKET_CATEGORIES = ", ".join(
+    f"{key} ({category.name}: {category.description.split(' | ')[0]})" for key, category in CATEGORIES.items()
+)
 
 _USER_ID_PROPERTY = {
     "type": ["string", "null"],
@@ -295,14 +330,210 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "discord_user_id": _USER_ID_PROPERTY,
         },
     ),
+    "list_mod_files": _function_schema(
+        "list_mod_files",
+        "List DragonMineZ's own source files that read_mod_file can read. Areas: config (the Java config classes: "
+        "every option with its current default; ConfigManager says which file each class is saved to), "
+        "defaults (the config JSON files the mod ships as its upgrade baseline: the same files, layout and keys as a "
+        "player's config/dragonminez/<file>.json, e.g. general-server.json, combat.json, races/<race>/stats.json, "
+        "forms/*.json; values can be a version old, the config classes hold the current defaults), commands (the "
+        "server commands with their syntax, DMZPermissions with every permission node, DMZServer), lang (en_us.json: "
+        "every in-game text and message by key), quests (the quest, saga and side-quest JSON files as shipped, in "
+        "the layout of a world's dragonminez folder). A listing that is cut short shows folders with their file "
+        "counts: pass one as folder to list it.",
+        {
+            "area": {"type": "string", "enum": list(mod_source.AREAS)},
+            "folder": {
+                "type": ["string", "null"],
+                "description": "Null for the whole area, or a folder from a cut-short listing's folders.",
+            },
+        },
+    ),
+    "read_mod_file": _function_schema(
+        "read_mod_file",
+        "Read one DragonMineZ source file from list_mod_files (no other paths), as numbered lines. With query: "
+        f"only the lines containing it (case-insensitive) with {mod_source.CONTEXT_LINES} lines around each; "
+        "without: the file from start_line. About 6000 characters at most; truncated means there is more (read on "
+        "from a later start_line, or narrow the query). A player's config/dragonminez/<file>.json path reads the "
+        "shipped file of the same name. Use it for technical config, command and permission questions instead of "
+        "guessing, and quote the exact key, value, command or permission node; never paste code.",
+        {
+            "path": {"type": "string", "description": "A path exactly as list_mod_files gave it."},
+            "query": {
+                "type": ["string", "null"],
+                "description": f"A config key, command, permission or text to find, up to {mod_source.QUERY_MAX} "
+                "characters; null reads a window.",
+            },
+            "start_line": {
+                "type": ["integer", "null"],
+                "description": "Without query: the first line to read (1 = the top). Null: 1.",
+            },
+        },
+    ),
+    # Not strict: each kind fills only its own fields; ui/ai_asks validates every call (errors go back to the model).
+    ASK_TOOL: {
+        "type": "function",
+        "name": ASK_TOOL,
+        "description": (
+            "Show answer controls under your reply, so the requester answers your question with a click instead of "
+            "typing. kind choices: 2-5 short answers as buttons. kind select: one dropdown of 2-25 options, for longer "
+            "lists (versions from get_latest_releases, launchers). kind form: a Fill in button that opens a form of "
+            "1-5 fields, when you need 2+ details at once. kind file: an Upload button for their log or screenshot "
+            "(instead of telling them to find the file and drag it in); with what log the card also shows where the "
+            "logs are per platform and launcher, and an uploaded log is analyzed before you see it. kind steps: a fix "
+            "of 2-8 steps they try in order, shown one at a time with Done and Still broken buttons; you hear back "
+            "which step failed, or that all are done. Labels and steps in the reply's language. Call it before "
+            "writing your reply; the reply must still read fine without the controls. One set per reply: the last "
+            "ask_requester or offer_action call wins."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": list(ai_asks.KINDS)},
+                "choices": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "kind choices: 2-5 short answers, up to 80 characters each.",
+                },
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"label": {"type": "string"}, "description": {"type": "string"}},
+                        "required": ["label"],
+                        "additionalProperties": False,
+                    },
+                    "description": "kind select: 2-25 options; label and optional description up to 100 characters.",
+                },
+                "placeholder": {"type": "string", "description": "kind select: hint text, up to 100 characters."},
+                "title": {"type": "string", "description": "kind form: the form's title, up to 45 characters."},
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string", "description": "Up to 45 characters."},
+                            "type": {
+                                "type": "string",
+                                "enum": list(ai_asks.FIELD_TYPES),
+                                "description": "short or long text, select (2-25 options), radio (2-10 options).",
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "select and radio only.",
+                            },
+                            "placeholder": {"type": "string", "description": "Text and select fields only."},
+                            "required": {"type": "boolean", "description": "Default true."},
+                        },
+                        "required": ["label", "type"],
+                        "additionalProperties": False,
+                    },
+                    "description": "kind form: 1-5 fields.",
+                },
+                "what": {
+                    "type": "string",
+                    "enum": list(ai_asks.FILE_WHATS),
+                    "description": "kind file: log (latest.log or crash-report.txt), screenshot, or any. Default any.",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "kind file: the button text, up to 80 characters (e.g. Upload latest.log). "
+                    "Default: Upload.",
+                },
+                "max_files": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": ai_asks.MAX_FILES,
+                    "description": f"kind file: how many files, 1-{ai_asks.MAX_FILES}. Default 1.",
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": f"kind steps: 2-{ai_asks.MAX_STEPS} steps in order, one short action each "
+                    f"(up to {ai_asks.STEP_LIMIT} characters).",
+                },
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+    },
+    # Not strict either: label, category, no_thanks and report_bug's prefill are optional; ui/ai_asks validates every
+    # call.
+    ACTION_TOOL: {
+        "type": "function",
+        "name": ACTION_TOOL,
+        "description": (
+            "Show one button under your reply that runs something for the requester when they click it (only they "
+            "can). get_staff (tickets only): flags the ticket for staff and pings the helpers, like the ticket's "
+            "'No, I still need help' button; offer it with a fix that may not work, never with a handoff (a handoff "
+            "already calls staff). open_ticket (public channels only, never in tickets or DMs): opens the ticket form "
+            "of a category, or lets them pick one; for questions that need a private ticket. link_patreon: gives "
+            "them their Patreon link button, like /patreon link; when their Patreon isn't linked with the bot. "
+            "report_bug (public channels and DMs, never in tickets): opens a bug report form pre-filled with title, "
+            "what_happened, steps and version from the conversation, which they check and send; it posts in the "
+            "bug-report forum with their recent logs and screenshots from here. For a real, unexplained DragonMineZ "
+            "bug that search_known_issues didn't find. "
+            "Call it before writing your reply, and say in the reply what the button does. One set per reply: the "
+            "last ask_requester or offer_action call wins."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(ai_asks.ACTIONS)},
+                "label": {
+                    "type": "string",
+                    "description": f"The button text in the reply's language, up to {ai_asks.BUTTON_LABEL_LIMIT} "
+                    "characters. Default: a plain name of the action.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": list(CATEGORIES),
+                    "description": f"open_ticket only: {_TICKET_CATEGORIES}. Leave it out when unsure: they pick one.",
+                },
+                "no_thanks": {
+                    "type": "boolean",
+                    "description": "Also show a No thanks button that only dismisses the offer. Default false.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": f"report_bug only: a short title of the bug, up to {ai_asks.BUG_LIMITS['title']} "
+                    "characters.",
+                },
+                "what_happened": {
+                    "type": "string",
+                    "description": "report_bug only: what goes wrong and what they expected, from the conversation, up "
+                    f"to {ai_asks.BUG_LIMITS['what_happened']} characters.",
+                },
+                "steps": {
+                    "type": "string",
+                    "description": "report_bug only: the steps to reproduce it, one per line, up to "
+                    f"{ai_asks.BUG_LIMITS['steps']} characters. Leave it out when unknown.",
+                },
+                "version": {
+                    "type": "string",
+                    "description": "report_bug only: DragonMineZ, Minecraft and Forge versions when known, up to "
+                    f"{ai_asks.BUG_LIMITS['version']} characters.",
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+    },
 }
 TOOL_FUNCS = {
     "get_patreon_status": get_patreon_status,
     "get_user_bug_reports": get_user_bug_reports,
     "search_known_issues": search_known_issues,
     "get_latest_releases": get_latest_releases,
+    "list_mod_files": list_mod_files,
+    "read_mod_file": read_mod_file,
+    ASK_TOOL: ask_requester,
+    ACTION_TOOL: offer_action,
 }
 SUPPORT_TOOL_NAMES = list(TOOL_SCHEMAS)
+# Runs whose reply can't carry controls (/ask) get only the lookups.
+LOOKUP_TOOL_NAMES = [name for name in SUPPORT_TOOL_NAMES if name not in CONTROL_TOOLS]
 
 
 async def _labeled(label: str, coro: Any) -> str | None:

@@ -1,5 +1,6 @@
 import base64
 import re
+from urllib.parse import quote
 
 from bulmaai.services.http import request
 from bulmaai.github.github_app_auth import GitHubAppAuth
@@ -163,6 +164,14 @@ class GitHubService:
         r.raise_for_status()
         j = r.json()
         return [item["path"] for item in j if item.get("type") == "file"] if isinstance(j, list) else []
+
+    async def list_tree(self, ref: str) -> list[str]:
+        """Every file path on ref, in one call (the recursive Git tree)."""
+        r = await request(
+            "GET", f"{self.api}/git/trees/{quote(ref, safe='')}", headers=await self._headers(), params={"recursive": "1"}
+        )
+        r.raise_for_status()
+        return [item["path"] for item in r.json().get("tree", []) if item.get("type") == "blob"]
 
     async def put_file(self, *, path: str, branch: str, new_text: str, sha: str, message: str) -> str:
         """Commit straight to `branch`. A stale `sha` gets a 409 instead of clobbering someone else's commit. Returns the commit URL."""

@@ -24,6 +24,10 @@ from v2_helpers import sent_message
 OWNER_ROLE, ADMIN_ROLE, MOD_ROLE, HELPER_ROLE, TESTER_ROLE = 11, 12, 13, 14, 15
 EN_ROLE, ES_ROLE, PT_ROLE = 21, 22, 23
 OWNER_ID, STAFF_ID = 100, 200
+# The open ticket's button row, in order; every swap of the row (AI toggle, re-open, language) keeps all of it.
+CONTROL_IDS = [
+    views.AI_BUTTON_ID, "ticket_btn_close", views.SOLVED_BUTTON_ID, views.SUMMARY_BUTTON_ID, views.DRAFT_BUTTON_ID
+]
 
 SETTINGS = SimpleNamespace(
     panel_owner_role_ids=(OWNER_ROLE,),
@@ -165,6 +169,17 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         payload = views.TicketModal(views.CATEGORIES["bug"]).to_dict()["components"]
         self.assertEqual([c["type"] for c in payload], [discord.ComponentType.label.value] * 5)
 
+    async def test_the_panel_select_opens_the_form_and_resets_only_the_public_panel(self):
+        cog = make_cog()
+        for ephemeral in (False, True):  # an ephemeral copy is Bulma's open_ticket offer
+            message = SimpleNamespace(flags=discord.MessageFlags(ephemeral=ephemeral), edit=AsyncMock())
+            interaction = SimpleNamespace(
+                data={"values": ["bug"]}, message=message, channel=make_channel(), response=SimpleNamespace(send_modal=AsyncMock())
+            )
+            await cog.on_panel_select(interaction)
+            self.assertEqual(interaction.response.send_modal.await_args.args[0].category.key, "bug")
+            self.assertEqual(message.edit.await_count, 0 if ephemeral else 1)
+
     async def test_cards_have_fixed_custom_ids(self):
         self.assertEqual(custom_ids(views.panel_view()), [views.PANEL_SELECT_ID])
         self.assertEqual(custom_ids(views.closed_view(None, None)), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"])
@@ -186,7 +201,7 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<@1>", texts(greeting))
         self.assertEqual(texts(request), "-# Summary\n### boom\n**Version**\n2.2")
         self.assertEqual((lang_row.id, custom_ids(lang_row)), (views.LANG_ROW_ID, [views.LANG_SELECT_ID]))
-        self.assertEqual(custom_ids(row), [views.AI_BUTTON_ID, "ticket_btn_close", views.SOLVED_BUTTON_ID])
+        self.assertEqual(custom_ids(row), CONTROL_IDS)
         self.assertIsNone(view.timeout)
 
     async def test_welcome_card_greets_in_the_ticket_language_and_selects_it(self):
@@ -211,7 +226,7 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(texts(view.children[1]), "-# Summary\n### boom")
         select = view.get_item(views.LANG_ROW_ID).children[0]
         self.assertEqual([o.value for o in select.options if o.default], ["es"])
-        self.assertEqual(custom_ids(view.get_item(views.ACTIONS_ID)), [views.AI_BUTTON_ID, "ticket_btn_close", views.SOLVED_BUTTON_ID])
+        self.assertEqual(custom_ids(view.get_item(views.ACTIONS_ID)), CONTROL_IDS)
 
     async def test_member_dms_are_in_the_ticket_language(self):
         channel = SimpleNamespace(guild=SimpleNamespace(icon=None), jump_url="https://discord.com/channels/1/900")
@@ -444,7 +459,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         edits = [call.kwargs for call in channel.edit.await_args_list]
         self.assertIs(edits[0]["overwrites"][owner].send_messages, True)
         self.assertEqual(edits[1], {"name": "crash-0042"})
-        self.assertEqual(custom_ids(set_row.await_args.args[1]), [views.AI_BUTTON_ID, "ticket_btn_close", views.SOLVED_BUTTON_ID])
+        self.assertEqual(custom_ids(set_row.await_args.args[1]), CONTROL_IDS)
 
     async def test_member_leaving_closes_and_deletes(self):
         cog, channel = make_cog(), make_channel()
@@ -1054,9 +1069,19 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kwargs["ticket_conversation"])
         self.assertEqual(self.cog._ticket_owners[900], OWNER_ID)
         self.assertIn("requester: Steve roles staff (roles: patron; Discord roles: none)", kwargs["context_lines"])
-        self.cog._send_messages_with_typing.assert_awaited_once_with(self.channel, ["Try updating."], ai_answer=True)
+        self.cog._send_messages_with_typing.assert_awaited_once_with(
+            self.channel, ["Try updating."], ai_answer=True, ask=None, requester_id=OWNER_ID, language="en"
+        )
         self.cog._mark_ticket_escalated.assert_not_called()
         self.noted.assert_awaited_once_with(900, 9)  # our answer starts the owner's reply countdown
+
+    async def test_the_first_reply_carries_its_controls_unless_it_hands_off(self):
+        ask = {"kind": "choices", "choices": ["1.20.1", "1.21"]}
+        await self.answer({"reply": "¿Qué versión?", "tool_results": [], "kind": "clarify", "ask": ask}, language="es")
+        kwargs = self.cog._send_messages_with_typing.await_args.kwargs
+        self.assertEqual((kwargs["ask"], kwargs["language"]), (ask, "es"))
+        await self.answer({"reply": "Staff will help.", "tool_results": [], "kind": "handoff", "ask": ask})
+        self.assertIsNone(self.cog._send_messages_with_typing.await_args.kwargs["ask"])
 
     async def test_answers_in_the_ticket_language(self):
         agent = await self.answer({"reply": "Prueba.", "tool_results": [], "kind": "answer"}, language="es")
@@ -1106,7 +1131,10 @@ class AiToggleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("AI support is now **off**", interaction.followup.send.await_args.args[0])
         busy = interaction.response.edit_message.await_args.kwargs["view"]
         labels = [(item.label, item.disabled) for item in walk(busy) if isinstance(item, discord.ui.Button)]
-        self.assertEqual(labels, [(v2.WORKING, True), ("Close | Cerrar", True), ("Solved", True)])
+        self.assertEqual(
+            labels,
+            [(v2.WORKING, True), ("Close | Cerrar", True), ("Solved", True), ("Summary", True), ("Draft reply", True)],
+        )
 
 
 class BusyCardTests(unittest.IsolatedAsyncioTestCase):
@@ -1173,7 +1201,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
         return views.dm_solved(42, SimpleNamespace(icon=None), self.URL, None, self.LATER, "en")
 
     def test_control_row_has_the_solved_button(self):
-        solved = views.control_row().children[-1]
+        solved = views.control_row().get_item(views.SOLVED_BUTTON_ID)
         self.assertEqual((solved.custom_id, solved.label, solved.style), (views.SOLVED_BUTTON_ID, "Solved", discord.ButtonStyle.primary))
 
     def test_solved_window_is_one_hour_and_the_sweep_runs_every_minute(self):

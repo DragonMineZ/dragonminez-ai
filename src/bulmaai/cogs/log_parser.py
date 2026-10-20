@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+import types
 from collections import defaultdict
 
 import discord
@@ -334,35 +335,7 @@ class LogParserCog(commands.Cog):
         pending_urls: list[str] = []
 
         for attachment in full_attachments(message):
-            filename = attachment.filename.lower()
-            if not any(filename.endswith(ext) for ext in ALLOWED_EXTENSIONS):
-                continue
-
-            if attachment.size > MAX_FILE_SIZE:
-                log.warning(
-                    "Skipping oversized attachment %s (%d bytes) from %s",
-                    attachment.filename,
-                    attachment.size,
-                    message.author,
-                )
-                continue
-
-            # Read a small preview to decide if this is a Minecraft log at all.
-            try:
-                raw_bytes = await attachment.read()
-                text = raw_bytes.decode("utf-8", errors="replace")
-            except Exception:
-                log.exception("Failed to read attachment %s", attachment.filename)
-                continue
-
-            # A dmzdebug dump is handled by DmzDebugCog; skip it here so a player
-            # state file (whose VisitedDimensions can contain "minecraft:...")
-            # doesn't also get parsed as a Minecraft log.
-            if looks_like_dmzdebug(text):
-                continue
-
-            if not looks_like_mc_log(text):
-                # Not a MC log → ignore completely, even if .log/.txt
+            if (text := await self._log_text(attachment, message.author)) is None:
                 continue
 
             # ── High-confidence name → auto-parse immediately ─────────────
@@ -391,6 +364,45 @@ class LogParserCog(commands.Cog):
                 await message.add_reaction(_APPROVE_EMOJI)
             except discord.HTTPException:
                 log.warning("Could not add approval reaction to message %s", message.id)
+
+    async def parse_upload(self, message: discord.Message, uploader: discord.abc.User) -> None:
+        """Bulma's repost of files a member uploaded with her Upload button (cogs/ai_tickets, ask kind file): each
+        Minecraft log gets its card under the repost, as a typed upload does. Bulma asked for the file, so an unusual
+        name needs no 🔍 approval. No AI diagnosis: the support AI answers the upload right after. The corpus credits
+        the member, not the bot."""
+        for attachment in full_attachments(message):
+            if (text := await self._log_text(attachment, uploader)) is None or not self._may_auto_parse(uploader.id):
+                continue
+            async with message.channel.typing():
+                report, url = await self._analyze(text, attachment.filename)
+            await message.reply(view=_build_card(report, attachment.filename, url), mention_author=False)
+            upload = types.SimpleNamespace(
+                id=message.id, channel=message.channel, guild=message.guild, created_at=message.created_at,
+                author=uploader, content="",
+            )
+            self._collect(upload, text, attachment.filename, report)
+
+    @staticmethod
+    async def _log_text(attachment: discord.Attachment, uploader) -> str | None:
+        """The text of an uploaded Minecraft log; None for any other file, an oversized one, or a dmzdebug dump."""
+        if not attachment.filename.lower().endswith(ALLOWED_EXTENSIONS):
+            return None
+        if attachment.size > MAX_FILE_SIZE:
+            log.warning(
+                "Skipping oversized attachment %s (%d bytes) from %s", attachment.filename, attachment.size, uploader
+            )
+            return None
+        try:
+            text = (await attachment.read()).decode("utf-8", errors="replace")
+        except Exception:
+            log.exception("Failed to read attachment %s", attachment.filename)
+            return None
+        # A dmzdebug dump is handled by DmzDebugCog; skip it here so a player state file (whose VisitedDimensions can
+        # contain "minecraft:...") doesn't also get parsed as a Minecraft log. Anything else that isn't a MC log is
+        # ignored completely, even if .log/.txt.
+        if looks_like_dmzdebug(text) or not looks_like_mc_log(text):
+            return None
+        return text
 
     # ── on_reaction_add: admin approval ───────────────────────────────────────
 

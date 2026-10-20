@@ -600,7 +600,7 @@ CREATE TABLE IF NOT EXISTS support_info (
     title              TEXT NOT NULL,
     body               TEXT NOT NULL,
     status             TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('suggested', 'active', 'discarded', 'removed')),
-    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
+    source             TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai', 'feedback')),
     ticket_id          BIGINT,
     expires_at         TIMESTAMPTZ,
     created_by         BIGINT,
@@ -610,6 +610,10 @@ CREATE TABLE IF NOT EXISTS support_info (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 'feedback': staff wrote it from the weekly "Answers to fix" card (a 👎 answer, cogs/support_info.py).
+ALTER TABLE support_info DROP CONSTRAINT IF EXISTS support_info_source_check;
+ALTER TABLE support_info ADD CONSTRAINT support_info_source_check CHECK (source IN ('manual', 'ai', 'feedback'));
 
 CREATE INDEX IF NOT EXISTS idx_support_info_status
     ON support_info (status, created_at DESC);
@@ -661,3 +665,36 @@ CREATE TABLE IF NOT EXISTS log_corpus_pings (
     dmz_version  TEXT PRIMARY KEY,
     pinged_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Bulma's answer controls (ui/ai_asks, services/ai_asks): one row per answer card that carries them. Clicks and form
+-- opens read the spec from here (they work after a restart); the first answer sets answered_at (WHERE answered_at IS NULL).
+CREATE TABLE IF NOT EXISTS ai_asks (
+    message_id    BIGINT PRIMARY KEY,
+    channel_id    BIGINT NOT NULL,
+    requester_id  BIGINT NOT NULL,
+    spec          JSONB NOT NULL,
+    language      TEXT NOT NULL DEFAULT 'en',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    answered_at   TIMESTAMPTZ
+);
+-- A steps card's current step (0-based; NULL = 0): Done moves it on (WHERE progress = the clicked step).
+ALTER TABLE ai_asks ADD COLUMN IF NOT EXISTS progress INT;
+
+-- Thumbs up/down under Bulma's answers (ui/ai_feedback, services/ai_feedback): one row per answer card with the buttons,
+-- saved with helpful NULL; the requester's first click sets it (WHERE helpful IS NULL). The weekly report counts them.
+CREATE TABLE IF NOT EXISTS ai_feedback (
+    message_id    BIGINT PRIMARY KEY,
+    channel_id    BIGINT NOT NULL,
+    requester_id  BIGINT NOT NULL,
+    response_id   TEXT,
+    helpful       BOOLEAN,
+    language      TEXT NOT NULL DEFAULT 'en',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_feedback_created_at ON ai_feedback (created_at);
+-- The weekly "Answers to fix" review of 👎 answers (cogs/support_info.py): the first staff click claims the row
+-- (WHERE reviewed_at IS NULL); info_id is the support info written from it (NULL when skipped).
+ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS reviewed_by BIGINT;
+ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS info_id BIGINT;

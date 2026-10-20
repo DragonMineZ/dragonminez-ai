@@ -486,6 +486,14 @@ class Settings:
     # to download them as a .zip (0 = never ping).
     log_corpus_channel_id: int | None = 1350534736795275357
     log_corpus_ping_threshold: int = 20
+    # 👍/👎 under the support AI's plain answers outside tickets (ui/ai_feedback); counted in the weekly report.
+    ai_answer_feedback_enabled: bool = True
+    # A staff message in a ticket, written in another language than the ticket's, gets Bulma's translation as a reply
+    # (cogs/ai_tickets._translate_staff_message, ai_translation_model).
+    ai_ticket_translate_staff: bool = True
+    # Branch of GITHUB_DEFAULT_REPO the support AI reads the mod's configs, commands and lang file from
+    # (services/mod_source: the list_mod_files / read_mod_file tools).
+    mod_source_branch: str = "v2.2"
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"

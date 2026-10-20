@@ -18,6 +18,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 - Models: Claude Sonnet 5.5 and Haiku 5.5 only. No Opus (Bruno, 2026-10-17).
 - No OpenAI code paths are kept.
 - `support_ai_traces` / `support_sessions` / `ticket_transcripts.openai_file_id` keep their OpenAI-era names as history. Don't rename them.
+- The mod source tools (`list_mod_files` / `read_mod_file`) read only the allowlist in `services/mod_source.AREAS` (config classes, shipped configs and quests, commands and permissions, `en_us.json`) on `mod_source_branch` (default `v2.2`, Bruno's pick). The AI quotes keys, values and commands from them and never pastes code.
 
 ## Discord UI: Components V2 only
 
@@ -32,7 +33,11 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
   - Mod replies don't mention whether the DM was delivered.
 - Alerts about deleted messages never show "Jump to message". Quote the captured text instead.
 - Handled alerts collapse (`alert_card` in `ui/mod_cards.py`).
-- Card buttons that do slow work run through `ui/v2.while_busy`: the click disables the row and shows "⏳ Working…" at once, and a second click gets "Already working on it.". No silent `defer()` on buttons.
+- Card buttons that do slow work run through `ui/v2.while_busy`: the click disables the row and shows "⏳ Working…" at once, and a second click gets "Already working on it.". No silent `defer()` on buttons. Exception: buttons on a card many people share whose answer is ephemeral (the ticket welcome card's 📋 Summary / ✍️ Draft reply) defer ephemerally with `thinking=True` instead, so the card isn't locked for everyone.
+- Bulma's answer controls (`ask_requester`): only the requester can use them, through the same gates as typing. The edited card is the record of the answer (history and transcripts read it back). Specs live in the `ai_asks` table and modal submits are routed by custom id, never by in-memory callbacks. Upload asks (kind `file`) only go out in tickets and DMs: the bot reposts the files, so moderation never sees them.
+- `offer_action` buttons only run flows the requester could start themselves (get_staff = the "No, I still need help" escalation, open_ticket = the ticket panel's form, link_patreon = `/patreon link`, report_bug = a post in the bug-report forum, public channels and DMs only, never tickets; Bruno added it 2026-10-19), and only on their own click. Never add a privileged or new action there.
+- "Ask Bulma" (message command) passes the same gates as typing there (ping, ticket or DM) and never pings; other bots' messages are refused. 👍/👎 feedback goes only under plain answers outside tickets (tickets have the "solved?" prompt), only the requester rates, first click wins.
+- Threads: Bulma answers in public threads of our servers (forum posts too) like a public channel, never in private threads or the bug-report forum, and a thread is never a ticket. A follow-up to her answer in a text channel (a reply to it, or an answer on its controls) moves into a new thread; if the thread can't be made, she answers in the channel. In a help thread she opened, its requester is answered without a ping (who it is for is read off the thread's starter, never kept only in memory); everyone else still pings her.
 
 ## Moderation
 
@@ -69,6 +74,8 @@ Console actions are private to Bruno:
 - The ticket panel, forms and ephemeral replies stay EN | ES. Everything member-facing inside a ticket and its DMs (welcome, solved prompt, deletion notice, transcript/solved/reminder DMs) uses the ticket's support language (en/es/pt) only; staff-only buttons and notices stay English.
   - Support language: the owner's single language role (`announcement_role_{en,es,pt}_id`). No role: detected from the form. Several: a picker card asks them. Owner or staff can switch it from the welcome card's select. The AI always answers in it.
 - The AI's "Have I solved your problem?" prompt pings the owner. Escalation pings Helpers only, never Moderators.
+- Staff copilot: Summary and Draft reply on the welcome card are staff-only (HELPER) and answer ephemerally. Bulma never posts a draft herself: a staff click does, as a public card signed `-# ✍️ <@staff>`. History and transcripts read that card as the staff member's turn, never Bulma's, and posting it counts as staff speaking (drops the pending AI answer, starts the owner-reply countdown).
+- Staff messages in a ticket that aren't in the ticket's language get Bulma's translation as a reply, automatically (`ai_ticket_translate_staff`, on by default). Owner messages are never translated (staff have Summary). Translation cards never enter AI history, text transcripts, summaries or knowledge.
 - Owner reminder: 12h after someone else (staff, or an AI answer that isn't a handoff) spoke and the owner didn't reply, the owner gets one DM per silence (`tickets.awaiting_owner_since` / `owner_reminded_at`, swept by `_remind_owners`).
 - Testers can't see tickets.
 - Re-Open and Delete are mod/admin only, from the closed card in the channel. Owners can never re-open. Exception: helpers may Delete a ticket closed as Solved (skips the 1h wait).
@@ -90,6 +97,7 @@ Console actions are private to Bruno:
 ## Support info
 
 - Nothing the AI suggests goes live without a staff click (Approve / Edit & approve on the review card, or the panel). Approved temporary suggestions without an expiry expire after 7 days.
+- The weekly "Answers to fix" cards (the week's 👎 answers, posted after the weekly report only, never by `/support-report`): what staff write there goes live at once as active support info with source `feedback`, since staff wrote it. The first staff Write or Skip claims the answer; a text that doesn't validate gives it back.
 - Suggestions come only from tickets staff closed with Solved (the click is enough; staff needn't have typed). They keep the links/file names staff gave, and the AI may repeat links that appear in approved entries (`ai_guard.link_targets`).
 - The daily post shows active temporary entries only, replaces the previous post, and skips the day when none are active.
 - Managing entries is staff-level (`/info`, panel HELPER tier).

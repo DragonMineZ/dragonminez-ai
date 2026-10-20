@@ -59,6 +59,17 @@ class GitHubServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["json"]["branch"], "main")
         self.assertEqual(kwargs["json"]["sha"], "s1")
 
+    async def test_list_tree_returns_every_file_of_the_branch(self) -> None:
+        service = _service("dragonminez")
+        tree = {"tree": [{"path": "src", "type": "tree"}, {"path": "src/a.json", "type": "blob"}, {"path": "b.java", "type": "blob"}]}
+        with patch(
+            "bulmaai.github.github_service.request", AsyncMock(return_value=FakeResponse(200, tree))
+        ) as request_mock:
+            self.assertEqual(await service.list_tree("feature/x"), ["src/a.json", "b.java"])
+        args, kwargs = request_mock.await_args
+        self.assertEqual(args, ("GET", "https://api.github.com/repos/DragonMineZ/dragonminez/git/trees/feature%2Fx"))
+        self.assertEqual(kwargs["params"], {"recursive": "1"})
+
     async def test_put_file_stale_sha_raises_409(self) -> None:
         service = _service()
         with patch(

@@ -1,5 +1,7 @@
-"""Staff support info: /info to manage entries, the daily public post of active temporary ones, and the staff review
-card for suggestions the ticket close summary makes (suggest_from_ticket / finish_suggestion).
+"""Staff support info: /info to manage entries, the daily public post of active temporary ones, the staff review
+card for suggestions the ticket close summary makes (suggest_from_ticket / finish_suggestion), and the weekly
+"Answers to fix" cards (ui/feedback_fix, posted by cogs/support_report.py): staff write the right answer to a 👎 answer,
+which goes live as support info (source feedback), or skip it.
 
 The post is DB-driven (support_info_post.posted_at) and checked every POLL_MINUTES, so restarts don't skip or repeat
 it; claim_daily_post makes sure only one loop posts."""
@@ -10,7 +12,9 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 
+from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services import support_info as db
+from bulmaai.ui import feedback_fix
 from bulmaai.ui.support_info_views import (
     APPROVE,
     EDIT,
@@ -32,6 +36,8 @@ NOT_FOUND_MSG = "No active support info #{id}."
 ALREADY_HANDLED_MSG = "Already handled."
 REVIEW_FAILED_MSG = "Couldn't update that suggestion. Try again."
 DAYS_MSG = "Expires in days must be a whole number from 1 to 365."
+FIX_HANDLED_MSG = "Someone already handled this one."
+FIX_FAILED_MSG = "Couldn't save that. Try again."
 # An approved temporary suggestion without its own expiry stops feeding the AI after this long.
 SUGGESTION_EXPIRY = timedelta(days=7)
 
@@ -251,9 +257,16 @@ class SupportInfoCog(ReloadableCog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
+        custom_id = (interaction.data or {}).get("custom_id") or ""
+        if interaction.type == discord.InteractionType.modal_submit:
+            if (message_id := feedback_fix.parse_modal_id(custom_id)) is not None:
+                await self._on_fix_submit(interaction, message_id)
+            return
         if interaction.type != discord.InteractionType.component:
             return
-        parsed = parse_review_custom_id((interaction.data or {}).get("custom_id") or "")
+        if (fix := feedback_fix.parse_custom_id(custom_id)) is not None:
+            return await self._on_fix_button(interaction, *fix)
+        parsed = parse_review_custom_id(custom_id)
         if parsed is None:
             return
         action, info_id = parsed
@@ -277,6 +290,89 @@ class SupportInfoCog(ReloadableCog):
             return True
 
         await while_busy(interaction, self._working, finish, failed=REVIEW_FAILED_MSG)
+
+    # ---- weekly "Answers to fix" (👎 answers; cogs/support_report.py posts the cards) ---------------------------------
+
+    async def _fix_outcome(self, message_id: int) -> discord.ui.DesignerView | None:
+        """The collapsed card of an answer someone already reviewed; None while nobody has."""
+        row = await feedback_store.get(message_id)
+        if row is None or row.reviewed_at is None:
+            return None
+        entry = await db.get_info(row.info_id) if row.info_id else None
+        return feedback_fix.handled_card(row.reviewed_by, row.info_id, entry.title if entry else "")
+
+    async def _on_fix_button(self, interaction: discord.Interaction, action: str, message_id: int) -> None:
+        if not _is_staff_member(interaction.user, self.bot.settings):
+            return await interaction.response.send_message(STAFF_ONLY_MSG, ephemeral=True)
+        if action == feedback_fix.WRITE:
+            row = await feedback_store.get(message_id)
+            if row is None or row.reviewed_at is not None:
+                outcome = await self._fix_outcome(message_id)
+                if outcome is None:
+                    return await interaction.response.send_message(FIX_HANDLED_MSG, ephemeral=True)
+                await interaction.response.edit_message(view=outcome)
+                return await interaction.followup.send(FIX_HANDLED_MSG, ephemeral=True)
+            answer = await feedback_store.answer_to_fix(row)
+            return await interaction.response.send_modal(
+                feedback_fix.fix_modal(message_id, answer.question if answer else "")
+            )
+
+        async def skip() -> bool:
+            if await feedback_store.claim_review(message_id, interaction.user.id):
+                await interaction.edit_original_response(view=feedback_fix.skipped_card(interaction.user.id))
+                return True
+            outcome = await self._fix_outcome(message_id)
+            if outcome is not None:
+                await interaction.edit_original_response(view=outcome)
+            else:
+                await unbusy(interaction)
+            await interaction.followup.send(FIX_HANDLED_MSG, ephemeral=True)
+            return True
+
+        await while_busy(interaction, self._working, skip, failed=FIX_FAILED_MSG)
+
+    async def _on_fix_submit(self, interaction: discord.Interaction, message_id: int) -> None:
+        """The Write form: claims the answer (first wins), saves the text as active support info (source feedback,
+        created by the staff member) and collapses the card. A text that doesn't validate releases the claim."""
+        if not _is_staff_member(interaction.user, self.bot.settings):
+            return await interaction.response.send_message(STAFF_ONLY_MSG, ephemeral=True)
+        form = feedback_fix.read_form((interaction.data or {}).get("components"))
+        if form.days and not (form.days.isdigit() and 1 <= int(form.days) <= 365):
+            return await interaction.response.send_message(DAYS_MSG, ephemeral=True)
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(days=int(form.days))
+            if form.days and form.kind == db.KIND_TEMPORARY
+            else None
+        )
+        staff_id = interaction.user.id
+        if not await feedback_store.claim_review(message_id, staff_id):
+            return await interaction.response.send_message(FIX_HANDLED_MSG, ephemeral=True)
+        try:
+            entry = await db.add_info(
+                kind=form.kind,
+                title=form.title,
+                body=form.answer,
+                created_by=staff_id,
+                expires_at=expires_at,
+                status="active",
+                source="feedback",
+            )
+        except Exception as error:
+            if not isinstance(error, ValueError):
+                log.exception("Could not save the right answer", extra={"message_id": message_id})
+            await feedback_store.release_review(message_id, staff_id)
+            reply = str(error) if isinstance(error, ValueError) else FIX_FAILED_MSG
+            return await interaction.response.send_message(reply, ephemeral=True)
+        try:
+            await feedback_store.set_info(message_id, entry.id)
+        except Exception:
+            # The support info is live already; only the link back from the answer is missing.
+            log.exception("Could not link the right answer to its feedback row", extra={"message_id": message_id})
+        view = feedback_fix.fixed_card(staff_id, entry.id, entry.title)
+        if getattr(interaction, "message", None) is not None:
+            await interaction.response.edit_message(view=view)
+        else:
+            await interaction.response.send_message(f"Saved as support info #{entry.id}.", ephemeral=True)
 
     # ---- /info -----------------------------------------------------------------------------------------------------
 

@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
+import io
 import logging
 import random
 import re
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -13,10 +16,26 @@ from discord.ext import commands
 
 from bulmaai.cogs import dmzdebug as dmzdebug_cog
 from bulmaai.cogs import log_parser as log_parser_cog
+from bulmaai.services import ai_asks as ask_store
 from bulmaai.services import ai_budget
+from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services.ai_oneshot import response_text
-from bulmaai.services.ai_guard import can_post_publicly, defuse_mentions, safe_name, strip_links
-from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
+from bulmaai.services.ai_guard import (
+    BLOCKING_FLAGS,
+    can_post_publicly,
+    defuse_mentions,
+    link_targets,
+    safe_name,
+    screen_reply,
+    strip_links,
+)
+from bulmaai.services.ai_tools import LOOKUP_TOOL_NAMES, SUPPORT_TOOL_NAMES
+from bulmaai.services.staff_copilot import (
+    TicketSoFar,
+    summarize_so_far,
+    translate_staff_text,
+    translation_wanted,
+)
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.ai_client import (
     ConversationMessage,
@@ -49,8 +68,17 @@ from bulmaai.services.ticket_transcripts import (
     summarize_ticket,
     ticket_knowledge_filename,
 )
-from bulmaai.services.tickets import ClosedGap, get_ticket_by_channel, hide_closed_messages, note_ticket_message
-from bulmaai.ui.v2 import while_busy
+from bulmaai.services.tickets import (
+    STATUS_OPEN,
+    ClosedGap,
+    get_open_tickets_by_owner,
+    get_ticket_by_channel,
+    hide_closed_messages,
+    note_ticket_message,
+)
+from bulmaai.ui import ai_asks, ai_feedback, staff_copilot
+from bulmaai.ui.ticket_views import CATEGORIES, TicketModal, msg_already_open, panel_view
+from bulmaai.ui.v2 import trim, while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content
@@ -67,6 +95,10 @@ log = logging.getLogger(__name__)
 
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+DM_UPLOAD_LIMIT = 25 * 1024 * 1024  # when a DM interaction doesn't say what the bot may upload there
+BUG_REPORTS_COG = "BugReportsCog"
+BUG_REPORT_MAX_FILES = 3  # the requester's logs and screenshots a report_bug post carries
+BUG_POST_FALLBACK_NAME = "Bug report"
 DISCORD_MESSAGE_LIMIT = 1900
 # V2 cards allow 4000 characters of text per message; leave room for the footer.
 CARD_TEXT_LIMIT = 3500
@@ -110,6 +142,15 @@ SOLVED_CLOSE_TEXT = {
 LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "pt": "Portuguese"}
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
+# ponytail: a thread is one conversation, so no age cutoff there; its newest N messages plus what led into it.
+THREAD_CONTEXT_MESSAGE_LIMIT = 30
+THREAD_NAME_LIMIT = 90
+HELP_THREAD_ARCHIVE_MINUTES = 1440
+_THREAD_NAME_JUNK_RE = re.compile(
+    r"<a?:\w+:\d+>|<[@#][!&]?\d+>|<t:\d+(?::\w)?>|(?i:\b[a-z][a-z0-9+.-]*://\S+)|[*_~`|>#\[\]()\\]+"
+)
+# ponytail: who each of Bulma's help threads is for, read off its starter once; a restart reads it again.
+_THREAD_REQUESTERS_SIZE = 512
 # ponytail: in-memory per-user window (a restart resets it); stops one member draining the shared daily AI budget.
 SUPPORT_RATE_LIMIT_CALLS = 8
 SUPPORT_RATE_LIMIT_WINDOW_SECONDS = 600
@@ -191,6 +232,51 @@ def _is_ticket_channel(
         and settings.ai_ticket_category_id is not None
         and channel.category.id == settings.ai_ticket_category_id
     )
+
+
+def _channel_kind(channel: Any, *, settings) -> str:
+    """Where an answer goes out, as ai_client's channel kinds: ticket, dm or public. Threads are never tickets."""
+    if isinstance(channel, discord.DMChannel):
+        return "dm"
+    if _is_ticket_channel(channel, settings=settings):
+        return "ticket"
+    return "public"
+
+
+def _is_support_thread(channel: Any, *, settings) -> bool:
+    """A public thread of our servers (forum posts count) that Bulma answers in like a public channel. Private threads
+    the bug-report forum's posts (cogs/bug_reports owns those) and threads inside tickets are left alone."""
+    ticket_categories = {getattr(settings, "ai_ticket_category_id", None), getattr(settings, "ticket_closed_category_id", None)}
+    return (
+        isinstance(channel, discord.Thread)
+        and channel.type == discord.ChannelType.public_thread
+        and is_allowed_guild_id(getattr(getattr(channel, "guild", None), "id", None), settings)
+        and channel.parent_id != getattr(settings, "bug_report_forum_channel_id", None)
+        and getattr(getattr(channel, "parent", None), "category_id", None) not in ticket_categories - {None}
+    )
+
+
+async def _thread_starter(thread: discord.Thread) -> discord.Message | None:
+    """The message a thread was started from (it has the thread's id): a forum post's first message, in the thread,
+    or the text-channel message the thread was made off. None when it was deleted; other fetch errors raise."""
+    if (cached := getattr(thread, "starting_message", None)) is not None:
+        return cached
+    parent = thread.parent
+    source = parent if isinstance(parent, discord.TextChannel) else thread
+    try:
+        return await source.fetch_message(thread.id)
+    except discord.NotFound:
+        return None
+
+
+def _thread_name(text: str, settings: Any) -> str:
+    """A help thread's name from member text: one line without mentions, emoji codes, links or markdown, at most
+    THREAD_NAME_LIMIT characters. "" when nothing is left or the text trips the reply guard (a banned word)."""
+    name = " ".join(_THREAD_NAME_JUNK_RE.sub(" ", text or "").split())
+    if len(name) > THREAD_NAME_LIMIT:
+        name = name[: THREAD_NAME_LIMIT - 1].rstrip() + "…"
+    screened, flags = screen_reply(name, settings)
+    return "" if flags & BLOCKING_FLAGS else screened
 
 
 def _is_pinging_bot(message: discord.Message, bot_user: discord.ClientUser | None) -> bool:
@@ -325,6 +411,15 @@ def _is_image_attachment(attachment: discord.Attachment) -> bool:
     return attachment.filename.lower().endswith(IMAGE_ATTACHMENT_EXTENSIONS)
 
 
+def _upload_limit(interaction: discord.Interaction) -> int:
+    """How many bytes the bot may post in one message where this interaction happened: the guild's upload limit; in
+    DMs what Discord says for this interaction, else DM_UPLOAD_LIMIT."""
+    if (guild := getattr(interaction, "guild", None)) is not None:
+        return guild.filesize_limit
+    limit = getattr(interaction, "attachment_size_limit", None)
+    return limit if isinstance(limit, int) and limit > 0 else DM_UPLOAD_LIMIT
+
+
 def _has_user_visible_tool_result(tool_results: list[Any]) -> bool:
     for entry in tool_results:
         output = entry.get("output")
@@ -352,18 +447,129 @@ def _is_staff_ticket_message(
     )
 
 
-def _card_text(message: discord.Message) -> str:
-    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer."""
-    lines: list[str] = []
+def _component_dicts(message: discord.Message) -> list[dict]:
+    """Every component of a message, nested ones included, as Discord payload dicts."""
+    out: list[dict] = []
 
     def walk(items) -> None:
         for item in items or ():
-            if item.get("type") == 10 and item.get("content"):
-                lines.append(item["content"].replace(AI_FOOTER, ""))
+            out.append(item)
             walk(item.get("components"))
 
     walk([component.to_dict() for component in getattr(message, "components", None) or ()])
+    return out
+
+
+def _card_texts(message: discord.Message) -> list[str]:
+    return [item["content"] for item in _component_dicts(message) if item.get("type") == 10 and item.get("content")]
+
+
+def _card_text(message: discord.Message) -> str:
+    """The text of a V2 card (its `content` is empty), minus our "AI can make mistakes" footer, a recorded answer
+    (that is the requester's turn, see _card_answer), the thanks for a rating (ui/ai_feedback) and a posted draft's
+    signature (who it is from, see _signed_turn)."""
+    lines = [
+        item["content"].replace(AI_FOOTER, "")
+        for item in _component_dicts(message)
+        if item.get("type") == 10
+        and item.get("content")
+        and item.get("id") != staff_copilot.SIGNED_TEXT_ID
+        and not item["content"].startswith(ai_asks.ANSWER_LINE_PREFIX)
+        and item["content"] not in ai_feedback.THANKS_LINES
+    ]
     return "\n".join(line.strip() for line in lines if line.strip())
+
+
+def _card_answer(message: discord.Message) -> tuple[int, str] | None:
+    """(user id, answer) given with the controls on this card, if any: a pick's label, a form's lines, a steps
+    outcome, or the steps done so far on a steps card still in progress (read off its buttons)."""
+    return ai_asks.read_answer(_card_texts(message)) or ai_asks.read_progress(
+        [item.get("custom_id") for item in _component_dicts(message)]
+    )
+
+
+def _is_answer_card(message: Any, bot_user: discord.ClientUser | None) -> bool:
+    """One of Bulma's support answers (a typed one's, Ask Bulma's, /ask's): her card with the AI footer, which only an
+    answer's last card carries."""
+    author_id = getattr(getattr(message, "author", None), "id", None)
+    return (
+        bot_user is not None
+        and author_id == bot_user.id
+        and any(AI_FOOTER in text for text in _card_texts(message))
+    )
+
+
+def _rebuilt(message: discord.Message, *items: discord.ui.Item) -> discord.ui.DesignerView:
+    """The card's own text (not the text that belongs to its controls), then items."""
+    own = [
+        item["content"]
+        for item in _component_dicts(message)
+        if item.get("type") == 10 and item.get("content") and item.get("id") != ai_asks.CONTROLS_TEXT_ID
+    ]
+    return discord.ui.DesignerView(
+        discord.ui.Container(*(discord.ui.TextDisplay(text) for text in own), *items, color=AI_CARD_COLOR),
+        timeout=None,
+    )
+
+
+def _answered_card(
+    message: discord.Message, lines: list[str], *, controls_text: str | None = None, notes: Sequence[str] = ()
+) -> discord.ui.DesignerView:
+    """The card as it was, without its controls, with the answer lines under it. controls_text replaces the text that
+    belonged to the controls (a steps card's list, in its final state); notes go last (what an action did)."""
+    controls = [discord.ui.TextDisplay(controls_text, id=ai_asks.CONTROLS_TEXT_ID)] if controls_text else []
+    return _rebuilt(message, *controls, *(discord.ui.TextDisplay(text) for text in [*lines, *notes]))
+
+
+def _steps_card(message: discord.Message, row: ask_store.AskRow, progress: int) -> discord.ui.DesignerView:
+    """A steps card at step progress: its own text, then the list and that step's buttons."""
+    return _rebuilt(message, *ai_asks.steps_items(row.spec, row.requester_id, row.language, progress))
+
+
+# ponytail: only what the answer path reads off a discord.Message (and utils/forwards); add attributes as it grows.
+class _ChoiceMessage:
+    """Stands in for the message an answer on a card (a pick, a submitted form or an upload) replaces. Its id is the
+    card's, so the general history, which always keeps the triggering message, keeps the card and the answer on it.
+    attachments: an upload's files as reposted, so their screenshots get analyzed like a typed upload's. card: the
+    answer card itself, which a follow-up in a text channel moves into a thread off (_open_help_thread)."""
+
+    attachments = snapshots = mentions = ()
+    reference = None
+
+    def __init__(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        message_id: int,
+        attachments: Sequence[Any] = (),
+        card: discord.Message | None = None,
+    ) -> None:
+        self.author = interaction.user
+        self.channel = interaction.channel
+        self.guild = interaction.guild
+        self.id = message_id
+        self.content = self.clean_content = content
+        self.created_at = datetime.now(timezone.utc)
+        self.attachments = tuple(attachments)
+        self.card = card
+
+
+class _AskedMessage(_ChoiceMessage):
+    """Stands in for the requester asking Bulma about a message (the target) with the "Ask Bulma" command: the target
+    quoted as their turn, with its files (forwarded ones too), so screenshots and logs get analyzed as if they posted
+    them. Its id is the target's: _build_history skips the target's own place in the channel and puts this turn last."""
+
+    def __init__(self, interaction: discord.Interaction, target: discord.Message) -> None:
+        author = target.author
+        content = ai_asks.asked_content(getattr(author, "display_name", author.name), _message_text(target))
+        super().__init__(interaction, content, target.id, full_attachments(target))
+        self.target_author_id = author.id
+        self.reply_to = target  # the answer replies to it, so the channel sees what it is about
+
+
+def _message_text(message: discord.Message) -> str:
+    """A message's text: its own, a card's, and what it forwards (no attachments)."""
+    return "\n".join(p for p in (message.clean_content.strip(), _card_text(message), forwarded_content(message)) if p)
 
 
 def _message_content(
@@ -371,9 +577,7 @@ def _message_content(
     image_analyses: dict[int, str] | None = None,
 ) -> str:
     """Text plus attachment markers. Images only show as text when analyzed before; never re-processed."""
-    content = "\n".join(
-        p for p in (message.clean_content.strip(), _card_text(message), forwarded_content(message)) if p
-    )
+    content = _message_text(message)
     attachment_lines: list[str] = []
     for attachment in full_attachments(message):
         analysis = (image_analyses or {}).get(getattr(attachment, "id", None))
@@ -482,6 +686,9 @@ class AITicketsCog(ReloadableCog):
         self._ticket_owners: dict[int, int | None] = {}
         # Ticket channel → its support language (None: no tickets row); TicketsCog drops an entry when it changes.
         self._ticket_languages: dict[int, str | None] = {}
+        # Bulma's thread → the member it is for (None: not a help thread); see _help_thread_requester.
+        self._thread_requesters: dict[int, int | None] = {}
+        self._translations: set[asyncio.Task[None]] = set()  # staff messages being translated (kept so none is GC'd)
 
     async def on_startup(self) -> None:
         try:
@@ -580,6 +787,66 @@ class AITicketsCog(ReloadableCog):
         await self.set_ticket_ai_enabled(channel.id, enable)
         await ctx.respond(f"AI support is now **{'on' if enable else 'off'}** in this channel.")
 
+    @discord.message_command(
+        name="Ask Bulma", contexts={discord.InteractionContextType.guild, discord.InteractionContextType.bot_dm}
+    )
+    async def ask_bulma(self, ctx: discord.ApplicationContext, message: discord.Message) -> None:
+        """Right-click a message → Apps → Ask Bulma: the invoker asks Bulma about it (_AskedMessage). Past the gates
+        the click gets an ephemeral "On it…" at once, and the answer is posted in the channel like a typed one's."""
+        interaction = ctx.interaction
+        refusal, language, context = await self._ask_bulma_gate(interaction, message)
+        if refusal:
+            return await ctx.respond(ai_asks.text(language, refusal), ephemeral=True)
+        await ctx.respond(ai_asks.text(language, "on_it"), ephemeral=True)
+        self._answer_pick(_AskedMessage(interaction, message), **context)
+
+    async def _ask_bulma_gate(
+        self, interaction: discord.Interaction, target: discord.Message
+    ) -> tuple[str | None, str, dict[str, Any]]:
+        """(why Ask Bulma can't answer, as a ui/ai_asks.TEXT key, or None; the language to say it in: the ticket's, else
+        English; the _answer_support arguments). The gates are a typed request's (_process_support_message): a ping's
+        in public channels and threads, the ticket's in tickets (AI on, still open), DM support's in DMs. Our own cards
+        may be asked about, other bots' messages not."""
+        settings = self.bot.settings
+        channel, user = interaction.channel, interaction.user
+        kind = _channel_kind(channel, settings=settings)
+        in_ticket, in_dm = kind == "ticket", kind == "dm"
+        language = (await self._ticket_language(channel.id) or "en") if in_ticket else "en"
+        context: dict[str, Any] = {
+            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": kind == "public", "member": None
+        }
+
+        def refuse(key: str) -> tuple[str, str, dict[str, Any]]:
+            return key, language, context
+
+        # Like a ping: only text channels and public threads (not the bug forum's) of our servers, or a DM.
+        answerable = isinstance(channel, discord.TextChannel) or _is_support_thread(channel, settings=settings)
+        in_our_server = answerable and is_allowed_guild_id(getattr(interaction, "guild_id", None), settings)
+        if not settings.ai_support_enabled or not (in_dm or in_our_server):
+            return refuse("ask_off")
+        if (target.author.bot or getattr(target, "webhook_id", None)) and target.author.id != getattr(
+            self.bot.user, "id", None
+        ):
+            return refuse("ask_bot")
+        if not _message_text(target) and not full_attachments(target):
+            return refuse("ask_empty")
+        if in_ticket and not self.is_ticket_ai_enabled(channel.id):
+            return refuse("ask_off")
+        if not (in_ticket or in_dm) and await self._is_closed_ticket(channel):
+            return refuse("closed")
+        member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
+        context["member"] = member
+        if not in_ticket and not (member is not None and can_use_ai_support(member, settings=settings)):
+            return refuse("ask_no_access")
+        if ai_budget.is_paused(settings):
+            return refuse("paused")
+        events = self._rate_limit_state.record(
+            self._support_events, (user.id, 0), time.monotonic(), SUPPORT_RATE_LIMIT_WINDOW_SECONDS
+        )
+        if len(events) > SUPPORT_RATE_LIMIT_CALLS:
+            return refuse("rate_limited")
+        return None, language, context
+
     async def _resolve_member_for_user(self, user: discord.abc.User) -> discord.Member | None:
         guilds = [g for g in self.bot.guilds if is_allowed_guild_id(g.id, self.bot.settings)]
         for guild in guilds:
@@ -642,13 +909,23 @@ class AITicketsCog(ReloadableCog):
         messages: list[str],
         *,
         ai_answer: bool = False,
+        ask: dict[str, Any] | None = None,
+        requester_id: int | None = None,
+        language: str | None = None,
+        feedback: bool = False,
+        response_id: str | None = None,
+        reply_to: discord.Message | None = None,
     ) -> bool:
-        """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one."""
+        """Each chunk is a V2 card; ai_answer adds the "AI can make mistakes" footer to the last one, and ask (an
+        ask_requester / offer_action spec, ui/ai_asks) puts its controls on it for requester_id only, saved in ai_asks.
+        Chunks leave room for the text the controls bring (a steps list and its outcome line). feedback (without ask)
+        puts the 👍/👎 row there instead, saved in ai_feedback with the reply's response_id."""
+        limit = CARD_TEXT_LIMIT - ai_asks.reserved_text(ask)
         chunks = [
             chunk
             for message in messages
             if message
-            for chunk in _chunk_discord_message(message, CARD_TEXT_LIMIT)
+            for chunk in _chunk_discord_message(message, limit)
             if chunk.strip()
         ]
         if not chunks:
@@ -656,19 +933,25 @@ class AITicketsCog(ReloadableCog):
 
         if ai_answer:
             chunks[-1] = _with_footer(chunks[-1])
+        views = [_card(chunk) for chunk in chunks]
+        feedback = feedback and not ask and requester_id is not None
+        if ask and requester_id is not None:
+            views[-1] = _card(chunks[-1], AI_CARD_COLOR, *ai_asks.ask_rows(ask, requester_id, language))
+        elif feedback:
+            views[-1] = _card(chunks[-1], AI_CARD_COLOR, ai_feedback.feedback_row(requester_id))
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
-        allowed_mentions = discord.AllowedMentions.none()
+        allowed_mentions = discord.AllowedMentions.none()  # none(): a reply doesn't ping its author either
+        # Only the first card replies (reply_to); a deleted target just sends it unreplied.
+        references = [reply_to.to_reference(fail_if_not_exists=False) if reply_to else None] + [None] * (len(views) - 1)
         try:
             if typing_lead_seconds <= 0:
-                for chunk in chunks:
-                    await channel.send(view=_card(chunk), allowed_mentions=allowed_mentions)
-                return True
-
-            async with channel.typing():
-                await asyncio.sleep(typing_lead_seconds)
-                for chunk in chunks:
-                    await channel.send(view=_card(chunk), allowed_mentions=allowed_mentions)
-            return True
+                for view, reference in zip(views, references):
+                    sent = await channel.send(view=view, allowed_mentions=allowed_mentions, reference=reference)
+            else:
+                async with channel.typing():
+                    await asyncio.sleep(typing_lead_seconds)
+                    for view, reference in zip(views, references):
+                        sent = await channel.send(view=view, allowed_mentions=allowed_mentions, reference=reference)
         except discord.HTTPException:
             log.exception(
                 "Failed to send AI support response",
@@ -680,6 +963,31 @@ class AITicketsCog(ReloadableCog):
                 },
             )
             return False
+        if ask and requester_id is not None:
+            try:
+                # Clicks read the spec from this row; without it they answer that the question expired.
+                await ask_store.save(
+                    message_id=sent.id,
+                    channel_id=channel.id,
+                    requester_id=requester_id,
+                    spec=ask,
+                    language=language or "en",
+                )
+            except Exception:
+                log.exception("Could not save answer controls", extra={"channel_id": channel.id, "message_id": sent.id})
+        elif feedback:
+            try:
+                # Without it a rating still counts (feedback_store.rate), only the response id is lost.
+                await feedback_store.save(
+                    message_id=sent.id,
+                    channel_id=channel.id,
+                    requester_id=requester_id,
+                    response_id=response_id,
+                    language=language or "en",
+                )
+            except Exception:
+                log.exception("Could not save answer feedback", extra={"channel_id": channel.id, "message_id": sent.id})
+        return True
 
     def _speaker_kind(self, message: discord.Message, requester_id: int | None) -> str:
         if message.author == self.bot.user:
@@ -699,6 +1007,12 @@ class AITicketsCog(ReloadableCog):
     ) -> ConversationMessage | None:
         if message.author.bot and message.author != self.bot.user:
             return None
+        if self._is_translation(message):
+            return None  # it repeats the staff message it replies to
+        if (uploaded := self._upload_turn(message, requester_id, image_analyses)) is not None:
+            return uploaded
+        if (signed := self._signed_turn(message, requester_id, image_analyses)) is not None:
+            return signed
 
         content = _message_content(message, image_analyses)
         if not content:
@@ -723,6 +1037,65 @@ class AITicketsCog(ReloadableCog):
             serialized["reply_to"] = f'{author_name}: "{preview}"'
         return serialized
 
+    def _choice_turn(self, entry: discord.Message, requester_id: int | None) -> ConversationMessage | None:
+        """The answer given on one of our cards (a pick, or a form's "label: value" lines), as the answerer's turn
+        right after the card's question."""
+        if entry.author != self.bot.user or (answer := _card_answer(entry)) is None:
+            return None
+        user_id, label = answer
+        return self._member_turn(entry, user_id, requester_id, label, getattr(entry, "edited_at", None))
+
+    def _upload_turn(
+        self, entry: discord.Message, requester_id: int | None, analyses: dict[int, str] | None = None
+    ) -> ConversationMessage | None:
+        """Files a member uploaded with an Upload button, reposted on our card (_handle_ask_file): their turn, the
+        files rendered as _message_content renders a typed upload's (log and screenshot analyses)."""
+        if entry.author != self.bot.user or not full_attachments(entry):
+            return None
+        if (upload := ai_asks.read_upload(_card_texts(entry))) is None:
+            return None
+        content = _message_content(entry, analyses)
+        return self._member_turn(entry, upload[0], requester_id, content, getattr(entry, "created_at", None))
+
+    def _signed_turn(
+        self, entry: discord.Message, requester_id: int | None, analyses: dict[int, str] | None = None
+    ) -> ConversationMessage | None:
+        """A reply staff wrote with Draft reply and posted (ui/staff_copilot.posted_card): their turn, not Bulma's,
+        though the card is hers. Its signature line says whose it is."""
+        if entry.author != self.bot.user or (staff_id := staff_copilot.signed_by(entry)) is None:
+            return None
+        if not (content := _message_content(entry, analyses)):
+            return None
+        return self._member_turn(entry, staff_id, requester_id, content, getattr(entry, "created_at", None), "staff")
+
+    def _is_translation(self, entry: discord.Message) -> bool:
+        """Bulma's translation of a staff message (ui/staff_copilot.translation_card)."""
+        return entry.author == self.bot.user and staff_copilot.is_translation(entry)
+
+    def _member_turn(
+        self,
+        entry: discord.Message,
+        user_id: int,
+        requester_id: int | None,
+        content: str,
+        at: datetime | None,
+        kind: str | None = None,
+    ) -> ConversationMessage:
+        """Someone's words recorded on one of our cards (a member's answer, a staff member's posted draft), as their
+        turn. kind: their speaker kind when the card says it (staff); else requester or participant."""
+        guild = getattr(entry, "guild", None)
+        member = guild.get_member(user_id) if guild is not None else None
+        turn = ConversationMessage(
+            role="user",
+            content=content,
+            speaker_name=safe_name(member.display_name) if member is not None else kind or "member",
+            speaker_id=str(user_id),
+            speaker_kind=kind or ("requester" if user_id == requester_id else "participant"),
+        )
+        if age := _relative_age(at):
+            turn["age"] = age
+        return turn
+
     async def _cached_image_analyses(self, messages: list[discord.Message]) -> dict[int, str]:
         attachment_ids = [
             attachment.id
@@ -742,17 +1115,28 @@ class AITicketsCog(ReloadableCog):
         self,
         message: discord.Message,
         image_analyses: dict[int, str],
+        skip_id: int | None = None,
     ) -> list[ConversationMessage]:
-        channel = message.channel
+        return await self._ticket_history(message.channel, message.author.id, image_analyses, skip_id)
+
+    async def _ticket_history(
+        self,
+        channel: Any,
+        requester_id: int,
+        image_analyses: dict[int, str],
+        skip_id: int | None = None,
+    ) -> list[ConversationMessage]:
+        """A ticket's newest messages as turns, requester_id's as the requester's."""
         if not isinstance(channel, discord.TextChannel):
             return []
 
         # Newest N, then oldest first: history(oldest_first=True) would return the ticket's FIRST N.
         messages = [
-            entry async for entry in channel.history(limit=self.bot.settings.ai_support_history_limit)
+            entry
+            async for entry in channel.history(limit=self.bot.settings.ai_support_history_limit)
+            if entry.id != skip_id
         ]
         messages.reverse()
-        requester_id = message.author.id
         analyses = {**await self._cached_image_analyses(messages), **await _log_analyses(messages), **image_analyses}
 
         history: list[ConversationMessage] = []
@@ -760,25 +1144,31 @@ class AITicketsCog(ReloadableCog):
             serialized = self._serialize_message(entry, requester_id=requester_id, image_analyses=analyses)
             if serialized is not None:
                 history.append(serialized)
+            if (picked := self._choice_turn(entry, requester_id)) is not None:
+                history.append(picked)
         return history
 
     async def _build_general_history(
         self,
         message: discord.Message,
         image_analyses: dict[int, str],
+        skip_id: int | None = None,
     ) -> list[ConversationMessage]:
         channel = message.channel
         if not hasattr(channel, "history"):
             return []
 
         author_id = message.author.id
-        cutoff = datetime.now(timezone.utc) - GENERAL_CONTEXT_MAX_AGE
-        relevant_messages = [
-            entry
-            async for entry in channel.history(limit=GENERAL_CONTEXT_MESSAGE_LIMIT)
-            if entry.id == message.id or entry.created_at >= cutoff
-        ]
-        relevant_messages.reverse()
+        if isinstance(channel, discord.Thread):
+            relevant_messages = await self._thread_context(channel, skip_id)
+        else:
+            cutoff = datetime.now(timezone.utc) - GENERAL_CONTEXT_MAX_AGE
+            relevant_messages = [
+                entry
+                async for entry in channel.history(limit=GENERAL_CONTEXT_MESSAGE_LIMIT)
+                if entry.id != skip_id and (entry.id == message.id or entry.created_at >= cutoff)
+            ]
+            relevant_messages.reverse()
         analyses = {
             **await self._cached_image_analyses(relevant_messages),
             **await _log_analyses(relevant_messages),
@@ -801,7 +1191,151 @@ class AITicketsCog(ReloadableCog):
             serialized = self._serialize_message(entry, requester_id=author_id, image_analyses=analyses)
             if serialized is not None:
                 history.append(serialized)
+            if (picked := self._choice_turn(entry, author_id)) is not None:
+                history.append(picked)
         return history
+
+    async def _thread_context(self, thread: discord.Thread, skip_id: int | None = None) -> list[discord.Message]:
+        """A thread's messages for the model, oldest first, with no age cutoff: what led into it (_thread_lead), then
+        its newest THREAD_CONTEXT_MESSAGE_LIMIT messages. A forum post's starter is the thread's first message, so it
+        is only fetched when the thread outgrew the window."""
+        own = [entry async for entry in thread.history(limit=THREAD_CONTEXT_MESSAGE_LIMIT)]
+        own.reverse()
+        lead = [] if any(entry.id == thread.id for entry in own) else await self._thread_lead(thread)
+        return [entry for entry in (*lead, *own) if entry.id != skip_id]
+
+    async def _thread_lead(self, thread: discord.Thread) -> list[discord.Message]:
+        """What a thread was started from, oldest first: a forum post's first message; the text-channel message it was
+        made off; for a help thread Bulma opened, the channel's conversation up to that message too (public context
+        window, counted back from it), so the question and her earlier answer stay in view after the move."""
+        parent = thread.parent
+        try:
+            if not isinstance(parent, discord.TextChannel):
+                starter = await _thread_starter(thread)
+                return [starter] if starter is not None else []
+            help_thread = self._is_help_thread(thread)
+            # before the thread's id + 1: the message it was made off (same id) is the newest one returned.
+            entries = [
+                entry
+                async for entry in parent.history(
+                    limit=GENERAL_CONTEXT_MESSAGE_LIMIT if help_thread else 1, before=discord.Object(id=thread.id + 1)
+                )
+            ]
+        except discord.HTTPException:
+            log.info("Couldn't read what a thread was started from", exc_info=True, extra={"channel_id": thread.id})
+            return []
+        started = next((entry.created_at for entry in entries if entry.id == thread.id), None)
+        cutoff = (started or discord.utils.snowflake_time(thread.id)) - GENERAL_CONTEXT_MAX_AGE
+        return [
+            entry
+            for entry in reversed(entries)
+            if entry.id == thread.id or (help_thread and entry.created_at >= cutoff)
+        ]
+
+    def _is_help_thread(self, channel: Any) -> bool:
+        """A thread Bulma made off a message in a text channel: a help thread (_open_help_thread) or, say, a dev jar
+        build's feedback thread; _help_thread_requester tells them apart."""
+        return (
+            isinstance(channel, discord.Thread)
+            and channel.owner_id == getattr(self.bot.user, "id", None)
+            and isinstance(channel.parent, discord.TextChannel)
+        )
+
+    def _remember_thread_requester(self, thread_id: int, requester_id: int | None) -> None:
+        self._thread_requesters[thread_id] = requester_id
+        if len(self._thread_requesters) > _THREAD_REQUESTERS_SIZE:
+            self._thread_requesters.pop(next(iter(self._thread_requesters)))
+
+    def _starter_requester(self, starter: discord.Message | None) -> int | None:
+        """Who a help thread is for, read off the message it was made off: the member whose reply to Bulma's answer it
+        was, or, for her answer card, whoever answered on it (the pick, form or steps line). None for anything else."""
+        if starter is None:
+            return None
+        author = starter.author
+        if author.id == getattr(self.bot.user, "id", None):
+            answer = _card_answer(starter) if _is_answer_card(starter, self.bot.user) else None
+            return answer[0] if answer is not None else None
+        if author.bot or not _is_reply_to_bot(starter, self.bot.user):
+            return None
+        return author.id
+
+    async def _help_thread_requester(self, channel: Any) -> int | None:
+        """The member a help thread of Bulma's is for (they're answered there without a ping, as in a ticket); None
+        anywhere else. It comes from Discord (the thread's starter), so it survives a restart; cached per thread."""
+        if not self._is_help_thread(channel):
+            return None
+        if channel.id not in self._thread_requesters:
+            try:
+                starter = await _thread_starter(channel)
+            except discord.HTTPException:
+                log.info("Couldn't read a help thread's starter", exc_info=True, extra={"channel_id": channel.id})
+                return None  # not cached: the next message tries again
+            self._remember_thread_requester(channel.id, self._starter_requester(starter))
+        return self._thread_requesters[channel.id]
+
+    def _follow_up_source(self, message: discord.Message | _ChoiceMessage) -> tuple[Any, Any]:
+        """(the message a follow-up's thread is made off, Bulma's earlier answer card) when message continues a
+        conversation with her in a public text channel; (None, None) otherwise. A pick, form or steps outcome on her
+        answer card: the card, which records it. A typed reply to her answer: the reply. Either way the thread starts
+        at the end of the channel's conversation, so _thread_lead finds all of it before the starter."""
+        channel = message.channel
+        if (
+            not isinstance(channel, discord.TextChannel)
+            or _is_ticket_channel(channel, settings=self.bot.settings)
+            or isinstance(message, _AskedMessage)
+        ):
+            return None, None
+        if isinstance(message, _ChoiceMessage):
+            return (message.card, message.card) if message.card is not None else (None, None)
+        reference = getattr(message, "reference", None)
+        card = getattr(reference, "resolved", None) or getattr(reference, "cached_message", None)
+        return (message, card) if _is_answer_card(card, self.bot.user) else (None, None)
+
+    async def _answered_question(self, channel: discord.TextChannel, card: Any, requester_id: int) -> str | None:
+        """The question an answer card answered: a /ask question, the message an Ask Bulma answer replies to, else the
+        requester's latest message before the card within the public context window."""
+        if asked := _ASK_QUESTIONS.get(card.id):
+            return asked[2]
+        target = getattr(getattr(card, "reference", None), "resolved", None)
+        if target is not None and hasattr(target, "clean_content"):
+            return _message_text(target)
+        cutoff = card.created_at - GENERAL_CONTEXT_MAX_AGE
+        try:
+            async for entry in channel.history(limit=GENERAL_CONTEXT_MESSAGE_LIMIT, before=card):
+                if entry.created_at < cutoff:
+                    break
+                if entry.author.id == requester_id:
+                    return _message_text(entry)
+        except discord.HTTPException:
+            log.info("Couldn't read the question behind an answer", exc_info=True, extra={"channel_id": channel.id})
+        return None
+
+    async def _open_help_thread(self, message: discord.Message | _ChoiceMessage) -> discord.Thread | None:
+        """A follow-up in a public text channel (a reply to Bulma's answer, an answer on its card) is answered in a new
+        thread made off _follow_up_source's message and named after the question. None (answer in the channel, as
+        before) when it isn't a follow-up or the thread can't be made (no permission, the message has one already)."""
+        source, card = self._follow_up_source(message)
+        if source is None:
+            return None
+        settings = self.bot.settings
+        question = await self._answered_question(message.channel, card, message.author.id)
+        typed = None if isinstance(message, _ChoiceMessage) else _message_text(message)
+        name = ""
+        for text in (question, typed):
+            if text and (name := _thread_name(text, settings)):
+                break
+        name = name or safe_name(getattr(message.author, "display_name", message.author.name))
+        try:
+            thread = await source.create_thread(name=name, auto_archive_duration=HELP_THREAD_ARCHIVE_MINUTES)
+        except (discord.HTTPException, discord.InvalidArgument):
+            # INFO: a channel where Bulma may not make threads would warn staff on every follow-up.
+            log.info("Couldn't open a help thread", exc_info=True, extra={"channel_id": message.channel.id})
+            return None
+        except Exception:
+            log.exception("Opening a help thread failed", extra={"channel_id": message.channel.id})
+            return None
+        self._remember_thread_requester(thread.id, message.author.id)
+        return thread
 
     async def _build_history(
         self,
@@ -810,9 +1344,18 @@ class AITicketsCog(ReloadableCog):
         in_ticket: bool,
         image_analyses: dict[int, str] | None = None,
     ) -> list[ConversationMessage]:
-        if in_ticket:
-            return await self._build_ticket_history(message, image_analyses or {})
-        return await self._build_general_history(message, image_analyses or {})
+        analyses = image_analyses or {}
+        build = self._build_ticket_history if in_ticket else self._build_general_history
+        if not isinstance(message, _AskedMessage):
+            return await build(message, analyses)
+        # Ask Bulma: the target is quoted in the requester's turn, which goes last (it is what they ask now); its own
+        # place in the channel is skipped, so the model doesn't read it twice.
+        history = await build(message, analyses, skip_id=message.id)
+        analyses = {**await self._cached_image_analyses([message]), **await _log_analyses([message]), **analyses}
+        asked = self._serialize_message(message, requester_id=message.author.id, image_analyses=analyses)
+        if asked is not None:
+            history.append(asked)
+        return history
 
     async def _extract_image_context(self, message: discord.Message) -> dict[int, str]:
         """Analyze up to 2 new screenshots; reuse cached analyses so an image is only processed once."""
@@ -888,17 +1431,33 @@ class AITicketsCog(ReloadableCog):
     ) -> list[str]:
         settings = self.bot.settings
         channel = message.channel
+        asked = isinstance(message, _AskedMessage)
         if in_ticket:
             where = "support ticket"
         elif in_dm:
             where = "direct message"
         else:
-            where = f"public channel #{getattr(channel, 'name', '?')} (you were pinged; answer only the requester)"
+            if asked:
+                how = "they used Ask Bulma on a message"
+            elif self._thread_requesters.get(channel.id) == message.author.id:
+                how = "you opened this thread to help them, so they needn't ping you"
+            else:
+                how = "you were pinged"
+            if isinstance(channel, discord.Thread):
+                # Members name threads (and forum posts), so the name is cleaned like a display name.
+                parent = getattr(getattr(channel, "parent", None), "name", "?")
+                thread_name = safe_name(getattr(channel, "name", None))
+                where = f"public thread #{thread_name} in #{parent} ({how}; answer only the requester)"
+            else:
+                where = f"public channel #{getattr(channel, 'name', '?')} ({how}; answer only the requester)"
         name = safe_name(getattr(message.author, "display_name", message.author.name))
         lines = [f"channel: {where}", f"requester: {name} (roles: {_member_roles(member, settings)})"]
         opened = _relative_age(getattr(channel, "created_at", None)) if in_ticket else None
         if opened:
             lines.append(f"ticket opened: {opened}")
+        if asked and message.target_author_id != message.author.id:
+            own_answer = message.target_author_id == getattr(self.bot.user, "id", None)
+            lines.append(ai_asks.asked_context_line(own_answer=own_answer))
         return lines
 
     async def _send_paused_notice(self, channel: discord.abc.Messageable) -> None:
@@ -929,15 +1488,24 @@ class AITicketsCog(ReloadableCog):
             return
 
         settings = self.bot.settings
-        in_ticket = isinstance(channel, discord.TextChannel) and _is_ticket_channel(channel, settings=settings)
-        in_dm = isinstance(channel, discord.DMChannel)
+        kind = _channel_kind(channel, settings=settings)
+        in_ticket, in_dm = kind == "ticket", kind == "dm"
         if in_ticket and _is_staff_ticket_message(message, in_ticket=True, settings=settings):
             return
         bot_pinged = _is_pinging_bot(message, self.bot.user)
-        mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
-        dm_request = in_dm and _has_support_request_content(message, self.bot.user)
+        has_content = _has_support_request_content(message, self.bot.user)
+        mention_request = bot_pinged and has_content
+        dm_request = in_dm and has_content
+        # The member a help thread of Bulma's is for needs no ping there, as in a ticket.
+        help_request = (
+            kind == "public"
+            and not mention_request
+            and has_content
+            and await self._help_thread_requester(channel) == message.author.id
+        )
+        public_request = mention_request or help_request
 
-        if not in_ticket and not mention_request and not dm_request:
+        if not in_ticket and not public_request and not dm_request:
             return
         member = (
             message.author
@@ -945,13 +1513,13 @@ class AITicketsCog(ReloadableCog):
             else await self._resolve_member_for_user(message.author)
         )
         author_has_support_access = member is not None and can_use_ai_support(member, settings=settings)
-        if (mention_request or dm_request) and not in_ticket and not author_has_support_access:
+        if (public_request or dm_request) and not in_ticket and not author_has_support_access:
             return
 
         if in_ticket and channel.id in self._escalated_ticket_channels:
             return
         has_image = any(_is_image_attachment(attachment) for attachment in full_attachments(message))
-        if in_ticket or _is_reply_to_bot(message, self.bot.user):
+        if in_ticket or help_request or _is_reply_to_bot(message, self.bot.user):
             # Follow-ups ("still broken", "1.20.1") must reach the model; only pure acks are skipped.
             if not has_image and _is_ack_message(_strip_bot_mentions(full_content(message), self.bot.user)):
                 return
@@ -974,7 +1542,24 @@ class AITicketsCog(ReloadableCog):
             if len(events) == SUPPORT_RATE_LIMIT_CALLS + 1 and (in_ticket or in_dm):
                 await self._send_messages_with_typing(channel, [RATE_LIMITED_TEXT])
             return
+        await self._answer_support(
+            message, in_ticket=in_ticket, in_dm=in_dm, mention_request=public_request, member=member
+        )
 
+    async def _answer_support(
+        self,
+        message: discord.Message | _ChoiceMessage,
+        *,
+        in_ticket: bool,
+        in_dm: bool,
+        mention_request: bool,
+        member: discord.Member | None,
+    ) -> None:
+        """The model's answer to message, once it passed the gates (typed messages, and answer picks on a card). A
+        follow-up in a public text channel gets its answer in a new thread (_open_help_thread)."""
+        channel = message.channel
+        settings = self.bot.settings
+        channel_kind = _channel_kind(channel, settings=settings)
         async with self._channel_locks[channel.id]:
             try:
                 # Analyses are rendered inline on the triggering message, so the question text and
@@ -1005,7 +1590,7 @@ class AITicketsCog(ReloadableCog):
                         settings=settings,
                         context_lines=context_lines,
                         requester_is_staff=member is not None and is_staff(member, settings=settings),
-                        channel_kind="ticket" if in_ticket else "dm" if in_dm else "public",
+                        channel_kind=channel_kind,
                     ))
             except asyncio.CancelledError:
                 raise
@@ -1055,6 +1640,8 @@ class AITicketsCog(ReloadableCog):
                 return
 
             outgoing_messages: list[str] = []
+            ask: dict[str, Any] | None = None
+            feedback = False
             should_mark_escalated = False
             kind = result.get("kind")
             if in_ticket and _asks_for_human(full_content(message)):
@@ -1069,6 +1656,12 @@ class AITicketsCog(ReloadableCog):
             if reply_text and reply_text != "(no reply)":
                 outgoing_messages.append(reply_text)
                 should_mark_escalated = in_ticket and kind == "handoff"
+                if kind != "handoff" and reply_text != PUBLIC_FALLBACK_TEXT:
+                    ask = result.get("ask")  # controls only under the model's own reply
+                    if ask and not ai_asks.allowed_in(ask, channel_kind):
+                        ask = None  # no uploads in public (moderation never sees a repost), actions only where they run
+                    # 👍/👎 under a plain answer; tickets have the "solved?" prompt and staff instead.
+                    feedback = not in_ticket and not ask and ai_feedback.wanted(settings, kind)
             else:
                 if in_ticket:
                     outgoing_messages.append(
@@ -1080,14 +1673,40 @@ class AITicketsCog(ReloadableCog):
                         "I couldn't find a confident knowledge-backed answer for that. Please open a ticket if it needs follow-up."
                     )
 
-            sent = await self._send_messages_with_typing(channel, outgoing_messages, ai_answer=True)
+            async def send(where: discord.abc.Messageable) -> bool:
+                return await self._send_messages_with_typing(
+                    where,
+                    outgoing_messages,
+                    ai_answer=True,
+                    ask=ask,
+                    requester_id=message.author.id,
+                    language=language or result.get("language"),
+                    feedback=feedback,
+                    response_id=result.get("response_id"),
+                    reply_to=getattr(message, "reply_to", None),
+                )
+
+            # Only a real answer moves (not our fallback texts); its controls and 👍/👎 rows are saved with the thread.
+            moving = public and bool(outgoing_messages) and reply_text not in ("", "(no reply)", PUBLIC_FALLBACK_TEXT)
+            thread = await self._open_help_thread(message) if moving else None
+            # The thread's lock: a message there waits for this answer, so its history has it.
+            async with self._channel_locks[thread.id] if thread is not None else contextlib.nullcontext():
+                sent = await send(thread or channel)
+            if not sent and thread is not None:
+                sent = await send(channel)  # the thread is there, but the answer still reaches the requester
             if sent and in_ticket and not should_mark_escalated:
                 await self._awaiting_owner(channel.id)
             if sent and should_mark_escalated:
                 await self._mark_ticket_escalated(channel.id)
                 if kind == "handoff":
                     await self._ping_escalation_roles(channel, message.author.id)
-            elif sent and in_ticket and kind in (None, "answer") and await self._is_ticket_owner(channel, message.author.id):
+            elif (
+                sent
+                and in_ticket
+                and kind in (None, "answer")
+                and not ask  # still asking, so not "solved?" yet
+                and await self._is_ticket_owner(channel, message.author.id)
+            ):
                 await self._maybe_prompt_resolution(
                     channel,
                     requester_id=message.author.id,
@@ -1150,13 +1769,118 @@ class AITicketsCog(ReloadableCog):
             return
         if not _is_ticket_channel(channel, settings=settings):
             return  # closed before the first answer was ready
-        if not await self._send_messages_with_typing(channel, [reply], ai_answer=True):
+        ask = result.get("ask") if result.get("kind") != "handoff" else None
+        if ask and not ai_asks.allowed_in(ask, "ticket"):
+            ask = None
+        if not await self._send_messages_with_typing(
+            channel, [reply], ai_answer=True, ask=ask, requester_id=member.id, language=language
+        ):
             return
         if result.get("kind") == "handoff":
             await self._mark_ticket_escalated(channel.id)
             await self._ping_escalation_roles(channel, member.id)
         else:
             await self._awaiting_owner(channel.id)
+
+    # ---- staff copilot (the welcome card's Summary / Draft reply, translations of staff messages) -------------
+
+    async def ticket_summary(self, channel: discord.TextChannel, ticket: Any) -> TicketSoFar | None:
+        """📋 Summary: the open ticket so far for staff (problem, tried, current state, next step), from the same
+        transcript lines a close archives. Raises when the model call fails."""
+        settings = self.bot.settings
+        lines, _ = await self._collect_transcript(channel, ticket.owner_id)
+        return await summarize_so_far(
+            lines, model=settings.ai_ticket_summary_model, timeout_seconds=settings.ai_support_timeout_seconds
+        )
+
+    async def draft_reply(self, channel: discord.TextChannel, ticket: Any, staff: discord.abc.User) -> str | None:
+        """✍️ Draft reply: the support agent writes staff's next reply to the owner, in the ticket's language, from the
+        ticket's history (lookup tools only, no controls; traces staff_draft*). The reply passed ai_guard in
+        ai_client. None when there is nothing to post; raises when the model call fails."""
+        settings = self.bot.settings
+        owner_id = ticket.owner_id
+        language = ticket.language or "en"
+        history = await self._ticket_history(channel, owner_id, {})
+        owner = channel.guild.get_member(owner_id)
+        name = safe_name(owner.display_name) if owner is not None else "unknown"
+        context_lines = [
+            "channel: support ticket",
+            f"requester: {name} (roles: {_member_roles(owner, settings)})",
+            *([f"ticket opened: {opened}"] if (opened := _relative_age(getattr(channel, "created_at", None))) else []),
+            _language_line(language),
+            f"a staff member ({safe_name(getattr(staff, 'display_name', staff.name))}) asked you to draft their next "
+            f"reply to the requester: write it as their reply, in {LANGUAGE_NAMES.get(language, 'English')}, ready to "
+            "post under their name (don't introduce yourself, don't say you are an AI, never hand off to staff: they "
+            "are staff); no buttons or controls",
+        ]
+        result = await run_support_agent(
+            messages=history,
+            enabled_tools=LOOKUP_TOOL_NAMES,
+            language_hint=language,
+            user_id=owner_id,
+            channel_id=channel.id,
+            ticket_conversation=True,
+            bot=self.bot,
+            settings=settings,
+            context_lines=context_lines,
+            requester_is_staff=False,
+            channel_kind="ticket",
+            workflow_prefix="staff_draft",
+        )
+        reply = (result.get("reply") or "").strip()
+        if result.get("paused") or reply in ("", "(no reply)"):
+            return None
+        return trim(reply, staff_copilot.POST_LIMIT)
+
+    def staff_replied(self, channel_id: int) -> None:
+        """A draft staff posted (TicketsCog) is them speaking: like a typed staff message, it drops the AI answer
+        still pending in the ticket."""
+        self._cancel_pending_task((channel_id, 0))
+
+    def _schedule_translation(self, message: discord.Message) -> None:
+        """In the background, so on_message never waits on the model; one per message (edits aren't translated)."""
+        task = asyncio.create_task(self._translate_staff_message(message))
+        self._translations.add(task)
+        task.add_done_callback(self._translations.discard)
+
+    async def _translate_staff_message(self, message: discord.Message) -> None:
+        """A staff message in an open ticket, written in another language than the ticket's: Bulma replies to it with
+        its translation (ui/staff_copilot.translation_card, no ping), so the owner can read it. Off with
+        ai_ticket_translate_staff or a paused budget; skipped when translation_wanted finds no clear other language,
+        when the model finds it in the ticket's language, or when the guard blocks the text."""
+        settings = self.bot.settings
+        channel = message.channel
+        if not getattr(settings, "ai_ticket_translate_staff", False) or ai_budget.is_paused(settings):
+            return
+        text = message.clean_content.strip()
+        language = await self._ticket_language(channel.id)
+        if language is None or not translation_wanted(text, language):
+            return
+        try:
+            translated = await translate_staff_text(
+                text,
+                language,
+                model=settings.ai_translation_model,
+                timeout_seconds=settings.ai_support_timeout_seconds,
+            )
+        except Exception:
+            log.exception("Staff message translation failed", extra={"channel_id": channel.id, "message_id": message.id})
+            return
+        if translated is None:
+            return
+        source, translation = translated
+        # The staff member's own links are theirs to keep, so they count as ours.
+        translation, flags = screen_reply(translation, settings, link_targets(text))
+        if flags & BLOCKING_FLAGS or not translation.strip() or not _is_ticket_channel(channel, settings=settings):
+            return
+        try:
+            await channel.send(
+                view=staff_copilot.translation_card(translation, source, language),
+                reference=message.to_reference(fail_if_not_exists=False),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            log.info("Couldn't post a staff message's translation", exc_info=True, extra={"channel_id": channel.id})
 
     async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
         """The tickets cog's welcome message mentions the owner; only they may get the "solved?" buttons."""
@@ -1260,6 +1984,643 @@ class AITicketsCog(ReloadableCog):
 
         await while_busy(interaction, self._working, answer, failed=RESOLVE_FAILED_TEXT)
 
+    async def _is_closed_ticket(self, channel: Any) -> bool:
+        """Closing moves a ticket out of the open category, so it looks like any channel; its tickets row tells."""
+        try:
+            ticket = await get_ticket_by_channel(channel.id)
+        except Exception:
+            log.exception("Could not look up the ticket behind an answer card", extra={"channel_id": channel.id})
+            closed_category_id = self.bot.settings.ticket_closed_category_id
+            return closed_category_id is not None and getattr(channel, "category_id", None) == closed_category_id
+        return ticket is not None and ticket.status != STATUS_OPEN
+
+    async def _ask_row(self, interaction: discord.Interaction, message_id: int) -> ask_store.AskRow | None:
+        """The answer card's ai_asks row; None (after telling the clicker) when it is missing or unreadable."""
+        try:
+            row = await ask_store.get(message_id)
+        except Exception:
+            log.exception("Could not load answer controls", extra={"message_id": message_id})
+            await interaction.response.send_message(ai_asks.text("en", "failed"), ephemeral=True)
+            return None
+        if row is None:
+            await interaction.response.send_message(ai_asks.text("en", "expired"), ephemeral=True)
+        return row
+
+    async def _ask_refusal(
+        self, interaction: discord.Interaction, row: ask_store.AskRow, *, spend: bool, ai: bool = True
+    ) -> tuple[str | None, dict[str, Any]]:
+        """(why this answer can't go through, as a ui/ai_asks.TEXT key, or None; the _answer_support arguments).
+        The gates are the typed path's (see _process_support_message); spend: the answer runs the AI now, so it counts
+        toward the rate limit. ai=False (a click that never reaches the AI: a step done, an action): only the
+        requester, open-question and closed-ticket gates."""
+        settings = self.bot.settings
+        channel = interaction.channel
+        user = interaction.user
+        kind = _channel_kind(channel, settings=settings)
+        in_ticket, in_dm = kind == "ticket", kind == "dm"
+        # mention_request: outside tickets and DMs the card answered a ping (or its help thread's requester).
+        context: dict[str, Any] = {
+            "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": kind == "public", "member": None
+        }
+        if user.id != row.requester_id:
+            return "not_yours", context
+        if row.answered_at is not None:
+            return "answered", context
+        if not in_dm and await self._is_closed_ticket(channel):
+            return "closed", context
+        if not ai:
+            return None, context
+        member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
+        context["member"] = member
+        if (
+            not settings.ai_support_enabled
+            or (in_ticket and not self.is_ticket_ai_enabled(channel.id))
+            or (not in_ticket and not (member is not None and can_use_ai_support(member, settings=settings)))
+        ):
+            return "ai_off", context
+        if ai_budget.is_paused(settings):
+            return "paused", context
+        if spend:
+            events = self._rate_limit_state.record(
+                self._support_events, (user.id, 0), time.monotonic(), SUPPORT_RATE_LIMIT_WINDOW_SECONDS
+            )
+            if len(events) > SUPPORT_RATE_LIMIT_CALLS:
+                return "rate_limited", context
+        return None, context
+
+    async def _answer_recorded(
+        self,
+        interaction: discord.Interaction,
+        message_id: int,
+        content: str,
+        context: dict[str, Any],
+        attachments: Sequence[Any] = (),
+        card: discord.Message | None = None,
+    ) -> None:
+        """The answer is on the card: it is the requester's reply in the ticket, and the AI answers it like a typed
+        one. card: the answer card, which a follow-up in a public text channel moves into a thread off."""
+        if context["in_ticket"]:
+            try:
+                await note_ticket_message(interaction.channel.id, interaction.user.id)  # as TicketsCog.on_message does
+            except Exception:
+                log.exception("Could not track ticket reply", extra={"channel_id": interaction.channel.id})
+        self._answer_pick(_ChoiceMessage(interaction, content, message_id, attachments, card=card), **context)
+
+    async def _handle_ask(self, interaction: discord.Interaction, *, kind: str, index: int) -> None:
+        """A control on an answer card (ui/ai_asks). A pick goes on the card and is answered like a typed reply;
+        "Fill in" and "Upload" open their modal (submits: _handle_ask_form, _handle_ask_file); "Where is it?" only
+        shows where the logs are; steps and action buttons: _handle_steps, _handle_action."""
+        message = interaction.message
+        if (row := await self._ask_row(interaction, message.id)) is None:
+            return
+        language = row.language
+        if kind == "steps":
+            return await self._handle_steps(interaction, row, index)
+        if kind == ai_asks.ACTION_KIND:
+            return await self._handle_action(interaction, row, index)
+        if kind == "file" and index == ai_asks.WHERE_INDEX:
+            # Just help, for anyone who opens it: it answers nothing and claims nothing.
+            view = ai_asks.where_card(language, (interaction.data or {}).get("values"))
+            if view is None:
+                return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+            return await interaction.response.send_message(view=view, ephemeral=True)
+        refusal, context = await self._ask_refusal(interaction, row, spend=kind not in ("form", "file"))
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        # A modal must be the first response, so no while_busy here; the submit claims the row.
+        if kind == "form":
+            return await interaction.response.send_modal(ai_asks.form_modal(row.spec, message.id))
+        if kind == "file":
+            return await interaction.response.send_modal(ai_asks.file_modal(row.spec, message.id, language))
+        label = ai_asks.picked_label(row.spec, kind, index, (interaction.data or {}).get("values"))
+        if not label:
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        user = interaction.user
+        no_pings = discord.AllowedMentions.none()  # edits never ping; none() keeps it that way should that change
+
+        async def pick() -> None:
+            if await ask_store.claim(message.id) is None:
+                # Answered meanwhile: only the controls go.
+                await interaction.edit_original_response(view=_answered_card(message, []), allowed_mentions=no_pings)
+                await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+                return
+            try:
+                await interaction.edit_original_response(
+                    view=_answered_card(message, [ai_asks.pick_line(user.id, label)]), allowed_mentions=no_pings
+                )
+            except Exception:
+                await ask_store.release(message.id)
+                raise
+            await self._answer_recorded(interaction, message.id, label, context, card=message)
+
+        await while_busy(interaction, self._working, pick, failed=ai_asks.text(language, "failed"))
+
+    async def _handle_steps(self, interaction: discord.Interaction, row: ask_store.AskRow, index: int) -> None:
+        """Done / Still broken on a steps card. Done before the last step moves the card on (no AI, no rate limit);
+        Still broken, or Done on the last step, records the outcome and the AI answers it. The row's progress is the
+        truth: a click on an outdated card only brings the card up to date."""
+        message, spec, language = interaction.message, row.spec, row.language
+        steps = spec.get("steps") or []
+        step, button = ai_asks.split_step_index(index)
+        if spec.get("kind") != "steps" or not 0 <= step < len(steps):
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        final = button == ai_asks.STEP_BROKEN or step == len(steps) - 1
+        refusal, context = await self._ask_refusal(interaction, row, spend=final, ai=final)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        no_pings = discord.AllowedMentions.none()
+        if step != row.progress:
+            await interaction.response.edit_message(view=_steps_card(message, row, row.progress), allowed_mentions=no_pings)
+            return await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+        failed = ai_asks.text(language, "failed")
+
+        if not final:
+            async def advance() -> bool | None:
+                if not await ask_store.move(message.id, step, step + 1):
+                    return False  # moved on meanwhile; the card comes back and the next click refreshes it
+                try:
+                    await interaction.edit_original_response(
+                        view=_steps_card(message, row, step + 1), allowed_mentions=no_pings
+                    )
+                except Exception:
+                    await ask_store.move(message.id, step + 1, step)
+                    raise
+                return None
+
+            return await while_busy(interaction, self._working, advance, failed=failed)
+
+        user = interaction.user
+        if button == ai_asks.STEP_BROKEN:
+            line = ai_asks.step_failed_line(user.id, step, steps[step], language)
+            outcome = ai_asks.steps_text(spec, step, failed=step)
+        else:
+            line = ai_asks.steps_done_line(user.id, len(steps), language)
+            outcome = ai_asks.steps_text(spec, len(steps))
+        _, content = ai_asks.read_answer([line])  # what the model reads back, in English
+
+        async def finish() -> None:
+            if await ask_store.claim(message.id) is None:
+                current = ai_asks.steps_text(spec, row.progress)
+                await interaction.edit_original_response(
+                    view=_answered_card(message, [], controls_text=current), allowed_mentions=no_pings
+                )
+                await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+                return
+            try:
+                await interaction.edit_original_response(
+                    view=_answered_card(message, [line], controls_text=outcome), allowed_mentions=no_pings
+                )
+            except Exception:
+                await ask_store.release(message.id)
+                raise
+            await self._answer_recorded(interaction, message.id, content, context, card=message)
+
+        await while_busy(interaction, self._working, finish, failed=failed)
+
+    async def _handle_action(self, interaction: discord.Interaction, row: ask_store.AskRow, index: int) -> None:
+        """An offer_action button. It runs an existing flow for the requester, never anything they couldn't start
+        themselves: get_staff is the "No, I still need help" button's escalation, open_ticket the ticket panel's
+        form, link_patreon /patreon link's answer, report_bug a post in the bug-report forum (its form first).
+        "No thanks" only records itself. None of them runs the AI."""
+        spec, language, user = row.spec, row.language, interaction.user
+        action = spec.get("action")
+        if spec.get("kind") != ai_asks.ACTION_KIND or index not in (ai_asks.ACTION_RUN, ai_asks.ACTION_DECLINE):
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        refusal, context = await self._ask_refusal(interaction, row, spend=False, ai=False)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        if index == ai_asks.ACTION_DECLINE:
+            return await self._run_action(interaction, row, ai_asks.text(language, "no_thanks"))
+        if not ai_asks.allowed_in(spec, _channel_kind(interaction.channel, settings=self.bot.settings)):
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        label = ai_asks.action_label(spec, language)
+        if action == "open_ticket":
+            return await self._offer_ticket(interaction, row, label)
+        if action == "report_bug":
+            return await self._offer_bug_report(interaction, row)
+        if action == "get_staff":
+            channel = interaction.channel
+
+            async def get_staff() -> list[str]:
+                # AI already off: staff have the ticket (an earlier handoff, or they turned it off), so no new ping.
+                if self.is_ticket_ai_enabled(channel.id):
+                    await self._mark_ticket_escalated(channel.id)
+                    await self._ping_escalation_roles(channel, row.requester_id)
+                return [_resolve_text(await self._ticket_language(channel.id) or language)["escalated"]]
+
+            return await self._run_action(interaction, row, label, get_staff)
+        flow = self.bot.get_cog("PatreonWhitelistFlowCog")
+        if flow is None:
+            log.warning("Patreon cog isn't loaded; can't run a link_patreon offer", extra={"channel_id": row.channel_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+
+        async def link_patreon() -> list[str]:
+            member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
+            await flow.send_link_prompt(member or user, interaction.followup)
+            return []
+
+        await self._run_action(interaction, row, label, link_patreon)
+
+    async def _run_action(self, interaction: discord.Interaction, row: ask_store.AskRow, label: str, run=None) -> None:
+        """Claims the card (the first click wins), runs run (its notes go under the answer line), then records the click
+        on the card. A failure reopens the offer."""
+        message, language = interaction.message, row.language
+        no_pings = discord.AllowedMentions.none()
+
+        async def work() -> None:
+            if await ask_store.claim(message.id) is None:
+                await interaction.edit_original_response(view=_answered_card(message, []), allowed_mentions=no_pings)
+                await interaction.followup.send(ai_asks.text(language, "answered"), ephemeral=True)
+                return
+            try:
+                notes = await run() if run is not None else []
+                lines = [ai_asks.pick_line(interaction.user.id, label)]
+                await interaction.edit_original_response(
+                    view=_answered_card(message, lines, notes=notes), allowed_mentions=no_pings
+                )
+            except Exception:
+                await ask_store.release(message.id)
+                raise
+
+        await while_busy(interaction, self._working, work, failed=ai_asks.text(language, "failed"))
+
+    async def _offer_ticket(self, interaction: discord.Interaction, row: ask_store.AskRow, label: str) -> None:
+        """open_ticket: the ticket panel's own form for the offered category (its category select when none was
+        given), so TicketsCog.create_ticket opens the ticket as from the panel. One open ticket per member: someone
+        who has one gets its link instead. The form must be the click's first response, so no while_busy here."""
+        message, language, user = interaction.message, row.language, interaction.user
+        if self.bot.get_cog("TicketsCog") is None:
+            log.warning("Tickets cog isn't loaded; can't open a ticket from an offer", extra={"channel_id": row.channel_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        try:
+            open_tickets = await get_open_tickets_by_owner(user.id)
+            claimed = not open_tickets and await ask_store.claim(message.id) is not None
+        except Exception:
+            log.exception("Could not start a ticket from an offer", extra={"message_id": message.id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if open_tickets:
+            return await interaction.response.send_message(msg_already_open(open_tickets[0].channel_id), ephemeral=True)
+        if not claimed:
+            return await interaction.response.send_message(ai_asks.text(language, "answered"), ephemeral=True)
+        category = CATEGORIES.get(row.spec.get("category"))
+        try:
+            if category is not None:
+                await interaction.response.send_modal(TicketModal(category))
+            else:
+                await interaction.response.send_message(view=panel_view(), ephemeral=True)
+        except Exception:
+            log.exception("Could not show the ticket form of an offer", extra={"message_id": message.id})
+            try:
+                await ask_store.release(message.id)
+            except Exception:
+                log.exception("Could not reopen the ticket offer", extra={"message_id": message.id})
+            return
+        try:
+            await message.edit(
+                view=_answered_card(message, [ai_asks.pick_line(user.id, label)]),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            log.exception("Could not record a ticket offer on its card", extra={"message_id": message.id})
+
+    async def _bug_forum(self) -> discord.ForumChannel | None:
+        """The bug-report forum (bug_report_forum_channel_id); None when it isn't set or can't be found."""
+        forum_id = getattr(self.bot.settings, "bug_report_forum_channel_id", None)
+        if forum_id is None:
+            return None
+        forum = self.bot.get_channel(forum_id)
+        if forum is None:
+            try:
+                forum = await self.bot.fetch_channel(forum_id)
+            except discord.HTTPException:
+                log.warning("Couldn't find the bug-report forum", exc_info=True, extra={"channel_id": forum_id})
+                return None
+        return forum if isinstance(forum, discord.ForumChannel) else None
+
+    async def _bug_report_target(self, user: discord.abc.User) -> tuple[Any, discord.ForumChannel] | None:
+        """(BugReportsCog, the forum) when the requester can report a bug there: the forum is set and found, the cog is
+        loaded, and they are in the forum's server (the post credits them, and its triage card's "Open a ticket" needs
+        them there). None otherwise."""
+        bugs = self.bot.get_cog(BUG_REPORTS_COG)
+        if not getattr(self.bot.settings, "bug_reports_enabled", False):
+            bugs = None  # off: nothing would triage the post
+        forum = await self._bug_forum() if bugs is not None else None
+        if forum is None:
+            return None
+        guild = forum.guild
+        if isinstance(user, discord.Member) and user.guild.id == guild.id:
+            return bugs, forum
+        if guild.get_member(user.id) is None:
+            try:
+                await guild.fetch_member(user.id)
+            except discord.NotFound:
+                return None
+            except discord.HTTPException:
+                log.info("Couldn't look up a bug reporter", exc_info=True, extra={"user_id": user.id})
+                return None
+        return bugs, forum
+
+    async def _offer_bug_report(self, interaction: discord.Interaction, row: ask_store.AskRow) -> None:
+        """report_bug: the bug report form, pre-filled with what the model passed. Nothing is claimed yet: the submit
+        (_handle_ask_bug) claims the card, so a closed form leaves the offer open. Refused at once when the report
+        couldn't be posted (_bug_report_target). The form must be the click's first response, so no while_busy here."""
+        language = row.language
+        if await self._bug_report_target(interaction.user) is None:
+            return await interaction.response.send_message(ai_asks.text(language, "bug_closed"), ephemeral=True)
+        try:
+            await interaction.response.send_modal(ai_asks.bug_modal(row.spec, interaction.message.id, language))
+        except Exception:
+            log.exception("Could not show the bug report form", extra={"message_id": interaction.message.id})
+
+    async def _handle_ask_bug(self, interaction: discord.Interaction, message_id: int) -> None:
+        """A submitted report_bug form. The first submit claims the card; Bulma posts the report in the bug-report
+        forum (it credits the requester and carries their recent logs and screenshots from this conversation), the
+        card records the post's link, and BugReportsCog triages it with the requester as reporter. If the post can't
+        be made the offer is open again."""
+        if (row := await self._ask_row(interaction, message_id)) is None:
+            return
+        spec, language, user = row.spec, row.language, interaction.user
+        failed = ai_asks.text(language, "failed")
+        if spec.get("action") != "report_bug" or not ai_asks.allowed_in(
+            spec, _channel_kind(interaction.channel, settings=self.bot.settings)
+        ):
+            return await interaction.response.send_message(failed, ephemeral=True)
+        refusal, _context = await self._ask_refusal(interaction, row, spend=False, ai=False)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        answers = ai_asks.bug_answers((interaction.data or {}).get("components"))
+        if not all(answers.get(field) for field in ai_asks.BUG_REQUIRED):
+            return await interaction.response.send_message(failed, ephemeral=True)
+        if (target := await self._bug_report_target(user)) is None:
+            return await interaction.response.send_message(ai_asks.text(language, "bug_closed"), ephemeral=True)
+        bugs, forum = target
+        try:
+            claimed = await ask_store.claim(message_id) is not None
+        except Exception:
+            log.exception("Could not claim a bug report", extra={"message_id": message_id})
+            return await interaction.response.send_message(failed, ephemeral=True)
+        if not claimed:
+            return await interaction.response.send_message(ai_asks.text(language, "answered"), ephemeral=True)
+        # Downloading the files and posting can outlast the 3-second window; invisible=False keeps it ephemeral.
+        await interaction.response.defer(ephemeral=True, invisible=False)
+        no_pings = discord.AllowedMentions.none()
+        body = ai_asks.bug_post(user.id, answers)
+        try:
+            files = await self._reporter_files(interaction.channel, message_id, user.id, forum.guild.filesize_limit)
+            thread = await forum.create_thread(
+                name=_thread_name(answers["title"], self.bot.settings) or BUG_POST_FALLBACK_NAME,
+                content=body,
+                files=files,
+                allowed_mentions=no_pings,
+            )
+        except Exception:
+            log.exception("Could not post a bug report", extra={"message_id": message_id})
+            try:
+                await ask_store.release(message_id)
+            except Exception:
+                log.exception("Could not reopen the bug report offer", extra={"message_id": message_id})
+            return await interaction.followup.send(failed, ephemeral=True)
+        link = f"https://discord.com/channels/{forum.guild.id}/{thread.id}"
+        try:
+            message = interaction.message
+            if getattr(message, "id", None) != message_id:  # a modal submit may come without its message
+                message = await interaction.channel.fetch_message(message_id)
+            line = ai_asks.bug_line(user.id, link, language)
+            await message.edit(view=_answered_card(message, [line]), allowed_mentions=no_pings)
+        except Exception:
+            # The post is up, so the card stays claimed (reopening it would let a second report through).
+            log.exception("Could not record a bug report on its card", extra={"message_id": message_id})
+        try:
+            await interaction.followup.send(ai_asks.text(language, "bug_done").format(link=link), ephemeral=True)
+        except discord.HTTPException:
+            log.info("Couldn't confirm a bug report", exc_info=True, extra={"message_id": message_id})
+        await self._triage_bug_post(bugs, thread, body, user.id)
+
+    async def _reporter_files(
+        self, channel: Any, card_id: int, requester_id: int, size_limit: int
+    ) -> list[discord.File]:
+        """The requester's own logs (.log/.txt) and screenshots from the conversation the answer card belongs to,
+        newest first, at most BUG_REPORT_MAX_FILES within size_limit together, re-uploaded: their messages' files and
+        the files Bulma reposted for them (upload cards). The conversation is what the answer read: a thread's
+        messages (_thread_context), elsewhere the public context window before the card."""
+        try:
+            if isinstance(channel, discord.Thread):
+                messages = await self._thread_context(channel)
+            else:
+                cutoff = discord.utils.snowflake_time(card_id) - GENERAL_CONTEXT_MAX_AGE
+                messages = [
+                    entry
+                    async for entry in channel.history(
+                        limit=GENERAL_CONTEXT_MESSAGE_LIMIT, before=discord.Object(id=card_id)
+                    )
+                    if entry.created_at >= cutoff
+                ]
+                messages.reverse()
+        except discord.HTTPException:
+            log.info("Couldn't read the conversation for a bug report", exc_info=True, extra={"channel_id": channel.id})
+            return []
+        picked: list[discord.Attachment] = []
+        budget = size_limit  # one post carries them all, so the limit is for the total
+        for attachment in (item for entry in reversed(messages) for item in self._own_files(entry, requester_id)):
+            if len(picked) >= BUG_REPORT_MAX_FILES:
+                break
+            size = attachment.size or 0
+            if (
+                any(attachment.id == seen.id for seen in picked)
+                or not (_is_log_attachment(attachment) or _is_image_attachment(attachment))
+                or size > budget
+            ):
+                continue
+            picked.append(attachment)
+            budget -= size
+        files: list[discord.File] = []
+        for attachment, name in zip(picked, ai_asks.upload_names([attachment.filename for attachment in picked])):
+            try:
+                files.append(discord.File(io.BytesIO(await attachment.read()), filename=name))
+            except discord.HTTPException:
+                log.info("Couldn't copy a file into a bug report", exc_info=True, extra={"attachment_id": attachment.id})
+        return files
+
+    def _own_files(self, entry: discord.Message, requester_id: int) -> Sequence[Any]:
+        """The files that are the requester's in this message: their own message's, or Bulma's repost of their upload."""
+        author = entry.author
+        if author.id == requester_id and not author.bot:
+            return full_attachments(entry)
+        if author.id == getattr(self.bot.user, "id", None):
+            upload = ai_asks.read_upload(_card_texts(entry))
+            if upload is not None and upload[0] == requester_id:
+                return entry.attachments
+        return ()
+
+    async def _triage_bug_post(self, bugs: Any, thread: discord.Thread, body: str, reporter_id: int) -> None:
+        """BugReportsCog's triage of a post Bulma made for the requester, with them as reporter (its listener leaves
+        posts whose first message is a bot's alone). Off with the rest of the triage (bug_reports_enabled)."""
+        if not getattr(self.bot.settings, "bug_reports_enabled", False):
+            return
+        try:
+            starter = await bugs._fetch_starter_message(thread)
+            await bugs.triage_thread(
+                thread,
+                text=f"{thread.name}\n\n{body}".strip(),
+                reporter_id=reporter_id,
+                attachments=list(starter.attachments) if starter is not None else [],
+            )
+        except Exception:
+            log.exception("Could not triage a bug report Bulma posted", extra={"channel_id": thread.id})
+
+    async def _handle_ask_form(self, interaction: discord.Interaction, message_id: int) -> None:
+        """A submitted "Fill in" form: one line per answered field goes on the card, then the AI answers them."""
+        if (row := await self._ask_row(interaction, message_id)) is None:
+            return
+        language = row.language
+        refusal, context = await self._ask_refusal(interaction, row, spend=True)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        answers = ai_asks.form_answers(row.spec, (interaction.data or {}).get("components"))
+        try:
+            claimed = bool(answers) and await ask_store.claim(message_id) is not None
+        except Exception:
+            log.exception("Could not claim a form answer", extra={"message_id": message_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if not claimed:
+            reason = "answered" if answers else "failed"
+            return await interaction.response.send_message(ai_asks.text(language, reason), ephemeral=True)
+        await interaction.response.defer(invisible=True)
+        try:
+            message = interaction.message
+            if getattr(message, "id", None) != message_id:  # a modal submit may come without its message
+                message = await interaction.channel.fetch_message(message_id)
+            lines = ai_asks.form_lines(interaction.user.id, answers, used=sum(map(len, _card_texts(message))))
+            await message.edit(view=_answered_card(message, lines), allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            log.exception("Could not record a form answer on its card", extra={"message_id": message_id})
+            try:
+                await ask_store.release(message_id)
+            except Exception:
+                log.exception("Could not reopen the form", extra={"message_id": message_id})
+            return await interaction.followup.send(ai_asks.text(language, "failed"), ephemeral=True)
+        content = "\n".join(f"{label}: {value}" for label, value in answers)
+        await self._answer_recorded(interaction, message_id, content, context, card=message)
+
+    async def _handle_ask_file(self, interaction: discord.Interaction, message_id: int) -> None:
+        """A submitted "Upload": the files are reposted on a card credited to the requester (history and transcripts
+        read it as their turn), the question card records them, logs get their analysis card, then the AI answers
+        (screenshots analyzed on the way), so its history already holds the analyses."""
+        if (row := await self._ask_row(interaction, message_id)) is None:
+            return
+        language = row.language
+        refusal, context = await self._ask_refusal(interaction, row, spend=True)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        try:
+            state = getattr(interaction, "_state", None)
+            uploads = [discord.Attachment(data=data, state=state) for data in ai_asks.uploaded(row.spec, interaction.data)]
+        except Exception:
+            log.exception("Could not read an upload", extra={"message_id": message_id})
+            uploads = []
+        if not uploads:
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if sum(upload.size or 0 for upload in uploads) > _upload_limit(interaction):  # one message carries them all
+            return await interaction.response.send_message(ai_asks.text(language, "too_big"), ephemeral=True)
+        try:
+            claimed = await ask_store.claim(message_id) is not None
+        except Exception:
+            log.exception("Could not claim an upload", extra={"message_id": message_id})
+            return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
+        if not claimed:
+            return await interaction.response.send_message(ai_asks.text(language, "answered"), ephemeral=True)
+        await interaction.response.defer(invisible=True)
+        user = interaction.user
+        no_pings = discord.AllowedMentions.none()
+        names = ai_asks.upload_names([upload.filename for upload in uploads])
+        try:
+            files = [
+                discord.File(io.BytesIO(await upload.read()), filename=name) for upload, name in zip(uploads, names)
+            ]
+            view = ai_asks.upload_card(user.id, names, [_is_image_attachment(u) for u in uploads], AI_CARD_COLOR)
+            reposted = await interaction.channel.send(view=view, files=files, allowed_mentions=no_pings)
+        except Exception:
+            log.exception("Could not repost an upload", extra={"message_id": message_id})
+            try:
+                await ask_store.release(message_id)
+            except Exception:
+                log.exception("Could not reopen the upload", extra={"message_id": message_id})
+            return await interaction.followup.send(ai_asks.text(language, "failed"), ephemeral=True)
+        try:
+            message = interaction.message
+            if getattr(message, "id", None) != message_id:  # a modal submit may come without its message
+                message = await interaction.channel.fetch_message(message_id)
+            lines = [ai_asks.upload_line(user.id, name) for name in names]
+            await message.edit(view=_answered_card(message, lines), allowed_mentions=no_pings)
+        except Exception:
+            # The repost is the record the AI and transcripts read; the files are in, so the answer goes on.
+            log.exception("Could not record an upload on its card", extra={"message_id": message_id})
+        await self._show_upload_cards(reposted, user)
+        content = "\n".join(f"uploaded {name}" for name in names)
+        await self._answer_recorded(interaction, message_id, content, context, attachments=reposted.attachments)
+
+    async def _show_upload_cards(self, message: discord.Message, uploader: discord.abc.User) -> None:
+        """The log / dmzdebug cards for a reposted upload, as a typed upload gets them (not in DMs, like those).
+        LogParserCog.parse_upload never adds its AI diagnosis, since the support AI answers next. Failures never stop
+        the answer."""
+        if getattr(message, "guild", None) is None:
+            return
+        for cog_name, post in (
+            ("LogParserCog", lambda cog: cog.parse_upload(message, uploader)),
+            ("DmzDebugCog", lambda cog: cog.post_cards(message)),
+        ):
+            if (cog := self.bot.get_cog(cog_name)) is None:
+                continue
+            try:
+                await post(cog)
+            except Exception:
+                log.exception("Could not analyze a reposted upload", extra={"message_id": message.id, "cog": cog_name})
+
+    async def _handle_feedback(self, interaction: discord.Interaction, requester_id: int, helpful: bool) -> None:
+        """👍/👎 under an answer (ui/ai_feedback): only the requester's first rating counts; the card then swaps the
+        buttons for a thanks line in the answer's language."""
+        message = interaction.message
+        try:
+            row = await feedback_store.get(message.id)
+        except Exception:
+            log.exception("Could not load answer feedback", extra={"message_id": message.id})
+            return await interaction.response.send_message(ai_asks.text("en", "failed"), ephemeral=True)
+        language = row.language if row is not None else "en"
+        if interaction.user.id != requester_id:
+            return await interaction.response.send_message(ai_feedback.text(language, "not_yours"), ephemeral=True)
+
+        async def rate() -> None:
+            # A second rating (a race, or a click after a failed edit) changes nothing; the card still says thanks.
+            await feedback_store.rate(
+                message_id=message.id, channel_id=message.channel.id, requester_id=requester_id, helpful=helpful
+            )
+            await interaction.edit_original_response(
+                view=_rebuilt(message, discord.ui.TextDisplay(ai_feedback.text(language, "thanks"))),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        await while_busy(interaction, self._working, rate, failed=ai_asks.text(language, "failed"))
+
+    def _answer_pick(self, message: _ChoiceMessage, *, in_ticket: bool, **kwargs: Any) -> None:
+        """Answers in the background, so a failing AI run never brings the buttons back (it reports its own errors).
+        It is the pending answer of the ticket (or of the member elsewhere), as a typed message's is: a newer message,
+        an escalation or a close cancels it. It stays keyed by the card's channel when the answer moves into a new
+        thread: the thread only exists once the answer is ready, and a message there waits on the thread's lock until
+        the answer is in (_answer_support)."""
+        pending_key = _pending_key(message, in_ticket=in_ticket)
+        self._cancel_pending_task(pending_key)
+
+        async def answer() -> None:
+            try:
+                await self._answer_support(message, in_ticket=in_ticket, **kwargs)
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._pending_tasks.get(pending_key) is asyncio.current_task():
+                    self._pending_tasks.pop(pending_key, None)
+
+        self._pending_tasks[pending_key] = asyncio.create_task(answer())
+
     async def _maybe_close_solved(self, channel: discord.TextChannel, message: discord.Message) -> None:
         """The AI is off here; the owner saying it's solved closes the ticket like the "Yes" button
         (TicketsCog.solve_ticket)."""
@@ -1337,7 +2698,11 @@ class AITicketsCog(ReloadableCog):
             if isinstance(entry, ClosedGap):
                 lines.append(TranscriptLine(entry.created_at, "system", "System", entry.notice))
                 continue
-            if entry.author.bot and entry.author != self.bot.user:
+            if (entry.author.bot and entry.author != self.bot.user) or self._is_translation(entry):
+                continue  # other bots; our translations repeat the staff message they reply to
+            turn = self._upload_turn(entry, requester_id, analyses) or self._signed_turn(entry, requester_id, analyses)
+            if turn is not None:
+                lines.append(TranscriptLine(entry.created_at, turn["speaker_kind"], turn["speaker_name"], turn["content"]))
                 continue
             content = _message_content(entry, analyses)
             if not content:
@@ -1350,6 +2715,15 @@ class AITicketsCog(ReloadableCog):
                     content=content,
                 )
             )
+            if (picked := self._choice_turn(entry, requester_id)) is not None:
+                lines.append(
+                    TranscriptLine(
+                        getattr(entry, "edited_at", None) or entry.created_at,
+                        picked["speaker_kind"],
+                        picked["speaker_name"],
+                        picked["content"],
+                    )
+                )
         return lines, requester_id
 
     def forget_archived(self, channel_id: int) -> None:
@@ -1510,9 +2884,23 @@ class AITicketsCog(ReloadableCog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if interaction.type == discord.InteractionType.modal_submit:
+            if (form_message_id := ai_asks.parse_form_modal_id(custom_id)) is not None:
+                await self._handle_ask_form(interaction, form_message_id)
+            elif (file_message_id := ai_asks.parse_file_modal_id(custom_id)) is not None:
+                await self._handle_ask_file(interaction, file_message_id)
+            elif (bug_message_id := ai_asks.parse_bug_modal_id(custom_id)) is not None:
+                await self._handle_ask_bug(interaction, bug_message_id)
+            return
         if interaction.type != discord.InteractionType.component:
             return
-        parsed = _parse_resolve_custom_id((interaction.data or {}).get("custom_id", ""))
+        if (ask := ai_asks.parse_custom_id(custom_id)) is not None:
+            kind, _requester_id, index = ask  # the row says whose question it is
+            return await self._handle_ask(interaction, kind=kind, index=index)
+        if (rating := ai_feedback.parse_custom_id(custom_id)) is not None:
+            return await self._handle_feedback(interaction, *rating)
+        parsed = _parse_resolve_custom_id(custom_id)
         if parsed is None:
             return
         solved, requester_id, language = parsed
@@ -1540,16 +2928,23 @@ class AITicketsCog(ReloadableCog):
             self._schedule_support_response(message, in_ticket=False)
             return
 
-        if not message.guild or not isinstance(channel, discord.TextChannel):
+        if not message.guild or not (
+            isinstance(channel, discord.TextChannel) or _is_support_thread(channel, settings=settings)
+        ):
             return
 
-        in_ticket = _is_ticket_channel(channel, settings=settings)
+        in_ticket = _channel_kind(channel, settings=settings) == "ticket"
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
+        # In a help thread of Bulma's, the member it is for needs no ping; everyone else still pings her.
+        help_request = (
+            not (in_ticket or mention_request or message.author.bot)
+            and await self._help_thread_requester(channel) == message.author.id
+        )
         author_has_support_access = await self._can_use_support_from_message(message, settings=settings)
-        if not in_ticket and not mention_request:
+        if not in_ticket and not mention_request and not help_request:
             return
-        if mention_request and not in_ticket and not author_has_support_access:
+        if (mention_request or help_request) and not in_ticket and not author_has_support_access:
             return
 
         if not message.author.bot and isinstance(message.author, discord.Member):
@@ -1558,6 +2953,7 @@ class AITicketsCog(ReloadableCog):
         if message.author.bot or not isinstance(message.author, discord.Member):
             return
         if _is_staff_ticket_message(message, in_ticket=in_ticket, settings=settings):
+            self._schedule_translation(message)  # the AI never answers staff; it may translate them for the owner
             return
         if in_ticket and channel.id in self._escalated_ticket_channels:
             await self._maybe_close_solved(channel, message)

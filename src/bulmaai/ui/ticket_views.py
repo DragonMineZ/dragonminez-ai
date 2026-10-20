@@ -19,6 +19,9 @@ REOPEN_BUTTON_ID = "ticket_btn_reopen"
 DELETE_BUTTON_ID = "ticket_btn_delete"
 AI_BUTTON_ID = "ticket_btn_ai"
 SOLVED_BUTTON_ID = "ticket_btn_solved"
+# Staff copilot (ui/staff_copilot): the ticket so far, and a draft of the next reply to the owner; both ephemeral.
+SUMMARY_BUTTON_ID = "ticket_btn_summary"
+DRAFT_BUTTON_ID = "ticket_btn_draft"
 # + ticket id; the Re-open button older "solved" DMs still carry. It now only answers that staff re-open tickets.
 SOLVED_REOPEN_PREFIX = "ticket_solved_reopen:"
 ACTIONS_ID = 800  # the button row on the welcome / closed cards
@@ -233,6 +236,9 @@ MSG = {
     "transcript_failed": "❌ I couldn't generate the transcript.",
     "protected_target": "You can't remove the ticket owner or staff.",
     "done": "Done.",
+    "ai_paused": "AI is paused for today.",
+    "copilot_failed": "I couldn't do that right now. Please try again.",
+    "post_failed": "I couldn't post that reply. Please try again.",
 }
 
 
@@ -381,7 +387,8 @@ def language_changed(language: str, mention: str) -> discord.ui.DesignerView:
 
 
 def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
-    """Staff-only AI toggle (doubles as its status) and Solved, plus Close, while the ticket is open."""
+    """Staff-only AI toggle (doubles as its status), Solved, Summary and Draft reply, plus Close, while the ticket is
+    open. Every state change swaps this whole row, so all five buttons stay."""
     return discord.ui.ActionRow(
         discord.ui.Button(
             label="AI support: On" if ai_enabled else "AI support: Off",
@@ -393,6 +400,8 @@ def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
             label=tri("Close", "Cerrar"), emoji="🔒", style=discord.ButtonStyle.danger, custom_id=CLOSE_BUTTON_ID
         ),
         discord.ui.Button(label="Solved", emoji="✅", style=discord.ButtonStyle.primary, custom_id=SOLVED_BUTTON_ID),
+        discord.ui.Button(label="Summary", emoji="📋", style=discord.ButtonStyle.secondary, custom_id=SUMMARY_BUTTON_ID),
+        discord.ui.Button(label="Draft reply", emoji="✍️", style=discord.ButtonStyle.secondary, custom_id=DRAFT_BUTTON_ID),
         id=ACTIONS_ID,
     )
 

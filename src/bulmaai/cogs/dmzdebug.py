@@ -462,7 +462,11 @@ class DmzDebugCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
+        await self.post_cards(message)
 
+    async def post_cards(self, message: discord.Message) -> None:
+        """A card under message for each dmzdebug dump on it: a member's upload, or Bulma's repost of files a member
+        uploaded with her Upload button (cogs/ai_tickets)."""
         # ponytail: two dumps per message is plenty; more is a flood, not a support question.
         for attachment in [a for a in full_attachments(message) if self._is_candidate(a)][:2]:
 

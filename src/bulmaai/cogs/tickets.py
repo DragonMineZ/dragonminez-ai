@@ -50,12 +50,14 @@ from bulmaai.services.tickets import (
     set_language,
 )
 from bulmaai.services.patron_page import PATREON_URL
+from bulmaai.ui import staff_copilot
 from bulmaai.ui.ticket_views import (
     ACTIONS_ID,
     AI_BUTTON_ID,
     CATEGORIES,
     CLOSE_BUTTON_ID,
     DELETE_BUTTON_ID,
+    DRAFT_BUTTON_ID,
     LANG_BUTTON_PREFIX,
     LANG_SELECT_ID,
     LANGUAGES,
@@ -64,6 +66,7 @@ from bulmaai.ui.ticket_views import (
     REOPEN_BUTTON_ID,
     SOLVED_BUTTON_ID,
     SOLVED_REOPEN_PREFIX,
+    SUMMARY_BUTTON_ID,
     TRANSCRIPT_BUTTON_ID,
     CLOSED_RED,
     ClosePrompt,
@@ -91,7 +94,7 @@ from bulmaai.ui.ticket_views import (
     transcript_link_view,
     welcome_view,
 )
-from bulmaai.ui.v2 import unbusy, while_busy
+from bulmaai.ui.v2 import ALREADY_WORKING, unbusy, while_busy
 from bulmaai.utils.forwards import inline_forwards
 from bulmaai.utils.language import detect_language_from_text, role_languages
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -248,6 +251,7 @@ class TicketsCog(ReloadableCog):
         # ponytail: in-memory guard against double-clicks; one bot process owns the guild.
         self._deleting: set[int] = set()
         self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
+        self._copilot_working: set[tuple[int, int]] = set()  # (ticket channel, staff) with a Summary/Draft running
 
     @property
     def settings(self):
@@ -320,13 +324,17 @@ class TicketsCog(ReloadableCog):
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
-        if interaction.type != discord.InteractionType.component:
-            return
         custom_id = (interaction.data or {}).get("custom_id") or ""
-        if custom_id.startswith(SOLVED_REOPEN_PREFIX):
+        if interaction.type == discord.InteractionType.modal_submit:
+            handler = self.on_draft_edited if custom_id.startswith(staff_copilot.EDIT_MODAL_PREFIX) else None
+        elif interaction.type != discord.InteractionType.component:
+            return
+        elif custom_id.startswith(SOLVED_REOPEN_PREFIX):
             handler = self.on_solved_reopen
         elif custom_id.startswith(LANG_BUTTON_PREFIX):
             handler = self.on_language
+        elif custom_id.startswith(staff_copilot.DRAFT_PREFIX):
+            handler = self.on_draft_button
         else:
             handler = {
                 PANEL_SELECT_ID: self.on_panel_select,
@@ -337,6 +345,8 @@ class TicketsCog(ReloadableCog):
                 REOPEN_BUTTON_ID: self.on_reopen,
                 DELETE_BUTTON_ID: self.on_delete,
                 SOLVED_BUTTON_ID: self.on_solved,
+                SUMMARY_BUTTON_ID: self.on_summary,
+                DRAFT_BUTTON_ID: self.on_draft,
             }.get(custom_id)
         if handler is None:
             return
@@ -634,9 +644,11 @@ class TicketsCog(ReloadableCog):
         if category is None:
             return await interaction.response.send_message(MSG["failed"], ephemeral=True)
         await interaction.response.send_modal(TicketModal(category))
-        if interaction.message is not None:
+        # An ephemeral copy (Bulma's open_ticket offer) can't be edited through the channel, and only its viewer sees it.
+        message = interaction.message
+        if message is not None and not getattr(getattr(message, "flags", None), "ephemeral", False):
             # Re-sending the card clears the option the dropdown still shows as picked.
-            await self._safely(interaction.message.edit(view=panel_view()), interaction.channel)
+            await self._safely(message.edit(view=panel_view()), interaction.channel)
 
     async def on_close(self, interaction: discord.Interaction) -> None:
         if await self._gate(interaction, Rank.OWNER) is None:
@@ -843,6 +855,124 @@ class TicketsCog(ReloadableCog):
         ticket = await get_ticket_by_id(ticket_id)
         language = ticket.language if ticket is not None else "en"
         await interaction.response.send_message(t(language, "reopen_staff"), ephemeral=True)
+
+    # ---- staff copilot (ui/staff_copilot; the AI work is AITicketsCog's) --------------------------------
+
+    async def on_summary(self, interaction: discord.Interaction) -> None:
+        """📋 Summary: the ticket so far, for the staff member who clicked."""
+
+        async def summary(ai, ticket: Ticket) -> discord.ui.DesignerView | None:
+            so_far = await ai.ticket_summary(interaction.channel, ticket)
+            return staff_copilot.summary_card(ticket.ticket_id, so_far) if so_far is not None else None
+
+        await self._copilot(interaction, summary)
+
+    async def on_draft(self, interaction: discord.Interaction) -> None:
+        """✍️ Draft reply: a draft of the next reply to the owner, with Post / Edit & post / Discard."""
+
+        async def draft(ai, ticket: Ticket) -> discord.ui.DesignerView | None:
+            text = await ai.draft_reply(interaction.channel, ticket, interaction.user)
+            return staff_copilot.draft_card(text) if text else None
+
+        await self._copilot(interaction, draft)
+
+    async def _copilot(self, interaction: discord.Interaction, build) -> None:
+        """Summary and Draft reply: staff only, while the ticket is open and the AI budget isn't paused. The answer is an
+        ephemeral card for the clicker (build(ai cog, ticket), None when there is nothing to show). The click gets an
+        ephemeral "thinking" at once instead of while_busy, which would lock the whole welcome card (the owner's Close,
+        Solved) while the AI works; a second click by the same staff member on this ticket meanwhile is refused."""
+        ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only")
+        if ticket is None:
+            return
+        ai = self.bot.get_cog(AI_COG)
+        if ai is None:
+            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
+        if ai_budget.is_paused(self.settings):
+            return await interaction.response.send_message(MSG["ai_paused"], ephemeral=True)
+        key = (interaction.channel_id, interaction.user.id)
+        if key in self._copilot_working:
+            return await interaction.response.send_message(ALREADY_WORKING, ephemeral=True)
+        self._copilot_working.add(key)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                view = await build(ai, ticket)
+            except Exception:
+                log.exception("Staff copilot failed", extra={"channel_id": interaction.channel_id})
+                view = None
+            if view is None:
+                await interaction.followup.send(MSG["copilot_failed"], ephemeral=True)
+            else:
+                await interaction.followup.send(view=view, ephemeral=True)
+        finally:
+            self._copilot_working.discard(key)
+
+    async def on_draft_button(self, interaction: discord.Interaction) -> None:
+        """Post / Edit & post / Discard on an ephemeral draft card; the draft is read back from the card itself. Post
+        and Edit check the staff gate and the open ticket again."""
+        action = staff_copilot.parse_draft_custom_id((interaction.data or {}).get("custom_id") or "")
+        if action is None:
+            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
+        if action == staff_copilot.DRAFT_DISCARD:
+            return await interaction.response.edit_message(view=staff_copilot.done_card(staff_copilot.DISCARDED))
+        if await self._gate(interaction, Rank.HELPER, denied="staff_only") is None:
+            return
+        text = staff_copilot.draft_text(interaction.message)
+        if not text:
+            return await interaction.response.send_message(MSG["post_failed"], ephemeral=True)
+        if action == staff_copilot.DRAFT_EDIT:
+            # A modal must be the first response, so no while_busy here; its submit is on_draft_edited.
+            return await interaction.response.send_modal(staff_copilot.edit_modal(text, interaction.channel_id))
+
+        async def post() -> bool:
+            if not await self._post_staff_reply(interaction.channel, interaction.user, text):
+                return False
+            await interaction.edit_original_response(view=staff_copilot.done_card(staff_copilot.POSTED))
+            return True
+
+        await while_busy(interaction, self._working, post, failed=MSG["post_failed"])
+
+    async def on_draft_edited(self, interaction: discord.Interaction) -> None:
+        """The Edit & post form: the edited text is posted like Post does, and the draft card (when the submit comes
+        with it) turns into "Posted."."""
+        data = interaction.data or {}
+        if staff_copilot.parse_edit_modal_id(data.get("custom_id") or "") != interaction.channel_id:
+            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
+        if await self._gate(interaction, Rank.HELPER, denied="staff_only") is None:
+            return
+        text = staff_copilot.edited_text(data.get("components"))
+        if not text:
+            return await interaction.response.send_message(MSG["post_failed"], ephemeral=True)
+        card = getattr(interaction, "message", None)
+        # Posting can outlast the 3-second window. With the draft card: a silent defer, then that card is edited.
+        await interaction.response.defer(ephemeral=card is None, invisible=card is not None)
+        if not await self._post_staff_reply(interaction.channel, interaction.user, text):
+            return await interaction.followup.send(MSG["post_failed"], ephemeral=True)
+        if card is not None:
+            await interaction.edit_original_response(view=staff_copilot.done_card(staff_copilot.POSTED))
+        else:
+            await interaction.followup.send(staff_copilot.POSTED, ephemeral=True)
+
+    async def _post_staff_reply(self, channel: discord.TextChannel, staff: discord.abc.User, text: str) -> bool:
+        """A staff reply from Draft reply, posted as a public card signed "-# ✍️ <@staff>" (no pings; the text's
+        mentions are defused). It counts as them speaking: the AI's pending answer is dropped and the owner's reply
+        countdown starts, as for a typed staff message. History and transcripts read the card as theirs
+        (AITicketsCog._signed_turn). False when Discord refused it."""
+        try:
+            await channel.send(
+                view=staff_copilot.posted_card(defuse_mentions(text), staff.id),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            log.exception("Could not post a staff reply", extra={"channel_id": channel.id})
+            return False
+        if (ai := self.bot.get_cog(AI_COG)) is not None:
+            ai.staff_replied(channel.id)
+        try:
+            await note_ticket_message(channel.id, staff.id)
+        except Exception:
+            log.exception("Could not track ticket reply", extra={"channel_id": channel.id})
+        return True
 
     # ---- transcript + archive --------------------------------------------------------------------
 

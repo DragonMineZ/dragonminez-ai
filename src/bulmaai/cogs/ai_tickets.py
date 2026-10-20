@@ -2449,7 +2449,7 @@ class AITicketsCog(ReloadableCog):
         if author.id == getattr(self.bot.user, "id", None):
             upload = ai_asks.read_upload(_card_texts(entry))
             if upload is not None and upload[0] == requester_id:
-                return entry.attachments
+                return full_attachments(entry)
         return ()
 
     async def _triage_bug_post(self, bugs: Any, thread: discord.Thread, body: str, reporter_id: int) -> None:
@@ -2557,7 +2557,7 @@ class AITicketsCog(ReloadableCog):
             log.exception("Could not record an upload on its card", extra={"message_id": message_id})
         await self._show_upload_cards(reposted, user)
         content = "\n".join(f"uploaded {name}" for name in names)
-        await self._answer_recorded(interaction, message_id, content, context, attachments=reposted.attachments)
+        await self._answer_recorded(interaction, message_id, content, context, attachments=full_attachments(reposted))
 
     async def _show_upload_cards(self, message: discord.Message, uploader: discord.abc.User) -> None:
         """The log / dmzdebug cards for a reposted upload, as a typed upload gets them (not in DMs, like those).

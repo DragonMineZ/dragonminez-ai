@@ -25,7 +25,7 @@ from bulmaai.services.ai_client import (
     run_support_agent,
 )
 from bulmaai.ui import ai_feedback
-from bulmaai.utils.permissions import has_patreon_access_role, is_staff
+from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ REFUSAL_TEXT = (
     "I only answer DragonMineZ questions, in my own words: I won't repeat text, ping anyone or change my rules. "
     "Ask your question plainly, or open a ticket."
 )
+UNPOSTABLE_TEXT = "I can't answer that one here. Open a ticket and staff will help."
 
 
 def is_ask_channel_allowed(channel_id: int, allowed_channel_ids: Sequence[int]) -> bool:
@@ -64,20 +65,9 @@ class AskCog(commands.Cog):
     @discord.option(
         "question", description="Your DragonMineZ question", required=True, max_length=ASK_MAX_QUESTION_LENGTH
     )
-    @discord.option(
-        "private",
-        description="Only show the answer to you (Patreon supporters and staff)",
-        required=False,
-        default=False,
-    )
-    async def ask(self, ctx: discord.ApplicationContext, question: str, private: bool = False) -> None:
+    async def ask(self, ctx: discord.ApplicationContext, question: str) -> None:
         settings = self.bot.settings
         channel_id = ctx.channel.id
-        public = not private
-
-        if private and not (is_staff(ctx.author, settings=settings) or has_patreon_access_role(ctx.author, settings=settings)):
-            await ctx.respond("Private answers are for Patreon supporters and staff. Run `/ask` again without `private`.", ephemeral=True)
-            return
 
         if not is_ask_channel_allowed(channel_id, settings.ask_allowed_channel_ids):
             await ctx.respond("`/ask` isn't enabled in this channel.", ephemeral=True)
@@ -116,7 +106,7 @@ class AskCog(commands.Cog):
             await ctx.respond(REFUSAL_TEXT, ephemeral=True)
             return
 
-        await ctx.defer(ephemeral=not public)
+        await ctx.defer()
 
         messages: list[ConversationMessage] = [
             ConversationMessage(
@@ -176,22 +166,21 @@ class AskCog(commands.Cog):
         if not answered:
             reply_text = "I couldn't find a confident knowledge-backed answer for that."
 
-        private = not public or not can_post_publicly(result)
-        # 👍/👎 under a public answer, as under a ping's (ui/ai_feedback); private answers go without.
-        feedback = answered and not private and ai_feedback.wanted(settings, result.get("kind"))
-        if public and private:
-            # The first followup inherits the public defer, so it can't carry the answer itself.
-            await ctx.followup.send("-# I sent this answer to you privately.", allowed_mentions=discord.AllowedMentions.none())
+        # An answer the guard won't post publicly becomes a fallback text, as in ai_tickets' public replies.
+        postable = can_post_publicly(result)
+        if not postable:
+            reply_text = UNPOSTABLE_TEXT
+        # 👍/👎 under a real answer, as under a ping's (ui/ai_feedback).
+        feedback = answered and postable and ai_feedback.wanted(settings, result.get("kind"))
         chunks = _chunk_discord_message(reply_text, CARD_TEXT_LIMIT)
         chunks[-1] = _with_footer(chunks[-1])
         for index, chunk in enumerate(chunks):
             rows = [ai_feedback.feedback_row(ctx.author.id)] if feedback and index == len(chunks) - 1 else []
             sent = await ctx.followup.send(
                 view=_card(chunk, AI_CARD_COLOR, *rows),
-                ephemeral=private,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-            if index == 0 and not private:
+            if index == 0 and postable:
                 remember_ask_question(sent.id, ctx.author.id, messages[0]["speaker_name"], question)
             if rows:
                 await self._save_feedback(sent.id, channel_id, ctx.author.id, result)

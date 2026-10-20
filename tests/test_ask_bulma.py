@@ -475,8 +475,8 @@ class AskCommandFeedbackTests(unittest.IsolatedAsyncioTestCase):
         )
         return ask_cog.AskCog(types.SimpleNamespace(settings=settings))
 
-    async def _ask(self, cog, *, private: bool = False, kind: str = "answer"):
-        author = _member(42, 3)  # staff, so private answers are allowed
+    async def _ask(self, cog, *, kind: str = "answer"):
+        author = _member(42, 3)
         followup_ids = iter(range(100, 110))
         ctx = types.SimpleNamespace(
             channel=types.SimpleNamespace(id=13, name="help"),
@@ -491,18 +491,24 @@ class AskCommandFeedbackTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ask_cog, "run_support_agent", AsyncMock(return_value=result)),
             patch.object(feedback_store, "save", AsyncMock()) as save,
         ):
-            await ask_cog.AskCog.ask.callback(cog, ctx, "How do I fix my crash?", private)
+            await ask_cog.AskCog.ask.callback(cog, ctx, "How do I fix my crash?")
+        ctx.defer.assert_awaited_once_with()
+        self.assertTrue(all("ephemeral" not in call.kwargs for call in ctx.followup.send.await_args_list))
         return ctx.followup.send.await_args.kwargs["view"], save
 
-    async def test_public_answers_get_the_buttons_private_ones_dont(self) -> None:
+    async def test_answers_get_the_buttons_unless_off_or_unpostable(self) -> None:
         view, save = await self._ask(self._cog())
         self.assertEqual([b.custom_id for b in buttons(view)], ["ai_fb:42:up", "ai_fb:42:down"])
         save.assert_awaited_once_with(message_id=100, channel_id=13, requester_id=42, response_id="msg_9", language="en")
 
-        for cog, kwargs in ((self._cog(), dict(private=True)), (self._cog(ai_answer_feedback_enabled=False), {})):
-            view, save = await self._ask(cog, **kwargs)
-            self.assertEqual(buttons(view), [])
-            save.assert_not_called()
+        view, save = await self._ask(self._cog(ai_answer_feedback_enabled=False))
+        self.assertEqual(buttons(view), [])
+        save.assert_not_called()
+
+        view, save = await self._ask(self._cog(), kind="offtopic")
+        self.assertEqual(buttons(view), [])
+        save.assert_not_called()
+        self.assertIn(ask_cog.UNPOSTABLE_TEXT, "\n".join(texts(view)))
 
 
 if __name__ == "__main__":

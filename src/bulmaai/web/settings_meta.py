@@ -105,7 +105,7 @@ META: dict[str, tuple[str, str, str]] = {
     # Patreon
     "PATREON_CAMPAIGN_ID": ("patreon", "Campaign ID", "Patreon campaign polled for new posts and checked for memberships."),
     "patreon_eligible_tier_ids": ("patreon", "Eligible tiers", "Patreon tier ids that grant beta access (comma-separated)."),
-    "patreon_access_role_ids": ("patreon", "Supporter roles", "Discord roles that mark someone as a Patreon supporter (beta access, private /ask answers)."),
+    "patreon_access_role_ids": ("patreon", "Supporter roles", "Discord roles that mark someone as a Patreon supporter (beta access)."),
     "patreon_contributor_role_id": ("patreon", "Contributor role", "Supporters with this role can gift beta access to 1 person."),
     "patreon_benefactor_role_id": ("patreon", "Benefactor role", "Supporters with this role can gift beta access to 2 people."),
     "patreon_admin_ping_role_id": ("patreon", "Admin ping role", "Not read by any feature at the moment."),

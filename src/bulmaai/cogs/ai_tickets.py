@@ -89,6 +89,9 @@ log = logging.getLogger(__name__)
 LOG_ATTACHMENT_EXTENSIONS = (".log", ".txt")
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 DM_UPLOAD_LIMIT = 25 * 1024 * 1024  # when a DM interaction doesn't say what the bot may upload there
+BUG_REPORTS_COG = "BugReportsCog"
+BUG_REPORT_MAX_FILES = 3  # the requester's logs and screenshots a report_bug post carries
+BUG_POST_FALLBACK_NAME = "Bug report"
 DISCORD_MESSAGE_LIMIT = 1900
 # V2 cards allow 4000 characters of text per message; leave room for the footer.
 CARD_TEXT_LIMIT = 3500
@@ -2030,7 +2033,8 @@ class AITicketsCog(ReloadableCog):
     async def _handle_action(self, interaction: discord.Interaction, row: ask_store.AskRow, index: int) -> None:
         """An offer_action button. It runs an existing flow for the requester, never anything they couldn't start
         themselves: get_staff is the "No, I still need help" button's escalation, open_ticket the ticket panel's
-        form, link_patreon /patreon link's answer. "No thanks" only records itself. None of them runs the AI."""
+        form, link_patreon /patreon link's answer, report_bug a post in the bug-report forum (its form first).
+        "No thanks" only records itself. None of them runs the AI."""
         spec, language, user = row.spec, row.language, interaction.user
         action = spec.get("action")
         if spec.get("kind") != ai_asks.ACTION_KIND or index not in (ai_asks.ACTION_RUN, ai_asks.ACTION_DECLINE):
@@ -2045,6 +2049,8 @@ class AITicketsCog(ReloadableCog):
         label = ai_asks.action_label(spec, language)
         if action == "open_ticket":
             return await self._offer_ticket(interaction, row, label)
+        if action == "report_bug":
+            return await self._offer_bug_report(interaction, row)
         if action == "get_staff":
             channel = interaction.channel
 
@@ -2129,6 +2135,191 @@ class AITicketsCog(ReloadableCog):
             )
         except Exception:
             log.exception("Could not record a ticket offer on its card", extra={"message_id": message.id})
+
+    async def _bug_forum(self) -> discord.ForumChannel | None:
+        """The bug-report forum (bug_report_forum_channel_id); None when it isn't set or can't be found."""
+        forum_id = getattr(self.bot.settings, "bug_report_forum_channel_id", None)
+        if forum_id is None:
+            return None
+        forum = self.bot.get_channel(forum_id)
+        if forum is None:
+            try:
+                forum = await self.bot.fetch_channel(forum_id)
+            except discord.HTTPException:
+                log.warning("Couldn't find the bug-report forum", exc_info=True, extra={"channel_id": forum_id})
+                return None
+        return forum if isinstance(forum, discord.ForumChannel) else None
+
+    async def _bug_report_target(self, user: discord.abc.User) -> tuple[Any, discord.ForumChannel] | None:
+        """(BugReportsCog, the forum) when the requester can report a bug there: the forum is set and found, the cog is
+        loaded, and they are in the forum's server (the post credits them, and its triage card's "Open a ticket" needs
+        them there). None otherwise."""
+        bugs = self.bot.get_cog(BUG_REPORTS_COG)
+        if not getattr(self.bot.settings, "bug_reports_enabled", False):
+            bugs = None  # off: nothing would triage the post
+        forum = await self._bug_forum() if bugs is not None else None
+        if forum is None:
+            return None
+        guild = forum.guild
+        if isinstance(user, discord.Member) and user.guild.id == guild.id:
+            return bugs, forum
+        if guild.get_member(user.id) is None:
+            try:
+                await guild.fetch_member(user.id)
+            except discord.NotFound:
+                return None
+            except discord.HTTPException:
+                log.info("Couldn't look up a bug reporter", exc_info=True, extra={"user_id": user.id})
+                return None
+        return bugs, forum
+
+    async def _offer_bug_report(self, interaction: discord.Interaction, row: ask_store.AskRow) -> None:
+        """report_bug: the bug report form, pre-filled with what the model passed. Nothing is claimed yet: the submit
+        (_handle_ask_bug) claims the card, so a closed form leaves the offer open. Refused at once when the report
+        couldn't be posted (_bug_report_target). The form must be the click's first response, so no while_busy here."""
+        language = row.language
+        if await self._bug_report_target(interaction.user) is None:
+            return await interaction.response.send_message(ai_asks.text(language, "bug_closed"), ephemeral=True)
+        try:
+            await interaction.response.send_modal(ai_asks.bug_modal(row.spec, interaction.message.id, language))
+        except Exception:
+            log.exception("Could not show the bug report form", extra={"message_id": interaction.message.id})
+
+    async def _handle_ask_bug(self, interaction: discord.Interaction, message_id: int) -> None:
+        """A submitted report_bug form. The first submit claims the card; Bulma posts the report in the bug-report
+        forum (it credits the requester and carries their recent logs and screenshots from this conversation), the
+        card records the post's link, and BugReportsCog triages it with the requester as reporter. If the post can't
+        be made the offer is open again."""
+        if (row := await self._ask_row(interaction, message_id)) is None:
+            return
+        spec, language, user = row.spec, row.language, interaction.user
+        failed = ai_asks.text(language, "failed")
+        if spec.get("action") != "report_bug" or not ai_asks.allowed_in(
+            spec, _channel_kind(interaction.channel, settings=self.bot.settings)
+        ):
+            return await interaction.response.send_message(failed, ephemeral=True)
+        refusal, _context = await self._ask_refusal(interaction, row, spend=False, ai=False)
+        if refusal:
+            return await interaction.response.send_message(ai_asks.text(language, refusal), ephemeral=True)
+        answers = ai_asks.bug_answers((interaction.data or {}).get("components"))
+        if not all(answers.get(field) for field in ai_asks.BUG_REQUIRED):
+            return await interaction.response.send_message(failed, ephemeral=True)
+        if (target := await self._bug_report_target(user)) is None:
+            return await interaction.response.send_message(ai_asks.text(language, "bug_closed"), ephemeral=True)
+        bugs, forum = target
+        try:
+            claimed = await ask_store.claim(message_id) is not None
+        except Exception:
+            log.exception("Could not claim a bug report", extra={"message_id": message_id})
+            return await interaction.response.send_message(failed, ephemeral=True)
+        if not claimed:
+            return await interaction.response.send_message(ai_asks.text(language, "answered"), ephemeral=True)
+        # Downloading the files and posting can outlast the 3-second window; invisible=False keeps it ephemeral.
+        await interaction.response.defer(ephemeral=True, invisible=False)
+        no_pings = discord.AllowedMentions.none()
+        body = ai_asks.bug_post(user.id, answers)
+        try:
+            files = await self._reporter_files(interaction.channel, message_id, user.id, forum.guild.filesize_limit)
+            thread = await forum.create_thread(
+                name=_thread_name(answers["title"], self.bot.settings) or BUG_POST_FALLBACK_NAME,
+                content=body,
+                files=files,
+                allowed_mentions=no_pings,
+            )
+        except Exception:
+            log.exception("Could not post a bug report", extra={"message_id": message_id})
+            try:
+                await ask_store.release(message_id)
+            except Exception:
+                log.exception("Could not reopen the bug report offer", extra={"message_id": message_id})
+            return await interaction.followup.send(failed, ephemeral=True)
+        link = f"https://discord.com/channels/{forum.guild.id}/{thread.id}"
+        try:
+            message = interaction.message
+            if getattr(message, "id", None) != message_id:  # a modal submit may come without its message
+                message = await interaction.channel.fetch_message(message_id)
+            line = ai_asks.bug_line(user.id, link, language)
+            await message.edit(view=_answered_card(message, [line]), allowed_mentions=no_pings)
+        except Exception:
+            # The post is up, so the card stays claimed (reopening it would let a second report through).
+            log.exception("Could not record a bug report on its card", extra={"message_id": message_id})
+        try:
+            await interaction.followup.send(ai_asks.text(language, "bug_done").format(link=link), ephemeral=True)
+        except discord.HTTPException:
+            log.info("Couldn't confirm a bug report", exc_info=True, extra={"message_id": message_id})
+        await self._triage_bug_post(bugs, thread, body, user.id)
+
+    async def _reporter_files(
+        self, channel: Any, card_id: int, requester_id: int, size_limit: int
+    ) -> list[discord.File]:
+        """The requester's own logs (.log/.txt) and screenshots from the conversation the answer card belongs to,
+        newest first, at most BUG_REPORT_MAX_FILES within size_limit together, re-uploaded: their messages' files and
+        the files Bulma reposted for them (upload cards). The conversation is what the answer read: a thread's
+        messages (_thread_context), elsewhere the public context window before the card."""
+        try:
+            if isinstance(channel, discord.Thread):
+                messages = await self._thread_context(channel)
+            else:
+                cutoff = discord.utils.snowflake_time(card_id) - GENERAL_CONTEXT_MAX_AGE
+                messages = [
+                    entry
+                    async for entry in channel.history(
+                        limit=GENERAL_CONTEXT_MESSAGE_LIMIT, before=discord.Object(id=card_id)
+                    )
+                    if entry.created_at >= cutoff
+                ]
+                messages.reverse()
+        except discord.HTTPException:
+            log.info("Couldn't read the conversation for a bug report", exc_info=True, extra={"channel_id": channel.id})
+            return []
+        picked: list[discord.Attachment] = []
+        budget = size_limit  # one post carries them all, so the limit is for the total
+        for attachment in (item for entry in reversed(messages) for item in self._own_files(entry, requester_id)):
+            if len(picked) >= BUG_REPORT_MAX_FILES:
+                break
+            size = attachment.size or 0
+            if (
+                any(attachment.id == seen.id for seen in picked)
+                or not (_is_log_attachment(attachment) or _is_image_attachment(attachment))
+                or size > budget
+            ):
+                continue
+            picked.append(attachment)
+            budget -= size
+        files: list[discord.File] = []
+        for attachment, name in zip(picked, ai_asks.upload_names([attachment.filename for attachment in picked])):
+            try:
+                files.append(discord.File(io.BytesIO(await attachment.read()), filename=name))
+            except discord.HTTPException:
+                log.info("Couldn't copy a file into a bug report", exc_info=True, extra={"attachment_id": attachment.id})
+        return files
+
+    def _own_files(self, entry: discord.Message, requester_id: int) -> Sequence[Any]:
+        """The files that are the requester's in this message: their own message's, or Bulma's repost of their upload."""
+        author = entry.author
+        if author.id == requester_id and not author.bot:
+            return full_attachments(entry)
+        if author.id == getattr(self.bot.user, "id", None):
+            upload = ai_asks.read_upload(_card_texts(entry))
+            if upload is not None and upload[0] == requester_id:
+                return entry.attachments
+        return ()
+
+    async def _triage_bug_post(self, bugs: Any, thread: discord.Thread, body: str, reporter_id: int) -> None:
+        """BugReportsCog's triage of a post Bulma made for the requester, with them as reporter (its listener leaves
+        posts whose first message is a bot's alone). Off with the rest of the triage (bug_reports_enabled)."""
+        if not getattr(self.bot.settings, "bug_reports_enabled", False):
+            return
+        try:
+            starter = await bugs._fetch_starter_message(thread)
+            await bugs.triage_thread(
+                thread,
+                text=f"{thread.name}\n\n{body}".strip(),
+                reporter_id=reporter_id,
+                attachments=list(starter.attachments) if starter is not None else [],
+            )
+        except Exception:
+            log.exception("Could not triage a bug report Bulma posted", extra={"channel_id": thread.id})
 
     async def _handle_ask_form(self, interaction: discord.Interaction, message_id: int) -> None:
         """A submitted "Fill in" form: one line per answered field goes on the card, then the AI answers them."""
@@ -2555,6 +2746,8 @@ class AITicketsCog(ReloadableCog):
                 await self._handle_ask_form(interaction, form_message_id)
             elif (file_message_id := ai_asks.parse_file_modal_id(custom_id)) is not None:
                 await self._handle_ask_file(interaction, file_message_id)
+            elif (bug_message_id := ai_asks.parse_bug_modal_id(custom_id)) is not None:
+                await self._handle_ask_bug(interaction, bug_message_id)
             return
         if interaction.type != discord.InteractionType.component:
             return

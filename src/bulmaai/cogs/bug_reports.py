@@ -147,21 +147,33 @@ class BugReportsCog(ReloadableCog):
 
         report_text = starter.content if starter is not None else ""
         reporter_id = starter.author.id if starter is not None else thread.owner_id
-        attachments = (
-            [attachment.filename for attachment in starter.attachments]
-            if starter is not None
-            else []
-        )
-        digest = await self._log_digest(starter.attachments) if starter is not None else ""
         # Forum posts carry the title separately from the body.
         full_text = f"{thread.name}\n\n{report_text}".strip()
+        await self.triage_thread(
+            thread,
+            text=full_text,
+            reporter_id=reporter_id,
+            attachments=list(starter.attachments) if starter is not None else [],
+        )
 
+    async def triage_thread(
+        self,
+        thread: discord.Thread,
+        *,
+        text: str,
+        reporter_id: int | None,
+        attachments: list[discord.Attachment],
+    ) -> None:
+        """AI-triages a bug-report post: the triage card in the thread and the bug_reports row (keyed by the thread's
+        id). text is the post's title and body; attachments are its files (logs get a digest). The listener calls it
+        for members' posts, AITicketsCog for the posts Bulma makes for a member (report_bug), with them as reporter."""
+        digest = await self._log_digest(attachments)
         try:
             triage = await analyze_bug_report(
                 self.client,
                 model=self.settings.ai_bugreport_model,
-                report_text=full_text,
-                attachments=attachments,
+                report_text=text,
+                attachments=[attachment.filename for attachment in attachments],
                 fallback_title=thread.name[:240] or "Bug report",
                 log_digest=digest,
             )

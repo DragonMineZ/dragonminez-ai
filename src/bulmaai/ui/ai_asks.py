@@ -6,8 +6,8 @@ back as the requester's turn; the spec itself lives in the ai_asks table (servic
 restart. Uploaded files are reposted on a card of their own whose `-# ↳ <@id> uploaded **name**` lines credit the
 requester, so the files read back as their turn.
 
-Pure helpers only (spec validation, the card's controls, custom ids, the modals, answer lines, readback); the
-Discord wiring is in cogs/ai_tickets.py."""
+Pure helpers only (spec validation, the card's controls, custom ids, the modals, report_bug's post text, answer
+lines, readback); the Discord wiring is in cogs/ai_tickets.py."""
 
 import re
 from typing import Any, Callable
@@ -43,17 +43,36 @@ MAX_STEPS = 8
 STEP_LIMIT = 200
 STEP_DONE, STEP_BROKEN = 0, 1  # a steps button's index is step * 2 + this
 CONTROLS_TEXT_ID = 810  # the component id of the text that belongs to the controls (a steps card's list)
-ACTIONS = ("get_staff", "open_ticket", "link_patreon")
+ACTIONS = ("get_staff", "open_ticket", "link_patreon", "report_bug")
 # Where each action may go out (ai_client's channel kinds). get_staff is the ticket's "No, I still need help";
-# open_ticket is the ticket panel, which needs a server and makes no sense inside a ticket.
-ACTION_CHANNELS = {"get_staff": ("ticket",), "open_ticket": ("public",), "link_patreon": ("ticket", "dm", "public")}
-ACTION_WHERE = {"get_staff": "in tickets", "open_ticket": "in public channels", "link_patreon": "anywhere"}
+# open_ticket is the ticket panel, which needs a server and makes no sense inside a ticket; report_bug posts in the
+# bug-report forum, never from a ticket (staff handle bugs there).
+ACTION_CHANNELS = {
+    "get_staff": ("ticket",),
+    "open_ticket": ("public",),
+    "link_patreon": ("ticket", "dm", "public"),
+    "report_bug": ("public", "dm"),
+}
+ACTION_WHERE = {
+    "get_staff": "in tickets",
+    "open_ticket": "in public channels",
+    "link_patreon": "anywhere",
+    "report_bug": "in public channels and DMs",
+}
 ACTION_RUN, ACTION_DECLINE = 0, 1  # an action card's buttons: the action, and "No thanks"
+# report_bug's prefill (the model's) and its modal's fields, in form order; the long ones keep their line breaks.
+BUG_FIELDS = ("title", "what_happened", "steps", "version")
+BUG_LIMITS = {"title": 100, "what_happened": 1000, "steps": 1000, "version": 100}  # a forum post's name: 100
+BUG_LONG = ("what_happened", "steps")
+BUG_REQUIRED = ("title", "what_happened")
+BUG_SECTIONS = (("what_happened", "What happened"), ("steps", "Steps"), ("version", "Version"))
+BUG_POST_LIMIT = 2000  # a forum post's first message is plain text
 ALLOWED_FLAGS = frozenset({"unknown_link"})  # a label is never a clickable link, so "latest.log" may stay
 
 CUSTOM_ID_PREFIX = "ai_ask:"  # ai_ask:{kind}:{requester_id}:{index}
 FORM_MODAL_PREFIX = "ai_ask_form:"  # ai_ask_form:{card message id}
 FILE_MODAL_PREFIX = "ai_ask_file:"  # ai_ask_file:{card message id}
+BUG_MODAL_PREFIX = "ai_ask_bug:"  # ai_ask_bug:{card message id}
 ANSWER_LINE_PREFIX = "-# ↳ "
 # A pick: "-# ↳ <@id>: **label**". A form field: "-# ↳ <@id> · Field label: **value**".
 ANSWER_LINE_RE = re.compile(r"^-# ↳ <@!?(\d+)>(?: · (.+?))?: \*\*(.+)\*\*$", re.DOTALL)
@@ -106,6 +125,15 @@ TEXT: dict[str, dict[str, str]] = {
         "action_get_staff": "Get a staff member",
         "action_open_ticket": "Open a ticket",
         "action_link_patreon": "Link Patreon",
+        "action_report_bug": "Report this bug",
+        "bug_title": "Report a bug",
+        "bug_field_title": "Title",
+        "bug_field_what_happened": "What happened",
+        "bug_field_steps": "Steps to reproduce",
+        "bug_field_version": "Version",
+        "bug_closed": "Bug reports aren't open right now.",
+        "bug_reported": "Reported the bug",
+        "bug_done": "Thanks! Your bug report is up: {link}",
         "on_it": "On it…",
         "ask_off": "Bulma isn't answering here right now.",
         "ask_no_access": "You can't ask Bulma here. Try `/ask`, or open a ticket.",
@@ -145,6 +173,15 @@ TEXT: dict[str, dict[str, str]] = {
         "action_get_staff": "Llamar al staff",
         "action_open_ticket": "Abrir un ticket",
         "action_link_patreon": "Vincular Patreon",
+        "action_report_bug": "Reportar este bug",
+        "bug_title": "Reportar un bug",
+        "bug_field_title": "Título",
+        "bug_field_what_happened": "Qué pasó",
+        "bug_field_steps": "Pasos para reproducirlo",
+        "bug_field_version": "Versión",
+        "bug_closed": "Los reportes de bugs no están abiertos ahora mismo.",
+        "bug_reported": "Bug reportado",
+        "bug_done": "¡Gracias! Tu reporte de bug está publicado: {link}",
         "on_it": "Estoy en ello…",
         "ask_off": "Bulma no está respondiendo aquí ahora mismo.",
         "ask_no_access": "No puedes preguntarle a Bulma aquí. Prueba `/ask` o abre un ticket.",
@@ -184,6 +221,15 @@ TEXT: dict[str, dict[str, str]] = {
         "action_get_staff": "Chamar a staff",
         "action_open_ticket": "Abrir um ticket",
         "action_link_patreon": "Vincular Patreon",
+        "action_report_bug": "Reportar este bug",
+        "bug_title": "Reportar um bug",
+        "bug_field_title": "Título",
+        "bug_field_what_happened": "O que aconteceu",
+        "bug_field_steps": "Passos para reproduzir",
+        "bug_field_version": "Versão",
+        "bug_closed": "Os relatos de bugs não estão abertos agora.",
+        "bug_reported": "Bug reportado",
+        "bug_done": "Obrigado! Seu relato de bug foi publicado: {link}",
         "on_it": "Estou nisso…",
         "ask_off": "A Bulma não está respondendo aqui agora.",
         "ask_no_access": "Você não pode perguntar à Bulma aqui. Tente `/ask` ou abra um ticket.",
@@ -208,6 +254,17 @@ def _clean(value: Any, limit: int, settings: Any) -> str | None:
     if not line or len(line) > limit:
         return None
     screened, flags = ai_guard.screen_reply(line, settings)
+    return screened if not flags - ALLOWED_FLAGS and len(screened) <= limit else None
+
+
+def _clean_text(value: Any, limit: int, settings: Any) -> str | None:
+    """_clean for text that keeps its line breaks (a bug report's prefill)."""
+    if not isinstance(value, str):
+        return None
+    text = "\n".join(" ".join(line.split()) for line in value.strip().splitlines()).strip()
+    if not text or len(text) > limit:
+        return None
+    screened, flags = ai_guard.screen_reply(text, settings)
     return screened if not flags - ALLOWED_FLAGS and len(screened) <= limit else None
 
 
@@ -395,6 +452,15 @@ def validate_action(args: dict, settings: Any, channel_kind: str | None = None) 
             dropped.append(
                 f"category {_preview(args['category'])!r}: one of {', '.join(CATEGORIES)}; without it they pick one"
             )
+    for field in BUG_FIELDS:
+        if not args.get(field):
+            continue
+        if action != "report_bug":
+            dropped.append(f"{field}: only for report_bug")
+        elif value := (_clean_text if field in BUG_LONG else _clean)(args[field], BUG_LIMITS[field], settings):
+            spec[field] = value
+        else:
+            dropped.append(f"{field}: over {BUG_LIMITS[field]} characters or not allowed; they fill it in")
     if args.get("no_thanks") is True:
         spec["no_thanks"] = True
     extra = {"dropped": dropped} if dropped else {}
@@ -625,6 +691,15 @@ def parse_file_modal_id(value: str) -> int | None:
     return _modal_message_id(FILE_MODAL_PREFIX, value)
 
 
+def bug_modal_id(message_id: int) -> str:
+    return f"{BUG_MODAL_PREFIX}{message_id}"
+
+
+def parse_bug_modal_id(value: str) -> int | None:
+    """The answer card a submitted bug report belongs to."""
+    return _modal_message_id(BUG_MODAL_PREFIX, value)
+
+
 def _field_item(field: dict, custom_id_: str) -> discord.ui.ModalItem:
     required = bool(field.get("required"))
     if field["type"] in ("short", "long"):
@@ -734,6 +809,51 @@ def uploaded(spec: dict, data: Any) -> list[dict]:
     return payloads[: spec.get("max_files") or 1]
 
 
+def bug_modal(spec: dict, message_id: int, language: str | None) -> discord.ui.DesignerModal:
+    """report_bug's form: title, what happened, steps to reproduce and version, pre-filled with what the model passed
+    (the requester edits or completes it). Routed by custom id like the form (store=False)."""
+    items = []
+    for field in BUG_FIELDS:
+        required = field in BUG_REQUIRED
+        item = discord.ui.InputText(
+            style=discord.InputTextStyle.long if field in BUG_LONG else discord.InputTextStyle.short,
+            custom_id=field,
+            max_length=BUG_LIMITS[field],
+            required=required,
+            value=(spec.get(field) or "")[: BUG_LIMITS[field]] or None,
+        )
+        item.required = required  # older py-cord drops required=False in the constructor (see ui/ticket_views)
+        items.append(discord.ui.Label(text(language, f"bug_field_{field}"), item))
+    return discord.ui.DesignerModal(
+        *items, title=text(language, "bug_title"), custom_id=bug_modal_id(message_id), store=False
+    )
+
+
+def bug_answers(components: Any) -> dict[str, str]:
+    """The submitted bug report's fields (field -> text, only the filled ones), as typed: the short ones on one line.
+    bug_post makes them safe to repost."""
+    submitted = _submitted(components)
+    answers: dict[str, str] = {}
+    for field in BUG_FIELDS:
+        raw = submitted.get(field)
+        value = str((raw[0] if raw else "") if isinstance(raw, list) else raw or "").strip()
+        if field not in BUG_LONG:
+            value = " ".join(value.split())
+        if value:
+            answers[field] = value[: BUG_LIMITS[field]]
+    return answers
+
+
+def bug_post(user_id: int, answers: dict[str, str]) -> str:
+    """The forum post's text for a report Bulma files for a member: who reported it, then what happened, the steps and
+    the version, member text with no pings or clickable links, trimmed to fit one post (the files carry long logs)."""
+    head = f"Reported by <@{user_id}> with Bulma"
+    sections = [(heading, ai_guard.defang(answers[key])) for key, heading in BUG_SECTIONS if answers.get(key)]
+    overhead = len(head) + sum(len(f"\n\n**{heading}**\n") for heading, _ in sections)
+    values = fit([value for _, value in sections], BUG_POST_LIMIT - overhead)
+    return head + "".join(f"\n\n**{heading}**\n{value}" for (heading, _), value in zip(sections, values))
+
+
 def upload_names(filenames: list[str]) -> list[str]:
     """The names the files are reposted under: plain enough for attachment:// URLs and the card (letters, digits,
     . _ -; no pings, links or markdown), short, and distinct. The end is kept, so is the extension."""
@@ -796,6 +916,26 @@ def steps_done_line(user_id: int, count: int, language: str | None) -> str:
     return f"{ANSWER_LINE_PREFIX}<@{user_id}>: **{text(language, 'steps_done').format(n=count)}**"
 
 
+def bug_line(user_id: int, link: str, language: str | None) -> str:
+    """report_bug's outcome on the card: "-# ↳ <@id>: **Reported the bug** → <the post's link>"."""
+    return f"{ANSWER_LINE_PREFIX}<@{user_id}>: **{text(language, 'bug_reported')}** → {link}"
+
+
+# The report_bug outcome line in every language. It reads back without the link: a link in history the model might
+# repeat would keep its public answer from going out (ai_guard).
+_BUG_LINES = [
+    re.compile(rf"^-# ↳ <@!?(\d+)>: \*\*{re.escape(TEXT[language]['bug_reported'])}\*\* → \S+$") for language in TEXT
+]
+BUG_READBACK = "I reported the bug in the bug-report forum."
+
+
+def _read_bug_line(line: str) -> tuple[int, str] | None:
+    for pattern in _BUG_LINES:
+        if match := pattern.match(line):
+            return int(match[1]), BUG_READBACK
+    return None
+
+
 def _step_pattern(key: str, language: str, tail: str) -> re.Pattern:
     phrase = re.escape(TEXT[language][key]).replace(re.escape("{n}"), r"(\d+)")
     return re.compile(rf"^-# ↳ <@!?(\d+)>: \*\*{phrase}\*\*{tail}$")
@@ -841,12 +981,13 @@ def read_upload(texts: list[str]) -> tuple[int, list[str]] | None:
 
 
 def read_answer(texts: list[str]) -> tuple[int, str] | None:
-    """(user id, answer) recorded on a card: a pick's label, a form's "label: value" lines, or a steps outcome (in
-    English). Upload lines aren't answers: the repost that carries the files is the uploader's turn (read_upload)."""
+    """(user id, answer) recorded on a card: a pick's label, a form's "label: value" lines, or a steps or report_bug
+    outcome (in English). Upload lines aren't answers: the repost that carries the files is the uploader's turn
+    (read_upload)."""
     user_id: int | None = None
     parts: list[str] = []
     for line in texts:
-        if (step := _read_step_line(line or "")) is not None:
+        if (step := _read_step_line(line or "") or _read_bug_line(line or "")) is not None:
             return step
         if match := ANSWER_LINE_RE.match(line or ""):
             user_id = user_id if user_id is not None else int(match[1])

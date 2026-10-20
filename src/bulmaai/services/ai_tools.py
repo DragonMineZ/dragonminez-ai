@@ -405,7 +405,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    # Not strict either: label, category and no_thanks are optional; ui/ai_asks validates every call.
+    # Not strict either: label, category, no_thanks and report_bug's prefill are optional; ui/ai_asks validates every
+    # call.
     ACTION_TOOL: {
         "type": "function",
         "name": ACTION_TOOL,
@@ -416,6 +417,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "already calls staff). open_ticket (public channels only, never in tickets or DMs): opens the ticket form "
             "of a category, or lets them pick one; for questions that need a private ticket. link_patreon: gives "
             "them their Patreon link button, like /patreon link; when their Patreon isn't linked with the bot. "
+            "report_bug (public channels and DMs, never in tickets): opens a bug report form pre-filled with title, "
+            "what_happened, steps and version from the conversation, which they check and send; it posts in the "
+            "bug-report forum with their recent logs and screenshots from here. For a real, unexplained DragonMineZ "
+            "bug that search_known_issues didn't find. "
             "Call it before writing your reply, and say in the reply what the button does. One set per reply: the "
             "last ask_requester or offer_action call wins."
         ),
@@ -436,6 +441,26 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "no_thanks": {
                     "type": "boolean",
                     "description": "Also show a No thanks button that only dismisses the offer. Default false.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": f"report_bug only: a short title of the bug, up to {ai_asks.BUG_LIMITS['title']} "
+                    "characters.",
+                },
+                "what_happened": {
+                    "type": "string",
+                    "description": "report_bug only: what goes wrong and what they expected, from the conversation, up "
+                    f"to {ai_asks.BUG_LIMITS['what_happened']} characters.",
+                },
+                "steps": {
+                    "type": "string",
+                    "description": "report_bug only: the steps to reproduce it, one per line, up to "
+                    f"{ai_asks.BUG_LIMITS['steps']} characters. Leave it out when unknown.",
+                },
+                "version": {
+                    "type": "string",
+                    "description": "report_bug only: DragonMineZ, Minecraft and Forge versions when known, up to "
+                    f"{ai_asks.BUG_LIMITS['version']} characters.",
                 },
             },
             "required": ["action"],

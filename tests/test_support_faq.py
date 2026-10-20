@@ -78,6 +78,11 @@ class SupportFAQTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(support_trace_to_faq_source(row).question, "How do I transform?")
 
+    def test_support_trace_question_decodes_jsonb_text(self) -> None:
+        row = {"id": 1, "created_at": "x", "input_json": json.dumps([{"role": "user", "content": "How do I transform?"}])}
+
+        self.assertEqual(support_trace_to_faq_source(row).question, "How do I transform?")
+
     def test_support_trace_to_faq_source_accepts_subscript_only_rows(self) -> None:
         row = SubscriptOnlyRow(
             {

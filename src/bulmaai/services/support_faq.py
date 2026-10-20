@@ -123,6 +123,11 @@ def _row_value(row: Any, key: str, default: Any = None) -> Any:
 
 def support_trace_to_faq_source(row: Any) -> SupportFAQSource:
     input_json = _row_value(row, "input_json", []) or []
+    if isinstance(input_json, str):  # asyncpg hands jsonb back as text
+        try:
+            input_json = json.loads(input_json)
+        except ValueError:
+            input_json = []
     question = ""
     for message in reversed(input_json):
         if not isinstance(message, dict) or message.get("role") != "user":

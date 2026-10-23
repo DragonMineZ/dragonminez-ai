@@ -34,7 +34,7 @@ from bulmaai.services.staff_copilot import (
     TicketSoFar,
     summarize_so_far,
     translate_staff_text,
-    translation_wanted,
+    translation_source,
 )
 from bulmaai.services.moderation import ModerationState
 from bulmaai.services.ai_client import (
@@ -1870,19 +1870,21 @@ class AITicketsCog(ReloadableCog):
     async def _translate_staff_message(self, message: discord.Message) -> None:
         """A staff message in an open ticket, written in another language than the ticket's: Bulma replies to it with
         its translation (ui/staff_copilot.translation_card, no ping), so the owner can read it. Off with
-        ai_ticket_translate_staff or a paused budget; skipped when translation_wanted finds no clear other language,
-        when the model finds it in the ticket's language, or when the guard blocks the text."""
+        ai_ticket_translate_staff or a paused budget; skipped when translation_source finds no clear other language,
+        when translate_staff_text drops the model's text, or when the guard blocks it."""
         settings = self.bot.settings
         channel = message.channel
         if not getattr(settings, "ai_ticket_translate_staff", False) or ai_budget.is_paused(settings):
             return
         text = message.clean_content.strip()
         language = await self._ticket_language(channel.id)
-        if language is None or not translation_wanted(text, language):
+        source = None if language is None else translation_source(text, language)
+        if source is None:
             return
         try:
-            translated = await translate_staff_text(
+            translation = await translate_staff_text(
                 text,
+                source,
                 language,
                 model=settings.ai_translation_model,
                 timeout_seconds=settings.ai_support_timeout_seconds,
@@ -1890,9 +1892,8 @@ class AITicketsCog(ReloadableCog):
         except Exception:
             log.exception("Staff message translation failed", extra={"channel_id": channel.id, "message_id": message.id})
             return
-        if translated is None:
+        if translation is None:
             return
-        source, translation = translated
         # The staff member's own links are theirs to keep, so they count as ours.
         translation, flags = screen_reply(translation, settings, link_targets(text))
         if flags & BLOCKING_FLAGS or not translation.strip() or not _is_ticket_channel(channel, settings=settings):

@@ -640,6 +640,27 @@ class TranslateCallTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIsNone(await copilot.translate_staff_text("x", "es", model="m", client=fake_client(payload)))
 
+    async def test_a_translation_still_in_the_source_language_is_asked_again(self):
+        text = "No debes hacer nada, es problema de la plataforma, solo toca esperar hasta que ellos lo solucionen"
+        echo = {"source_language": "es", "translation": text.replace("es problema", "es un problema")}
+        fixed = {"source_language": "es", "translation": "Você não precisa fazer nada, é um problema da plataforma"}
+        client = fake_client(echo)
+        client.messages.create.side_effect = [response_with(echo), response_with(fixed)]
+        with patch.object(copilot.ai_budget, "record_response"):
+            result = await copilot.translate_staff_text(text, "pt", model="m", client=client)
+        self.assertEqual(result, ("es", fixed["translation"]))
+        retry = client.messages.create.await_args_list[1].kwargs["messages"]
+        self.assertEqual([turn["role"] for turn in retry], ["user", "assistant", "user"])
+        self.assertEqual(retry[2]["content"], "That is still in Spanish. Translate it into Brazilian Portuguese.")
+        self.assertIn("written entirely in Brazilian Portuguese", client.messages.create.await_args.kwargs["system"])
+
+    async def test_no_translation_when_the_model_keeps_the_source_language(self):
+        text = "No debes hacer nada, es problema de la plataforma, solo toca esperar hasta que ellos lo solucionen"
+        client = fake_client({"source_language": "es", "translation": text})
+        with patch.object(copilot.ai_budget, "record_response"):
+            self.assertIsNone(await copilot.translate_staff_text(text, "pt", model="m", client=client))
+        self.assertEqual(client.messages.create.await_count, 2)
+
 
 class StaffTranslationTests(unittest.IsolatedAsyncioTestCase):
     def cog(self, **overrides):

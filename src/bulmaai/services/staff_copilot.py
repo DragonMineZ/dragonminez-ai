@@ -11,7 +11,7 @@ from typing import Any
 
 from bulmaai.services import ai_budget
 from bulmaai.services.ai_guard import defuse_mentions, strip_links
-from bulmaai.services.ai_oneshot import json_output_config, response_json
+from bulmaai.services.ai_oneshot import json_output_config, response_json, response_text
 from bulmaai.services.ticket_transcripts import TranscriptLine, anonymize_lines
 from bulmaai.utils.language import marker_counts
 
@@ -52,6 +52,8 @@ in a Discord support ticket, so the member they are helping can read it in their
 
 - Translate into {language} in a plain, friendly support tone. Keep the meaning exact: the same instructions, steps,
   questions and level of certainty. Never summarise, shorten or drop anything.
+- The translation must be written entirely in {language}, never in the message's own language. Spanish and Portuguese
+  look alike: rewrite every word, never hand back the message with small fixes.
 - Keep exactly as written: code blocks, inline code, commands, file names and paths, config keys and values, version
   numbers, links, and mod, item and technique names that players use in English.
 - Keep Discord markdown and emojis.
@@ -157,25 +159,37 @@ async def translate_staff_text(
     timeout_seconds: int = 60,
 ) -> tuple[str, str] | None:
     """(source language, translation into target_language) of a staff message; None when the model finds it already
-    in the target language, in another language than en/es/pt, or has nothing to say. The caller screens the text
+    in the target language, in another language than en/es/pt, or has nothing to say. A translation that still reads
+    as another language (translation_wanted) is asked for once more, then dropped. The caller screens the text
     (ai_guard) before it is shown. Raises when the call or its JSON fails."""
     if client is None:
         from bulmaai.services.ai_client import client
-    response = await asyncio.wait_for(
-        client.messages.create(
-            model=model,
-            system=TRANSLATION_INSTRUCTIONS.format(language=LANGUAGE_NAMES.get(target_language, "English")),
-            messages=[{"role": "user", "content": text}],
-            max_tokens=4000,
-            output_config=json_output_config(TRANSLATION_SCHEMA),
-        ),
-        timeout=timeout_seconds,
-    )
-    ai_budget.record_response(response)
-    payload = response_json(response, "staff_translation")
-    payload = payload if isinstance(payload, dict) else {}
-    source = str(payload.get("source_language") or "")
-    translation = str(payload.get("translation") or "").strip()
-    if source not in LANGUAGES or source == target_language or not translation:
-        return None
-    return source, translation
+    language = LANGUAGE_NAMES.get(target_language, "English")
+    messages: list[dict[str, Any]] = [{"role": "user", "content": text}]
+    for attempt in range(2):
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=model,
+                system=TRANSLATION_INSTRUCTIONS.format(language=language),
+                messages=messages,
+                max_tokens=4000,
+                output_config=json_output_config(TRANSLATION_SCHEMA),
+            ),
+            timeout=timeout_seconds,
+        )
+        ai_budget.record_response(response)
+        payload = response_json(response, "staff_translation")
+        payload = payload if isinstance(payload, dict) else {}
+        source = str(payload.get("source_language") or "")
+        translation = str(payload.get("translation") or "").strip()
+        if source not in LANGUAGES or source == target_language or not translation:
+            return None
+        # The model sometimes hands the message back in its own language (Spanish into Portuguese): ask once more.
+        if not translation_wanted(translation, target_language):
+            return source, translation
+        messages = [
+            *messages,
+            {"role": "assistant", "content": response_text(response, "staff_translation")},
+            {"role": "user", "content": f"That is still in {LANGUAGE_NAMES[source]}. Translate it into {language}."},
+        ]
+    return None

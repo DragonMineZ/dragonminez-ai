@@ -654,47 +654,43 @@ async def run_support_agent(
     repeat = _is_repeat(result["reply"], previous_replies)
     clarify_loop = _is_clarify_loop(result, previous_replies)
     threshold = float(getattr(runtime_settings, "ai_support_escalation_confidence", 0.7))
-    route = ai_budget.escalation_route(runtime_settings)
-    if (
-        not _needs_escalation(result, repeat=repeat, threshold=threshold, clarify_loop=clarify_loop)
-        or route is None
-        or route[:2] == (model, fast_effort)
-    ):
-        await _record_traces(trace, draft_workflow=draft_workflow)
-        return result
-
-    escalation_model, effort, use_tools = route
-    try:
-        second, second_trace = await run(
-            model=escalation_model,
-            effort=effort,
-            use_tools=use_tools,
-            workflow=escalation_workflow,
-            notes=[*([REPEAT_NOTE] if repeat else []), *([CLARIFY_LOOP_NOTE] if clarify_loop else [])],
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        # A failed second opinion should not lose the first answer.
-        log.exception("Support escalation failed", extra={"event": "support_escalation_failed", "channel_id": channel_id})
-        await _record_traces(trace, draft_workflow=draft_workflow)
-        return result
-    if second["reply"] == "(no reply)" and not any(
-        call["name"] not in (SEARCH_KNOWLEDGE_TOOL, *ai_tools.CONTROL_TOOLS) for call in second["tool_results"]
-    ):
-        await _record_traces(trace, drafts=[second_trace], draft_workflow=draft_workflow)
-        return result
-    second["escalated"] = True
-    second["paused"] = False
-    if second.get("kind") is None:
-        # The big model sometimes drops the marker; a handoff must not silently become a plain reply.
-        second["kind"] = result.get("kind")
-    if _is_repeat(second["reply"], previous_replies) or _is_clarify_loop(second, previous_replies):
-        second["kind"] = "handoff"
-    if second["kind"] == "handoff":
-        second["ask"] = None
-    await _record_traces(second_trace, drafts=[trace], draft_workflow=draft_workflow)
-    return second
+    notes = [*([REPEAT_NOTE] if repeat else []), *([CLARIFY_LOOP_NOTE] if clarify_loop else [])]
+    drafts: list[SupportAITrace] = []
+    # Haiku at high effort settles most escalations; Sonnet only sees what it still can't.
+    for escalation_model, effort, use_tools in ai_budget.escalation_routes(runtime_settings):
+        if not _needs_escalation(result, repeat=repeat, threshold=threshold, clarify_loop=clarify_loop):
+            break
+        if (escalation_model, effort) == (model, fast_effort):
+            continue
+        try:
+            second, second_trace = await run(
+                model=escalation_model, effort=effort, use_tools=use_tools, workflow=escalation_workflow, notes=notes
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A failed second opinion should not lose the answer so far.
+            log.exception("Support escalation failed", extra={"event": "support_escalation_failed", "channel_id": channel_id})
+            break
+        if second["reply"] == "(no reply)" and not any(
+            call["name"] not in (SEARCH_KNOWLEDGE_TOOL, *ai_tools.CONTROL_TOOLS) for call in second["tool_results"]
+        ):
+            drafts.append(second_trace)
+            continue
+        second["escalated"] = True
+        second["paused"] = False
+        if second.get("kind") is None:
+            # A second pass sometimes drops the marker; a handoff must not silently become a plain reply.
+            second["kind"] = result.get("kind")
+        if _is_repeat(second["reply"], previous_replies) or _is_clarify_loop(second, previous_replies):
+            second["kind"] = "handoff"
+        if second["kind"] == "handoff":
+            second["ask"] = None
+        drafts.append(trace)
+        result, trace = second, second_trace
+        repeat = clarify_loop = False  # folded into the handoff above
+    await _record_traces(trace, drafts=drafts, draft_workflow=draft_workflow)
+    return result
 
 
 async def _record_traces(

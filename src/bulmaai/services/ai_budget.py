@@ -95,16 +95,17 @@ def pick_model(preferred: str, settings: Any) -> str | None:
     return preferred
 
 
-def escalation_route(settings: Any) -> tuple[str, str, bool] | None:
-    """(model, effort, use_tools) for a second opinion, or None when nothing is left.
-    Big model while the big pool has room, else the small model at high effort."""
-    big_model = getattr(settings, "ai_support_escalation_model", "claude-sonnet-5-5")
-    effort = getattr(settings, "ai_support_effort", "medium")
-    if has_room(BIG, settings):
-        return big_model, effort, True
+def escalation_routes(settings: Any) -> list[tuple[str, str, bool]]:
+    """(model, effort, use_tools) second opinions, cheapest first: the small model at high effort while the
+    small pool has room, then the big model while the big pool has room."""
+    routes = []
     if has_room(SMALL, settings):
-        return getattr(settings, "ai_model", "claude-haiku-5-5"), "high", True
-    return None
+        routes.append((getattr(settings, "ai_model", "claude-haiku-5-5"), "high", True))
+    if has_room(BIG, settings):
+        routes.append(
+            (getattr(settings, "ai_support_escalation_model", "claude-sonnet-5-5"), getattr(settings, "ai_support_effort", "medium"), True)
+        )
+    return routes
 
 
 def seed(rows: Any) -> None:

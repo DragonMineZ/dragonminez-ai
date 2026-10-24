@@ -99,7 +99,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
 )
 
 DEFAULT_AI_MODEL = "claude-haiku-5-5"
-# First pass runs on the small model; unsure answers escalate to the big model.
+# First pass runs on the small model; unsure answers go to the small model at high effort, then the big model.
 DEFAULT_AI_SUPPORT_MODEL = "claude-haiku-5-5"
 DEFAULT_AI_SUPPORT_ESCALATION_MODEL = "claude-sonnet-5-5"
 DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE = 0.7

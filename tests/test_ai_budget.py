@@ -58,13 +58,16 @@ class AIBudgetTests(unittest.TestCase):
         ai_budget.record("claude-haiku-5-5", 10**9)
         self.assertFalse(ai_budget.is_paused(types.SimpleNamespace()))
 
-    def test_escalation_route_prefers_big_model_then_small_at_high_effort(self) -> None:
+    def test_escalation_routes_try_small_model_at_high_effort_before_the_big_model(self) -> None:
         settings = _settings(small=1000, big=100)
-        self.assertEqual(ai_budget.escalation_route(settings), ("claude-sonnet-5-5", "medium", True))
+        self.assertEqual(
+            ai_budget.escalation_routes(settings),
+            [("claude-haiku-5-5", "high", True), ("claude-sonnet-5-5", "medium", True)],
+        )
         ai_budget.record("claude-sonnet-5-5", 100)
-        self.assertEqual(ai_budget.escalation_route(settings), ("claude-haiku-5-5", "high", True))
+        self.assertEqual(ai_budget.escalation_routes(settings), [("claude-haiku-5-5", "high", True)])
         ai_budget.record("claude-haiku-5-5", 1000)
-        self.assertIsNone(ai_budget.escalation_route(settings))
+        self.assertEqual(ai_budget.escalation_routes(settings), [])
 
     def test_seed_restores_todays_usage(self) -> None:
         ai_budget.seed([("claude-haiku-5-5", 50), ("claude-sonnet-5-5", 20), ("claude-sonnet-5-5", 7)])

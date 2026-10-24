@@ -444,10 +444,25 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turns[-1]["role"], "user")
         self.assertIn("your earlier replies in this transcript: 1", kwargs["system"][1]["text"])
 
-    async def test_low_confidence_answer_escalates_to_big_model_with_tools(self) -> None:
+    async def test_low_confidence_answer_goes_to_small_model_high_effort_first(self) -> None:
+        result, create_message, _ = await self._run(
+            [
+                _message("Maybe try reinstalling.\n[kind: answer]\n[confidence: 0.3]"),
+                _message("Delete config/dragonminez and restart.\n[kind: answer]\n[confidence: 0.9]", response_id="r2"),
+            ]
+        )
+
+        self.assertEqual(create_message.await_count, 2)
+        second = create_message.await_args_list[1].kwargs
+        self.assertEqual((second["model"], second["output_config"]), (HAIKU, {"effort": "high"}))
+        self.assertEqual((result["reply"], result["escalated"]), ("Delete config/dragonminez and restart.", True))
+        self.assertEqual(ai_budget.used(ai_budget.BIG), 0)
+
+    async def test_still_unsure_after_high_effort_escalates_to_big_model_with_tools(self) -> None:
         result, create_message, record_trace = await self._run(
             [
                 _message("Maybe try reinstalling.\n[kind: answer]\n[confidence: 0.3]"),
+                _message("Maybe update Forge.\n[kind: answer]\n[confidence: 0.4]"),
                 _message(
                     "Delete config/dragonminez and restart.\n[kind: answer]\n[confidence: 0.9]",
                     response_id="r2",
@@ -456,10 +471,10 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        self.assertEqual(create_message.await_count, 2)
-        second = create_message.await_args_list[1].kwargs
-        self.assertEqual((second["model"], second["output_config"]), (SONNET, {"effort": "medium"}))
-        tool_names = [tool["name"] for tool in second["tools"]]
+        self.assertEqual(create_message.await_count, 3)
+        third = create_message.await_args_list[2].kwargs
+        self.assertEqual((third["model"], third["output_config"]), (SONNET, {"effort": "medium"}))
+        tool_names = [tool["name"] for tool in third["tools"]]
         self.assertIn("search_knowledge", tool_names)
         self.assertIn("get_patreon_status", tool_names)
         self.assertEqual(result["reply"], "Delete config/dragonminez and restart.")
@@ -467,9 +482,9 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["response_id"], "r2")
         self.assertEqual(
             [call.args[0].workflow for call in record_trace.await_args_list],
-            ["support_draft", "support_escalation"],
+            ["support_draft", "support_draft", "support_escalation"],
         )
-        self.assertEqual((ai_budget.used(ai_budget.SMALL), ai_budget.used(ai_budget.BIG)), (100, 100))
+        self.assertEqual((ai_budget.used(ai_budget.SMALL), ai_budget.used(ai_budget.BIG)), (200, 100))
 
     async def test_workflow_prefix_renames_every_trace(self) -> None:
         _, _, record_trace = await self._run(
@@ -494,10 +509,11 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             [
                 _message("I'll pass this to staff.\n[kind: handoff]\n[confidence: 0.2]"),
                 _message("Alright, I'll pass this to staff.", response_id="r2"),
+                _message("Staff will take it from here.", response_id="r3", model=SONNET),
             ]
         )
 
-        self.assertEqual(create_message.await_count, 2)
+        self.assertEqual(create_message.await_count, 3)
         self.assertEqual((result["kind"], result["escalated"]), ("handoff", True))
 
     async def test_confident_clarify_and_missing_markers_do_not_escalate(self) -> None:
@@ -578,9 +594,10 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         result, create_message, _ = await self._run(
             [
                 _message("Maybe reinstall.\n[kind: answer]\n[confidence: 0.3]"),
-                _message(content=[ask], model=SONNET),
-                _message("[kind: clarify]", response_id="r3", model=SONNET),
-            ]
+                _message(content=[ask]),
+                _message("[kind: clarify]", response_id="r3"),
+            ],
+            ai_daily_big_token_limit=0,
         )
         self.assertEqual(create_message.await_count, 3)
         self.assertEqual((result["reply"], result["ask"], result["escalated"]), ("Maybe reinstall.", None, False))
@@ -595,11 +612,12 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             [
                 _message("Do you mean the dev builds channel?\n[kind: clarify]\n[confidence: 0.9]"),
                 _message("Which channel exactly?\n[kind: clarify]\n[confidence: 0.9]", response_id="r2"),
+                _message("Which one do you mean?\n[kind: clarify]\n[confidence: 0.9]", response_id="r3", model=SONNET),
             ],
             messages=messages,
         )
 
-        self.assertEqual(create_message.await_count, 2)
+        self.assertEqual(create_message.await_count, 3)
         self.assertIn("Do not ask another one", create_message.await_args_list[1].kwargs["system"][1]["text"])
         self.assertEqual((result["kind"], result["escalated"]), ("handoff", True))
 

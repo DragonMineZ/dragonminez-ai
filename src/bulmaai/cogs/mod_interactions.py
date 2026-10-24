@@ -2,6 +2,7 @@
 reports. The views in ui/mod_views.py have no callbacks; their custom ids carry the target, so the
 on_interaction listener below routes clicks by prefix and they keep working after a restart."""
 
+import asyncio
 import logging
 import math
 import time
@@ -58,6 +59,7 @@ QUICK_PERMISSIONS = {
 }
 ASK_REASON = {"warn", "kick", "ban"}  # the reason modal doubles as a misclick guard
 CONFIRM_HIT_ACTIONS = {"warn", "timeout", "kick", "ban"}  # punitive clicks confirm an automod hit, without learning
+APPEAL_CHECK_SECONDS = 2
 QUICK_TIMEOUT_SECONDS = 86400
 REPORT_ACTIONS = ("delete", "warn", "timeout", "ban", "dismiss")
 REPORT_COOLDOWN_SECONDS = 60
@@ -558,7 +560,12 @@ class ModInteractionsCog(commands.Cog):
         if guild is None:
             await _reply(interaction, "I can't reach that server any more.")
             return
-        refusal, _, _ = await self._appeal_check(guild, interaction.user)
+        try:
+            # Discord drops the click unless the modal opens within 3s; the submit checks again anyway.
+            refusal, _, _ = await asyncio.wait_for(self._appeal_check(guild, interaction.user), APPEAL_CHECK_SECONDS)
+        except TimeoutError:
+            log.warning("Appeal check was slow; opening the form anyway", extra={"event": "mod_appeal_check_slow"})
+            refusal = None
         if refusal:
             await _reply(interaction, refusal)
             return

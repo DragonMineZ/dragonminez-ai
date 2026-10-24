@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import unittest
@@ -303,6 +304,16 @@ class AppealTests(Base):
             await self.cog.on_interaction(inter)
         self.assertIn("already appealed", inter.response.send_message.await_args.args[0])
         inter.response.send_modal.assert_not_awaited()
+
+    async def test_slow_check_still_opens_the_form(self):
+        async def slow(*_args, **_kwargs):
+            await asyncio.sleep(1)
+
+        self.guild.fetch_ban.side_effect = slow
+        inter = self.interaction(f"modappeal:{GUILD_ID}", self.banned)
+        with patch("bulmaai.cogs.mod_interactions.APPEAL_CHECK_SECONDS", 0.01):
+            await self.cog.on_interaction(inter)
+        inter.response.send_modal.assert_awaited_once()
 
     async def test_appeals_disabled(self):
         self.settings.moderation_appeals_enabled = False

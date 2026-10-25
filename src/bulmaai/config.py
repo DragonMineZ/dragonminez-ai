@@ -205,7 +205,7 @@ DEFAULT_DEV_JAR_TESTER_ROLE_IDS: Sequence[int] = (1286814599215317034,)
 # (the highest-versioned .md inside is used, e.g. PATCH_NOTES-v2.2.md) or a
 # specific .md file. Runtime settings, so the panel's settings page repoints without a redeploy.
 DEFAULT_PATCH_NOTES_REPO = DEFAULT_GITHUB_DEFAULT_REPO
-DEFAULT_PATCH_NOTES_BRANCH = "v2.2"
+DEFAULT_PATCH_NOTES_BRANCH = "main"
 DEFAULT_PATCH_NOTES_FILE_PATH = "PATCH_NOTES"
 DEFAULT_ANNOUNCEMENT_ROLE_EN_ID = 1260413114898317387
 DEFAULT_ANNOUNCEMENT_ROLE_ES_ID = 1260413006202802276
@@ -493,7 +493,7 @@ class Settings:
     ai_ticket_translate_staff: bool = True
     # Branch of GITHUB_DEFAULT_REPO the support AI reads the mod's configs, commands and lang file from
     # (services/mod_source: the list_mod_files / read_mod_file tools).
-    mod_source_branch: str = "v2.2"
+    mod_source_branch: str = "main"
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"

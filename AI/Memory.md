@@ -19,7 +19,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 - Lean on Haiku: Sonnet only gets what Haiku at high effort couldn't settle (Bruno, 2026-10-24).
 - No OpenAI code paths are kept.
 - `support_ai_traces` / `support_sessions` / `ticket_transcripts.openai_file_id` keep their OpenAI-era names as history. Don't rename them.
-- The mod source tools (`list_mod_files` / `read_mod_file`) read only the allowlist in `services/mod_source.AREAS` (config classes, shipped configs and quests, commands and permissions, `en_us.json`) on `mod_source_branch` (default `v2.2`, Bruno's pick). The AI quotes keys, values and commands from them and never pastes code.
+- The mod source tools (`list_mod_files` / `read_mod_file`) read only the allowlist in `services/mod_source.AREAS` (config classes, shipped configs and quests, commands and permissions, `en_us.json`) on `mod_source_branch` (default `main`, since v2.2 was merged into it). The AI quotes keys, values and commands from them and never pastes code.
 
 ## Discord UI: Components V2 only
 

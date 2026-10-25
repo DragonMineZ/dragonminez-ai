@@ -15,7 +15,7 @@ from bulmaai.services.ai_oneshot import json_output_config, response_json
 from bulmaai.services.ticket_transcripts import TranscriptLine, anonymize_lines
 from bulmaai.utils.language import marker_counts
 
-LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "pt": "Brazilian Portuguese"}
+LANGUAGE_NAMES = {"en": "English", "es": "Latin American Spanish", "pt": "Brazilian Portuguese"}
 _TRANSCRIPT_TAIL_CHARS = 30000
 FIELD_LIMIT = 400
 

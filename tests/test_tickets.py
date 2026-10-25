@@ -1088,7 +1088,7 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
         kwargs = agent.await_args.kwargs
         self.assertEqual(kwargs["language_hint"], "es")
         self.assertIn(
-            "support language: Spanish. Always reply in Spanish, even if the requester writes in another language.",
+            "support language: Latin American Spanish. Always reply in Latin American Spanish, even if the requester writes in another language.",
             kwargs["context_lines"],
         )
         self.assertEqual(self.cog._ticket_languages[900], "es")

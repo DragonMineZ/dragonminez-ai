@@ -77,7 +77,7 @@ def translated_role_mentions(
 
 
 async def translate_text(cog: "AiAnnTranslation", text: str, target_language: str) -> str:
-    language_name = "Spanish" if target_language == "es" else "Brazilian Portuguese"
+    language_name = "Latin American Spanish (neutral, not Spain Spanish: use ustedes, never vosotros)" if target_language == "es" else "Brazilian Portuguese"
 
     response = await cog.client.messages.create(
         model=cog.settings.ai_translation_model,

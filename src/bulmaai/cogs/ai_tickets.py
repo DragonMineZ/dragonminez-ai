@@ -139,7 +139,7 @@ SOLVED_CLOSE_TEXT = {
     "pt": "Que bom que foi resolvido! 🎉 Obrigado pelo contato, este ticket será fechado agora.",
 }
 # A ticket's support language, as the model is told to answer in it.
-LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "pt": "Portuguese"}
+LANGUAGE_NAMES = {"en": "English", "es": "Latin American Spanish", "pt": "Portuguese"}
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
 # ponytail: a thread is one conversation, so no age cutoff there; its newest N messages plus what led into it.

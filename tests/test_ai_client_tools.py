@@ -15,8 +15,10 @@ from bulmaai.services.ai_client import (
     CONTINUE_TURN,
     FALLBACK_BETA,
     REPEAT_NOTE,
+    REPEATED_SEARCH_NOTE,
     SEARCH_KNOWLEDGE_SCHEMA,
     START_TURN,
+    TOOL_LIMIT_NOTE,
     _build_conversation,
     _build_trace_metadata,
     _create_message,
@@ -516,10 +518,36 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(create_message.await_count, 3)
         self.assertEqual((result["kind"], result["escalated"]), ("handoff", True))
 
-    async def test_confident_clarify_and_missing_markers_do_not_escalate(self) -> None:
-        for text in ("Which Minecraft version?\n[kind: clarify]\n[confidence: 0.4]", "Plain answer without markers."):
+    async def test_confident_clarify_does_not_escalate(self) -> None:
+        _, create_message, _ = await self._run([_message("Which Minecraft version?\n[kind: clarify]\n[confidence: 0.4]")])
+        create_message.assert_awaited_once()
+
+    async def test_reply_without_any_marker_escalates_but_one_marker_is_enough(self) -> None:
+        result, create_message, _ = await self._run(
+            [_message("osiq"), _message("Press G.\n[kind: answer]\n[confidence: 0.9]", response_id="r2")]
+        )
+        self.assertEqual(create_message.await_count, 2)
+        self.assertEqual((result["reply"], result["escalated"]), ("Press G.", True))
+
+        for text in ("Press G.\n[kind: answer]", "Press G.\n[confidence: 0.9]"):
             _, create_message, _ = await self._run([_message(text)])
             create_message.assert_awaited_once()
+
+    async def test_tool_markup_as_text_is_blocked_and_escalates(self) -> None:
+        markup = '<invoke name="search_knowledge"><parameter name="query">x</parameter></invoke>'
+        result, create_message, _ = await self._run(
+            [
+                _message(markup + "\n[kind: answer]\n[confidence: 0.9]"),
+                _message("Press G.\n[kind: answer]\n[confidence: 0.9]", response_id="r2"),
+            ]
+        )
+        self.assertEqual(create_message.await_count, 2)
+        self.assertEqual((result["reply"], result["escalated"]), ("Press G.", True))
+
+        ai_budget.reset()
+        result, _, _ = await self._run([_message(markup)], ai_daily_big_token_limit=0, ai_support_fast_effort="high")
+        self.assertEqual(result["reply"], "(no reply)")
+        self.assertIn("tool_markup", result["guard_flags"])
 
     async def test_ask_requester_is_checked_locally_and_the_last_valid_call_goes_with_the_reply(self) -> None:
         tool_turn = _message(
@@ -709,6 +737,37 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         choices = [call.kwargs["tool_choice"] for call in create_message.await_args_list]
         self.assertEqual(choices, [{"type": "auto"}] * 3 + [{"type": "none"}])
         self.assertEqual(result["reply"], "Done.")
+        last_turns = [call.kwargs["messages"][-1]["content"] for call in create_message.await_args_list]
+        self.assertEqual(last_turns[3][-1], {"type": "text", "text": TOOL_LIMIT_NOTE})
+        self.assertEqual({block["type"] for block in last_turns[3][:-1]}, {"tool_result"})
+        for content in last_turns[1:3]:
+            self.assertEqual({block["type"] for block in content}, {"tool_result"})
+        self.assertIn("tools", create_message.await_args_list[3].kwargs)
+
+    async def test_repeated_search_query_runs_once_and_says_so(self) -> None:
+        hit = {"filename": "f.md", "title": "T", "url": WIKI, "text": "Press G."}
+        _, create_message, _ = await self._run(
+            [
+                _message(content=[_tool_use("search_knowledge", "toolu_1", {"query": "Jackie  Chun quest"})]),
+                _message(content=[_tool_use("search_knowledge", "toolu_2", {"query": "jackie chun QUEST"})]),
+                _message("Done.\n[kind: answer]\n[confidence: 0.9]"),
+            ],
+            search_hits=[hit],
+        )
+        self.knowledge_search.assert_awaited_once()
+        block = create_message.await_args_list[2].kwargs["messages"][-1]["content"][0]
+        self.assertEqual(block["content"], [{"type": "text", "text": REPEATED_SEARCH_NOTE}])
+        self.assertNotIn("is_error", block)
+        result = (await self._run(
+            [
+                _message(content=[_tool_use("search_knowledge", "toolu_1", {"query": "a"})]),
+                _message(content=[_tool_use("search_knowledge", "toolu_2", {"query": "A "})]),
+                _message("Done.\n[kind: answer]\n[confidence: 0.9]"),
+            ],
+            search_hits=[hit],
+        ))[0]
+        self.assertEqual(result["tool_results"][1]["arguments"], {"query": "A "})
+        self.assertEqual(result["tool_results"][1]["output"], {"results": [], "repeated_query": True})
 
     async def test_suppressing_tool_ends_the_loop_without_a_reply_or_escalation(self) -> None:
         flow = AsyncMock(return_value={"suppress_ai_reply": True})
@@ -826,6 +885,24 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
         line = next(line for line in logs.output if "max_tokens" in line)
         self.assertNotIn("transform", line)
         self.assertNotIn("Cut off", line)
+
+    async def test_max_tokens_reply_is_never_sent_and_escalates(self) -> None:
+        result, create_message, _ = await self._run(
+            [
+                _message("Cut off answer\n[kind: answer]\n[confidence: 0.9]", stop_reason="max_tokens"),
+                _message("Press G.\n[kind: answer]\n[confidence: 0.9]", response_id="r2"),
+            ]
+        )
+        self.assertEqual(create_message.await_count, 2)
+        self.assertEqual((result["reply"], result["escalated"]), ("Press G.", True))
+
+        ai_budget.reset()
+        result, _, _ = await self._run(
+            [_message("Cut off answer", stop_reason="max_tokens")],
+            ai_daily_big_token_limit=0,
+            ai_support_fast_effort="high",
+        )
+        self.assertEqual(result["reply"], "(no reply)")
 
     async def test_repeated_reply_escalates_with_note_and_hands_off_if_still_repeating(self) -> None:
         earlier = "Update GeckoLib to 4.8.3 and TerraBlender to 3.0.1.10, then restart the game."

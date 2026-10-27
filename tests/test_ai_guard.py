@@ -56,6 +56,24 @@ class ScreenReplyTests(unittest.TestCase):
         self.assertEqual(screen_reply("you slurface", SETTINGS), (NO_REPLY, frozenset({"banned_word"})))
         self.assertEqual(screen_reply("get it at https://evil.example/dmz", SETTINGS)[0], NO_REPLY)
 
+    def test_tool_calls_written_as_text_block_the_reply(self) -> None:
+        for text in (
+            '<invoke name="search_knowledge"><parameter name="query">x</parameter></invoke>',
+            '<invoke name="search_knowledge">',
+            "ok </function_calls>",
+            "<invoke name='x'>",
+            "<INVOKE NAME='x'>",
+            "<" + "antml:invoke name='x'>",
+            "</" + "antml:parameter>",
+        ):
+            with self.subTest(text=text):
+                reply, flags = screen_reply(text, SETTINGS)
+                self.assertEqual((reply, flags), (NO_REPLY, frozenset({"tool_markup"})))
+
+    def test_prose_about_invoking_or_parameters_passes(self) -> None:
+        text = "You can invoke the command with a parameter, e.g. /dmz <player> or <parameter-less>."
+        self.assertEqual(screen_reply(text, SETTINGS), (text, frozenset()))
+
     def test_links_outside_the_allowlist_are_flagged_not_blocked(self) -> None:
         ours = "https://www.curseforge.com/minecraft/mc-mods/dragonminez/files/1 https://wiki.dragonminez.com/y"
         self.assertEqual(screen_reply(ours + " https://github.com/DragonMineZ/dragonminez/issues/5", SETTINGS)[1], set())

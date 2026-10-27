@@ -50,6 +50,13 @@ SEARCH_KNOWLEDGE_SCHEMA: dict[str, Any] = {
         "additionalProperties": False,
     },
 }
+TOOL_LIMIT_NOTE = (
+    "Tool limit reached, no more tool calls. Answer now from what you already have, or hand off. "
+    "Never write tool calls as text."
+)
+REPEATED_SEARCH_NOTE = (
+    "You already searched this above. Use those results, try a different query, or answer."
+)
 REPEAT_SIMILARITY = 0.85
 REPEAT_MIN_CHARS = 40
 REPEAT_NOTE = (
@@ -568,6 +575,8 @@ def _needs_escalation(result: AgentResult, *, repeat: bool, threshold: float, cl
         return True
     kind = result.get("kind")
     confidence = result.get("confidence")
+    if kind is None and confidence is None:
+        return True  # no output-contract markers at all
     if kind == "handoff":
         return True
     return kind == "answer" and confidence is not None and confidence < threshold
@@ -768,6 +777,7 @@ async def _run_once(
     response = await _create_message(timeout_seconds=settings.ai_support_timeout_seconds, **request_kwargs)
     responses = [response]
     tool_results: list[ToolCallResult] = []
+    searched: set[str] = set()
     turns: list[Any] = list(request_kwargs["messages"])
     for round_index in range(MAX_TOOL_ROUNDS):
         calls = _extract_tool_uses(response)
@@ -777,11 +787,19 @@ async def _run_once(
         for call in calls:
             args = call.input if isinstance(call.input, dict) else {}
             is_error = False
+            repeated = False
+            hits: list[dict[str, Any]] = []
             try:
                 if call.name == SEARCH_KNOWLEDGE_TOOL:
                     args = {"query": str(args.get("query") or "")}
-                    hits = await _run_knowledge_tool(args, settings)
-                    output = {"results": [{"filename": hit["filename"], "title": hit["title"]} for hit in hits]}
+                    key = " ".join(args["query"].casefold().split())
+                    if key in searched:
+                        repeated = True
+                        output = {"results": [], "repeated_query": True}
+                    else:
+                        searched.add(key)
+                        hits = await _run_knowledge_tool(args, settings)
+                        output = {"results": [{"filename": hit["filename"], "title": hit["title"]} for hit in hits]}
                 else:
                     args = _hydrate_tool_args(
                         name=call.name,
@@ -801,7 +819,9 @@ async def _run_once(
                 "tool_use_id": call.id,
                 "content": json.dumps(output, ensure_ascii=False, default=str),
             }
-            if call.name == SEARCH_KNOWLEDGE_TOOL and not is_error:
+            if repeated:
+                block["content"] = [{"type": "text", "text": REPEATED_SEARCH_NOTE}]
+            elif call.name == SEARCH_KNOWLEDGE_TOOL and not is_error:
                 # A tool_result holding search results may hold nothing else.
                 block["content"] = _search_result_blocks(hits) or [{"type": "text", "text": "No results found."}]
             if is_error:
@@ -814,6 +834,8 @@ async def _run_once(
         followup_kwargs = {**request_kwargs, "messages": turns}
         if round_index == MAX_TOOL_ROUNDS - 1:
             followup_kwargs["tool_choice"] = {"type": "none"}
+            # Text blocks go after every tool_result; tools stay in the request while history holds tool_use.
+            result_blocks.append({"type": "text", "text": TOOL_LIMIT_NOTE})
         response = await _create_message(timeout_seconds=settings.ai_support_timeout_seconds, **followup_kwargs)
         responses.append(response)
 
@@ -834,7 +856,8 @@ async def _run_once(
             extra={"event": "support_ai_max_tokens", "channel_id": channel_id, "model": model, "workflow": workflow},
         )
 
-    if _reply_suppressed(tool_results) or stop_reason == "refusal":
+    # A cut-off reply is never sent.
+    if _reply_suppressed(tool_results) or stop_reason in ("refusal", "max_tokens"):
         raw_text = "(no reply)"
     else:
         raw_text = _extract_text(response) or "(no reply)"

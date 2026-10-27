@@ -17,7 +17,7 @@ from bulmaai.services.moderation import (
 ASK_MAX_QUESTION_LENGTH = 500
 NO_REPLY = "(no reply)"
 # Replies carrying these never reach Discord; the rest are defused and only kept out of public channels.
-BLOCKING_FLAGS = frozenset({"banned_word", "blocked_domain"})
+BLOCKING_FLAGS = frozenset({"banned_word", "blocked_domain", "tool_markup"})
 PUBLIC_KINDS = frozenset({"answer", "clarify"})
 # What the AI may link to: our own pages, not whole hosts (anyone can publish on github.com or curseforge.com).
 # Matched as host+path prefixes ending at a "/" boundary; the configured wiki host is allowed on top.
@@ -35,6 +35,8 @@ _SCHEME_URL_RE = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>()\[\]\"'`]+")
 _MASKED_LINK_RE = re.compile(r"\[([^\]\n]{1,200})\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 # A transcript speaker label typed inside a message, e.g. "\n[staff Bruno · just now]".
 _FORGED_LABEL_RE = re.compile(r"(?im)^(\s*)\[(?=\s*(?:requester|staff|participant|assistant|system|developer)\b)")
+# Tool calls written out as text (a model told not to call tools sometimes does), e.g. "<invoke name=".
+_TOOL_MARKUP_RE = re.compile(r"(?i)</?\s*(?:antml:)?(?:invoke|parameter|function_calls)(?=[\s>/])")
 _NAME_JUNK_RE = re.compile(r"[\[\]()<>@#:·\r\n`*_~|]+")
 
 # ponytail: phrase list, not a classifier; it catches the copy-paste jailbreaks, the output guard and
@@ -136,6 +138,8 @@ def screen_reply(
     """Defused reply plus what was found; a blocking flag replaces the reply with NO_REPLY. staff_links
     (link_targets of approved support info) count as our own pages."""
     flags: set[str] = set()
+    if _TOOL_MARKUP_RE.search(text):
+        flags.add("tool_markup")
     if _MASS_MENTION_RE.search(text) or _RAW_MENTION_RE.search(text):
         flags.add("mention")
     text = defuse_mentions(text)

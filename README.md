@@ -16,6 +16,7 @@ BulmaAI is the official Discord bot for the [DragonMineZ](https://github.com/Dra
 | Command | Description |
 |---|---|
 | `/about` | Get information about the bot. |
+| `/help` | List the commands you can use. |
 | `/loghelp` | Get help finding your latest.log or crash-report.txt file. |
 | `/patreon beta-access` | Request DragonMineZ Patreon beta access. |
 | `/patreon link` | Link your Patreon account. |

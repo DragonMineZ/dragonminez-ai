@@ -195,6 +195,73 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("**1/2** warns in 7d → timeout 1d", payload)
         self.assertIn("Next warn → **timeout 1d**", payload)
 
+    def whois_user(self, created_at=NOW):
+        return SimpleNamespace(
+            id=RANDOM_ID,
+            name="target",
+            display_name="Target",
+            mention=f"<@{RANDOM_ID}>",
+            created_at=created_at,
+            avatar=None,
+            bot=False,
+            display_avatar=SimpleNamespace(url="https://example.com/a.png"),
+            public_flags=SimpleNamespace(all=lambda: []),
+            banner=None,
+            accent_color=None,
+        )
+
+    async def whois(self, user, cases):
+        self.bot.fetch_user = AsyncMock(return_value=user)
+        with (
+            patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=cases)),
+            patch("bulmaai.services.mod_cases.count_active_since", AsyncMock(return_value=1)),
+            patch("bulmaai.services.member_activity.get_member_activity", AsyncMock(return_value=SimpleNamespace(level=12, xp=3450))),
+            patch("bulmaai.services.tickets.get_open_tickets_by_owner", AsyncMock(return_value=[SimpleNamespace(channel_id=77)])),
+            patch("bulmaai.services.tickets.count_tickets_by_owner", AsyncMock(side_effect=RuntimeError("db down"))),
+        ):
+            return await self.cog._whois_view(self.guild, user, self.members[HELPER_ID])
+
+    async def test_whois_member_card(self):
+        user = self.whois_user(created_at=NOW)
+        member = self.members[RANDOM_ID]
+        member.__dict__.update(
+            display_name="Target", joined_at=NOW, premium_since=None, pending=False, voice=None, timed_out=True,
+            communication_disabled_until=NOW, color=discord.Color.default(),
+            roles=[SimpleNamespace(id=5, mention="<@&5>", is_default=lambda: False)],
+            guild_permissions=discord.Permissions(kick_members=True),
+        )
+        cases = [
+            ModCase(2, 1, RANDOM_ID, MOD_ID, "warn", "spam", None, "command", NOW),
+            ModCase(1, 1, RANDOM_ID, MOD_ID, "note", "watch", None, "command", NOW),
+        ]
+        with patch("discord.utils.utcnow", return_value=NOW):
+            view = await self.whois(user, cases)
+        payload = str(view.to_components())
+        for expected in (
+            "## Target", "`@target`", "🆕 New account", "🖼️ Default avatar", "**Roles (1)** <@&5>",
+            "**Key permissions** Kick", "**Power level** 12 · 3,450 XP", "🔇 **Timed out**",
+            "**Record** 2 cases: warn 1 · note 1", "**Active** 1 warn · 1 note", "**Next warn** → **timeout 1d**",
+            "`#2` **warn**", "**Open ticket** <#77>",
+        ):
+            self.assertIn(expected, payload)
+        self.assertNotIn("**Tickets**", payload)  # a failed lookup only drops its line
+        self.assertNotIn("**Patreon**", payload)  # helpers don't see Patreon
+        labels = [item.label for item in view.walk_children() if isinstance(item, discord.ui.Button)]
+        self.assertEqual(labels, ["Warnings", "Mod logs", "Notes", "Avatar"])
+
+    async def test_whois_banned_user(self):
+        user = self.whois_user(created_at=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        user.id = 4242
+        not_found = discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "unknown member")
+        self.guild.fetch_member = AsyncMock(side_effect=not_found)
+        self.guild.fetch_ban = AsyncMock(return_value=SimpleNamespace(reason="raid"))
+        view = await self.whois(user, [])
+        payload = str(view.to_components())
+        self.assertIn("**Not in the server** (banned)", payload)
+        self.assertIn("🔨 **Banned**: raid", payload)
+        self.assertIn("✨ Clean, no cases", payload)
+        self.assertNotIn("New account", payload)
+
     async def test_mute_rejects_bad_duration_and_caps_long_ones(self):
         ctx = self.ctx(MOD_ID)
         with patch("bulmaai.services.mod_actions.perform", AsyncMock(return_value=ActionResult("timeout", 5))) as perform:

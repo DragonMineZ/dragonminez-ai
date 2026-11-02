@@ -216,6 +216,15 @@ async def get_open_tickets_by_owner(owner_id: int, *, pool: Any | None = None) -
     return [_ticket(row) for row in rows]
 
 
+async def count_tickets_by_owner(guild_id: int, owner_id: int, *, pool: Any | None = None) -> int:
+    resolved_pool = pool or await get_pool()
+    return await resolved_pool.fetchval(
+        "SELECT count(*) FROM tickets WHERE guild_id = $1 AND owner_id = $2 AND channel_id IS NOT NULL",
+        guild_id,
+        owner_id,
+    )
+
+
 async def list_active_tickets(*, pool: Any | None = None) -> list[Ticket]:
     resolved_pool = pool or await get_pool()
     rows = await resolved_pool.fetch(

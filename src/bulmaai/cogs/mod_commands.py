@@ -11,7 +11,8 @@ from datetime import timedelta
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.services import mod_actions, mod_cases, panel_logs, scam_images
+from bulmaai.services import member_activity, mod_actions, mod_cases, panel_logs, patreon_grants, scam_images
+from bulmaai.services import tickets as ticket_store
 from bulmaai.services.mod_actions import (
     MAX_TIMEOUT_SECONDS,
     ActionResult,
@@ -24,6 +25,8 @@ from bulmaai.services.mod_actions import (
     warn_expiry_seconds,
 )
 from bulmaai.ui.mod_cards import reply_card
+from bulmaai.ui.v2 import fit, trim
+from bulmaai.ui.v2 import head as v2_head
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, resolve_member, tier_for
 
@@ -94,6 +97,47 @@ def _case_lines(cases: list[mod_cases.ModCase]) -> str:
         line = f"`#{case.id}` **{case.action}** · {case.source} · {discord.utils.format_dt(case.created_at, 'R')} · {reason}"
         lines.append(line if case.active else f"~~{line}~~")
     return "\n".join(lines)[:4096]
+
+
+# The permissions worth knowing about at a glance on /whois (Administrator alone replaces the list).
+KEY_PERMISSIONS = (
+    ("manage_guild", "Manage Server"),
+    ("manage_roles", "Manage Roles"),
+    ("manage_channels", "Manage Channels"),
+    ("ban_members", "Ban"),
+    ("kick_members", "Kick"),
+    ("moderate_members", "Timeout"),
+    ("manage_messages", "Manage Messages"),
+    ("mention_everyone", "Mention `@everyone`"),
+    ("manage_webhooks", "Manage Webhooks"),
+)
+NEW_ACCOUNT_DAYS = 7
+
+
+def _whois_flags(user: discord.abc.User, member: discord.Member | None, now) -> list[str]:
+    """Things a moderator wants to notice first."""
+    flags = []
+    age = now - user.created_at
+    if age < timedelta(days=NEW_ACCOUNT_DAYS):
+        flags.append(f"🆕 New account, {format_duration(max(int(age.total_seconds()), 1))} old")
+    if member is not None and member.joined_at and now - member.joined_at < timedelta(days=1):
+        flags.append("🚪 Joined in the last 24h")
+    if member is not None and member.pending:
+        flags.append("⏳ Hasn't passed membership screening")
+    if user.avatar is None:
+        flags.append("🖼️ Default avatar")
+    if user.bot:
+        flags.append("🤖 Bot account")
+    return flags
+
+
+async def _quietly(awaitable):
+    """The extra /whois facts are best effort: a failed lookup drops its line, not the card."""
+    try:
+        return await awaitable
+    except Exception:
+        log.warning("A /whois lookup failed", exc_info=True)
+        return None
 
 
 class ReasonModal(discord.ui.Modal):
@@ -232,17 +276,22 @@ class ModCommandsCog(ReloadableCog):
         if await self._allowed(ctx, "mod.cases.view"):
             await ctx.respond(view=await self._warnings_view(ctx.guild.id, user), allowed_mentions=NO_PINGS)
 
-    async def _ladder_text(self, guild_id: int, user_id: int) -> str | None:
-        steps = parse_ladder(self.bot.settings.moderation_warn_ladder)
-        if not steps:
-            return None
+    @staticmethod
+    async def _warn_counts(guild_id: int, user_id: int, steps: list[LadderStep]) -> dict[int, int]:
+        """Active warns per ladder window (0 = all time)."""
         now = discord.utils.utcnow()
-        counts = {
+        return {
             window: await mod_cases.count_active_since(
                 guild_id, user_id, "warn", now - timedelta(seconds=window) if window else None
             )
             for window in {step.window_seconds for step in steps}
         }
+
+    async def _ladder_text(self, guild_id: int, user_id: int) -> str | None:
+        steps = parse_ladder(self.bot.settings.moderation_warn_ladder)
+        if not steps:
+            return None
+        counts = await self._warn_counts(guild_id, user_id, steps)
         expiry = getattr(self.bot.settings, "moderation_warn_expiry", "")
         lines = []
         for step in steps:
@@ -679,35 +728,151 @@ class ModCommandsCog(ReloadableCog):
 
     # --- members -----------------------------------------------------------------------------
 
-    @discord.slash_command(name="whois", description="Account info, roles and case counts for a user")
+    @discord.slash_command(name="whois", description="Who a user is: account, roles, moderation record, tickets")
     @discord.default_permissions(moderate_members=True)
     @discord.option("user", discord.User, description="User to look up")
     async def whois(self, ctx: discord.ApplicationContext, user: discord.User):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
-        member = await resolve_member(ctx.guild, user.id)
-        facts = [f"**ID** `{user.id}`", f"**Created** {discord.utils.format_dt(user.created_at, 'R')}"]
-        lines = [f"### {discord.utils.escape_markdown(str(user))}"]
+        await ctx.defer()  # a profile fetch, a ban lookup and a few DB reads can outlast 3s
+        await ctx.respond(view=await self._whois_view(ctx.guild, user, ctx.user), allowed_mentions=NO_PINGS)
+
+    async def _whois_view(
+        self, guild: discord.Guild, user: discord.abc.User, viewer: discord.Member
+    ) -> discord.ui.DesignerView:
+        settings = self.bot.settings
+        now = discord.utils.utcnow()
+        member = await resolve_member(guild, user.id)
+        try:
+            profile = await self.bot.fetch_user(user.id)  # banner and accent colour only come with a fetch
+        except discord.HTTPException:
+            profile = user
+        ban = None
         if member is None:
-            lines.append("Not in the server.")
-        else:
-            if member.joined_at:
-                facts.append(f"**Joined** {discord.utils.format_dt(member.joined_at, 'R')}")
-            if member.timed_out:
-                facts.append(f"**Timed out** until {discord.utils.format_dt(member.communication_disabled_until, 'R')}")
-        lines.append("　".join(facts))
-        if member is not None:
-            roles = " ".join(role.mention for role in reversed(member.roles) if not role.is_default()) or "None"
-            if len(roles) > 1500:
-                roles = roles[:1500].rsplit(" ", 1)[0] + " …"
-            lines.append(f"**Roles** {roles}")
-        counts = Counter(case.action for case in await mod_cases.list_cases(ctx.guild.id, user_id=user.id, limit=1000))
-        lines.append("**Cases** " + (", ".join(f"{action} {n}" for action, n in counts.most_common()) or "None"))
-        section = discord.ui.Section(
-            discord.ui.TextDisplay("\n".join(lines)), accessory=discord.ui.Thumbnail(user.display_avatar.url)
+            try:
+                ban = await guild.fetch_ban(discord.Object(user.id))
+            except discord.HTTPException:
+                pass
+        cases = await mod_cases.list_cases(guild.id, user_id=user.id, limit=1000)
+        steps = parse_ladder(settings.moderation_warn_ladder)
+        warn_counts = await self._warn_counts(guild.id, user.id, steps) if steps else {}
+        activity = await _quietly(member_activity.get_member_activity(guild.id, user.id))
+        open_tickets = await _quietly(ticket_store.get_open_tickets_by_owner(user.id))
+        ticket_count = await _quietly(ticket_store.count_tickets_by_owner(guild.id, user.id))
+        patreon = (
+            await _quietly(patreon_grants.get_patreon_link(user.id))
+            if tier_for(viewer, settings) >= PERMISSIONS["patreon.view"]
+            else None
         )
-        view = discord.ui.DesignerView(discord.ui.Container(section, color=discord.Color.blurple()))
-        await ctx.respond(view=view, allowed_mentions=NO_PINGS)
+
+        who = member or user
+        head = f"## {discord.utils.escape_markdown(who.display_name)}\n{user.mention} · `@{user.name}` · `{user.id}`"
+        if badges := [flag.name.replace("_", " ").title() for flag in user.public_flags.all()]:
+            head += "\n-# 🏅 " + " · ".join(badges)
+        if flags := _whois_flags(user, member, now):
+            head += "\n" + "\n".join(f"> {flag}" for flag in flags)
+
+        profile_lines = [
+            "### 👤 Profile",
+            f"**Created** {discord.utils.format_dt(user.created_at, 'D')} · {discord.utils.format_dt(user.created_at, 'R')}",
+        ]
+        if member is not None:
+            if member.joined_at:
+                profile_lines.append(
+                    f"**Joined** {discord.utils.format_dt(member.joined_at, 'D')} · {discord.utils.format_dt(member.joined_at, 'R')}"
+                )
+            if member.premium_since:
+                profile_lines.append(f"**Boosting** since {discord.utils.format_dt(member.premium_since, 'R')}")
+            if tier := tier_for(member, settings):
+                profile_lines.append(f"**Staff** {tier.name.title()}")
+            if member.voice and member.voice.channel:
+                profile_lines.append(f"**Voice** {member.voice.channel.mention}")
+            roles = [role.mention for role in reversed(member.roles) if not role.is_default()]
+            shown = " ".join(roles) or "None"
+            if len(shown) > 1000:
+                shown = shown[:1000].rsplit(" ", 1)[0] + " …"
+            profile_lines.append(f"**Roles ({len(roles)})** {shown}")
+            permissions = member.guild_permissions
+            granted = ["Administrator"] if permissions.administrator else [
+                label for name, label in KEY_PERMISSIONS if getattr(permissions, name)
+            ]
+            if granted:
+                profile_lines.append("**Key permissions** " + ", ".join(granted))
+        else:
+            profile_lines.append("**Not in the server**" + (" (banned)" if ban else ""))
+        if activity and activity.xp:
+            profile_lines.append(f"**Power level** {activity.level} · {activity.xp:,} XP")
+
+        if ban is not None:
+            status = f"🔨 **Banned**: {discord.utils.escape_markdown(trim(ban.reason or 'no reason', 200))}"
+        elif member is not None and member.timed_out:
+            status = f"🔇 **Timed out**, ends {discord.utils.format_dt(member.communication_disabled_until, 'R')}"
+        elif member is None:
+            status = "🚪 Not in the server"
+        else:
+            status = "✅ No active punishment"
+        counts = Counter(case.action for case in cases)
+        active_warns = sum(case.active and case.action == "warn" for case in cases)
+        active_notes = sum(case.active and case.action == "note" for case in cases)
+        mod_lines = ["### 🛡️ Moderation", f"**Status** {status}"]
+        if cases:
+            plural = "" if len(cases) == 1 else "s"
+            breakdown = " · ".join(f"{action} {n}" for action, n in counts.most_common())
+            mod_lines.append(f"**Record** {len(cases)} case{plural}: {breakdown}")
+            mod_lines.append(f"**Active** {active_warns} warn{'' if active_warns == 1 else 's'} · {active_notes} note{'' if active_notes == 1 else 's'}")
+        else:
+            mod_lines.append("**Record** ✨ Clean, no cases")
+        if steps:
+            upcoming = pick_step(steps, {window: count + 1 for window, count in warn_counts.items()})
+            mod_lines.append(f"**Next warn** → {f'**{_step_text(upcoming)}**' if upcoming else 'no automatic action'}")
+        if cases:
+            mod_lines.append("**Latest cases**\n" + _case_lines(cases[:3]))
+
+        support_lines = []
+        if open_tickets:
+            support_lines.append("**Open ticket** " + " ".join(f"<#{ticket.channel_id}>" for ticket in open_tickets))
+        if ticket_count:
+            support_lines.append(f"**Tickets** {ticket_count} opened")
+        if patreon is not None:
+            state = "active" if patreon.entitlement_active else "inactive"
+            support_lines.append(f"**Patreon** linked, {state}" + (f" ({patreon.patron_status})" if patreon.patron_status else ""))
+        if support_lines:
+            support_lines.insert(0, "### 🎫 Support")
+
+        if ban is not None:
+            color = discord.Color.red()
+        elif member is not None and member.timed_out:
+            color = discord.Color.orange()
+        elif active_warns:
+            color = discord.Color.gold()
+        elif member is not None and member.color.value:
+            color = member.color
+        else:
+            color = profile.accent_color or discord.Color.blurple()
+
+        head, *blocks = fit([head, "\n".join(profile_lines), "\n".join(mod_lines), "\n".join(support_lines)])
+        items: list[discord.ui.Item] = []
+        if profile.banner:
+            items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(profile.banner.url)))
+        items.append(v2_head(head, user.display_avatar.url))
+        for text in blocks:
+            items += [discord.ui.Separator(), discord.ui.TextDisplay(text)]
+        buttons = []
+        for label, emoji, command in (("Warnings", "⚠️", self.warnings), ("Mod logs", "📜", self.modlogs), ("Notes", "📝", self.notes)):
+            button = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary)
+            button.callback = self._whois_callback(command, user)
+            buttons.append(button)
+        buttons.append(discord.ui.Button(label="Avatar", style=discord.ButtonStyle.link, url=user.display_avatar.url))
+        items.append(discord.ui.ActionRow(*buttons))
+        return discord.ui.DesignerView(discord.ui.Container(*items, color=color), timeout=900, disable_on_timeout=True)
+
+    def _whois_callback(self, command, user: discord.abc.User):
+        """The whois shortcuts run the same command, with the same gate, as typing it."""
+
+        async def callback(interaction: discord.Interaction):
+            await command.callback(self, interaction, user)
+
+        return callback
 
     # --- context menus -----------------------------------------------------------------------
 

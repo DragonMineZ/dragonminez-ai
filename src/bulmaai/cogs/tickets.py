@@ -1092,7 +1092,7 @@ class TicketsCog(ReloadableCog):
             log.exception("Could not post a staff reply", extra={"channel_id": channel.id})
             return False
         if (ai := self.bot.get_cog(AI_COG)) is not None:
-            ai.staff_replied(channel.id)
+            ai.staff_replied(channel.id, staff.id)
         try:
             await note_ticket_message(channel.id, staff.id)
         except Exception:

@@ -7,7 +7,8 @@ own card (DRAFT_TEXT_ID), so Post and Edit & post read it back from there: no DB
 of the text plus a "-# ✍️ <@staff>" line (SIGNED_TEXT_ID); history and transcripts read it as that staff member's turn.
 A translation (TRANSLATION_TEXT_ID) is in the ticket's language, posted through the ticket's webhook as the person
 who wrote the message (or, failing that, as Bulma's reply to it); history and transcripts skip it, since it repeats
-that message.
+that message. An owner's message is translated for the staff in the ticket instead: one language looks the same,
+several share one card (translations_card), each under its language's label, in the same TEXT_LIMIT.
 
 Pure helpers only (custom ids, cards, the modal, readback); the Discord wiring is in cogs/tickets.py (buttons, gates,
 posting) and cogs/ai_tickets.py (the AI work, history and transcripts)."""
@@ -17,6 +18,7 @@ from typing import Any
 
 import discord
 
+from bulmaai.ui.ticket_views import LANGUAGES as LANGUAGE_LABELS
 from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, trim
 from bulmaai.utils.i18n import t, table
 
@@ -226,6 +228,42 @@ def translation_card(
     footer = f"-# 🌐 {translated_from(source, language)}"
     head = quote(original) if original and original.strip() else ""
     body = trim(translation, TEXT_LIMIT - len(head) - len(footer))
+    items: list[discord.ui.Item] = [discord.ui.TextDisplay(head), discord.ui.Separator()] if head else []
+    items += [discord.ui.TextDisplay(body, id=TRANSLATION_TEXT_ID), discord.ui.TextDisplay(footer)]
+    return discord.ui.DesignerView(discord.ui.Container(*items, color=COLOR), timeout=None)
+
+
+def translation_label(language: str) -> str:
+    flag, name = LANGUAGE_LABELS[language]
+    return f"-# {flag} {name}"
+
+
+def _share(parts: list[str], room: int) -> list[str]:
+    """parts cut to fit room together, fairly: the short ones stay whole and the long ones split what's left evenly."""
+    out = list(parts)
+    left = max(room, 0)
+    order = sorted(range(len(parts)), key=lambda i: len(parts[i]))
+    for done, i in enumerate(order):
+        out[i] = trim(parts[i], left // (len(parts) - done))
+        left -= len(out[i])
+    return out
+
+
+def translations_card(
+    translations: dict[str, str], source: str, original: str | None = None
+) -> discord.ui.DesignerView:
+    """A ticket owner's message (in source) for the staff: one translation is translation_card; several share one
+    text (TRANSLATION_TEXT_ID), each under its language's label ("-# 🇬🇧 English"), the long ones sharing the room
+    evenly (_share), and the footer is English, the staff's shared language."""
+    if len(translations) == 1:
+        (language, translation), = translations.items()
+        return translation_card(translation, source, language, original=original)
+    footer = f"-# 🌐 {translated_from(source, 'en')}"
+    head = quote(original) if original and original.strip() else ""
+    labels = [translation_label(language) for language in translations]
+    room = TEXT_LIMIT - len(head) - len(footer) - sum(len(label) + 3 for label in labels)
+    bodies = _share([text.strip() for text in translations.values()], room)
+    body = "\n\n".join(f"{label}\n{text}" for label, text in zip(labels, bodies))
     items: list[discord.ui.Item] = [discord.ui.TextDisplay(head), discord.ui.Separator()] if head else []
     items += [discord.ui.TextDisplay(body, id=TRANSLATION_TEXT_ID), discord.ui.TextDisplay(footer)]
     return discord.ui.DesignerView(discord.ui.Container(*items, color=COLOR), timeout=None)

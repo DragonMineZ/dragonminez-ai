@@ -35,7 +35,7 @@ META: dict[str, tuple[str, str, str]] = {
     "ask_rate_limit_window_seconds": ("ai", "/ask rate limit: window", "Length in seconds of the window for the per-person /ask limit."),
     "ask_rate_limit_max_calls": ("ai", "/ask rate limit: calls", "How many /ask uses one person gets per window."),
     "ai_answer_feedback_enabled": ("ai", "Answer feedback", "Puts 👍/👎 buttons under the AI's answers outside tickets (and public /ask answers); the weekly support report counts them."),
-    "ai_ticket_translate_staff": ("ai", "Translate in tickets", "When anyone but the ticket's owner (staff, or a member added to it) writes in another language than the ticket's, the AI posts a translation into the ticket's language under their name."),
+    "ai_ticket_translate_staff": ("ai", "Translate in tickets", "When anyone but the ticket's owner (staff, or a member added to it) writes in another language than the ticket's, the AI posts a translation into the ticket's language under their name. The owner's messages are translated for the staff in the ticket too (into each one's language, English before any staff has written)."),
     "mod_source_branch": ("ai", "Mod source branch", "Branch of the mod repository the AI reads config files, commands and the lang file from when it answers technical questions."),
     "code_notes_enabled": ("ai", "Code notes", "Writes a short private note for each commit pushed to the mod repository (what changed and why); staff read them with /devlog and in AI draft replies. Never posted anywhere else."),
     "log_ai_enabled": ("ai", "Crash-log AI diagnosis", "Adds an AI diagnosis to crash-log cards with errors (main server only, never in tickets)."),

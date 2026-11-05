@@ -494,7 +494,8 @@ class Settings:
     # 👍/👎 under the support AI's plain answers outside tickets (ui/ai_feedback); counted in the weekly report.
     ai_answer_feedback_enabled: bool = True
     # A message in a ticket from anyone but its owner, written in another language than the ticket's, gets translated
-    # (cogs/ai_tickets._translate_message, ai_translation_model). Name kept: stored panel overrides use it.
+    # into it; the owner's messages get translated for the staff there (their languages, English before any has
+    # written). cogs/ai_tickets._translate_message, ai_translation_model. Name kept: stored panel overrides use it.
     ai_ticket_translate_staff: bool = True
     # Branch of GITHUB_DEFAULT_REPO the support AI reads the mod's configs, commands and lang file from
     # (services/mod_source: the list_mod_files / read_mod_file tools).

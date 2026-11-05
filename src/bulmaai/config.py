@@ -98,6 +98,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.support_report",
     "bulmaai.cogs.knowledge_sync",
     "bulmaai.cogs.devlog",
+    "bulmaai.cogs.mail_inbox",
 )
 
 DEFAULT_AI_MODEL = "claude-haiku-5-5"
@@ -288,6 +289,8 @@ NON_OVERRIDABLE_SETTINGS = {
     "github_push_webhook_secret",
     "dev_jar_download_upload_dir",
     "panel_session_secret",
+    "mail_user",
+    "mail_password",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -519,6 +522,13 @@ class Settings:
     appeals_public_url: str = "https://appeals.dragonminez.com"
     appeals_invite_url: str = ""  # shown on an accepted appeal; empty = no link
     appeals_cooldown_days: int = 30  # after a denial, how long before the same person can appeal again
+    # Mailbox mirrored into an admin channel (cogs/mail_inbox.py): new mail is posted with a Reply button that sends from
+    # MAIL_USER over SMTP. On only when the channel, MAIL_USER and MAIL_PASSWORD are all set. Ports: IMAP 993, SMTP 465.
+    mail_channel_id: int | None = None
+    mail_user: str | None = None
+    mail_password: str | None = None
+    mail_imap_host: str = "imap.hostinger.com"
+    mail_smtp_host: str = "smtp.hostinger.com"
     moderation_lockdown_channel_ids: Sequence[int] = ()  # empty = every text channel @everyone can talk in
     # Extra automod filters; 0 turns a count/limit off. Banned words accept * wildcards.
     moderation_banned_words: Sequence[str] = ()
@@ -598,6 +608,8 @@ def _build_settings_from_env() -> Settings:
         discord_oauth_client_id=_get_env("DISCORD_OAUTH_CLIENT_ID") or DEFAULT_DISCORD_OAUTH_CLIENTID,
         discord_oauth_client_secret=DISCORD_OAUTH_CLIENT_SECRET,
         panel_session_secret=_get_env("PANEL_SESSION_SECRET"),
+        mail_user=_get_env("MAIL_USER"),
+        mail_password=_get_env("MAIL_PASSWORD"),
         discord_oauth_redirect_uri=(
             _get_env("DISCORD_OAUTH_REDIRECT_URI", DEFAULT_DISCORD_OAUTH_REDIRECT_URI)
             or DEFAULT_DISCORD_OAUTH_REDIRECT_URI

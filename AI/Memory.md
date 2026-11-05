@@ -125,6 +125,11 @@ Console actions are private to Bruno:
 - `revoke_owner_access` never revokes: testers (`dev_jar_tester_role_ids`), anyone Patreon still reports active, or anyone whose lookup fails.
 - `DragonMineZ/.github/allowed_betatesters.txt` has a `# Manually added` section above `# Auto-added`. The bot never removes names above that header and appends at the end, so `# Auto-added` stays the last section. No blank lines (the bot's rewrite drops them).
 
+## Mail inbox
+
+- The Hostinger mailbox (`MAIL_USER`) is admins-only: only main-guild admins reply from Discord, and `mail_channel_id` must be an admin-only channel (Bruno, 2026-11-05).
+- The bot never changes the mailbox (no mark-read, move or delete); webmail stays the source of truth.
+
 ## Kept on purpose
 
 - The Dyno bot is gone, but `cogs/mod_log_sync.py` and the `dyno_*` settings stay until Bruno says to remove them. `mod_cases` rows with `source="dyno"` are history.

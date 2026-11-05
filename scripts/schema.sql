@@ -750,3 +750,23 @@ CREATE TABLE IF NOT EXISTS ban_appeals (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ban_appeals_one_open ON ban_appeals (user_id) WHERE outcome IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ban_appeals_user ON ban_appeals (user_id, created_at DESC);
+
+-- Mail to the MAIL_USER mailbox mirrored into mail_channel_id (services/mail_inbox.py, cogs/mail_inbox.py). One row per
+-- Message-ID (a sha256 stand-in when the header is missing); a row whose card couldn't be posted is deleted so the next
+-- poll retries. An admin's reply claims the row WHERE replied_at IS NULL (first wins) and is released if SMTP fails.
+CREATE TABLE IF NOT EXISTS mail_messages (
+    id              BIGSERIAL PRIMARY KEY,
+    message_id      TEXT NOT NULL UNIQUE,
+    from_addr       TEXT NOT NULL,
+    from_name       TEXT NOT NULL DEFAULT '',
+    subject         TEXT NOT NULL DEFAULT '',
+    body            TEXT NOT NULL DEFAULT '',
+    attachments     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    received_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    card_channel_id BIGINT,
+    card_message_id BIGINT,
+    replied_by      BIGINT,
+    replied_at      TIMESTAMPTZ,
+    reply_text      TEXT
+);

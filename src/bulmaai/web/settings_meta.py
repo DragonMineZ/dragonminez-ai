@@ -18,6 +18,7 @@ META: dict[str, tuple[str, str, str]] = {
     "welcome_channel_id": ("general", "Welcome channel", "Channel where new members get a welcome message once they pass membership screening; empty = no message."),
     "member_role_id": ("general", "Member role", "Role given to new members once they pass membership screening."),
     "member_role_name": ("general", "Member role name", "Role name looked up instead when no member role is picked."),
+    "mail_channel_id": ("general", "Mail inbox channel", "Admin channel where new mail to the MAIL_USER mailbox is posted, with a Reply button; empty turns it off."),
     "bot_restart_channel_id": ("general", "Bot restart channel", "Not read by any feature at the moment."),
     # AI support & /ask
     "ai_support_enabled": ("ai", "AI support", "Lets the AI answer in tickets, DMs and mentions; off silences it everywhere."),
@@ -229,6 +230,8 @@ META: dict[str, tuple[str, str, str]] = {
     "discord_log_forwarding_enabled": ("advanced", "Forward logs to Discord", "Posts bot warnings and errors to the moderation log channel (read at startup)."),
     "discord_log_min_level": ("advanced", "Forwarded log level", "Lowest log level forwarded to Discord, e.g. WARNING."),
     "self_update_auto_apply": ("advanced", "Auto-apply updates", "Applies tested hot-reloadable updates from origin on their own; full restarts still ask first."),
+    "mail_imap_host": ("advanced", "Mail IMAP host", "IMAP server (SSL, port 993) the mail inbox channel reads new mail from."),
+    "mail_smtp_host": ("advanced", "Mail SMTP host", "SMTP server (SSL, port 465) that sends replies from the mail inbox channel."),
     "message_presets_path": ("advanced", "Message presets path", "Its folder holds message_templates.json, the saved message templates."),
 }
 

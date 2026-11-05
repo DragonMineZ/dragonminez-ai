@@ -560,6 +560,8 @@ class TicketsCog(ReloadableCog):
 
         # With a picker the first answer waits for the pick (on_language), so it comes in the chosen language.
         ai_cog = self.bot.get_cog(AI_COG)
+        if ai_cog is not None and category.mod_only:
+            await ai_cog.set_ticket_ai_enabled(channel.id, False)  # moderators handle these; staff may turn it back on
         if ai_cog is not None and category.ai_reply and picker is None:
             await ai_cog.answer_new_ticket(
                 channel, member, category_label=category.name, form_text=form_text, language=language

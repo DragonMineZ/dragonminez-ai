@@ -1491,7 +1491,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
             response=SimpleNamespace(defer=AsyncMock(), is_done=lambda: False),
             edit_original_response=AsyncMock(),
         )
-        ai_cog = SimpleNamespace(answer_new_ticket=AsyncMock())
+        ai_cog = SimpleNamespace(answer_new_ticket=AsyncMock(), set_ticket_ai_enabled=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
         intake = TicketIntake(channel_slug="crash", language="pt", summary="")
         with (
@@ -1507,6 +1507,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
             reserve=reserve.await_args.kwargs["language"],
             attach=attach.await_args.kwargs["language"],
             answer=(call := ai_cog.answer_new_ticket.await_args) and call.kwargs["language"],
+            ai_off=[c.args for c in ai_cog.set_ticket_ai_enabled.await_args_list],
             sends=channel.send.await_args_list,
             dm=texts(owner.send.await_args.kwargs["view"]),
             owner=owner,
@@ -1544,7 +1545,10 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         made = await self.create(EN_ROLE, language="en", category="report")
         self.assertIs(made.mod_only, True)
         self.assertIsNone(made.answer)
-        self.assertIs((await self.create(EN_ROLE, language="en")).mod_only, False)
+        self.assertEqual(made.ai_off, [(900, False)])  # AI off for good in mod-only tickets
+        normal = await self.create(EN_ROLE, language="en")
+        self.assertIs(normal.mod_only, False)
+        self.assertEqual(normal.ai_off, [])
 
     def welcome_message(self):
         welcome = views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@100>", language="en")

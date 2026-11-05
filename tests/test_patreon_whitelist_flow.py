@@ -60,7 +60,7 @@ class CapturingPatreonWhitelistFlowCog(PatreonWhitelistFlowCog):
     def __init__(self):
         self.calls = []
 
-    async def start_whitelist_flow_for_user(self, member, destination, initial_nickname, *, ephemeral=False):
+    async def start_whitelist_flow_for_user(self, member, destination, initial_nickname, *, ephemeral=False, language="en"):
         self.calls.append((member, destination, initial_nickname, ephemeral))
 
 

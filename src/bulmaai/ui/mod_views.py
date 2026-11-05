@@ -43,13 +43,13 @@ def quick_action_buttons(
     return buttons
 
 
-def appeal_button(guild_id: int) -> discord.ui.Button:
-    return discord.ui.Button(label="Appeal", style=discord.ButtonStyle.primary, custom_id=f"{APPEAL}:{guild_id}")
+def appeal_button(guild_id: int, label: str = "Appeal") -> discord.ui.Button:
+    return discord.ui.Button(label=label, style=discord.ButtonStyle.primary, custom_id=f"{APPEAL}:{guild_id}")
 
 
-def appeal_link_button(url: str) -> discord.ui.Button:
-    """The ban/timeout DM's link to the appeals website."""
-    return discord.ui.Button(label="Appeal", style=discord.ButtonStyle.link, url=url)
+def appeal_link_button(url: str, label: str = "Appeal") -> discord.ui.Button:
+    """The ban/timeout DM's link to the appeals website (label: in the member's language)."""
+    return discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=url)
 
 
 def appeal_review_buttons(user_id: int) -> list[discord.ui.Button]:

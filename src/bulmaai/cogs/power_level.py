@@ -15,6 +15,34 @@ from bulmaai.services.member_activity import (
     set_level,
 )
 from bulmaai.ui.power_level_views import build_leaderboard_card, build_power_level_card
+from bulmaai.utils.i18n import described, reader_language, t, table
+
+# The cards are public, so English; only the ephemeral error follows the reader.
+TEXT = table({
+    "en": {"server_only": "This command only works in a server."},
+    "es": {"server_only": "Este comando solo funciona en un servidor."},
+    "pt": {"server_only": "Este comando só funciona em um servidor."},
+})
+DESC = table({
+    "en": {
+        "powerlevel": "Check your (or another member's) power level.",
+        "powerlevel.member": "Member to check (defaults to you)",
+        "leaderboard": "Show the top power levels in this server.",
+        "leaderboard.top": "Number of members to show (default from settings, max 25)",
+    },
+    "es": {
+        "powerlevel": "Mira tu nivel de poder (o el de otro miembro).",
+        "powerlevel.member": "Miembro a revisar (por defecto, tú)",
+        "leaderboard": "Muestra los niveles de poder más altos del servidor.",
+        "leaderboard.top": "Cuántos miembros mostrar (por defecto según la config, máx. 25)",
+    },
+    "pt": {
+        "powerlevel": "Veja seu nível de poder (ou o de outro membro).",
+        "powerlevel.member": "Membro a verificar (por padrão, você)",
+        "leaderboard": "Mostra os maiores níveis de poder do servidor.",
+        "leaderboard.top": "Quantos membros mostrar (padrão das configurações, máx. 25)",
+    },
+})
 
 
 log = logging.getLogger(__name__)
@@ -116,11 +144,11 @@ class PowerLevelCog(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         await self._award_message_xp(message)
 
-    @discord.slash_command(name="powerlevel", description="Check your (or another member's) power level.")
+    @discord.slash_command(name="powerlevel", **described(DESC, "powerlevel"))
     @discord.option(
         "member",
         discord.Member,
-        description="Member to check (defaults to you)",
+        **described(DESC, "powerlevel.member"),
         required=False,
         default=None,
     )
@@ -130,7 +158,7 @@ class PowerLevelCog(commands.Cog):
         member: discord.Member | None = None,
     ) -> None:
         if ctx.guild is None:
-            return await ctx.respond("This command only works in a server.", ephemeral=True)
+            return await ctx.respond(t(TEXT, "server_only", reader_language(ctx)), ephemeral=True)
 
         target = member or ctx.author
         activity = await get_member_activity(ctx.guild.id, target.id)
@@ -142,11 +170,11 @@ class PowerLevelCog(commands.Cog):
         )
         await ctx.respond(view=view)
 
-    @discord.slash_command(name="leaderboard", description="Show the top power levels in this server.")
+    @discord.slash_command(name="leaderboard", **described(DESC, "leaderboard"))
     @discord.option(
         "top",
         int,
-        description="Number of members to show (default from settings, max 25)",
+        **described(DESC, "leaderboard.top"),
         required=False,
         default=None,
     )
@@ -156,7 +184,7 @@ class PowerLevelCog(commands.Cog):
         top: int | None = None,
     ) -> None:
         if ctx.guild is None:
-            return await ctx.respond("This command only works in a server.", ephemeral=True)
+            return await ctx.respond(t(TEXT, "server_only", reader_language(ctx)), ephemeral=True)
 
         default_size = self._settings().power_level_leaderboard_size
         limit = min(max(top or default_size, 1), MAX_LEADERBOARD_SIZE)

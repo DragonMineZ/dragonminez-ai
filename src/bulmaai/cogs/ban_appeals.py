@@ -12,14 +12,37 @@ from bulmaai.services import ban_appeals as store
 from bulmaai.services import mod_actions
 from bulmaai.ui import appeal_cards
 from bulmaai.ui.v2 import unbusy, while_busy
+from bulmaai.utils.i18n import reader_language, t, table
 from bulmaai.web.core import PERMISSIONS, tier_for
 
 log = logging.getLogger(__name__)
 
 NO_MENTIONS = discord.AllowedMentions.none()
-HANDLED_MSG = "Someone already handled this appeal."
-FAILED_MSG = "Something went wrong, the appeal may not have been answered."
-DENIED_MSG = "Only moderators can handle appeals."
+# Replies to the clicking moderator, in their language; the appeal card itself stays English.
+TEXT = table({
+    "en": {
+        "handled": "Someone already handled this appeal.",
+        "failed": "Something went wrong, the appeal may not have been answered.",
+        "denied": "Only moderators can handle appeals.",
+        "empty_question": "The question can't be empty.",
+        "done": "Done.",
+    },
+    "es": {
+        "handled": "Alguien ya se encargó de esta apelación.",
+        "failed": "Algo salió mal, puede que la apelación no se haya respondido.",
+        "denied": "Solo los moderadores pueden gestionar apelaciones.",
+        "empty_question": "La pregunta no puede estar vacía.",
+        "done": "Listo.",
+    },
+    "pt": {
+        "handled": "Alguém já cuidou deste recurso.",
+        "failed": "Algo deu errado, o recurso pode não ter sido respondido.",
+        "denied": "Só moderadores podem cuidar de recursos.",
+        "empty_question": "A pergunta não pode ficar vazia.",
+        "done": "Feito.",
+    },
+})
+HANDLED_MSG = TEXT["en"]["handled"]
 
 
 class BanAppealsCog(commands.Cog):
@@ -36,6 +59,9 @@ class BanAppealsCog(commands.Cog):
     @property
     def settings(self):
         return self.bot.settings
+
+    def _say(self, interaction: discord.Interaction, key: str) -> str:
+        return t(TEXT, key, reader_language(interaction, self.settings))
 
     def _allowed(self, interaction: discord.Interaction) -> bool:
         guild = interaction.guild
@@ -59,29 +85,30 @@ class BanAppealsCog(commands.Cog):
         if not handler:
             return
         if not self._allowed(interaction):
-            return await interaction.response.send_message(DENIED_MSG, ephemeral=True)
+            return await interaction.response.send_message(self._say(interaction, "denied"), ephemeral=True)
         try:
             await handler(interaction, parsed[1])
         except Exception:
             log.exception("Appeal interaction failed", extra={"event": "ban_appeal_interaction_failed", "custom_id": custom_id})
             if not interaction.response.is_done():
-                await interaction.response.send_message(FAILED_MSG, ephemeral=True)
+                await interaction.response.send_message(self._say(interaction, "failed"), ephemeral=True)
 
     async def _show_current(self, interaction: discord.Interaction, appeal_id: int) -> None:
         """A click on an appeal someone else decided: the card shows their outcome, the clicker hears why."""
         appeal = await store.get(appeal_id)
         view = await store.render(self.bot, appeal) if appeal is not None else None
+        handled = self._say(interaction, "handled")
         if interaction.response.is_done():
             if view is not None:
                 await interaction.edit_original_response(view=view)
             else:
                 await unbusy(interaction)
-            await interaction.followup.send(HANDLED_MSG, ephemeral=True)
+            await interaction.followup.send(handled, ephemeral=True)
         elif view is not None and getattr(interaction, "message", None) is not None:
             await interaction.response.edit_message(view=view)
-            await interaction.followup.send(HANDLED_MSG, ephemeral=True)
+            await interaction.followup.send(handled, ephemeral=True)
         else:
-            await interaction.response.send_message(HANDLED_MSG, ephemeral=True)
+            await interaction.response.send_message(handled, ephemeral=True)
 
     # --- Accept ---
 
@@ -90,7 +117,7 @@ class BanAppealsCog(commands.Cog):
             await self.accept(interaction, appeal_id)
             return True
 
-        await while_busy(interaction, self._working, work, failed=FAILED_MSG)
+        await while_busy(interaction, self._working, work, failed=self._say(interaction, "failed"))
 
     async def accept(self, interaction: discord.Interaction, appeal_id: int) -> None:
         staff = interaction.user
@@ -114,7 +141,8 @@ class BanAppealsCog(commands.Cog):
             if error.status != 404:  # 404: already unbanned, or no longer in the server; the appeal still stands
                 await store.release(appeal_id, staff.id)
                 await unbusy(interaction)
-                return await interaction.followup.send(str(error), ephemeral=True)
+                language = reader_language(interaction, self.settings)
+                return await interaction.followup.send(error.text(language), ephemeral=True)
         except Exception:
             await store.release(appeal_id, staff.id)
             raise
@@ -126,7 +154,8 @@ class BanAppealsCog(commands.Cog):
         appeal = await store.get(appeal_id)
         if appeal is None or appeal.outcome is not None:
             return await self._show_current(interaction, appeal_id)
-        await interaction.response.send_modal(appeal_cards.deny_modal(appeal_id))
+        language = reader_language(interaction, self.settings)
+        await interaction.response.send_modal(appeal_cards.deny_modal(appeal_id, language))
 
     async def _deny_submit(self, interaction: discord.Interaction, appeal_id: int) -> None:
         reason = appeal_cards.read_text((interaction.data or {}).get("components"))[:500]
@@ -155,12 +184,13 @@ class BanAppealsCog(commands.Cog):
         appeal = await store.get(appeal_id)
         if appeal is None or appeal.outcome is not None:
             return await self._show_current(interaction, appeal_id)
-        await interaction.response.send_modal(appeal_cards.ask_modal(appeal_id))
+        language = reader_language(interaction, self.settings)
+        await interaction.response.send_modal(appeal_cards.ask_modal(appeal_id, language))
 
     async def _ask_submit(self, interaction: discord.Interaction, appeal_id: int) -> None:
         question = appeal_cards.read_text((interaction.data or {}).get("components"))[: store.QUESTION_MAX]
         if not question:
-            return await interaction.response.send_message("The question can't be empty.", ephemeral=True)
+            return await interaction.response.send_message(self._say(interaction, "empty_question"), ephemeral=True)
         appeal = await store.ask(appeal_id, question, interaction.user.id)
         if appeal is None:
             return await self._show_current(interaction, appeal_id)
@@ -175,7 +205,7 @@ class BanAppealsCog(commands.Cog):
         message = await store.card_message(self.bot, appeal)
         if message is not None:
             await message.edit(view=view, allowed_mentions=NO_MENTIONS)
-        await interaction.followup.send("Done.", ephemeral=True)
+        await interaction.followup.send(self._say(interaction, "done"), ephemeral=True)
 
 
 def setup(bot: discord.Bot):

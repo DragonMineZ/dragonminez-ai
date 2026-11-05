@@ -102,7 +102,7 @@ class PatreonWelcomeVerifyButtonTests(unittest.IsolatedAsyncioTestCase):
             patch.object(PatreonWhitelistFlowCog, "_send_patreon_oauth_prompt", AsyncMock()) as prompt,
         ):
             await cog.send_link_prompt(member, followup)
-        prompt.assert_awaited_once_with(member, followup, ephemeral=True)
+        prompt.assert_awaited_once_with(member, followup, ephemeral=True, language="en")
         followup.send.assert_not_called()
 
     async def test_other_component_interactions_are_ignored(self) -> None:

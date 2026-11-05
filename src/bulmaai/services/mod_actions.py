@@ -15,6 +15,7 @@ from bulmaai.ui import mod_cards
 from bulmaai.ui.mod_views import appeal_button, appeal_link_button
 from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
 from bulmaai.ui.v2 import card
+from bulmaai.utils.i18n import t, table, user_language
 
 log = logging.getLogger(__name__)
 
@@ -29,12 +30,108 @@ DM_ACTIONS = {"warn", "timeout", "kick", "ban", "softban"}
 DM_COLOR = discord.Color.orange()
 
 
-class ModActionError(Exception):
-    """Refused or failed action; status maps onto the panel's HTTP error codes."""
+# Refusals, by key: str(error) is English (the panel, logs); text(language) is what a moderator reads in Discord.
+ERRORS = table({
+    "en": {
+        "self": "You can't moderate yourself.",
+        "owner": "You can't moderate the server owner.",
+        "bot": "You can't moderate the bot.",
+        "tier": "That user's panel tier is equal to or above yours.",
+        "role": "That user's top role is equal to or above yours.",
+        "bot_role": "The bot's top role isn't above that user's, so Discord won't allow it.",
+        "not_member": "That user isn't in the server.",
+        "warn_repeat": "You just warned them; wait {seconds}s before warning them again.",
+        "no_duration": "A timeout needs a duration.",
+        "not_banned": "That user isn't banned.",
+        "not_found": "Discord couldn't find that user.",
+        "forbidden": "Discord refused: the bot is missing permissions for that.",
+        "discord_error": "Discord returned an error, try again.",
+        "note_db": "Couldn't save the note, the database is unavailable.",
+    },
+    "es": {
+        "self": "No puedes moderarte a ti mismo.",
+        "owner": "No puedes moderar al dueño del servidor.",
+        "bot": "No puedes moderar al bot.",
+        "tier": "El nivel de staff de ese usuario es igual o mayor que el tuyo.",
+        "role": "El rol más alto de ese usuario es igual o mayor que el tuyo.",
+        "bot_role": "El rol más alto del bot no está por encima del de ese usuario, así que Discord no lo permite.",
+        "not_member": "Ese usuario no está en el servidor.",
+        "warn_repeat": "Acabas de advertirle; espera {seconds}s antes de volver a hacerlo.",
+        "no_duration": "Un timeout necesita una duración.",
+        "not_banned": "Ese usuario no está baneado.",
+        "not_found": "Discord no encontró a ese usuario.",
+        "forbidden": "Discord lo rechazó: al bot le faltan permisos para eso.",
+        "discord_error": "Discord devolvió un error, inténtalo de nuevo.",
+        "note_db": "No pude guardar la nota, la base de datos no está disponible.",
+    },
+    "pt": {
+        "self": "Você não pode moderar a si mesmo.",
+        "owner": "Você não pode moderar o dono do servidor.",
+        "bot": "Você não pode moderar o bot.",
+        "tier": "O nível de staff desse usuário é igual ou maior que o seu.",
+        "role": "O cargo mais alto desse usuário é igual ou maior que o seu.",
+        "bot_role": "O cargo mais alto do bot não está acima do desse usuário, então o Discord não permite.",
+        "not_member": "Esse usuário não está no servidor.",
+        "warn_repeat": "Você acabou de advertir essa pessoa; espere {seconds}s antes de advertir de novo.",
+        "no_duration": "Um timeout precisa de uma duração.",
+        "not_banned": "Esse usuário não está banido.",
+        "not_found": "O Discord não encontrou esse usuário.",
+        "forbidden": "O Discord recusou: faltam permissões ao bot para isso.",
+        "discord_error": "O Discord retornou um erro, tente novamente.",
+        "note_db": "Não consegui salvar a nota, o banco de dados está indisponível.",
+    },
+})
+# What the member is told in the action's DM, in their own language.
+DM = table({
+    "en": {
+        "warn": "You were warned in **{guild}**.",
+        "timeout": "You were timed out in **{guild}** for {duration}.",
+        "kick": "You were kicked from **{guild}**.",
+        "softban": "You were kicked from **{guild}** and your recent messages were removed.",
+        "ban": "You were banned from **{guild}**.",
+        "tempban": "You were banned from **{guild}** for {duration}.",
+        "reason": "Reason: {reason}",
+        "no_reason": "No reason given",
+        "appeal": "Appeal",
+    },
+    "es": {
+        "warn": "Recibiste una advertencia en **{guild}**.",
+        "timeout": "Recibiste un timeout en **{guild}** por {duration}.",
+        "kick": "Te expulsaron de **{guild}**.",
+        "softban": "Te expulsaron de **{guild}** y se borraron tus mensajes recientes.",
+        "ban": "Te banearon de **{guild}**.",
+        "tempban": "Te banearon de **{guild}** por {duration}.",
+        "reason": "Motivo: {reason}",
+        "no_reason": "Sin motivo",
+        "appeal": "Apelar",
+    },
+    "pt": {
+        "warn": "Você recebeu uma advertência em **{guild}**.",
+        "timeout": "Você recebeu um castigo (timeout) em **{guild}** por {duration}.",
+        "kick": "Você foi expulso de **{guild}**.",
+        "softban": "Você foi expulso de **{guild}** e suas mensagens recentes foram removidas.",
+        "ban": "Você foi banido de **{guild}**.",
+        "tempban": "Você foi banido de **{guild}** por {duration}.",
+        "reason": "Motivo: {reason}",
+        "no_reason": "Nenhum motivo informado",
+        "appeal": "Recorrer",
+    },
+})
 
-    def __init__(self, message: str, status: int = 400):
-        super().__init__(message)
+
+class ModActionError(Exception):
+    """Refused or failed action; status maps onto the panel's HTTP error codes. message is an ERRORS key (values fill
+    it in) or, for one-off errors, plain English text."""
+
+    def __init__(self, message: str, status: int = 400, **values):
+        self.key = message if message in ERRORS["en"] else None
+        super().__init__(t(ERRORS, self.key, "en", **values) if self.key else message)
         self.status = status
+        self.values = values
+
+    def text(self, language: str | None) -> str:
+        """The error in language (English when it has no ERRORS key)."""
+        return t(ERRORS, self.key, language, **self.values) if self.key else str(self)
 
 
 class LadderStepSkipped(ModActionError):
@@ -214,35 +311,26 @@ def check_hierarchy(
     """Raises ModActionError for actions staff shouldn't (or Discord won't) take.
     moderator=None means the bot acting on its own (automod, warn ladder, anti-raid)."""
     if moderator is not None and target_id == moderator.id:
-        raise ModActionError("You can't moderate yourself.", 403)
+        raise ModActionError("self", 403)
     if target_id == guild.owner_id:
-        raise ModActionError("You can't moderate the server owner.", 403)
+        raise ModActionError("owner", 403)
     if bot.user is not None and target_id == bot.user.id:
-        raise ModActionError("You can't moderate the bot.", 403)
+        raise ModActionError("bot", 403)
     if target is None:
         return
     if moderator is not None:
         if tier_for(target, bot.settings) >= tier_for(moderator, bot.settings):
-            raise ModActionError("That user's panel tier is equal to or above yours.", 403)
+            raise ModActionError("tier", 403)
         if moderator.id != guild.owner_id and target.top_role.position >= moderator.top_role.position:
-            raise ModActionError("That user's top role is equal to or above yours.", 403)
+            raise ModActionError("role", 403)
     if discord_action and target.top_role.position >= guild.me.top_role.position:
-        raise ModActionError("The bot's top role isn't above that user's, so Discord won't allow it.", 409)
+        raise ModActionError("bot_role", 409)
 
 
-def dm_text(guild_name: str, action: str, reason: str, duration_seconds: int | None) -> str:
-    what = {
-        "warn": f"You were warned in **{guild_name}**.",
-        "timeout": f"You were timed out in **{guild_name}** for {format_duration(duration_seconds)}.",
-        "kick": f"You were kicked from **{guild_name}**.",
-        "softban": f"You were kicked from **{guild_name}** and your recent messages were removed.",
-        "ban": (
-            f"You were banned from **{guild_name}** for {format_duration(duration_seconds)}."
-            if duration_seconds
-            else f"You were banned from **{guild_name}**."
-        ),
-    }[action]
-    return f"{what}\nReason: {reason or 'No reason given'}"
+def dm_text(guild_name: str, action: str, reason: str, duration_seconds: int | None, language: str = "en") -> str:
+    key = "tempban" if action == "ban" and duration_seconds else action
+    what = t(DM, key, language, guild=guild_name, duration=format_duration(duration_seconds))
+    return f"{what}\n{t(DM, 'reason', language, reason=reason or t(DM, 'no_reason', language))}"
 
 
 async def _dm(member: discord.Member, text: str, button: discord.ui.Button | None) -> bool:
@@ -254,13 +342,14 @@ async def _dm(member: discord.Member, text: str, button: discord.ui.Button | Non
     return True
 
 
-def _appeal_button(settings, guild: discord.Guild, action: str) -> discord.ui.Button | None:
+def _appeal_button(settings, guild: discord.Guild, action: str, language: str = "en") -> discord.ui.Button | None:
     """Bans and timeouts in the main guild link to the appeals website while it is on; otherwise bans keep the old
-    in-Discord appeal button."""
+    in-Discord appeal button. Labelled in the member's language."""
     url = ban_appeals.site_url(settings) if guild.id == getattr(settings, "panel_guild_id", None) else None
+    label = t(DM, "appeal", language)
     if url and action in ("ban", "timeout"):
-        return appeal_link_button(url)
-    return appeal_button(guild.id) if action == "ban" and settings.moderation_appeals_enabled else None
+        return appeal_link_button(url, label)
+    return appeal_button(guild.id, label) if action == "ban" and settings.moderation_appeals_enabled else None
 
 
 async def resolve_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc.Messageable | None:
@@ -453,14 +542,14 @@ async def perform(
     settings = bot.settings
     member = await resolve_member(guild, target_id)
     if member is None and action in MEMBER_ONLY_ACTIONS:
-        raise ModActionError("That user isn't in the server.", 404)
+        raise ModActionError("not_member", 404)
     check_hierarchy(bot, guild, moderator, target_id, member, discord_action=action in DISCORD_ACTIONS)
     if action == "warn" and moderator is not None and not _claim_warn(moderator.id, target_id):
-        raise ModActionError(f"You just warned them; wait {WARN_REPEAT_SECONDS}s before warning them again.", 409)
+        raise ModActionError("warn_repeat", 409, seconds=WARN_REPEAT_SECONDS)
 
     if action == "timeout":
         if not duration_seconds or duration_seconds < 1:
-            raise ModActionError("A timeout needs a duration.")
+            raise ModActionError("no_duration")
         duration_seconds = min(duration_seconds, MAX_TIMEOUT_SECONDS)
     elif action != "ban":
         duration_seconds = None
@@ -480,8 +569,9 @@ async def perform(
     dm_sent = None
     if notify and settings.moderation_dm_on_action and member is not None and action in DM_ACTIONS:
         # Before kick/ban on purpose: once they share no server with the bot the DM can't be delivered.
-        button = _appeal_button(settings, guild, action)
-        dm_sent = await _dm(member, dm_text(guild.name, action, reason, duration_seconds), button)
+        language = user_language(member, settings, client=bot)
+        button = _appeal_button(settings, guild, action, language)
+        dm_sent = await _dm(member, dm_text(guild.name, action, reason, duration_seconds, language), button)
 
     try:
         if action == "timeout":
@@ -501,12 +591,12 @@ async def perform(
         elif action == "unban":
             await guild.unban(discord.Object(id=target_id), reason=audit_reason)
     except discord.NotFound:
-        raise ModActionError("That user isn't banned." if action == "unban" else "Discord couldn't find that user.", 404)
+        raise ModActionError("not_banned" if action == "unban" else "not_found", 404)
     except discord.Forbidden:
-        raise ModActionError("Discord refused: the bot is missing permissions for that.", 409)
+        raise ModActionError("forbidden", 409)
     except discord.HTTPException:
         log.exception("%s on %s failed", action, target_id)
-        raise ModActionError("Discord returned an error, try again.", 502)
+        raise ModActionError("discord_error", 502)
 
     moderator_id = moderator.id if moderator is not None else None
     try:
@@ -534,7 +624,7 @@ async def perform(
     except Exception:
         log.exception("Failed to record mod case %s for %s", action, target_id)
         if action == "note":
-            raise ModActionError("Couldn't save the note, the database is unavailable.", 503)
+            raise ModActionError("note_db", 503)
         case_id = None
 
     if log_case and action != "note":  # notes are staff-private, like Dyno's

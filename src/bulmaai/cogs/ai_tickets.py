@@ -80,6 +80,7 @@ from bulmaai.ui import ai_asks, ai_feedback, staff_copilot
 from bulmaai.ui.ticket_views import CATEGORIES, LANGUAGES, TicketModal, msg_already_open, panel_view
 from bulmaai.ui.v2 import trim, while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
+from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.language import role_languages
 from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content
@@ -104,6 +105,26 @@ DISCORD_MESSAGE_LIMIT = 1900
 # V2 cards allow 4000 characters of text per message; leave room for the footer.
 CARD_TEXT_LIMIT = 3500
 AI_CARD_COLOR = discord.Color.from_rgb(88, 101, 242)
+# /aisupport's own replies to the staff member (its public result in the ticket stays English).
+TEXT = table({
+    "en": {
+        "staff_only": "Only staff can toggle AI support.",
+        "not_ticket": "This isn't an AI support ticket channel.",
+    },
+    "es": {
+        "staff_only": "Solo el staff puede activar o desactivar el soporte con IA.",
+        "not_ticket": "Este no es un canal de ticket de soporte con IA.",
+    },
+    "pt": {
+        "staff_only": "Só a staff pode ligar ou desligar o suporte com IA.",
+        "not_ticket": "Este não é um canal de ticket de suporte com IA.",
+    },
+})
+DESC = table({
+    "en": {"aisupport": "Toggle AI support on or off in this ticket channel."},
+    "es": {"aisupport": "Activa o desactiva el soporte con IA en este canal de ticket."},
+    "pt": {"aisupport": "Liga ou desliga o suporte com IA neste canal de ticket."},
+})
 AI_FOOTER = "-# Bulma is AI and can make mistakes. · Bulma es una IA y puede equivocarse."
 MAX_IMAGE_ANALYSIS_CHARS = 1000
 # ponytail: per-process cache of parsed log summaries by attachment id; a restart only means re-parsing.
@@ -780,14 +801,15 @@ class AITicketsCog(ReloadableCog):
         if changed:
             await self._sync_ticket_button(channel_id, True)
 
-    @discord.slash_command(name="aisupport", description="Toggle AI support on or off in this ticket channel.")
+    @discord.slash_command(name="aisupport", **described(DESC, "aisupport"))
     async def aisupport(self, ctx: discord.ApplicationContext):
         settings = self.bot.settings
         channel = ctx.channel
+        language = reader_language(ctx, settings)
         if not isinstance(ctx.author, discord.Member) or not is_staff(ctx.author, settings=settings):
-            return await ctx.respond("Only staff can toggle AI support.", ephemeral=True)
+            return await ctx.respond(t(TEXT, "staff_only", language), ephemeral=True)
         if not _is_ticket_channel(channel, settings=settings):
-            return await ctx.respond("This isn't an AI support ticket channel.", ephemeral=True)
+            return await ctx.respond(t(TEXT, "not_ticket", language), ephemeral=True)
 
         enable = not self.is_ticket_ai_enabled(channel.id)
         await self.set_ticket_ai_enabled(channel.id, enable)
@@ -810,14 +832,14 @@ class AITicketsCog(ReloadableCog):
         self, interaction: discord.Interaction, target: discord.Message
     ) -> tuple[str | None, str, dict[str, Any]]:
         """(why Ask Bulma can't answer, as a ui/ai_asks.TEXT key, or None; the language to say it in: the ticket's, else
-        English; the _answer_support arguments). The gates are a typed request's (_process_support_message): a ping's
+        the invoker's own (utils/i18n.reader_language); the _answer_support arguments). The gates are a typed request's (_process_support_message): a ping's
         in public channels and threads, the ticket's in tickets (AI on, still open), DM support's in DMs. Our own cards
         may be asked about, other bots' messages not."""
         settings = self.bot.settings
         channel, user = interaction.channel, interaction.user
         kind = _channel_kind(channel, settings=settings)
         in_ticket, in_dm = kind == "ticket", kind == "dm"
-        language = (await self._ticket_language(channel.id) or "en") if in_ticket else "en"
+        language = (await self._ticket_language(channel.id) or "en") if in_ticket else reader_language(interaction, settings)
         context: dict[str, Any] = {
             "in_ticket": in_ticket, "in_dm": in_dm, "mention_request": kind == "public", "member": None
         }
@@ -2300,7 +2322,7 @@ class AITicketsCog(ReloadableCog):
 
         async def link_patreon() -> list[str]:
             member = user if isinstance(user, discord.Member) else await self._resolve_member_for_user(user)
-            await flow.send_link_prompt(member or user, interaction.followup)
+            await flow.send_link_prompt(member or user, interaction.followup, language=language)
             return []
 
         await self._run_action(interaction, row, label, link_patreon)

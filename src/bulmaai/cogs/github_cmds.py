@@ -17,6 +17,7 @@ from bulmaai.ui.github_views import (
     pr_board_items,
     PRCommentModal,
 )
+from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.permissions import is_staff
 from bulmaai.web.core import Tier, tier_for
 from bulmaai.ui.v2 import card, facts, unbusy, while_busy
@@ -168,6 +169,120 @@ def _pr_list_card(prs: list[dict], owner: str, repo: str, state: str, *, buttons
     )
 
 
+# Descriptions are keyed by their English text. Results post publicly in staff channels, so they stay English;
+# only the ephemeral admin denials follow the reader.
+TEXT = table({
+    "en": {"admins_only": "Only admins can {what} pull requests."},
+    "es": {"admins_only": "Solo los admins pueden {what} pull requests."},
+    "pt": {"admins_only": "Só admins podem {what} pull requests."},
+})
+_VERBS = {
+    "en": {"merge": "merge", "close": "close", "reopen": "reopen"},
+    "es": {"merge": "fusionar", "close": "cerrar", "reopen": "reabrir"},
+    "pt": {"merge": "mesclar", "close": "fechar", "reopen": "reabrir"},
+}
+DESC = table({
+    "en": {
+        "GitHub issue management commands": "GitHub issue management commands",
+        "GitHub pull request management": "GitHub pull request management",
+        "Add a comment to a GitHub issue": "Add a comment to a GitHub issue",
+        "Add a comment to a pull request": "Add a comment to a pull request",
+        "Add a label to an issue": "Add a label to an issue",
+        "Close a GitHub issue": "Close a GitHub issue",
+        "Close a pull request": "Close a pull request",
+        "Create a new GitHub issue with labels": "Create a new GitHub issue with labels",
+        "Filter by label": "Filter by label",
+        "Issue number to close": "Issue number to close",
+        "Issue number to reopen": "Issue number to reopen",
+        "Issue number to view": "Issue number to view",
+        "Issue number": "Issue number",
+        "Issue state": "Issue state",
+        "List GitHub issues": "List GitHub issues",
+        "List pull requests": "List pull requests",
+        "Merge a pull request": "Merge a pull request",
+        "PR number to close": "PR number to close",
+        "PR number to merge": "PR number to merge",
+        "PR number to reopen": "PR number to reopen",
+        "PR number to view": "PR number to view",
+        "PR number": "PR number",
+        "PR state": "PR state",
+        "Reopen a closed GitHub issue": "Reopen a closed GitHub issue",
+        "Reopen a closed pull request": "Reopen a closed pull request",
+        "Repository name": "Repository name",
+        "View a GitHub issue": "View a GitHub issue",
+        "View a pull request": "View a pull request",
+        "View available labels for a repository": "View available labels for a repository",
+    },
+    "es": {
+        "GitHub issue management commands": "Comandos para gestionar issues de GitHub",
+        "GitHub pull request management": "Gestión de pull requests de GitHub",
+        "Add a comment to a GitHub issue": "Agrega un comentario a un issue de GitHub",
+        "Add a comment to a pull request": "Agrega un comentario a un pull request",
+        "Add a label to an issue": "Agrega una etiqueta a un issue",
+        "Close a GitHub issue": "Cierra un issue de GitHub",
+        "Close a pull request": "Cierra un pull request",
+        "Create a new GitHub issue with labels": "Crea un issue nuevo en GitHub con etiquetas",
+        "Filter by label": "Filtrar por etiqueta",
+        "Issue number to close": "Número del issue a cerrar",
+        "Issue number to reopen": "Número del issue a reabrir",
+        "Issue number to view": "Número del issue a ver",
+        "Issue number": "Número del issue",
+        "Issue state": "Estado del issue",
+        "List GitHub issues": "Lista los issues de GitHub",
+        "List pull requests": "Lista los pull requests",
+        "Merge a pull request": "Fusiona un pull request",
+        "PR number to close": "Número del PR a cerrar",
+        "PR number to merge": "Número del PR a fusionar",
+        "PR number to reopen": "Número del PR a reabrir",
+        "PR number to view": "Número del PR a ver",
+        "PR number": "Número del PR",
+        "PR state": "Estado del PR",
+        "Reopen a closed GitHub issue": "Reabre un issue cerrado de GitHub",
+        "Reopen a closed pull request": "Reabre un pull request cerrado",
+        "Repository name": "Nombre del repositorio",
+        "View a GitHub issue": "Mira un issue de GitHub",
+        "View a pull request": "Mira un pull request",
+        "View available labels for a repository": "Mira las etiquetas disponibles de un repositorio",
+    },
+    "pt": {
+        "GitHub issue management commands": "Comandos para gerenciar issues do GitHub",
+        "GitHub pull request management": "Gerenciamento de pull requests do GitHub",
+        "Add a comment to a GitHub issue": "Adicione um comentário a uma issue do GitHub",
+        "Add a comment to a pull request": "Adicione um comentário a um pull request",
+        "Add a label to an issue": "Adicione uma label a uma issue",
+        "Close a GitHub issue": "Feche uma issue do GitHub",
+        "Close a pull request": "Feche um pull request",
+        "Create a new GitHub issue with labels": "Crie uma nova issue no GitHub com labels",
+        "Filter by label": "Filtrar por label",
+        "Issue number to close": "Número da issue a fechar",
+        "Issue number to reopen": "Número da issue a reabrir",
+        "Issue number to view": "Número da issue a ver",
+        "Issue number": "Número da issue",
+        "Issue state": "Estado da issue",
+        "List GitHub issues": "Liste as issues do GitHub",
+        "List pull requests": "Liste os pull requests",
+        "Merge a pull request": "Mescle um pull request",
+        "PR number to close": "Número do PR a fechar",
+        "PR number to merge": "Número do PR a mesclar",
+        "PR number to reopen": "Número do PR a reabrir",
+        "PR number to view": "Número do PR a ver",
+        "PR number": "Número do PR",
+        "PR state": "Estado do PR",
+        "Reopen a closed GitHub issue": "Reabra uma issue fechada do GitHub",
+        "Reopen a closed pull request": "Reabra um pull request fechado",
+        "Repository name": "Nome do repositório",
+        "View a GitHub issue": "Veja uma issue do GitHub",
+        "View a pull request": "Veja um pull request",
+        "View available labels for a repository": "Veja as labels disponíveis de um repositório",
+    },
+})
+
+
+def _admins_only(interaction, action: str) -> str:
+    language = reader_language(interaction)
+    return t(TEXT, "admins_only", language, what=_VERBS.get(language, _VERBS["en"])[action])
+
+
 class GitHubCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -175,7 +290,7 @@ class GitHubCog(commands.Cog):
         self.default_repo = settings.GITHUB_DEFAULT_REPO
         self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
 
-    github = discord.SlashCommandGroup("github", "GitHub issue management commands")
+    github = discord.SlashCommandGroup("github", **described(DESC, "GitHub issue management commands"))
 
     async def _service(self, ctx, repo: str | None) -> GitHubService | None:
         """ctx is an ApplicationContext or an Interaction; None once they've been told the repo isn't allowed."""
@@ -235,8 +350,8 @@ class GitHubCog(commands.Cog):
         await prompt_message.edit(view=card("Issue details submitted."))
         return modal.result
 
-    @github.command(name="create", description="Create a new GitHub issue with labels")
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="create", **described(DESC, "Create a new GitHub issue with labels"))
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def create_issue(self, ctx: discord.ApplicationContext, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can create issues.")
@@ -284,9 +399,9 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note="Issue created successfully."))
 
-    @github.command(name="close", description="Close a GitHub issue")
-    @discord.option("issue_number", description="Issue number to close", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="close", **described(DESC, "Close a GitHub issue"))
+    @discord.option("issue_number", **described(DESC, "Issue number to close"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def close_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can close issues.")
@@ -315,9 +430,9 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Issue #{issue_number} closed by {ctx.author.mention}."))
 
-    @github.command(name="reopen", description="Reopen a closed GitHub issue")
-    @discord.option("issue_number", description="Issue number to reopen", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="reopen", **described(DESC, "Reopen a closed GitHub issue"))
+    @discord.option("issue_number", **described(DESC, "Issue number to reopen"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def reopen_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can reopen issues.")
@@ -340,9 +455,9 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Issue #{issue_number} reopened by {ctx.author.mention}."))
 
-    @github.command(name="view", description="View a GitHub issue")
-    @discord.option("issue_number", description="Issue number to view", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="view", **described(DESC, "View a GitHub issue"))
+    @discord.option("issue_number", **described(DESC, "Issue number to view"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def view_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -362,10 +477,10 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view))
 
-    @github.command(name="list", description="List GitHub issues")
-    @discord.option("state", description="Issue state", choices=["open", "closed", "all"], required=False)
-    @discord.option("label", description="Filter by label", required=False)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="list", **described(DESC, "List GitHub issues"))
+    @discord.option("state", **described(DESC, "Issue state"), choices=["open", "closed", "all"], required=False)
+    @discord.option("label", **described(DESC, "Filter by label"), required=False)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def list_issues(self, ctx: discord.ApplicationContext, state: str = "open", label: str = None, repo: str = None):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -385,9 +500,9 @@ class GitHubCog(commands.Cog):
         view = issue_board_items(issues=issues, owner=self.owner, repo=target_repo)
         await ctx.followup.send(view=_issue_list_card(issues, self.owner, target_repo, state, buttons=view))
 
-    @github.command(name="comment", description="Add a comment to a GitHub issue")
-    @discord.option("issue_number", description="Issue number", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="comment", **described(DESC, "Add a comment to a GitHub issue"))
+    @discord.option("issue_number", **described(DESC, "Issue number"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def add_comment(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can comment on issues.")
@@ -415,8 +530,8 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Comment added to issue #{issue_number} by {ctx.author.mention}."))
 
-    @github.command(name="labels", description="View available labels for a repository")
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="labels", **described(DESC, "View available labels for a repository"))
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def list_labels(self, ctx: discord.ApplicationContext, repo: str = None):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -440,9 +555,9 @@ class GitHubCog(commands.Cog):
         title = f"## 🏷️ Labels · {self.owner}/{target_repo}"
         await ctx.followup.send(view=card(title, lines, color=discord.Color.blurple()))
 
-    @github.command(name="addlabel", description="Add a label to an issue")
-    @discord.option("issue_number", description="Issue number", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @github.command(name="addlabel", **described(DESC, "Add a label to an issue"))
+    @discord.option("issue_number", **described(DESC, "Issue number"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def add_label_to_issue(self, ctx: discord.ApplicationContext, issue_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can add labels.")
@@ -478,11 +593,11 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_issue_card(issue, self.owner, target_repo, buttons=view, note=f"Labels added to issue #{issue_number}."))
 
-    pr = github.create_subgroup("pr", "GitHub pull request management")
+    pr = github.create_subgroup("pr", **described(DESC, "GitHub pull request management"))
 
-    @pr.command(name="list", description="List pull requests")
-    @discord.option("state", description="PR state", choices=["open", "closed", "all"], required=False)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @pr.command(name="list", **described(DESC, "List pull requests"))
+    @discord.option("state", **described(DESC, "PR state"), choices=["open", "closed", "all"], required=False)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def list_prs(self, ctx: discord.ApplicationContext, state: str = "open", repo: str = None):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -501,9 +616,9 @@ class GitHubCog(commands.Cog):
         view = pr_board_items(prs=prs, owner=self.owner, repo=target_repo)
         await ctx.followup.send(view=_pr_list_card(prs, self.owner, target_repo, state, buttons=view))
 
-    @pr.command(name="view", description="View a pull request")
-    @discord.option("pr_number", description="PR number to view", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @pr.command(name="view", **described(DESC, "View a pull request"))
+    @discord.option("pr_number", **described(DESC, "PR number to view"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def view_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -524,12 +639,12 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view))
 
-    @pr.command(name="merge", description="Merge a pull request")
-    @discord.option("pr_number", description="PR number to merge", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @pr.command(name="merge", **described(DESC, "Merge a pull request"))
+    @discord.option("pr_number", **described(DESC, "PR number to merge"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def merge_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
         if not self._is_github_admin(ctx.author):
-            return await ctx.respond("Only admins can merge pull requests.", ephemeral=True)
+            return await ctx.respond(_admins_only(ctx, "merge"), ephemeral=True)
 
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -561,12 +676,12 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view, note=f"PR #{pr_number} merged via **{confirm_view.merge_method}** by {ctx.author.mention}."))
 
-    @pr.command(name="close", description="Close a pull request")
-    @discord.option("pr_number", description="PR number to close", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @pr.command(name="close", **described(DESC, "Close a pull request"))
+    @discord.option("pr_number", **described(DESC, "PR number to close"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def close_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
         if not self._is_github_admin(ctx.author):
-            return await ctx.respond("Only admins can close pull requests.", ephemeral=True)
+            return await ctx.respond(_admins_only(ctx, "close"), ephemeral=True)
 
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -587,12 +702,12 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view, note=f"PR #{pr_number} closed by {ctx.author.mention}."))
 
-    @pr.command(name="reopen", description="Reopen a closed pull request")
-    @discord.option("pr_number", description="PR number to reopen", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @pr.command(name="reopen", **described(DESC, "Reopen a closed pull request"))
+    @discord.option("pr_number", **described(DESC, "PR number to reopen"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def reopen_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
         if not self._is_github_admin(ctx.author):
-            return await ctx.respond("Only admins can reopen pull requests.", ephemeral=True)
+            return await ctx.respond(_admins_only(ctx, "reopen"), ephemeral=True)
 
         target_repo = repo or self.default_repo
         if (service := await self._service(ctx, target_repo)) is None:
@@ -613,9 +728,9 @@ class GitHubCog(commands.Cog):
         )
         await ctx.followup.send(view=_pr_card(pr, self.owner, target_repo, buttons=view, note=f"PR #{pr_number} reopened by {ctx.author.mention}."))
 
-    @pr.command(name="comment", description="Add a comment to a pull request")
-    @discord.option("pr_number", description="PR number", required=True)
-    @discord.option("repo", description="Repository name", autocomplete=repo_autocomplete, required=False)
+    @pr.command(name="comment", **described(DESC, "Add a comment to a pull request"))
+    @discord.option("pr_number", **described(DESC, "PR number"), required=True)
+    @discord.option("repo", **described(DESC, "Repository name"), autocomplete=repo_autocomplete, required=False)
     async def comment_pr(self, ctx: discord.ApplicationContext, pr_number: int, repo: str = None):
         if not is_staff(ctx.author):
             return await ctx.respond("Only staff can comment on pull requests.")
@@ -790,7 +905,7 @@ class GitHubCog(commands.Cog):
 
     async def _handle_pr_merge(self, interaction: discord.Interaction, custom_id: str):
         if not self._is_github_admin(interaction.user):
-            return await interaction.response.send_message("Only admins can merge PRs.", ephemeral=True)
+            return await interaction.response.send_message(_admins_only(interaction, "merge"), ephemeral=True)
 
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)
@@ -823,7 +938,7 @@ class GitHubCog(commands.Cog):
 
     async def _handle_pr_close(self, interaction: discord.Interaction, custom_id: str):
         if not self._is_github_admin(interaction.user):
-            return await interaction.response.send_message("Only admins can close PRs.", ephemeral=True)
+            return await interaction.response.send_message(_admins_only(interaction, "close"), ephemeral=True)
 
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)
@@ -848,7 +963,7 @@ class GitHubCog(commands.Cog):
 
     async def _handle_pr_reopen(self, interaction: discord.Interaction, custom_id: str):
         if not self._is_github_admin(interaction.user):
-            return await interaction.response.send_message("Only admins can reopen PRs.", ephemeral=True)
+            return await interaction.response.send_message(_admins_only(interaction, "reopen"), ephemeral=True)
 
         _, owner, repo, pr_number_raw = custom_id.split(":")
         pr_number = int(pr_number_raw)

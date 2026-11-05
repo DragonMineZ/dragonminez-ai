@@ -5,11 +5,23 @@ import logging
 
 import discord
 
+from bulmaai.utils.i18n import reader_language, t, table
+
 log = logging.getLogger(__name__)
 
 TEXT_LIMIT = 3900  # a V2 message holds 4000 characters of text in total; leave a little room
 WORKING = "⏳ Working…"
 ALREADY_WORKING = "Already working on it."
+# The busy label stays English: it shows on the card itself, often one many people share.
+COMMON = table({
+    "en": {"already_working": ALREADY_WORKING, "failed": "Something went wrong. Please try again."},
+    "es": {"already_working": "Ya estoy en eso.", "failed": "Algo salió mal. Inténtalo de nuevo."},
+    "pt": {"already_working": "Já estou cuidando disso.", "failed": "Algo deu errado. Tente novamente."},
+})
+
+
+def already_working(language: str | None) -> str:
+    return t(COMMON, "already_working", language)
 
 
 def trim(text: str, limit: int) -> str:
@@ -82,13 +94,14 @@ def busy(view: discord.ui.DesignerView, custom_id: str, label: str = WORKING) ->
     return view
 
 
-async def while_busy(interaction: discord.Interaction, working: set[int], work, *, failed: str) -> None:
+async def while_busy(interaction: discord.Interaction, working: set[int], work, *, failed: str | None = None) -> None:
     """Runs work() while the clicked card shows the button working with its row disabled; work leaves the card in its
-    final state. Another click on the same message meanwhile only gets ALREADY_WORKING. If work raises or returns False,
-    the card comes back as it was and the clicker gets failed (ephemeral)."""
+    final state. Another click on the same message meanwhile only gets already_working. If work raises or returns False,
+    the card comes back as it was and the clicker gets failed (ephemeral; default: COMMON "failed"), both in the
+    clicker's language."""
     message = interaction.message
     if message.id in working:
-        return await interaction.response.send_message(ALREADY_WORKING, ephemeral=True)
+        return await interaction.response.send_message(already_working(reader_language(interaction)), ephemeral=True)
     working.add(message.id)
     try:
         custom_id = (interaction.data or {}).get("custom_id")
@@ -103,7 +116,7 @@ async def while_busy(interaction: discord.Interaction, working: set[int], work, 
                 await interaction.edit_original_response(view=discord.ui.DesignerView.from_message(message, timeout=None))
             except discord.HTTPException:
                 pass
-            await interaction.followup.send(failed, ephemeral=True)
+            await interaction.followup.send(failed or t(COMMON, "failed", reader_language(interaction)), ephemeral=True)
     finally:
         working.discard(message.id)
 

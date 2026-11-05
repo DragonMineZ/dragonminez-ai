@@ -74,5 +74,5 @@ def role_languages(member, settings) -> list[LangCode]:
     return [
         code
         for code in ("en", "es", "pt")
-        if (role_id := getattr(settings, f"announcement_role_{code}_id")) is not None and role_id in role_ids
+        if (role_id := getattr(settings, f"announcement_role_{code}_id", None)) is not None and role_id in role_ids
     ]

@@ -19,6 +19,7 @@ from bulmaai.services import joiner_alerts, mod_actions, mod_cases
 from bulmaai.ui.mod_cards import alert_card, user_line
 from bulmaai.ui.mod_views import RAID, parse_custom_id, quick_action_buttons, raid_buttons
 from bulmaai.ui.v2 import while_busy
+from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, tier_for
 
@@ -30,6 +31,46 @@ RAID_ALERT_DEBOUNCE_SECONDS = 5
 RAID_JOINER_LOG_CAP = 25  # the alert embed only ever shows the most recent N joiners
 OFFENSE_ACTIONS = ("warn", "timeout", "kick", "ban")
 JOINER_ALERT_TIMEOUT_SECONDS = 3600  # auto-dismiss an untouched flagged-joiner alert after 1h
+TEXT = table({
+    "en": {
+        "denied": "You need moderator permissions for that.",
+        "lock_failed": "The lockdown failed. Try again or use /lockdown.",
+        "unlock_failed": "Lifting the lockdown failed. Try again or use /lockdown.",
+    },
+    "es": {
+        "denied": "Necesitas permisos de moderador para eso.",
+        "lock_failed": "El bloqueo falló. Inténtalo de nuevo o usa /lockdown.",
+        "unlock_failed": "No se pudo levantar el bloqueo. Inténtalo de nuevo o usa /lockdown.",
+    },
+    "pt": {
+        "denied": "Você precisa de permissões de moderador para isso.",
+        "lock_failed": "O bloqueio falhou. Tente novamente ou use /lockdown.",
+        "unlock_failed": "Não consegui retirar o bloqueio. Tente novamente ou use /lockdown.",
+    },
+})
+DESC = table({
+    "en": {
+        "raidmode": "Anti-raid controls",
+        "on": "Manually enter raid mode",
+        "on.minutes": "Minutes to stay in raid mode (defaults to the configured length)",
+        "off": "Manually end raid mode",
+        "status": "Show the current raid mode status",
+    },
+    "es": {
+        "raidmode": "Controles anti-raid",
+        "on": "Activa el modo raid a mano",
+        "on.minutes": "Minutos en modo raid (por defecto, la duración configurada)",
+        "off": "Termina el modo raid a mano",
+        "status": "Muestra el estado actual del modo raid",
+    },
+    "pt": {
+        "raidmode": "Controles anti-raid",
+        "on": "Ativa o modo raid manualmente",
+        "on.minutes": "Minutos no modo raid (padrão: a duração configurada)",
+        "off": "Encerra o modo raid manualmente",
+        "status": "Mostra o status atual do modo raid",
+    },
+})
 
 
 # --- pure helpers (unit tested directly) --------------------------------------------------------
@@ -393,7 +434,7 @@ class RaidGuardCog(ReloadableCog):
 
     async def _handle_raid_button(self, interaction: discord.Interaction, action: str) -> None:
         if not self._actor_allowed(interaction.user):
-            await interaction.response.send_message("You need moderator permissions for that.", ephemeral=True)
+            await interaction.response.send_message(self._say(interaction, "denied"), ephemeral=True)
             return
 
         settings = self._settings()
@@ -407,7 +448,7 @@ class RaidGuardCog(ReloadableCog):
                 await interaction.message.edit(view=self._raid_card())
                 await interaction.followup.send(f"🔒 Raid lockdown: locked {locked} channel(s), {failed} failed.")
 
-            await while_busy(interaction, self._working, lock, failed="The lockdown failed. Try again or use /lockdown.")
+            await while_busy(interaction, self._working, lock, failed=self._say(interaction, "lock_failed"))
         elif action == "unlock":
 
             async def unlock() -> None:
@@ -416,7 +457,7 @@ class RaidGuardCog(ReloadableCog):
                 await interaction.message.edit(view=self._raid_card())
                 await interaction.followup.send(f"🔓 Raid lockdown lifted: unlocked {unlocked} channel(s), {failed} failed.")
 
-            await while_busy(interaction, self._working, unlock, failed="Lifting the lockdown failed. Try again or use /lockdown.")
+            await while_busy(interaction, self._working, unlock, failed=self._say(interaction, "unlock_failed"))
         elif action == "end":
             await interaction.response.edit_message(view=self._raid_card(ended_by=interaction.user))
             self._end_raid_mode()
@@ -424,15 +465,19 @@ class RaidGuardCog(ReloadableCog):
 
     # --- /raidmode -------------------------------------------------------------------------------
 
+    def _say(self, interaction, key: str) -> str:
+        """Ephemeral replies in the reader's language; the public raid posts stay English."""
+        return t(TEXT, key, reader_language(interaction, self._settings()))
+
     raidmode = discord.SlashCommandGroup(
-        "raidmode", "Anti-raid controls", default_member_permissions=discord.Permissions(moderate_members=True)
+        "raidmode", **described(DESC, "raidmode"), default_member_permissions=discord.Permissions(moderate_members=True)
     )
 
-    @raidmode.command(name="on", description="Manually enter raid mode")
-    @discord.option("minutes", int, description="Minutes to stay in raid mode (defaults to the configured length)", min_value=1, max_value=1440, required=False)
+    @raidmode.command(name="on", **described(DESC, "on"))
+    @discord.option("minutes", int, **described(DESC, "on.minutes"), min_value=1, max_value=1440, required=False)
     async def raidmode_on(self, ctx: discord.ApplicationContext, minutes: int = None) -> None:
         if not self._actor_allowed(ctx.author):
-            await ctx.respond("You need moderator permissions for that.", ephemeral=True)
+            await ctx.respond(self._say(ctx, "denied"), ephemeral=True)
             return
         settings = self._settings()
         length = minutes or settings.moderation_raid_mode_minutes
@@ -440,18 +485,18 @@ class RaidGuardCog(ReloadableCog):
         await self._post_raid_alert()
         await ctx.respond(f"🚨 Raid mode is now on for {length} minute(s).")
 
-    @raidmode.command(name="off", description="Manually end raid mode")
+    @raidmode.command(name="off", **described(DESC, "off"))
     async def raidmode_off(self, ctx: discord.ApplicationContext) -> None:
         if not self._actor_allowed(ctx.author):
-            await ctx.respond("You need moderator permissions for that.", ephemeral=True)
+            await ctx.respond(self._say(ctx, "denied"), ephemeral=True)
             return
         self._end_raid_mode()
         await ctx.respond("🛡️ Raid mode turned off.")
 
-    @raidmode.command(name="status", description="Show the current raid mode status")
+    @raidmode.command(name="status", **described(DESC, "status"))
     async def raidmode_status(self, ctx: discord.ApplicationContext) -> None:
         if not self._actor_allowed(ctx.author):
-            await ctx.respond("You need moderator permissions for that.", ephemeral=True)
+            await ctx.respond(self._say(ctx, "denied"), ephemeral=True)
             return
         now = time.monotonic()
         if self._in_raid(now):

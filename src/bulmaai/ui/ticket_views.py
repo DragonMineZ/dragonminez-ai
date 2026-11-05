@@ -3,7 +3,8 @@
 The public panel is English with a short Spanish/Portuguese line. Each member's form and ephemeral replies are in their
 language (one language role, or the one they pick on form_language_card), which becomes the ticket's support language.
 Member-facing messages inside a ticket and its DMs are in that language only (TEXT, CATEGORY_TEXT: one table entry per
-language). Staff-only buttons and notices are English. Buttons are stateless: TicketsCog.on_interaction routes them by
+language). Ephemeral replies to staff are in the reader's own language (utils/i18n.user_language); public staff
+buttons and notices in the ticket are English. Buttons are stateless: TicketsCog.on_interaction routes them by
 custom id and looks the ticket up by channel, so they survive bot restarts.
 """
 
@@ -12,7 +13,8 @@ from datetime import datetime
 
 import discord
 
-from bulmaai.ui.v2 import ALREADY_WORKING, busy
+from bulmaai.ui.v2 import already_working, busy
+from bulmaai.utils import i18n
 
 PANEL_SELECT_ID = "ticket_panel_select"
 CLOSE_BUTTON_ID = "ticket_btn_close"
@@ -39,7 +41,7 @@ COG_NAME = "TicketsCog"
 LANGUAGES = {"en": ("🇬🇧", "English"), "es": ("🇪🇸", "Español"), "pt": ("🇧🇷", "Português")}
 
 # Member-facing ticket messages, each in the ticket's support language.
-TEXT: dict[str, dict[str, str]] = {
+TEXT: dict[str, dict[str, str]] = i18n.table({
     "en": {
         "greeting": "Hey {mention}! Staff will be with you soon. Add screenshots or extra details while you wait.",
         "no_pings": "⚠️ **Don't ping staff, it gets you a warn.**",
@@ -74,6 +76,21 @@ TEXT: dict[str, dict[str, str]] = {
         "reopened": "Ticket re-opened",
         "reopened_by": "Re-opened by {mention}.",
         "transcript_of": "Transcript of ticket #{number}",
+        "staff_only": "Only staff can do this.",
+        "mod_only": "Only moderators and admins can do this.",
+        "not_ticket": "This isn't an open ticket channel.",
+        "already_closed": "This ticket is already closed.",
+        "not_closed": "This ticket isn't closed.",
+        "owner_left": "The ticket owner left the server, so it can't be re-opened.",
+        "delete_failed": "❌ I couldn't delete this channel. Check my Manage Channels permission.",
+        "transcript_failed": "❌ I couldn't generate the transcript.",
+        "protected_target": "You can't remove the ticket owner or staff.",
+        "ai_paused": "AI is paused for today.",
+        "copilot_failed": "I couldn't do that right now. Please try again.",
+        "post_failed": "I couldn't post that reply. Please try again.",
+        "assign_bot": "You can't assign a ticket to a bot.",
+        "assigned": "📌 {mention}, this ticket was assigned to you by {by}. Please take care of it.",
+        "assigned_dm": "{by} assigned this ticket to you. Please take care of it.",
     },
     "es": {
         "greeting": "¡Hola {mention}! El staff te atenderá pronto. Puedes añadir capturas o más detalles mientras esperas.",
@@ -109,6 +126,21 @@ TEXT: dict[str, dict[str, str]] = {
         "reopened": "Ticket reabierto",
         "reopened_by": "Reabierto por {mention}.",
         "transcript_of": "Transcripción del ticket #{number}",
+        "staff_only": "Solo el staff puede hacer esto.",
+        "mod_only": "Solo los moderadores y admins pueden hacer esto.",
+        "not_ticket": "Este no es un canal de ticket abierto.",
+        "already_closed": "Este ticket ya está cerrado.",
+        "not_closed": "Este ticket no está cerrado.",
+        "owner_left": "El dueño del ticket salió del servidor, así que no se puede reabrir.",
+        "delete_failed": "❌ No pude eliminar este canal. Revisa mi permiso de Gestionar canales.",
+        "transcript_failed": "❌ No pude generar la transcripción.",
+        "protected_target": "No puedes quitar al dueño del ticket ni al staff.",
+        "ai_paused": "La IA está en pausa por hoy.",
+        "copilot_failed": "No pude hacer eso ahora. Inténtalo de nuevo.",
+        "post_failed": "No pude publicar esa respuesta. Inténtalo de nuevo.",
+        "assign_bot": "No puedes asignar un ticket a un bot.",
+        "assigned": "📌 {mention}, {by} te asignó este ticket. Por favor, encárgate de él.",
+        "assigned_dm": "{by} te asignó este ticket. Por favor, encárgate de él.",
     },
     "pt": {
         "greeting": "Olá {mention}! A staff vai te atender em breve. Adicione capturas ou mais detalhes enquanto espera.",
@@ -144,13 +176,28 @@ TEXT: dict[str, dict[str, str]] = {
         "reopened": "Ticket reaberto",
         "reopened_by": "Reaberto por {mention}.",
         "transcript_of": "Transcrição do ticket #{number}",
+        "staff_only": "Só a staff pode fazer isso.",
+        "mod_only": "Só moderadores e admins podem fazer isso.",
+        "not_ticket": "Este não é um canal de ticket aberto.",
+        "already_closed": "Este ticket já está fechado.",
+        "not_closed": "Este ticket não está fechado.",
+        "owner_left": "O dono do ticket saiu do servidor, então ele não pode ser reaberto.",
+        "delete_failed": "❌ Não consegui excluir este canal. Verifique minha permissão de Gerenciar canais.",
+        "transcript_failed": "❌ Não consegui gerar a transcrição.",
+        "protected_target": "Você não pode remover o dono do ticket nem a staff.",
+        "ai_paused": "A IA está pausada por hoje.",
+        "copilot_failed": "Não consegui fazer isso agora. Tente novamente.",
+        "post_failed": "Não consegui publicar essa resposta. Tente novamente.",
+        "assign_bot": "Você não pode atribuir um ticket a um bot.",
+        "assigned": "📌 {mention}, {by} atribuiu este ticket a você. Por favor, cuide dele.",
+        "assigned_dm": "{by} atribuiu este ticket a você. Por favor, cuide dele.",
     },
-}
+})
 
 
 def t(language: str, key: str, **values) -> str:
-    """TEXT in the ticket's language (English for an unknown one)."""
-    return TEXT.get(language, TEXT["en"])[key].format(**values)
+    """TEXT in language (English for an unknown one)."""
+    return i18n.t(TEXT, key, language, **values)
 
 BLURPLE = discord.Color.from_rgb(88, 101, 242)
 CLOSED_RED = discord.Color.from_rgb(237, 66, 69)
@@ -290,7 +337,7 @@ CATEGORIES: dict[str, TicketCategory] = {
 }
 
 # Every category's words, per language. A new language is one more entry here and in TEXT and LANGUAGES.
-CATEGORY_TEXT: dict[str, dict[str, CategoryText]] = {
+CATEGORY_TEXT: dict[str, dict[str, CategoryText]] = i18n.table({
     "en": {
         "bug": CategoryText(
             "Game-Breaking Bug",
@@ -558,25 +605,7 @@ CATEGORY_TEXT: dict[str, dict[str, CategoryText]] = {
             (("Assunto", "Sobre o quê?"), ("Detalhes", "Explique")),
         ),
     },
-}
-
-# Staff-facing (English) replies; member-facing ones are in TEXT.
-MSG = {
-    "failed": TEXT["en"]["failed"],
-    "staff_only": "Only staff can do this.",
-    "mod_only": "Only moderators and admins can do this.",
-    "not_ticket": "This isn't an open ticket channel.",
-    "already_closed": "This ticket is already closed.",
-    "not_closed": "This ticket isn't closed.",
-    "owner_left": "The ticket owner left the server, so it can't be re-opened.",
-    "delete_failed": "❌ I couldn't delete this channel. Check my Manage Channels permission.",
-    "transcript_failed": "❌ I couldn't generate the transcript.",
-    "protected_target": "You can't remove the ticket owner or staff.",
-    "done": "Done.",
-    "ai_paused": "AI is paused for today.",
-    "copilot_failed": "I couldn't do that right now. Please try again.",
-    "post_failed": "I couldn't post that reply. Please try again.",
-}
+})
 
 
 def msg_already_open(channel_id: int | None, language: str = "en") -> str:
@@ -656,13 +685,15 @@ def dm_created(
     )
 
 
-def dm_assigned(number: int, channel: discord.TextChannel, by: discord.abc.User) -> discord.ui.DesignerView:
-    """Goes to a staff member, so English."""
+def dm_assigned(
+    number: int, channel: discord.TextChannel, by: discord.abc.User, language: str = "en"
+) -> discord.ui.DesignerView:
+    """Goes to the assigned staff member, in their language."""
     return _dm_card(
         f"📌 Ticket #{number:04d}",
-        f"{by.display_name} assigned this ticket to you. Please take care of it.",
+        t(language, "assigned_dm", by=by.display_name),
         channel.guild,
-        _link_row("Open ticket", "🎫", channel.jump_url),
+        _link_row(t(language, "open_ticket"), "🎫", channel.jump_url),
     )
 
 
@@ -909,7 +940,7 @@ class ClosePrompt(discord.ui.DesignerView):
     async def _confirm(self, interaction: discord.Interaction) -> None:
         """on_confirm leaves the prompt in its final state; if it raises, the prompt comes back to try again."""
         if self._working:
-            return await interaction.response.send_message(ALREADY_WORKING, ephemeral=True)
+            return await interaction.response.send_message(already_working(self._language), ephemeral=True)
         self._working = True
         try:
             await interaction.response.edit_message(view=busy(self, self._close_id))

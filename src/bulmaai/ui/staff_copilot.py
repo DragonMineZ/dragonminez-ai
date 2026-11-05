@@ -1,7 +1,8 @@
 """Staff copilot in tickets: what the welcome card's "📋 Summary" and "✍️ Draft reply" buttons (ticket_views.control_row)
 show, the staff-signed card a draft becomes when it is posted, and the card that translates a staff message.
 
-Summary and the draft are ephemeral cards for the staff member who clicked (English). The draft's text lives on its
+Summary and the draft are ephemeral cards for the staff member who clicked, labelled in their language (TEXT; the AI's
+summary itself is English). The draft's text lives on its
 own card (DRAFT_TEXT_ID), so Post and Edit & post read it back from there: no DB row. A posted draft is a public card
 of the text plus a "-# ✍️ <@staff>" line (SIGNED_TEXT_ID); history and transcripts read it as that staff member's turn.
 A translation (TRANSLATION_TEXT_ID) is in the ticket's language, posted through the ticket's webhook as the person
@@ -17,6 +18,7 @@ from typing import Any
 import discord
 
 from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, trim
+from bulmaai.utils.i18n import t, table
 
 COLOR = discord.Color.from_rgb(88, 101, 242)
 DRAFT_PREFIX = "staff_draft:"  # staff_draft:{post|edit|discard}, the buttons on the ephemeral draft card
@@ -31,20 +33,56 @@ ORIGINAL_LIMIT = 1000  # the quoted original on a translation card
 # A posted reply's text; the signature line fits in what's left of the message's 4000 characters.
 POST_LIMIT = TEXT_LIMIT
 SIGNATURE_RE = re.compile(r"^-# ✍️ <@!?(\d+)>$")
-POSTED = "Posted."
-DISCARDED = "Discarded."
-SUMMARY_FIELDS = (
-    ("Problem", "problem"),
-    ("Tried", "tried"),
-    ("Current state", "current_state"),
-    ("Next step", "next_step"),
-)
+POSTED = "posted"  # done_card keys
+DISCARDED = "discarded"
+SUMMARY_FIELDS = ("problem", "tried", "current_state", "next_step")
+TEXT = table({
+    "en": {
+        "posted": "Posted.",
+        "discarded": "Discarded.",
+        "problem": "Problem",
+        "tried": "Tried",
+        "current_state": "Current state",
+        "next_step": "Next step",
+        "so_far": "Ticket #{number} so far",
+        "post": "Post",
+        "edit": "Edit & post",
+        "discard": "Discard",
+        "reply": "Reply",
+    },
+    "es": {
+        "posted": "Publicado.",
+        "discarded": "Descartado.",
+        "problem": "Problema",
+        "tried": "Intentado",
+        "current_state": "Estado actual",
+        "next_step": "Siguiente paso",
+        "so_far": "Ticket #{number} hasta ahora",
+        "post": "Publicar",
+        "edit": "Editar y publicar",
+        "discard": "Descartar",
+        "reply": "Respuesta",
+    },
+    "pt": {
+        "posted": "Publicado.",
+        "discarded": "Descartado.",
+        "problem": "Problema",
+        "tried": "Tentado",
+        "current_state": "Estado atual",
+        "next_step": "Próximo passo",
+        "so_far": "Ticket #{number} até agora",
+        "post": "Publicar",
+        "edit": "Editar e publicar",
+        "discard": "Descartar",
+        "reply": "Resposta",
+    },
+})
 # "-# Translated from {source}", in the ticket's language.
-TRANSLATED_FROM: dict[str, dict[str, str]] = {
+TRANSLATED_FROM: dict[str, dict[str, str]] = table({
     "en": {"en": "Translated from English", "es": "Translated from Spanish", "pt": "Translated from Portuguese"},
     "es": {"en": "Traducido del inglés", "es": "Traducido del español", "pt": "Traducido del portugués"},
     "pt": {"en": "Traduzido do inglês", "es": "Traduzido do espanhol", "pt": "Traduzido do português"},
-}
+})
 
 
 def _texts(message: Any) -> list[tuple[int | None, str]]:
@@ -61,18 +99,22 @@ def _texts(message: Any) -> list[tuple[int | None, str]]:
     return out
 
 
-def summary_card(number: int, summary: Any) -> discord.ui.DesignerView:
+def summary_card(number: int, summary: Any, language: str = "en") -> discord.ui.DesignerView:
     """The ticket so far (services/staff_copilot.TicketSoFar), for the staff member who asked."""
-    fields = [f"**{label}**\n{getattr(summary, key)}" for label, key in SUMMARY_FIELDS]
-    return card("\n".join(fit([f"### 📋 Ticket #{number:04d} so far", *fields])), color=COLOR)
+    fields = [f"**{t(TEXT, key, language)}**\n{getattr(summary, key)}" for key in SUMMARY_FIELDS]
+    title = t(TEXT, "so_far", language, number=f"{number:04d}")
+    return card("\n".join(fit([f"### 📋 {title}", *fields])), color=COLOR)
 
 
-def draft_card(text: str) -> discord.ui.DesignerView:
+def draft_card(text: str, language: str = "en") -> discord.ui.DesignerView:
     """A draft of the next reply to the owner, with Post / Edit & post / Discard. Only its viewer sees it."""
     buttons = [
-        discord.ui.Button(label="Post", style=discord.ButtonStyle.primary, custom_id=f"{DRAFT_PREFIX}{DRAFT_POST}"),
-        discord.ui.Button(label="Edit & post", style=discord.ButtonStyle.secondary, custom_id=f"{DRAFT_PREFIX}{DRAFT_EDIT}"),
-        discord.ui.Button(label="Discard", style=discord.ButtonStyle.secondary, custom_id=f"{DRAFT_PREFIX}{DRAFT_DISCARD}"),
+        discord.ui.Button(
+            label=t(TEXT, action, language),
+            style=discord.ButtonStyle.primary if action == DRAFT_POST else discord.ButtonStyle.secondary,
+            custom_id=f"{DRAFT_PREFIX}{action}",
+        )
+        for action in (DRAFT_POST, DRAFT_EDIT, DRAFT_DISCARD)
     ]
     return discord.ui.DesignerView(
         discord.ui.Container(
@@ -82,9 +124,9 @@ def draft_card(text: str) -> discord.ui.DesignerView:
     )
 
 
-def done_card(text: str) -> discord.ui.DesignerView:
+def done_card(key: str, language: str = "en") -> discord.ui.DesignerView:
     """What the draft card turns into: POSTED or DISCARDED."""
-    return card(text, color=COLOR)
+    return card(t(TEXT, key, language), color=COLOR)
 
 
 def parse_draft_custom_id(value: str) -> str | None:
@@ -98,7 +140,7 @@ def draft_text(message: Any) -> str:
     return next((text for component_id, text in _texts(message) if component_id == DRAFT_TEXT_ID), "").strip()
 
 
-def edit_modal(text: str, channel_id: int) -> discord.ui.DesignerModal:
+def edit_modal(text: str, channel_id: int, language: str = "en") -> discord.ui.DesignerModal:
     """Edit & post: the draft in a long text field. Routed by custom id (store=False), so a restart loses nothing."""
     field = discord.ui.InputText(
         style=discord.InputTextStyle.long,
@@ -108,7 +150,10 @@ def edit_modal(text: str, channel_id: int) -> discord.ui.DesignerModal:
         required=True,
     )
     return discord.ui.DesignerModal(
-        discord.ui.Label("Reply", field), title="Edit & post", custom_id=f"{EDIT_MODAL_PREFIX}{channel_id}", store=False
+        discord.ui.Label(t(TEXT, "reply", language), field),
+        title=t(TEXT, "edit", language),
+        custom_id=f"{EDIT_MODAL_PREFIX}{channel_id}",
+        store=False,
     )
 
 

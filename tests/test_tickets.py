@@ -1036,7 +1036,7 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
         restored = interaction.edit_original_response.await_args.kwargs["view"]
         reopen_button = next(item for item in walk(restored) if getattr(item, "custom_id", None) == views.REOPEN_BUTTON_ID)
         self.assertEqual((reopen_button.label, reopen_button.disabled), ("Re-Open", False))
-        interaction.followup.send.assert_awaited_once_with(views.MSG["failed"], ephemeral=True)
+        interaction.followup.send.assert_awaited_once_with(views.t("en", "failed"), ephemeral=True)
         self.assertEqual(cog._working, set())
 
     async def test_helper_cannot_delete_but_mod_can(self):
@@ -1092,7 +1092,7 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             interaction = self.interaction(member(STAFF_ID, MOD_ROLE))
             await cog.on_delete(interaction)
             interaction.response.send_message.assert_awaited_once()
-            self.assertEqual(interaction.response.send_message.await_args.args[0], views.MSG["not_closed"])
+            self.assertEqual(interaction.response.send_message.await_args.args[0], views.t("en", "not_closed"))
 
 
 class CreateTicketTests(unittest.IsolatedAsyncioTestCase):
@@ -1132,7 +1132,7 @@ class CreateTicketTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog.create_ticket(interaction, views.CATEGORIES["bug"], [("Summary", "boom")])
         abandon.assert_awaited_once_with(42)
-        self.assertEqual(interaction.edit_original_response.await_args.kwargs["content"], views.MSG["failed"])
+        self.assertEqual(interaction.edit_original_response.await_args.kwargs["content"], views.t("en", "failed"))
 
 
 class TypingContext:
@@ -1342,7 +1342,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cog, "close_ticket", AsyncMock()) as close,
         ):
             await cog.on_solved(interaction)
-        interaction.response.send_message.assert_awaited_once_with(views.MSG["staff_only"], ephemeral=True)
+        interaction.response.send_message.assert_awaited_once_with(views.t("en", "staff_only"), ephemeral=True)
         close.assert_not_called()
 
     async def test_solved_closes_resolved_with_a_deadline_and_sends_only_the_solved_dm(self):

@@ -27,6 +27,7 @@ from bulmaai.services.mod_actions import (
 from bulmaai.ui.mod_cards import reply_card
 from bulmaai.ui.v2 import fit, trim
 from bulmaai.ui.v2 import head as v2_head
+from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.web.core import PERMISSIONS, resolve_member, tier_for
 
@@ -48,6 +49,290 @@ VERBS = {
 }
 WARNINGS_PER_PAGE = 5
 NO_PINGS = discord.AllowedMentions.none()
+
+# What only the moderator sees (errors, confirm prompts, forms) is in their language; public results and the mod log
+# stay English, since they post in channels other staff read too.
+TEXT = table({
+    "en": {
+        "tier_denied": "Your staff tier can't do that.",
+        "cancel": "Cancel",
+        "cancelled": "Cancelled.",
+        "working": "⏳ Working…",
+        "reason": "Reason",
+        "already_removed": "Case #{case_id} was already removed.",
+        "not_a": "Case #{case_id} isn't a {label}.",
+        "label_warn": "warning",
+        "label_note": "note",
+        "clear_prompt": "**Clear all active warnings for <@{user_id}>?**",
+        "clear_button": "Clear warnings",
+        "bad_duration": "Couldn't read that duration, try 30m, 2h or 1d.",
+        "bad_ban_duration": "Couldn't read that duration, try 12h, 7d or 2w (leave it empty for a permanent ban).",
+        "bad_user_id": "That isn't a valid user ID.",
+        "purge_refused": "Discord refused: the bot can't delete messages here.",
+        "purge_from": "from <@{user_id}>",
+        "purge_containing": 'containing "{text}"',
+        "purge_some": "Scan the last **{amount}** message(s) here and delete the ones {filters}?",
+        "purge_all": "Scan the last **{amount}** message(s) here and delete all of them?",
+        "purge_button": "Purge",
+        "unknown_case": "Unknown case.",
+        "no_case": "There's no case #{case_id}. Check /modlogs for the user's case numbers.",
+        "thread_lock": "Threads can't be locked this way; lock the parent channel.",
+        "thread_unlock": "Threads can't be unlocked this way; unlock the parent channel.",
+        "channel_refused": "Discord refused: the bot can't edit that channel's permissions.",
+        "slowmode_refused": "Discord refused: the bot can't edit that channel.",
+        "lockdown_prompt": "**Lock every public channel** (or the configured lockdown list)?",
+        "lockdown_button": "Start lockdown",
+        "warn_title": "Warn {name}",
+        "delete_warn_title": "Delete & warn",
+        "warned_not_deleted": "Warned, but couldn't delete the message.",
+        "no_images": "No usable images on that message.",
+        "db_down": "Couldn't save, the database is unavailable.",
+    },
+    "es": {
+        "tier_denied": "Tu nivel de staff no puede hacer eso.",
+        "cancel": "Cancelar",
+        "cancelled": "Cancelado.",
+        "working": "⏳ Trabajando…",
+        "reason": "Motivo",
+        "already_removed": "El caso #{case_id} ya fue eliminado.",
+        "not_a": "El caso #{case_id} no es una {label}.",
+        "label_warn": "advertencia",
+        "label_note": "nota",
+        "clear_prompt": "**¿Borrar todas las advertencias activas de <@{user_id}>?**",
+        "clear_button": "Borrar advertencias",
+        "bad_duration": "No entendí esa duración, prueba 30m, 2h o 1d.",
+        "bad_ban_duration": "No entendí esa duración, prueba 12h, 7d o 2w (déjala vacía para un baneo permanente).",
+        "bad_user_id": "Ese no es un ID de usuario válido.",
+        "purge_refused": "Discord lo rechazó: el bot no puede borrar mensajes aquí.",
+        "purge_from": "de <@{user_id}>",
+        "purge_containing": 'que contengan "{text}"',
+        "purge_some": "¿Revisar los últimos **{amount}** mensajes de aquí y borrar los {filters}?",
+        "purge_all": "¿Revisar los últimos **{amount}** mensajes de aquí y borrarlos todos?",
+        "purge_button": "Borrar",
+        "unknown_case": "Caso desconocido.",
+        "no_case": "No existe el caso #{case_id}. Revisa /modlogs para ver los números de caso del usuario.",
+        "thread_lock": "Los hilos no se pueden bloquear así; bloquea el canal principal.",
+        "thread_unlock": "Los hilos no se pueden desbloquear así; desbloquea el canal principal.",
+        "channel_refused": "Discord lo rechazó: el bot no puede editar los permisos de ese canal.",
+        "slowmode_refused": "Discord lo rechazó: el bot no puede editar ese canal.",
+        "lockdown_prompt": "¿**Bloquear todos los canales públicos** (o la lista de bloqueo configurada)?",
+        "lockdown_button": "Iniciar bloqueo",
+        "warn_title": "Advertir a {name}",
+        "delete_warn_title": "Borrar y advertir",
+        "warned_not_deleted": "Advertido, pero no pude borrar el mensaje.",
+        "no_images": "Ese mensaje no tiene imágenes utilizables.",
+        "db_down": "No pude guardar, la base de datos no está disponible.",
+    },
+    "pt": {
+        "tier_denied": "Seu nível de staff não pode fazer isso.",
+        "cancel": "Cancelar",
+        "cancelled": "Cancelado.",
+        "working": "⏳ Trabalhando…",
+        "reason": "Motivo",
+        "already_removed": "O caso #{case_id} já foi removido.",
+        "not_a": "O caso #{case_id} não é uma {label}.",
+        "label_warn": "advertência",
+        "label_note": "nota",
+        "clear_prompt": "**Limpar todas as advertências ativas de <@{user_id}>?**",
+        "clear_button": "Limpar advertências",
+        "bad_duration": "Não entendi essa duração, tente 30m, 2h ou 1d.",
+        "bad_ban_duration": "Não entendi essa duração, tente 12h, 7d ou 2w (deixe vazio para um banimento permanente).",
+        "bad_user_id": "Esse não é um ID de usuário válido.",
+        "purge_refused": "O Discord recusou: o bot não pode apagar mensagens aqui.",
+        "purge_from": "de <@{user_id}>",
+        "purge_containing": 'que contenham "{text}"',
+        "purge_some": "Verificar as últimas **{amount}** mensagens daqui e apagar as {filters}?",
+        "purge_all": "Verificar as últimas **{amount}** mensagens daqui e apagar todas?",
+        "purge_button": "Apagar",
+        "unknown_case": "Caso desconhecido.",
+        "no_case": "Não existe o caso #{case_id}. Veja /modlogs para os números de caso do usuário.",
+        "thread_lock": "Tópicos não podem ser bloqueados assim; bloqueie o canal principal.",
+        "thread_unlock": "Tópicos não podem ser desbloqueados assim; desbloqueie o canal principal.",
+        "channel_refused": "O Discord recusou: o bot não pode editar as permissões desse canal.",
+        "slowmode_refused": "O Discord recusou: o bot não pode editar esse canal.",
+        "lockdown_prompt": "**Bloquear todos os canais públicos** (ou a lista de bloqueio configurada)?",
+        "lockdown_button": "Iniciar bloqueio",
+        "warn_title": "Advertir {name}",
+        "delete_warn_title": "Apagar e advertir",
+        "warned_not_deleted": "Advertido, mas não consegui apagar a mensagem.",
+        "no_images": "Essa mensagem não tem imagens utilizáveis.",
+        "db_down": "Não consegui salvar, o banco de dados está indisponível.",
+    },
+})
+# Command and option descriptions per Discord client language (names stay English).
+DESC = table({
+    "en": {
+        "lockdown": "Lock or unlock every public channel",
+        "warn": "Warn a member (counts toward the warn ladder)",
+        "warn.user": "Member to warn",
+        "dm_reason": "Shown to them in the DM",
+        "warnings": "A member's active warnings and warn-ladder standing",
+        "lookup_member": "Member to look up",
+        "lookup_user": "User to look up",
+        "delwarn": "Remove a warning (it stops counting toward the ladder)",
+        "delwarn.case_id": "Warning case number",
+        "delnote": "Remove a staff note",
+        "delnote.case_id": "Note case number",
+        "clearwarns": "Remove all of a member's active warnings",
+        "clearwarns.user": "Member whose warnings to clear",
+        "note": "Add a staff-only note to a user",
+        "note.user": "User to note",
+        "note.text": "The note",
+        "notes": "A user's staff notes",
+        "mute": "Time a member out",
+        "mute.user": "Member to time out",
+        "mute.duration": "e.g. 30m, 2h, 1d (max 28d)",
+        "unmute": "Remove a member's timeout",
+        "unmute.user": "Member to un-time-out",
+        "optional": "Optional",
+        "why": "Why",
+        "kick": "Kick a member",
+        "kick.user": "Member to kick",
+        "ban": "Ban a user, optionally for a limited time",
+        "ban.user": "User to ban (IDs of non-members work)",
+        "ban.duration": "e.g. 12h, 7d, 2w; empty = permanent",
+        "ban.delete_messages": "Delete their recent messages (default 7d)",
+        "softban": "Ban and unban to delete a day of messages",
+        "softban.user": "User to softban",
+        "unban": "Unban a user by ID",
+        "unban.user_id": "Their Discord user ID",
+        "purge": "Bulk-delete recent messages in this channel",
+        "purge.amount": "How many recent messages to scan",
+        "purge.user": "Only this user's messages",
+        "purge.contains": "Only messages containing this text",
+        "purge.kind": "Only this kind of message",
+        "case": "Show a moderation case",
+        "case.case_id": "Case number",
+        "reason": "Fix the reason on an existing case (find case numbers with /modlogs or /warnings)",
+        "reason.case_id": "The case number, e.g. 42 for case #42",
+        "reason.reason": "Replaces the old reason; the user isn't DMed again",
+        "modlogs": "A user's last 25 moderation cases",
+        "modstats": "Moderation actions per moderator",
+        "modstats.days": "Look back this many days (default 30)",
+        "lock": "Stop @everyone from talking in a channel",
+        "this_channel": "Default: this channel",
+        "unlock": "Undo /lock on a channel",
+        "lockdown.start": "Lock every public channel (or the configured list)",
+        "lockdown.end": "Unlock every channel the bot locked",
+        "slowmode": "Set a channel's slowmode",
+        "slowmode.seconds": "0 turns it off (max 21600 = 6h)",
+        "whois": "Who a user is: account, roles, moderation record, tickets",
+    },
+    "es": {
+        "lockdown": "Bloquea o desbloquea todos los canales públicos",
+        "warn": "Advierte a un miembro (cuenta para la escalera de advertencias)",
+        "warn.user": "Miembro a advertir",
+        "dm_reason": "Se le muestra en el MD",
+        "warnings": "Advertencias activas de un miembro y su lugar en la escalera",
+        "lookup_member": "Miembro a consultar",
+        "lookup_user": "Usuario a consultar",
+        "delwarn": "Quita una advertencia (deja de contar para la escalera)",
+        "delwarn.case_id": "Número de caso de la advertencia",
+        "delnote": "Quita una nota del staff",
+        "delnote.case_id": "Número de caso de la nota",
+        "clearwarns": "Quita todas las advertencias activas de un miembro",
+        "clearwarns.user": "Miembro cuyas advertencias borrar",
+        "note": "Añade una nota solo para el staff a un usuario",
+        "note.user": "Usuario de la nota",
+        "note.text": "La nota",
+        "notes": "Las notas del staff de un usuario",
+        "mute": "Da un timeout a un miembro",
+        "mute.user": "Miembro al que dar timeout",
+        "mute.duration": "p. ej. 30m, 2h, 1d (máx. 28d)",
+        "unmute": "Quita el timeout de un miembro",
+        "unmute.user": "Miembro al que quitar el timeout",
+        "optional": "Opcional",
+        "why": "Por qué",
+        "kick": "Expulsa a un miembro",
+        "kick.user": "Miembro a expulsar",
+        "ban": "Banea a un usuario, opcionalmente por un tiempo",
+        "ban.user": "Usuario a banear (sirven IDs de no miembros)",
+        "ban.duration": "p. ej. 12h, 7d, 2w; vacío = permanente",
+        "ban.delete_messages": "Borra sus mensajes recientes (por defecto 7d)",
+        "softban": "Banea y desbanea para borrar un día de mensajes",
+        "softban.user": "Usuario a softbanear",
+        "unban": "Desbanea a un usuario por ID",
+        "unban.user_id": "Su ID de usuario de Discord",
+        "purge": "Borra en masa los mensajes recientes de este canal",
+        "purge.amount": "Cuántos mensajes recientes revisar",
+        "purge.user": "Solo los mensajes de este usuario",
+        "purge.contains": "Solo los mensajes que contengan este texto",
+        "purge.kind": "Solo este tipo de mensaje",
+        "case": "Muestra un caso de moderación",
+        "case.case_id": "Número de caso",
+        "reason": "Corrige el motivo de un caso (busca los números con /modlogs o /warnings)",
+        "reason.case_id": "El número de caso, p. ej. 42 para el caso #42",
+        "reason.reason": "Reemplaza el motivo anterior; no se le vuelve a enviar MD",
+        "modlogs": "Los últimos 25 casos de moderación de un usuario",
+        "modstats": "Acciones de moderación por moderador",
+        "modstats.days": "Cuántos días mirar atrás (por defecto 30)",
+        "lock": "Impide que @everyone hable en un canal",
+        "this_channel": "Por defecto: este canal",
+        "unlock": "Deshace /lock en un canal",
+        "lockdown.start": "Bloquea todos los canales públicos (o la lista configurada)",
+        "lockdown.end": "Desbloquea todos los canales que bloqueó el bot",
+        "slowmode": "Configura el modo lento de un canal",
+        "slowmode.seconds": "0 lo desactiva (máx. 21600 = 6h)",
+        "whois": "Quién es un usuario: cuenta, roles, historial de moderación, tickets",
+    },
+    "pt": {
+        "lockdown": "Bloqueia ou desbloqueia todos os canais públicos",
+        "warn": "Adverte um membro (conta para a escada de advertências)",
+        "warn.user": "Membro a advertir",
+        "dm_reason": "Mostrado a ele na DM",
+        "warnings": "Advertências ativas de um membro e sua posição na escada",
+        "lookup_member": "Membro a consultar",
+        "lookup_user": "Usuário a consultar",
+        "delwarn": "Remove uma advertência (ela deixa de contar para a escada)",
+        "delwarn.case_id": "Número do caso da advertência",
+        "delnote": "Remove uma nota da staff",
+        "delnote.case_id": "Número do caso da nota",
+        "clearwarns": "Remove todas as advertências ativas de um membro",
+        "clearwarns.user": "Membro cujas advertências limpar",
+        "note": "Adiciona uma nota só para a staff a um usuário",
+        "note.user": "Usuário da nota",
+        "note.text": "A nota",
+        "notes": "As notas da staff sobre um usuário",
+        "mute": "Dá um timeout a um membro",
+        "mute.user": "Membro que vai receber o timeout",
+        "mute.duration": "ex.: 30m, 2h, 1d (máx. 28d)",
+        "unmute": "Remove o timeout de um membro",
+        "unmute.user": "Membro que vai perder o timeout",
+        "optional": "Opcional",
+        "why": "Por quê",
+        "kick": "Expulsa um membro",
+        "kick.user": "Membro a expulsar",
+        "ban": "Bane um usuário, opcionalmente por um tempo",
+        "ban.user": "Usuário a banir (IDs de não membros funcionam)",
+        "ban.duration": "ex.: 12h, 7d, 2w; vazio = permanente",
+        "ban.delete_messages": "Apaga as mensagens recentes dele (padrão 7d)",
+        "softban": "Bane e desbane para apagar um dia de mensagens",
+        "softban.user": "Usuário a dar softban",
+        "unban": "Desbane um usuário pelo ID",
+        "unban.user_id": "O ID de usuário do Discord dele",
+        "purge": "Apaga em massa as mensagens recentes deste canal",
+        "purge.amount": "Quantas mensagens recentes verificar",
+        "purge.user": "Só as mensagens deste usuário",
+        "purge.contains": "Só mensagens que contenham este texto",
+        "purge.kind": "Só este tipo de mensagem",
+        "case": "Mostra um caso de moderação",
+        "case.case_id": "Número do caso",
+        "reason": "Corrige o motivo de um caso (ache os números com /modlogs ou /warnings)",
+        "reason.case_id": "O número do caso, ex.: 42 para o caso #42",
+        "reason.reason": "Substitui o motivo antigo; o usuário não recebe outra DM",
+        "modlogs": "Os últimos 25 casos de moderação de um usuário",
+        "modstats": "Ações de moderação por moderador",
+        "modstats.days": "Quantos dias olhar para trás (padrão 30)",
+        "lock": "Impede que @everyone fale em um canal",
+        "this_channel": "Padrão: este canal",
+        "unlock": "Desfaz o /lock em um canal",
+        "lockdown.start": "Bloqueia todos os canais públicos (ou a lista configurada)",
+        "lockdown.end": "Desbloqueia todos os canais que o bot bloqueou",
+        "slowmode": "Define o modo lento de um canal",
+        "slowmode.seconds": "0 desativa (máx. 21600 = 6h)",
+        "whois": "Quem é um usuário: conta, cargos, histórico de moderação, tickets",
+    },
+})
 
 _LINK_RE = re.compile(r"https?://", re.IGNORECASE)
 _INVITE_RE = re.compile(r"discord(?:\.gg|(?:app)?\.com/invite)/", re.IGNORECASE)
@@ -141,9 +426,11 @@ async def _quietly(awaitable):
 
 
 class ReasonModal(discord.ui.Modal):
-    def __init__(self, title: str, submit: Callable[[discord.Interaction, str], Awaitable[object]]):
+    def __init__(self, title: str, submit: Callable[[discord.Interaction, str], Awaitable[object]], language: str = "en"):
         super().__init__(title=title[:45])
-        self.reason_input = discord.ui.InputText(label="Reason", style=discord.InputTextStyle.long, max_length=300)
+        self.reason_input = discord.ui.InputText(
+            label=t(TEXT, "reason", language), style=discord.InputTextStyle.long, max_length=300
+        )
         self.add_item(self.reason_input)
         self._submit = submit
 
@@ -155,9 +442,15 @@ class ConfirmView(discord.ui.DesignerView):
     """Private "are you sure?" card. On confirm it turns into "Working…" and on_confirm runs;
     on_confirm posts its own (public) result with interaction.followup.send."""
 
-    def __init__(self, prompt: str, label: str, on_confirm: Callable[[discord.Interaction], Awaitable[object]]):
+    def __init__(
+        self,
+        prompt: str,
+        label: str,
+        on_confirm: Callable[[discord.Interaction], Awaitable[object]],
+        language: str = "en",
+    ):
         confirm = discord.ui.Button(label=label, style=discord.ButtonStyle.danger)
-        cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+        cancel = discord.ui.Button(label=t(TEXT, "cancel", language), style=discord.ButtonStyle.secondary)
         confirm.callback, cancel.callback = self._confirm, self._cancel
         super().__init__(
             discord.ui.Container(
@@ -167,30 +460,38 @@ class ConfirmView(discord.ui.DesignerView):
             disable_on_timeout=True,
         )
         self._on_confirm = on_confirm
+        self._language = language
 
     async def _confirm(self, interaction: discord.Interaction):
         self.stop()
-        await interaction.response.edit_message(view=reply_card("⏳ Working…", discord.Color.dark_grey()))
+        working = reply_card(t(TEXT, "working", self._language), discord.Color.dark_grey())
+        await interaction.response.edit_message(view=working)
         await self._on_confirm(interaction)
         await interaction.delete_original_response()
 
     async def _cancel(self, interaction: discord.Interaction):
         self.stop()
-        await interaction.response.edit_message(view=reply_card("Cancelled.", discord.Color.dark_grey()))
+        await interaction.response.edit_message(
+            view=reply_card(t(TEXT, "cancelled", self._language), discord.Color.dark_grey())
+        )
 
 
 class ModCommandsCog(ReloadableCog):
     lockdown_group = discord.SlashCommandGroup(
-        "lockdown", "Lock or unlock every public channel", default_member_permissions=STAFF_ONLY
+        "lockdown", **described(DESC, "lockdown"), default_member_permissions=STAFF_ONLY
     )
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
+    def _say(self, ctx, key: str, **values) -> str:
+        """TEXT[key] in the language of whoever ran ctx (a command's context or an interaction)."""
+        return t(TEXT, key, reader_language(ctx, self.bot.settings), **values)
+
     async def _allowed(self, ctx: discord.ApplicationContext | discord.Interaction, capability: str) -> bool:
         if tier_for(ctx.user, self.bot.settings) >= PERMISSIONS[capability]:
             return True
-        await ctx.respond("Your staff tier can't do that.", ephemeral=True)
+        await ctx.respond(self._say(ctx, "tier_denied"), ephemeral=True)
         return False
 
     @staticmethod
@@ -241,7 +542,7 @@ class ModCommandsCog(ReloadableCog):
         except ModActionError as error:
             if deferred_here:
                 await interaction.delete_original_response()  # drop the public "thinking…" so the error stays private
-            await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            await interaction.followup.send(f"❌ {error.text(reader_language(ctx, self.bot.settings))}", ephemeral=True)
             return None
         emoji, phrase, color = VERBS[action]
         text = f"{emoji} ***{await self._display_name(target_id)} {phrase}"
@@ -261,17 +562,17 @@ class ModCommandsCog(ReloadableCog):
 
     # --- warnings and notes ------------------------------------------------------------------
 
-    @discord.slash_command(name="warn", description="Warn a member (counts toward the warn ladder)")
+    @discord.slash_command(name="warn", **described(DESC, "warn"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="Member to warn")
-    @discord.option("reason", str, description="Shown to them in the DM", max_length=MAX_REASON_LENGTH)
+    @discord.option("user", discord.User, **described(DESC, "warn.user"))
+    @discord.option("reason", str, **described(DESC, "dm_reason"), max_length=MAX_REASON_LENGTH)
     async def warn(self, ctx: discord.ApplicationContext, user: discord.User, reason: str):
         if await self._allowed(ctx, "mod.warn"):
             await self._perform(ctx, "warn", user.id, reason)
 
-    @discord.slash_command(name="warnings", description="A member's active warnings and warn-ladder standing")
+    @discord.slash_command(name="warnings", **described(DESC, "warnings"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="Member to look up")
+    @discord.option("user", discord.User, **described(DESC, "lookup_member"))
     async def warnings(self, ctx: discord.ApplicationContext, user: discord.User):
         if await self._allowed(ctx, "mod.cases.view"):
             await ctx.respond(view=await self._warnings_view(ctx.guild.id, user), allowed_mentions=NO_PINGS)
@@ -369,7 +670,7 @@ class ModCommandsCog(ReloadableCog):
             view = await self._warnings_view(guild_id, user, page)
             await interaction.response.edit_message(view=view, allowed_mentions=NO_PINGS)
             if removed is None:
-                await interaction.followup.send(f"Case #{case_id} was already removed.", ephemeral=True)
+                await interaction.followup.send(self._say(interaction, "already_removed", case_id=case_id), ephemeral=True)
             else:
                 text = f"Removed warning #{case_id} for <@{user.id}>."
                 await self._log_removal("Warning removed", text, interaction.user.id, user.id)
@@ -382,7 +683,7 @@ class ModCommandsCog(ReloadableCog):
         try:
             mod_actions.check_hierarchy(self.bot, ctx.guild, ctx.user, user_id, target, discord_action=False)
         except ModActionError as error:
-            await ctx.respond(str(error), ephemeral=True)
+            await ctx.respond(error.text(reader_language(ctx, self.bot.settings)), ephemeral=True)
             return False
         return True
 
@@ -392,11 +693,12 @@ class ModCommandsCog(ReloadableCog):
         label = "warning" if action == "warn" else action
         case = await mod_cases.get_case(ctx.guild.id, case_id)
         if case is None or case.action != action:
-            return await ctx.respond(f"Case #{case_id} isn't a {label}.", ephemeral=True)
+            label_here = self._say(ctx, f"label_{action}")
+            return await ctx.respond(self._say(ctx, "not_a", case_id=case_id, label=label_here), ephemeral=True)
         if not await self._outranks(ctx, case.user_id):
             return
         if await mod_actions.end_case(self.bot, ctx.guild.id, case_id, ended_by=ctx.user.id) is None:
-            return await ctx.respond(f"Case #{case_id} was already removed.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "already_removed", case_id=case_id), ephemeral=True)
         text = f"Removed {label} #{case_id} for <@{case.user_id}>."
         await ctx.respond(text, allowed_mentions=NO_PINGS)
         await self._log_removal(f"{label.title()} removed", text, ctx.user.id, case.user_id)
@@ -406,21 +708,21 @@ class ModCommandsCog(ReloadableCog):
             "case_removed", title, f"{text}\nBy <@{moderator_id}>", user_id=moderator_id, data={"target_id": user_id}
         )
 
-    @discord.slash_command(name="delwarn", description="Remove a warning (it stops counting toward the ladder)")
+    @discord.slash_command(name="delwarn", **described(DESC, "delwarn"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("case_id", int, description="Warning case number", min_value=1)
+    @discord.option("case_id", int, **described(DESC, "delwarn.case_id"), min_value=1)
     async def delwarn(self, ctx: discord.ApplicationContext, case_id: int):
         await self._remove_case(ctx, case_id, "warn")
 
-    @discord.slash_command(name="delnote", description="Remove a staff note")
+    @discord.slash_command(name="delnote", **described(DESC, "delnote"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("case_id", int, description="Note case number", min_value=1)
+    @discord.option("case_id", int, **described(DESC, "delnote.case_id"), min_value=1)
     async def delnote(self, ctx: discord.ApplicationContext, case_id: int):
         await self._remove_case(ctx, case_id, "note")
 
-    @discord.slash_command(name="clearwarns", description="Remove all of a member's active warnings")
+    @discord.slash_command(name="clearwarns", **described(DESC, "clearwarns"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="Member whose warnings to clear")
+    @discord.option("user", discord.User, **described(DESC, "clearwarns.user"))
     async def clearwarns(self, ctx: discord.ApplicationContext, user: discord.User):
         if not (await self._allowed(ctx, "mod.cases.remove") and await self._outranks(ctx, user.id)):
             return
@@ -431,23 +733,25 @@ class ModCommandsCog(ReloadableCog):
             await interaction.followup.send(text, allowed_mentions=NO_PINGS)
             await self._log_removal("Warnings cleared", text, ctx.user.id, user.id)
 
+        language = reader_language(ctx, self.bot.settings)
+        prompt = t(TEXT, "clear_prompt", language, user_id=user.id)
         await ctx.respond(
-            view=ConfirmView(f"**Clear all active warnings for <@{user.id}>?**", "Clear warnings", clear),
+            view=ConfirmView(prompt, t(TEXT, "clear_button", language), clear, language),
             ephemeral=True,
             allowed_mentions=NO_PINGS,
         )
 
-    @discord.slash_command(name="note", description="Add a staff-only note to a user")
+    @discord.slash_command(name="note", **described(DESC, "note"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="User to note")
-    @discord.option("text", str, description="The note", max_length=MAX_REASON_LENGTH)
+    @discord.option("user", discord.User, **described(DESC, "note.user"))
+    @discord.option("text", str, **described(DESC, "note.text"), max_length=MAX_REASON_LENGTH)
     async def note(self, ctx: discord.ApplicationContext, user: discord.User, text: str):
         if await self._allowed(ctx, "mod.warn"):
             await self._perform(ctx, "note", user.id, text)
 
-    @discord.slash_command(name="notes", description="A user's staff notes")
+    @discord.slash_command(name="notes", **described(DESC, "notes"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="User to look up")
+    @discord.option("user", discord.User, **described(DESC, "lookup_user"))
     async def notes(self, ctx: discord.ApplicationContext, user: discord.User):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
@@ -458,41 +762,47 @@ class ModCommandsCog(ReloadableCog):
 
     # --- actions -----------------------------------------------------------------------------
 
-    @discord.slash_command(name="mute", description="Time a member out")
+    @discord.slash_command(name="mute", **described(DESC, "mute"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="Member to time out")
-    @discord.option("duration", str, description="e.g. 30m, 2h, 1d (max 28d)")
-    @discord.option("reason", str, description="Shown to them in the DM", max_length=MAX_REASON_LENGTH)
+    @discord.option("user", discord.User, **described(DESC, "mute.user"))
+    @discord.option("duration", str, **described(DESC, "mute.duration"))
+    @discord.option("reason", str, **described(DESC, "dm_reason"), max_length=MAX_REASON_LENGTH)
     async def mute(self, ctx: discord.ApplicationContext, user: discord.User, duration: str, reason: str):
         if not await self._allowed(ctx, "mod.timeout"):
             return
         seconds = parse_duration_seconds(duration)
         if not seconds:
-            return await ctx.respond("Couldn't read that duration, try 30m, 2h or 1d.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "bad_duration"), ephemeral=True)
         await self._perform(ctx, "timeout", user.id, reason, duration_seconds=min(seconds, MAX_TIMEOUT_SECONDS))
 
-    @discord.slash_command(name="unmute", description="Remove a member's timeout")
+    @discord.slash_command(name="unmute", **described(DESC, "unmute"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="Member to un-time-out")
-    @discord.option("reason", str, description="Optional", max_length=MAX_REASON_LENGTH, required=False)
+    @discord.option("user", discord.User, **described(DESC, "unmute.user"))
+    @discord.option("reason", str, **described(DESC, "optional"), max_length=MAX_REASON_LENGTH, required=False)
     async def unmute(self, ctx: discord.ApplicationContext, user: discord.User, reason: str = ""):
         if await self._allowed(ctx, "mod.timeout"):
             await self._perform(ctx, "untimeout", user.id, reason or "")
 
-    @discord.slash_command(name="kick", description="Kick a member")
+    @discord.slash_command(name="kick", **described(DESC, "kick"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="Member to kick")
-    @discord.option("reason", str, description="Shown to them in the DM", max_length=MAX_REASON_LENGTH)
+    @discord.option("user", discord.User, **described(DESC, "kick.user"))
+    @discord.option("reason", str, **described(DESC, "dm_reason"), max_length=MAX_REASON_LENGTH)
     async def kick(self, ctx: discord.ApplicationContext, user: discord.User, reason: str):
         if await self._allowed(ctx, "mod.kick"):
             await self._perform(ctx, "kick", user.id, reason)
 
-    @discord.slash_command(name="ban", description="Ban a user, optionally for a limited time")
+    @discord.slash_command(name="ban", **described(DESC, "ban"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="User to ban (IDs of non-members work)")
-    @discord.option("reason", str, description="Shown to them in the DM", max_length=MAX_REASON_LENGTH)
-    @discord.option("duration", str, description="e.g. 12h, 7d, 2w; empty = permanent", required=False)
-    @discord.option("delete_messages", str, description="Delete their recent messages (default 7d)", choices=list(BAN_DELETE_SECONDS), required=False)
+    @discord.option("user", discord.User, **described(DESC, "ban.user"))
+    @discord.option("reason", str, **described(DESC, "dm_reason"), max_length=MAX_REASON_LENGTH)
+    @discord.option("duration", str, **described(DESC, "ban.duration"), required=False)
+    @discord.option(
+        "delete_messages",
+        str,
+        **described(DESC, "ban.delete_messages"),
+        choices=list(BAN_DELETE_SECONDS),
+        required=False,
+    )
     async def ban(
         self,
         ctx: discord.ApplicationContext,
@@ -505,9 +815,7 @@ class ModCommandsCog(ReloadableCog):
             return
         seconds = parse_duration_seconds(duration) if duration else None
         if duration and not seconds:
-            return await ctx.respond(
-                "Couldn't read that duration, try 12h, 7d or 2w (leave it empty for a permanent ban).", ephemeral=True
-            )
+            return await ctx.respond(self._say(ctx, "bad_ban_duration"), ephemeral=True)
         await self._perform(
             ctx,
             "ban",
@@ -517,32 +825,32 @@ class ModCommandsCog(ReloadableCog):
             delete_message_seconds=BAN_DELETE_SECONDS[delete_messages],
         )
 
-    @discord.slash_command(name="softban", description="Ban and unban to delete a day of messages")
+    @discord.slash_command(name="softban", **described(DESC, "softban"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="User to softban")
-    @discord.option("reason", str, description="Shown to them in the DM", max_length=MAX_REASON_LENGTH)
+    @discord.option("user", discord.User, **described(DESC, "softban.user"))
+    @discord.option("reason", str, **described(DESC, "dm_reason"), max_length=MAX_REASON_LENGTH)
     async def softban(self, ctx: discord.ApplicationContext, user: discord.User, reason: str):
         if await self._allowed(ctx, "mod.ban"):
             await self._perform(ctx, "softban", user.id, reason)
 
-    @discord.slash_command(name="unban", description="Unban a user by ID")
+    @discord.slash_command(name="unban", **described(DESC, "unban"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user_id", str, description="Their Discord user ID")
-    @discord.option("reason", str, description="Why", max_length=MAX_REASON_LENGTH)
+    @discord.option("user_id", str, **described(DESC, "unban.user_id"))
+    @discord.option("reason", str, **described(DESC, "why"), max_length=MAX_REASON_LENGTH)
     async def unban(self, ctx: discord.ApplicationContext, user_id: str, reason: str):
         if not await self._allowed(ctx, "mod.ban"):
             return
         user_id = user_id.strip().strip("<@!>")
         if not re.fullmatch(r"[0-9]{15,20}", user_id):
-            return await ctx.respond("That isn't a valid user ID.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "bad_user_id"), ephemeral=True)
         await self._perform(ctx, "unban", int(user_id), reason)
 
-    @discord.slash_command(name="purge", description="Bulk-delete recent messages in this channel")
+    @discord.slash_command(name="purge", **described(DESC, "purge"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("amount", int, description="How many recent messages to scan", min_value=1, max_value=500)
-    @discord.option("user", discord.User, description="Only this user's messages", required=False)
-    @discord.option("contains", str, description="Only messages containing this text", required=False)
-    @discord.option("kind", str, description="Only this kind of message", choices=list(PURGE_KINDS), required=False)
+    @discord.option("amount", int, **described(DESC, "purge.amount"), min_value=1, max_value=500)
+    @discord.option("user", discord.User, **described(DESC, "purge.user"), required=False)
+    @discord.option("contains", str, **described(DESC, "purge.contains"), required=False)
+    @discord.option("kind", str, **described(DESC, "purge.kind"), choices=list(PURGE_KINDS), required=False)
     async def purge(
         self,
         ctx: discord.ApplicationContext,
@@ -553,8 +861,16 @@ class ModCommandsCog(ReloadableCog):
     ):
         if not await self._allowed(ctx, "mod.channels"):
             return
-        filters = [f"from <@{user.id}>" if user else "", f'containing "{contains}"' if contains else "", kind or ""]
-        filter_text = ", ".join(f for f in filters if f)
+        def filters_in(language: str) -> str:
+            filters = [
+                t(TEXT, "purge_from", language, user_id=user.id) if user else "",
+                t(TEXT, "purge_containing", language, text=contains) if contains else "",
+                kind or "",
+            ]
+            return ", ".join(f for f in filters if f)
+
+        filter_text = filters_in("en")  # the mod log's
+        language = reader_language(ctx, self.bot.settings)
 
         async def run(interaction: discord.Interaction):
             try:
@@ -565,7 +881,7 @@ class ModCommandsCog(ReloadableCog):
                     reason=f"/purge by {ctx.user.name}",
                 )
             except discord.HTTPException:
-                return await interaction.followup.send("Discord refused: the bot can't delete messages here.", ephemeral=True)
+                return await interaction.followup.send(t(TEXT, "purge_refused", language), ephemeral=True)
             await interaction.followup.send(f"🧹 Deleted {len(deleted)} message(s) from the last 14 days.")
             if not deleted:
                 return
@@ -574,38 +890,37 @@ class ModCommandsCog(ReloadableCog):
                 text += f"\n**Filters** {filter_text[:1000]}"
             await self._post_mod_log("purge", "🧹 Purge", text, user_id=ctx.user.id, data={"channel_id": ctx.channel.id})
 
-        prompt = f"Scan the last **{amount}** message(s) here and delete " + (
-            f"the ones {filter_text}?" if filter_text else "all of them?"
+        prompt = (
+            t(TEXT, "purge_some", language, amount=amount, filters=filters_in(language))
+            if filter_text
+            else t(TEXT, "purge_all", language, amount=amount)
         )
-        await ctx.respond(view=ConfirmView(prompt, "Purge", run), ephemeral=True, allowed_mentions=NO_PINGS)
+        view = ConfirmView(prompt, t(TEXT, "purge_button", language), run, language)
+        await ctx.respond(view=view, ephemeral=True, allowed_mentions=NO_PINGS)
 
     # --- cases -------------------------------------------------------------------------------
 
-    @discord.slash_command(name="case", description="Show a moderation case")
+    @discord.slash_command(name="case", **described(DESC, "case"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("case_id", int, description="Case number", min_value=1)
+    @discord.option("case_id", int, **described(DESC, "case.case_id"), min_value=1)
     async def case_show(self, ctx: discord.ApplicationContext, case_id: int):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
         case = await mod_cases.get_case(ctx.guild.id, case_id)
         if case is None:
-            return await ctx.respond("Unknown case.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "unknown_case"), ephemeral=True)
         await ctx.respond(view=await mod_actions.render_case_card(self.bot, case), allowed_mentions=NO_PINGS)
 
-    @discord.slash_command(
-        name="reason", description="Fix the reason on an existing case (find case numbers with /modlogs or /warnings)"
-    )
+    @discord.slash_command(name="reason", **described(DESC, "reason"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("case_id", int, description="The case number, e.g. 42 for case #42", min_value=1)
-    @discord.option(
-        "reason", str, description="Replaces the old reason; the user isn't DMed again", max_length=MAX_REASON_LENGTH
-    )
+    @discord.option("case_id", int, **described(DESC, "reason.case_id"), min_value=1)
+    @discord.option("reason", str, **described(DESC, "reason.reason"), max_length=MAX_REASON_LENGTH)
     async def case_reason(self, ctx: discord.ApplicationContext, case_id: int, reason: str):
         if not await self._allowed(ctx, "mod.cases.edit"):
             return
         case = await mod_cases.get_case(ctx.guild.id, case_id)
         if case is None:
-            return await ctx.respond(f"There's no case #{case_id}. Check /modlogs for the user's case numbers.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "no_case", case_id=case_id), ephemeral=True)
         if not await self._outranks(ctx, case.user_id):
             return
         await mod_cases.update_reason(ctx.guild.id, case_id, reason.strip())
@@ -617,9 +932,9 @@ class ModCommandsCog(ReloadableCog):
             allowed_mentions=NO_PINGS,
         )
 
-    @discord.slash_command(name="modlogs", description="A user's last 25 moderation cases")
+    @discord.slash_command(name="modlogs", **described(DESC, "modlogs"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="User to look up")
+    @discord.option("user", discord.User, **described(DESC, "lookup_user"))
     async def modlogs(self, ctx: discord.ApplicationContext, user: discord.User):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
@@ -628,9 +943,9 @@ class ModCommandsCog(ReloadableCog):
         footer = "Struck-through cases are inactive (removed, cleared or expired)."
         await ctx.respond(view=reply_card(text[:3800], discord.Color.blurple(), footer), allowed_mentions=NO_PINGS)
 
-    @discord.slash_command(name="modstats", description="Moderation actions per moderator")
+    @discord.slash_command(name="modstats", **described(DESC, "modstats"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("days", int, description="Look back this many days (default 30)", min_value=1, max_value=3650)
+    @discord.option("days", int, **described(DESC, "modstats.days"), min_value=1, max_value=3650)
     async def modstats(self, ctx: discord.ApplicationContext, days: int = 30):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
@@ -648,41 +963,41 @@ class ModCommandsCog(ReloadableCog):
 
     # --- channels ----------------------------------------------------------------------------
 
-    @discord.slash_command(name="lock", description="Stop @everyone from talking in a channel")
+    @discord.slash_command(name="lock", **described(DESC, "lock"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("channel", discord.TextChannel, description="Default: this channel", required=False)
-    @discord.option("reason", str, description="Optional", max_length=MAX_REASON_LENGTH, required=False)
+    @discord.option("channel", discord.TextChannel, **described(DESC, "this_channel"), required=False)
+    @discord.option("reason", str, **described(DESC, "optional"), max_length=MAX_REASON_LENGTH, required=False)
     async def lock(self, ctx: discord.ApplicationContext, channel: discord.TextChannel = None, reason: str = ""):
         if not await self._allowed(ctx, "mod.channels"):
             return
         channel = channel or ctx.channel
         if isinstance(channel, discord.Thread):
-            return await ctx.respond("Threads can't be locked this way; lock the parent channel.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "thread_lock"), ephemeral=True)
         try:
             await mod_actions.lock_channel(
                 channel, moderator_id=ctx.user.id, reason=f"{reason or 'No reason given'} (via command by {ctx.user.name})"
             )
         except discord.HTTPException:
-            return await ctx.respond("Discord refused: the bot can't edit that channel's permissions.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "channel_refused"), ephemeral=True)
         await ctx.respond(f"🔒 Locked {channel.mention}.")
 
-    @discord.slash_command(name="unlock", description="Undo /lock on a channel")
+    @discord.slash_command(name="unlock", **described(DESC, "unlock"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("channel", discord.TextChannel, description="Default: this channel", required=False)
+    @discord.option("channel", discord.TextChannel, **described(DESC, "this_channel"), required=False)
     async def unlock(self, ctx: discord.ApplicationContext, channel: discord.TextChannel = None):
         if not await self._allowed(ctx, "mod.channels"):
             return
         channel = channel or ctx.channel
         if isinstance(channel, discord.Thread):
-            return await ctx.respond("Threads can't be unlocked this way; unlock the parent channel.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "thread_unlock"), ephemeral=True)
         try:
             await mod_actions.unlock_channel(channel, reason=f"Unlocked (via command by {ctx.user.name})")
         except discord.HTTPException:
-            return await ctx.respond("Discord refused: the bot can't edit that channel's permissions.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "channel_refused"), ephemeral=True)
         await ctx.respond(f"🔓 Unlocked {channel.mention}.")
 
-    @lockdown_group.command(name="start", description="Lock every public channel (or the configured list)")
-    @discord.option("reason", str, description="Why", max_length=MAX_REASON_LENGTH)
+    @lockdown_group.command(name="start", **described(DESC, "lockdown.start"))
+    @discord.option("reason", str, **described(DESC, "why"), max_length=MAX_REASON_LENGTH)
     async def lockdown_start(self, ctx: discord.ApplicationContext, reason: str):
         if not await self._allowed(ctx, "mod.channels"):
             return
@@ -695,12 +1010,11 @@ class ModCommandsCog(ReloadableCog):
                 f"🔒 Lockdown: locked {locked} channel(s)" + (f", {failed} failed." if failed else ".")
             )
 
-        await ctx.respond(
-            view=ConfirmView("**Lock every public channel** (or the configured lockdown list)?", "Start lockdown", run),
-            ephemeral=True,
-        )
+        language = reader_language(ctx, self.bot.settings)
+        prompt, label = t(TEXT, "lockdown_prompt", language), t(TEXT, "lockdown_button", language)
+        await ctx.respond(view=ConfirmView(prompt, label, run, language), ephemeral=True)
 
-    @lockdown_group.command(name="end", description="Unlock every channel the bot locked")
+    @lockdown_group.command(name="end", **described(DESC, "lockdown.end"))
     async def lockdown_end(self, ctx: discord.ApplicationContext):
         if not await self._allowed(ctx, "mod.channels"):
             return
@@ -710,10 +1024,10 @@ class ModCommandsCog(ReloadableCog):
         )
         await ctx.respond(f"🔓 Lockdown over: unlocked {unlocked} channel(s)" + (f", {failed} failed." if failed else "."))
 
-    @discord.slash_command(name="slowmode", description="Set a channel's slowmode")
+    @discord.slash_command(name="slowmode", **described(DESC, "slowmode"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("seconds", int, description="0 turns it off (max 21600 = 6h)", min_value=0, max_value=21600)
-    @discord.option("channel", discord.TextChannel, description="Default: this channel", required=False)
+    @discord.option("seconds", int, **described(DESC, "slowmode.seconds"), min_value=0, max_value=21600)
+    @discord.option("channel", discord.TextChannel, **described(DESC, "this_channel"), required=False)
     async def slowmode(self, ctx: discord.ApplicationContext, seconds: int, channel: discord.TextChannel = None):
         if not await self._allowed(ctx, "mod.channels"):
             return
@@ -721,16 +1035,16 @@ class ModCommandsCog(ReloadableCog):
         try:
             await channel.edit(slowmode_delay=seconds, reason=f"/slowmode by {ctx.user.name}")
         except discord.HTTPException:
-            return await ctx.respond("Discord refused: the bot can't edit that channel.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "slowmode_refused"), ephemeral=True)
         await ctx.respond(
             f"🐢 Slowmode in {channel.mention} is now {format_duration(seconds) if seconds else 'off'}."
         )
 
     # --- members -----------------------------------------------------------------------------
 
-    @discord.slash_command(name="whois", description="Who a user is: account, roles, moderation record, tickets")
+    @discord.slash_command(name="whois", **described(DESC, "whois"))
     @discord.default_permissions(moderate_members=True)
-    @discord.option("user", discord.User, description="User to look up")
+    @discord.option("user", discord.User, **described(DESC, "lookup_user"))
     async def whois(self, ctx: discord.ApplicationContext, user: discord.User):
         if not await self._allowed(ctx, "mod.cases.view"):
             return
@@ -885,8 +1199,13 @@ class ModCommandsCog(ReloadableCog):
     @discord.default_permissions(moderate_members=True)
     async def warn_menu(self, ctx: discord.ApplicationContext, user: discord.User):
         if await self._allowed(ctx, "mod.warn"):
+            language = reader_language(ctx, self.bot.settings)
             await ctx.send_modal(
-                ReasonModal(f"Warn {user.name}", lambda interaction, reason: self._perform(interaction, "warn", user.id, reason))
+                ReasonModal(
+                    t(TEXT, "warn_title", language, name=user.name),
+                    lambda interaction, reason: self._perform(interaction, "warn", user.id, reason),
+                    language,
+                )
             )
 
     @discord.message_command(name="Delete & warn")
@@ -906,9 +1225,10 @@ class ModCommandsCog(ReloadableCog):
             except discord.NotFound:
                 pass
             except discord.HTTPException:
-                await interaction.respond("Warned, but couldn't delete the message.", ephemeral=True)
+                await interaction.respond(self._say(interaction, "warned_not_deleted"), ephemeral=True)
 
-        await ctx.send_modal(ReasonModal("Delete & warn", submit))
+        language = reader_language(ctx, self.bot.settings)
+        await ctx.send_modal(ReasonModal(t(TEXT, "delete_warn_title", language), submit, language))
 
     @discord.message_command(name="Mark as scam image")
     @discord.default_permissions(moderate_members=True)
@@ -924,7 +1244,7 @@ class ModCommandsCog(ReloadableCog):
             if value is not None
         ]
         if not hashes:
-            return await self._private_error(ctx, "No usable images on that message.")
+            return await self._private_error(ctx, self._say(ctx, "no_images"))
         try:
             hash_ids = [
                 await scam_images.add(value, source="manual", added_by=ctx.user.id, note=f"message {message.id} by {message.author}")
@@ -932,7 +1252,7 @@ class ModCommandsCog(ReloadableCog):
             ]
         except Exception:
             log.exception("Couldn't save scam images from message %s", message.id)
-            return await self._private_error(ctx, "Couldn't save, the database is unavailable.")
+            return await self._private_error(ctx, self._say(ctx, "db_down"))
         deleted = "deleted the message"
         try:
             await message.delete(reason=f"Marked as a scam image by {ctx.user.name}")

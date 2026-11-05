@@ -63,6 +63,7 @@ from bulmaai.ui.patreon_views import (
     PATREON_WELCOME_VERIFY_CUSTOM_ID,
     UsernameUpdateConfirmView,
 )
+from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import has_any_allowed_role, has_patreon_access_role, in_main_guild, is_staff
 
@@ -196,6 +197,210 @@ def _discord_card(member, fallback_user_id: int) -> patron_page.DiscordCard:
     )
 
 
+_HOW_TO_ROLE = "https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access"
+
+# Discord replies are in the reader's language; the browser flow (BrowserFlowDestination) stays English.
+TEXT = table({
+    "en": {
+        "in_server": "Use `{command}` inside the DragonMineZ server.",
+        "in_server_verify": "Use `/patreon beta-access` inside the DragonMineZ server so I can verify your Patreon role.",
+        "heads_up": "**Heads up:** You don't have a Patreon beta access role yet. "
+        "If you're a Patron, connect your Patreon account to Discord first so the role is granted automatically — "
+        "otherwise this link won't activate your beta access: {url}\n\n"
+        "If you've already done that and are still missing the role, you can proceed with linking below.",
+        "staff_only": "Only staff can unlink Patreon accounts.",
+        "github_failed": "The GitHub whitelist update failed, so nothing was changed. Try again in a bit.",
+        "nothing_to_unlink": "<@{user}> has no Patreon link or beta access to remove.",
+        "unlinked": "Unlinked <@{user}>'s Patreon.",
+        "had_no_link": "<@{user}> had no Patreon link.",
+        "removed": " Removed beta access: {names}.",
+        "nothing_removed": " No beta access to remove.",
+        "not_configured": "Patreon linking is not configured yet. Ask staff to check the bot settings.",
+        "authorize_beta": "Authorize with Patreon to continue beta access verification for `{username}`: {url}",
+        "authorize_link": "Authorize with Patreon to link your account: {url}",
+        "invalid_name": "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
+        "no_role": "You don't have a Patreon beta access role yet. "
+        "If you're a Patron, make sure to connect your Patreon account to Discord so the role is granted automatically: {url}",
+        "already_active": "`{nickname}` is already your active Patreon beta whitelist username.",
+        "submit_failed": "I could not submit the whitelist change. Please ask staff to check the bot logs.",
+        "already_whitelisted": "`{nickname}` is already whitelisted. Nothing to do.",
+        "approved": "`{nickname}` was approved automatically for Patreon beta access.",
+        "grant_missing": "I could not find your active Patreon beta whitelist grant. Please run `/patreon beta-access` again.",
+        "changed_meanwhile": "Your active Patreon beta whitelist username changed while this confirmation was open. "
+        "Please run `/patreon beta-access` again.",
+        "update_failed": "I could not submit the whitelist username update. Please ask staff to check the bot logs.",
+        "nothing_to_update": "`{nickname}` is already whitelisted. Nothing to update.",
+        "updated": "Your Patreon beta whitelist username was updated from `{old}` to `{new}`.",
+        "bot_gift": "You cannot gift beta access to a bot.",
+        "no_gift": "You don't have any active Patreon gift to edit.",
+        "no_gift_for": "You don't have an active Patreon gift for {recipient}. "
+        "Pick the member you currently have a gift for as `recipient`.",
+        "nothing_to_change": "Nothing to change — {target} already holds this gift as `{nickname}`.",
+        "gift_update_failed": "I could not submit the username update. Please ask staff to check the bot logs.",
+        "gift_moved_renamed": "Moved the Patreon beta gift from <@{old}> to {target} "
+        "and updated the Minecraft username from `{old_nickname}` to `{nickname}`.",
+        "gift_moved": "Moved the Patreon beta gift from <@{old}> to {target} (Minecraft username `{nickname}`).",
+        "gift_renamed": "Updated {target}'s Patreon beta whitelist username from `{old_nickname}` to `{nickname}`.",
+        "need_role_gift": "Your Patreon account is linked, but you need the DragonMineZ Patreon access role "
+        "in this server before gifting beta access.",
+        "gift_limit": "You have already used your active Patreon gift limit ({limit}).",
+        "gift_failed": "I could not submit the gift request. Please ask staff to check the bot logs.",
+        "gift_approved": "Gift approved automatically: {recipient} as `{nickname}`.",
+        "join_first": "Join the DragonMineZ Discord server first, then press the button again.",
+    },
+    "es": {
+        "in_server": "Usa `{command}` dentro del servidor de DragonMineZ.",
+        "in_server_verify": "Usa `/patreon beta-access` dentro del servidor de DragonMineZ para que pueda verificar "
+        "tu rol de Patreon.",
+        "heads_up": "**Ojo:** todavía no tienes un rol de acceso beta de Patreon. "
+        "Si eres Patron, primero conecta tu cuenta de Patreon a Discord para que el rol se te dé automáticamente; "
+        "si no, este enlace no va a activar tu acceso beta: {url}\n\n"
+        "Si ya lo hiciste y aún te falta el rol, puedes seguir con el enlace de abajo.",
+        "staff_only": "Solo el staff puede desvincular cuentas de Patreon.",
+        "github_failed": "Falló la actualización de la whitelist en GitHub, así que no se cambió nada. "
+        "Inténtalo de nuevo en un rato.",
+        "nothing_to_unlink": "<@{user}> no tiene vínculo de Patreon ni acceso beta que quitar.",
+        "unlinked": "Se desvinculó el Patreon de <@{user}>.",
+        "had_no_link": "<@{user}> no tenía Patreon vinculado.",
+        "removed": " Acceso beta quitado: {names}.",
+        "nothing_removed": " No había acceso beta que quitar.",
+        "not_configured": "La vinculación con Patreon todavía no está configurada. Pídele al staff que revise "
+        "la configuración del bot.",
+        "authorize_beta": "Autoriza con Patreon para seguir con la verificación del acceso beta de `{username}`: {url}",
+        "authorize_link": "Autoriza con Patreon para vincular tu cuenta: {url}",
+        "invalid_name": "Nombre de Minecraft inválido. Usa de 3 a 16 letras, números o guiones bajos.",
+        "no_role": "Todavía no tienes un rol de acceso beta de Patreon. "
+        "Si eres Patron, asegúrate de conectar tu cuenta de Patreon a Discord para que el rol se te dé "
+        "automáticamente: {url}",
+        "already_active": "`{nickname}` ya es tu nombre activo en la whitelist beta de Patreon.",
+        "submit_failed": "No pude enviar el cambio a la whitelist. Pídele al staff que revise los logs del bot.",
+        "already_whitelisted": "`{nickname}` ya está en la whitelist. No hay nada que hacer.",
+        "approved": "`{nickname}` fue aprobado automáticamente para el acceso beta de Patreon.",
+        "grant_missing": "No encontré tu acceso activo en la whitelist beta de Patreon. Usa `/patreon beta-access` "
+        "de nuevo.",
+        "changed_meanwhile": "Tu nombre activo en la whitelist beta cambió mientras esta confirmación estaba abierta. "
+        "Usa `/patreon beta-access` de nuevo.",
+        "update_failed": "No pude enviar el cambio de nombre a la whitelist. Pídele al staff que revise los logs del bot.",
+        "nothing_to_update": "`{nickname}` ya está en la whitelist. No hay nada que actualizar.",
+        "updated": "Tu nombre en la whitelist beta de Patreon se cambió de `{old}` a `{new}`.",
+        "bot_gift": "No puedes regalarle acceso beta a un bot.",
+        "no_gift": "No tienes ningún regalo de Patreon activo para editar.",
+        "no_gift_for": "No tienes un regalo de Patreon activo para {recipient}. "
+        "Elige como `recipient` al miembro al que le regalaste el acceso.",
+        "nothing_to_change": "No hay nada que cambiar: {target} ya tiene este regalo como `{nickname}`.",
+        "gift_update_failed": "No pude enviar el cambio de nombre. Pídele al staff que revise los logs del bot.",
+        "gift_moved_renamed": "El regalo beta de Patreon pasó de <@{old}> a {target} "
+        "y el nombre de Minecraft cambió de `{old_nickname}` a `{nickname}`.",
+        "gift_moved": "El regalo beta de Patreon pasó de <@{old}> a {target} (nombre de Minecraft `{nickname}`).",
+        "gift_renamed": "El nombre de {target} en la whitelist beta de Patreon cambió de `{old_nickname}` a `{nickname}`.",
+        "need_role_gift": "Tu cuenta de Patreon está vinculada, pero necesitas el rol de acceso de Patreon de "
+        "DragonMineZ en este servidor para regalar acceso beta.",
+        "gift_limit": "Ya usaste tu límite de regalos de Patreon activos ({limit}).",
+        "gift_failed": "No pude enviar el regalo. Pídele al staff que revise los logs del bot.",
+        "gift_approved": "Regalo aprobado automáticamente: {recipient} como `{nickname}`.",
+        "join_first": "Primero únete al servidor de Discord de DragonMineZ y luego vuelve a presionar el botón.",
+    },
+    "pt": {
+        "in_server": "Use `{command}` dentro do servidor do DragonMineZ.",
+        "in_server_verify": "Use `/patreon beta-access` dentro do servidor do DragonMineZ para eu verificar "
+        "seu cargo do Patreon.",
+        "heads_up": "**Atenção:** você ainda não tem um cargo de acesso beta do Patreon. "
+        "Se você é Patron, conecte primeiro sua conta do Patreon ao Discord para receber o cargo automaticamente; "
+        "senão este link não vai ativar seu acesso beta: {url}\n\n"
+        "Se você já fez isso e ainda está sem o cargo, pode continuar com o link abaixo.",
+        "staff_only": "Só a staff pode desvincular contas do Patreon.",
+        "github_failed": "A atualização da whitelist no GitHub falhou, então nada foi alterado. "
+        "Tente de novo daqui a pouco.",
+        "nothing_to_unlink": "<@{user}> não tem vínculo com o Patreon nem acesso beta para remover.",
+        "unlinked": "O Patreon de <@{user}> foi desvinculado.",
+        "had_no_link": "<@{user}> não tinha Patreon vinculado.",
+        "removed": " Acesso beta removido: {names}.",
+        "nothing_removed": " Não havia acesso beta para remover.",
+        "not_configured": "A vinculação com o Patreon ainda não está configurada. Peça à staff para verificar "
+        "as configurações do bot.",
+        "authorize_beta": "Autorize com o Patreon para continuar a verificação do acesso beta de `{username}`: {url}",
+        "authorize_link": "Autorize com o Patreon para vincular sua conta: {url}",
+        "invalid_name": "Nome de Minecraft inválido. Use de 3 a 16 letras, números ou underlines.",
+        "no_role": "Você ainda não tem um cargo de acesso beta do Patreon. "
+        "Se você é Patron, conecte sua conta do Patreon ao Discord para receber o cargo automaticamente: {url}",
+        "already_active": "`{nickname}` já é seu nome ativo na whitelist beta do Patreon.",
+        "submit_failed": "Não consegui enviar a alteração da whitelist. Peça à staff para verificar os logs do bot.",
+        "already_whitelisted": "`{nickname}` já está na whitelist. Nada a fazer.",
+        "approved": "`{nickname}` foi aprovado automaticamente para o acesso beta do Patreon.",
+        "grant_missing": "Não encontrei seu acesso ativo na whitelist beta do Patreon. Use `/patreon beta-access` "
+        "de novo.",
+        "changed_meanwhile": "Seu nome ativo na whitelist beta mudou enquanto esta confirmação estava aberta. "
+        "Use `/patreon beta-access` de novo.",
+        "update_failed": "Não consegui enviar a troca de nome na whitelist. Peça à staff para verificar os logs do bot.",
+        "nothing_to_update": "`{nickname}` já está na whitelist. Nada para atualizar.",
+        "updated": "Seu nome na whitelist beta do Patreon foi alterado de `{old}` para `{new}`.",
+        "bot_gift": "Você não pode presentear um bot com acesso beta.",
+        "no_gift": "Você não tem nenhum presente do Patreon ativo para editar.",
+        "no_gift_for": "Você não tem um presente do Patreon ativo para {recipient}. "
+        "Escolha como `recipient` o membro que recebeu seu presente.",
+        "nothing_to_change": "Nada para mudar: {target} já tem este presente como `{nickname}`.",
+        "gift_update_failed": "Não consegui enviar a troca de nome. Peça à staff para verificar os logs do bot.",
+        "gift_moved_renamed": "O presente beta do Patreon passou de <@{old}> para {target} "
+        "e o nome de Minecraft mudou de `{old_nickname}` para `{nickname}`.",
+        "gift_moved": "O presente beta do Patreon passou de <@{old}> para {target} (nome de Minecraft `{nickname}`).",
+        "gift_renamed": "O nome de {target} na whitelist beta do Patreon mudou de `{old_nickname}` para `{nickname}`.",
+        "need_role_gift": "Sua conta do Patreon está vinculada, mas você precisa do cargo de acesso do Patreon do "
+        "DragonMineZ neste servidor para presentear acesso beta.",
+        "gift_limit": "Você já usou seu limite de presentes do Patreon ativos ({limit}).",
+        "gift_failed": "Não consegui enviar o presente. Peça à staff para verificar os logs do bot.",
+        "gift_approved": "Presente aprovado automaticamente: {recipient} como `{nickname}`.",
+        "join_first": "Entre primeiro no servidor do Discord do DragonMineZ e depois aperte o botão de novo.",
+    },
+})
+DESC = table({
+    "en": {
+        "patreon": "Patreon beta access",
+        "beta-access": "Request DragonMineZ Patreon beta access for a Minecraft username",
+        "beta-access.username": "Your Minecraft username",
+        "link": "Link your Patreon account",
+        "gift": "Gift your Patreon beta access to another Discord member's Minecraft username",
+        "gift.recipient": "Discord member receiving beta access",
+        "gift.username": "Recipient Minecraft username",
+        "edit-gift": "Reassign a Patreon beta gift to another member and/or change the Minecraft username",
+        "edit-gift.recipient": "The Discord member you currently have a gift for",
+        "edit-gift.new_recipient": "Move the gift to this Discord member instead (optional)",
+        "edit-gift.username": "New Minecraft username for the gift (optional)",
+        "unlink": "Staff: unlink a member's Patreon and remove the beta access it gave",
+        "unlink.member": "The member to unlink (works even if they left)",
+    },
+    "es": {
+        "patreon": "Acceso beta de Patreon",
+        "beta-access": "Pide el acceso beta de Patreon de DragonMineZ para un nombre de Minecraft",
+        "beta-access.username": "Tu nombre de Minecraft",
+        "link": "Vincula tu cuenta de Patreon",
+        "gift": "Regala tu acceso beta de Patreon al nombre de Minecraft de otro miembro de Discord",
+        "gift.recipient": "Miembro de Discord que recibe el acceso beta",
+        "gift.username": "Nombre de Minecraft de quien lo recibe",
+        "edit-gift": "Pasa un regalo beta de Patreon a otro miembro y/o cambia el nombre de Minecraft",
+        "edit-gift.recipient": "El miembro de Discord que tiene tu regalo ahora",
+        "edit-gift.new_recipient": "Pasar el regalo a este miembro de Discord (opcional)",
+        "edit-gift.username": "Nuevo nombre de Minecraft para el regalo (opcional)",
+        "unlink": "Staff: desvincula el Patreon de un miembro y quita el acceso beta que dio",
+        "unlink.member": "El miembro a desvincular (funciona aunque se haya ido)",
+    },
+    "pt": {
+        "patreon": "Acesso beta do Patreon",
+        "beta-access": "Peça o acesso beta do Patreon do DragonMineZ para um nome de Minecraft",
+        "beta-access.username": "Seu nome de Minecraft",
+        "link": "Vincule sua conta do Patreon",
+        "gift": "Presenteie seu acesso beta do Patreon ao nome de Minecraft de outro membro do Discord",
+        "gift.recipient": "Membro do Discord que recebe o acesso beta",
+        "gift.username": "Nome de Minecraft de quem recebe",
+        "edit-gift": "Passe um presente beta do Patreon para outro membro e/ou mude o nome de Minecraft",
+        "edit-gift.recipient": "O membro do Discord que está com seu presente agora",
+        "edit-gift.new_recipient": "Passar o presente para este membro do Discord (opcional)",
+        "edit-gift.username": "Novo nome de Minecraft para o presente (opcional)",
+        "unlink": "Staff: desvincula o Patreon de um membro e remove o acesso beta que ele deu",
+        "unlink.member": "O membro a desvincular (funciona mesmo se ele saiu)",
+    },
+})
+
+
 async def _send_message(destination, content: str, *, ephemeral: bool = False, **kwargs) -> None:
     if ephemeral:
         kwargs["ephemeral"] = True
@@ -284,38 +489,20 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         self._ensure_runtime_state()
         self._processed_patreon_oauth_states[state] = time.monotonic()
 
-    patreon = discord.SlashCommandGroup("patreon", "Patreon beta access")
+    patreon = discord.SlashCommandGroup("patreon", **described(DESC, "patreon"))
 
-    @patreon.command(
-        name="beta-access",
-        description="Request DragonMineZ Patreon beta access for a Minecraft username",
-    )
-    @discord.option(
-        "username",
-        description="Your Minecraft username",
-        required=True,
-    )
+    @patreon.command(name="beta-access", **described(DESC, "beta-access"))
+    @discord.option("username", **described(DESC, "beta-access.username"), required=True)
     async def beta_access(self, ctx: discord.ApplicationContext, username: str) -> None:
         await self._handle_beta_access_command(ctx, username)
 
-    @patreon.command(name="link", description="Link your Patreon account")
+    @patreon.command(name="link", **described(DESC, "link"))
     async def link_patreon(self, ctx: discord.ApplicationContext) -> None:
         await self._handle_link_patreon_command(ctx)
 
-    @patreon.command(
-        name="gift",
-        description="Gift your Patreon beta access to another Discord member's Minecraft username",
-    )
-    @discord.option(
-        "recipient",
-        description="Discord member receiving beta access",
-        required=True,
-    )
-    @discord.option(
-        "username",
-        description="Recipient Minecraft username",
-        required=True,
-    )
+    @patreon.command(name="gift", **described(DESC, "gift"))
+    @discord.option("recipient", **described(DESC, "gift.recipient"), required=True)
+    @discord.option("username", **described(DESC, "gift.username"), required=True)
     async def gift_beta(
         self,
         ctx: discord.ApplicationContext,
@@ -324,27 +511,10 @@ class PatreonWhitelistFlowCog(ReloadableCog):
     ) -> None:
         await self._handle_gift_beta_command(ctx, recipient, username)
 
-    @patreon.command(
-        name="edit-gift",
-        description="Reassign a Patreon beta gift to another member and/or change the Minecraft username",
-    )
-    @discord.option(
-        "recipient",
-        description="The Discord member you currently have a gift for",
-        required=True,
-    )
-    @discord.option(
-        "new_recipient",
-        description="Move the gift to this Discord member instead (optional)",
-        required=False,
-        default=None,
-    )
-    @discord.option(
-        "username",
-        description="New Minecraft username for the gift (optional)",
-        required=False,
-        default=None,
-    )
+    @patreon.command(name="edit-gift", **described(DESC, "edit-gift"))
+    @discord.option("recipient", **described(DESC, "edit-gift.recipient"), required=True)
+    @discord.option("new_recipient", **described(DESC, "edit-gift.new_recipient"), required=False, default=None)
+    @discord.option("username", **described(DESC, "edit-gift.username"), required=False, default=None)
     async def edit_gift(
         self,
         ctx: discord.ApplicationContext,
@@ -354,8 +524,8 @@ class PatreonWhitelistFlowCog(ReloadableCog):
     ) -> None:
         await self._handle_edit_gift_command(ctx, recipient, new_recipient, username)
 
-    @patreon.command(name="unlink", description="Staff: unlink a member's Patreon and remove the beta access it gave")
-    @discord.option("member", discord.User, description="The member to unlink (works even if they left)", required=True)
+    @patreon.command(name="unlink", **described(DESC, "unlink"))
+    @discord.option("member", discord.User, **described(DESC, "unlink.member"), required=True)
     async def unlink_patreon(self, ctx: discord.ApplicationContext, member: discord.User) -> None:
         await self._handle_unlink_command(ctx, member)
 
@@ -479,7 +649,9 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         if custom_id != PATREON_WELCOME_VERIFY_CUSTOM_ID:
             return
         await interaction.response.send_modal(
-            BetaAccessUsernameModal(on_submit=self._handle_welcome_verify_submit)
+            BetaAccessUsernameModal(
+                on_submit=self._handle_welcome_verify_submit, language=reader_language(interaction)
+            )
         )
 
     async def _handle_welcome_verify_submit(
@@ -488,16 +660,14 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         username: str,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        language = reader_language(interaction)
 
         user = interaction.user
         member = user if isinstance(user, discord.Member) else None
         if member is None:
             member = await self._resolve_member_across_guilds(user.id)
         if member is None:
-            await interaction.followup.send(
-                "Join the DragonMineZ Discord server first, then press the button again.",
-                ephemeral=True,
-            )
+            await interaction.followup.send(t(TEXT, "join_first", language), ephemeral=True)
             return
 
         await self.start_whitelist_flow_for_user(
@@ -505,6 +675,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             interaction.followup,
             username,
             ephemeral=True,
+            language=language,
         )
 
     def _unregister_patreon_routes(self) -> None:
@@ -739,12 +910,10 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         username: str,
     ) -> None:
         await ctx.defer(ephemeral=True)
+        language = reader_language(ctx)
 
         if not isinstance(ctx.author, discord.Member):
-            await ctx.followup.send(
-                "Use `/patreon beta-access` inside the DragonMineZ server so I can verify your Patreon role.",
-                ephemeral=True,
-            )
+            await ctx.followup.send(t(TEXT, "in_server_verify", language), ephemeral=True)
             return
 
         await self.start_whitelist_flow_for_user(
@@ -752,31 +921,22 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             ctx.followup,
             username,
             ephemeral=True,
+            language=language,
         )
 
     async def _handle_link_patreon_command(self, ctx: discord.ApplicationContext) -> None:
         await ctx.defer(ephemeral=True)
-        await self.send_link_prompt(ctx.author, ctx.followup)
+        await self.send_link_prompt(ctx.author, ctx.followup, language=reader_language(ctx))
 
-    async def send_link_prompt(self, member: discord.abc.User, followup: discord.Webhook) -> None:
+    async def send_link_prompt(self, member: discord.abc.User, followup: discord.Webhook, language: str = "en") -> None:
         """What `/patreon link` answers, ephemerally through an interaction's followup. Bulma's link_patreon offer
         (AITicketsCog) sends the same to the member who clicked it."""
         if not isinstance(member, discord.Member):
-            await followup.send(
-                "Use `/patreon link` inside the DragonMineZ server.",
-                ephemeral=True,
-            )
+            await followup.send(t(TEXT, "in_server", language, command="/patreon link"), ephemeral=True)
             return
         if not has_patreon_access_role(member, settings=self.bot.settings):
-            await followup.send(
-                "**Heads up:** You don't have a Patreon beta access role yet. "
-                "If you're a Patron, connect your Patreon account to Discord first so the role is granted automatically — "
-                "otherwise this link won't activate your beta access: "
-                "https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access\n\n"
-                "If you've already done that and are still missing the role, you can proceed with linking below.",
-                ephemeral=True,
-            )
-        await self._send_patreon_oauth_prompt(member, followup, ephemeral=True)
+            await followup.send(t(TEXT, "heads_up", language, url=_HOW_TO_ROLE), ephemeral=True)
+        await self._send_patreon_oauth_prompt(member, followup, ephemeral=True, language=language)
 
     async def _handle_unlink_command(self, ctx: discord.ApplicationContext, user: discord.abc.User) -> None:
         """Staff unlink: drops the Patreon link plus the owner's self grant and every gift they handed out.
@@ -784,8 +944,9 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         await ctx.defer(ephemeral=True)
         settings = self.bot.settings
         author = ctx.author
+        language = reader_language(ctx, settings)
         if not isinstance(author, discord.Member) or not in_main_guild(author, settings) or not is_staff(author, settings=settings):
-            await ctx.followup.send("Only staff can unlink Patreon accounts.", ephemeral=True)
+            await ctx.followup.send(t(TEXT, "staff_only", language), ephemeral=True)
             return
         async with self._beta_access_lock(user.id):
             grants = await list_active_grants_for_owner(user.id)
@@ -794,20 +955,21 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                     await self._remove_whitelist_grants(user.id, grants, f"unlinked by {author}")
                 except Exception:
                     log.exception("Patreon unlink whitelist removal failed for %s", user.id)
-                    await ctx.followup.send(
-                        "The GitHub whitelist update failed, so nothing was changed. Try again in a bit.", ephemeral=True
-                    )
+                    await ctx.followup.send(t(TEXT, "github_failed", language), ephemeral=True)
                     return
                 await deactivate_grants_for_owner(user.id)
             unlinked = await delete_patreon_link(user.id)
         if not grants and not unlinked:
-            await ctx.followup.send(f"<@{user.id}> has no Patreon link or beta access to remove.", ephemeral=True)
+            await ctx.followup.send(t(TEXT, "nothing_to_unlink", language, user=user.id), ephemeral=True)
             return
         names = ", ".join(f"`{name}`" for name in sorted({g.minecraft_username for g in grants if g.minecraft_username}))
-        summary = f"Unlinked <@{user.id}>'s Patreon." if unlinked else f"<@{user.id}> had no Patreon link."
-        summary += f" Removed beta access: {names}." if names else " No beta access to remove."
-        await self._log_staff_info(f"Patreon unlinked for <@{user.id}> by {author.mention}. {summary}")
-        await ctx.followup.send(summary, ephemeral=True)
+
+        def summary(lang: str) -> str:
+            text = t(TEXT, "unlinked" if unlinked else "had_no_link", lang, user=user.id)
+            return text + (t(TEXT, "removed", lang, names=names) if names else t(TEXT, "nothing_removed", lang))
+
+        await self._log_staff_info(f"Patreon unlinked for <@{user.id}> by {author.mention}. {summary('en')}")
+        await ctx.followup.send(summary(language), ephemeral=True)
 
     def _build_patreon_oauth_url(
         self,
@@ -843,6 +1005,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         *,
         ephemeral: bool,
         minecraft_username: str | None = None,
+        language: str = "en",
     ) -> None:
         action = "beta_access" if minecraft_username else "link"
         url = self._build_patreon_oauth_url(
@@ -851,26 +1014,18 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             minecraft_username=minecraft_username,
         )
         if url is None:
-            await _send_message(
-                destination,
-                "Patreon linking is not configured yet. Ask staff to check the bot settings.",
-                ephemeral=ephemeral,
-            )
+            await _send_message(destination, t(TEXT, "not_configured", language), ephemeral=ephemeral)
             return
         if isinstance(destination, BrowserFlowDestination):
             destination.patreon_url = url
         if minecraft_username:
             await _send_message(
                 destination,
-                f"Authorize with Patreon to continue beta access verification for `{minecraft_username}`: {url}",
+                t(TEXT, "authorize_beta", language, username=minecraft_username, url=url),
                 ephemeral=ephemeral,
             )
             return
-        await _send_message(
-            destination,
-            f"Authorize with Patreon to link your account: {url}",
-            ephemeral=ephemeral,
-        )
+        await _send_message(destination, t(TEXT, "authorize_link", language, url=url), ephemeral=ephemeral)
 
     async def start_whitelist_flow_for_user(
         self,
@@ -880,27 +1035,19 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         *,
         ephemeral: bool = False,
         active_link: PatreonLink | None = None,
+        language: str = "en",
     ) -> None:
         """
-        Core Patreon whitelist workflow used by /patreon beta-access.
+        Core Patreon whitelist workflow used by /patreon beta-access. `language` is the Discord reader's;
+        the browser flow keeps the English default.
         """
         nickname = initial_nickname.strip() if initial_nickname is not None else ""
         if not MC_NAME_RE.match(nickname):
-            await _send_message(
-                destination,
-                "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
-                ephemeral=ephemeral,
-            )
+            await _send_message(destination, t(TEXT, "invalid_name", language), ephemeral=ephemeral)
             return
 
         if not has_patreon_access_role(member, settings=self.bot.settings) and not _is_tester(member, self.bot.settings):
-            await _send_message(
-                destination,
-                "You don't have a Patreon beta access role yet. "
-                "If you're a Patron, make sure to connect your Patreon account to Discord so the role is granted automatically: "
-                "https://support.patreon.com/hc/en-us/articles/212052266-Getting-Discord-access",
-                ephemeral=ephemeral,
-            )
+            await _send_message(destination, t(TEXT, "no_role", language, url=_HOW_TO_ROLE), ephemeral=ephemeral)
             return
 
         link = active_link or await get_patreon_link(member.id)
@@ -910,6 +1057,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 destination,
                 ephemeral=ephemeral,
                 minecraft_username=nickname,
+                language=language,
             )
             return
 
@@ -921,9 +1069,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                     if isinstance(destination, BrowserFlowDestination):
                         destination.whitelisted = old_nickname
                     await _send_message(
-                        destination,
-                        f"`{nickname}` is already your active Patreon beta whitelist username.",
-                        ephemeral=ephemeral,
+                        destination, t(TEXT, "already_active", language, nickname=nickname), ephemeral=ephemeral
                     )
                     return
                 await self._send_username_update_prompt(
@@ -932,6 +1078,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                     old_nickname,
                     nickname,
                     ephemeral=ephemeral,
+                    language=language,
                 )
                 return
 
@@ -948,31 +1095,21 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                         "nickname": nickname,
                     },
                 )
-                await _send_message(
-                    destination,
-                    "I could not submit the whitelist change. Please ask staff to check the bot logs.",
-                    ephemeral=ephemeral,
-                )
+                await _send_message(destination, t(TEXT, "submit_failed", language), ephemeral=ephemeral)
                 return
 
             if commit_url is None:
                 if isinstance(destination, BrowserFlowDestination):
                     destination.whitelisted = nickname
                 await _send_message(
-                    destination,
-                    f"`{nickname}` is already whitelisted. Nothing to do.",
-                    ephemeral=ephemeral,
+                    destination, t(TEXT, "already_whitelisted", language, nickname=nickname), ephemeral=ephemeral
                 )
                 return
 
             await self._record_self_grant(member, nickname, commit_url)
             if isinstance(destination, BrowserFlowDestination):
                 destination.whitelisted = nickname
-            await _send_message(
-                destination,
-                f"`{nickname}` was approved automatically for Patreon beta access.",
-                ephemeral=ephemeral,
-            )
+            await _send_message(destination, t(TEXT, "approved", language, nickname=nickname), ephemeral=ephemeral)
             await self._log_staff_info(
                 f"{member.mention} linked Patreon access and `{nickname}` was approved automatically.\n-# [GitHub commit](<{commit_url}>)"
             )
@@ -991,6 +1128,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         new_nickname: str,
         *,
         ephemeral: bool,
+        language: str = "en",
     ) -> None:
         if isinstance(destination, BrowserFlowDestination):
             await _send_message(
@@ -1007,6 +1145,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 update_inter,
                 old_nickname,
                 new_nickname,
+                language,
             )
 
         view = UsernameUpdateConfirmView(
@@ -1014,6 +1153,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
             old_nickname=old_nickname,
             new_nickname=new_nickname,
             on_confirm=confirm,
+            language=language,
         )
         await destination.send(view=view, **({"ephemeral": True} if ephemeral else {}))
 
@@ -1023,29 +1163,22 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         interaction: discord.Interaction,
         old_nickname: str,
         new_nickname: str,
+        language: str = "en",
     ) -> None:
         async with self._beta_access_lock(member.id):
             current_grant = _active_self_grant(await list_active_grants_for_owner(member.id), member.id)
             if current_grant is None:
-                await interaction.followup.send(
-                    "I could not find your active Patreon beta whitelist grant. Please run `/patreon beta-access` again.",
-                    ephemeral=True,
-                )
+                await interaction.followup.send(t(TEXT, "grant_missing", language), ephemeral=True)
                 return
 
             current_nickname = current_grant.minecraft_username.strip()
             if current_nickname.casefold() == new_nickname.casefold():
                 await interaction.followup.send(
-                    f"`{new_nickname}` is already your active Patreon beta whitelist username.",
-                    ephemeral=True,
+                    t(TEXT, "already_active", language, nickname=new_nickname), ephemeral=True
                 )
                 return
             if current_nickname.casefold() != old_nickname.casefold():
-                await interaction.followup.send(
-                    "Your active Patreon beta whitelist username changed while this confirmation was open. "
-                    "Please run `/patreon beta-access` again.",
-                    ephemeral=True,
-                )
+                await interaction.followup.send(t(TEXT, "changed_meanwhile", language), ephemeral=True)
                 return
 
             try:
@@ -1060,23 +1193,18 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                         "new_nickname": new_nickname,
                     },
                 )
-                await interaction.followup.send(
-                    "I could not submit the whitelist username update. Please ask staff to check the bot logs.",
-                    ephemeral=True,
-                )
+                await interaction.followup.send(t(TEXT, "update_failed", language), ephemeral=True)
                 return
 
             if commit_url is None:
                 await interaction.followup.send(
-                    f"`{new_nickname}` is already whitelisted. Nothing to update.",
-                    ephemeral=True,
+                    t(TEXT, "nothing_to_update", language, nickname=new_nickname), ephemeral=True
                 )
                 return
 
             await self._record_self_grant(member, new_nickname, commit_url)
             await interaction.followup.send(
-                f"Your Patreon beta whitelist username was updated from `{old_nickname}` to `{new_nickname}`.",
-                ephemeral=True,
+                t(TEXT, "updated", language, old=old_nickname, new=new_nickname), ephemeral=True
             )
             await self._log_staff_info(
                 f"{member.mention} updated Patreon beta access from `{old_nickname}` to `{new_nickname}`.\n-# [GitHub commit](<{commit_url}>)"
@@ -1133,16 +1261,14 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         username: str | None = None,
     ) -> None:
         await ctx.defer(ephemeral=True)
+        language = reader_language(ctx)
 
         if not isinstance(ctx.author, discord.Member):
-            await ctx.followup.send(
-                "Use `/patreon edit-gift` inside the DragonMineZ server.",
-                ephemeral=True,
-            )
+            await ctx.followup.send(t(TEXT, "in_server", language, command="/patreon edit-gift"), ephemeral=True)
             return
 
         if new_recipient is not None and new_recipient.bot:
-            await ctx.followup.send("You cannot gift beta access to a bot.", ephemeral=True)
+            await ctx.followup.send(t(TEXT, "bot_gift", language), ephemeral=True)
             return
 
         async with self._beta_access_lock(ctx.author.id):
@@ -1161,15 +1287,10 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 gift_grant = gift_grants[0]
             if gift_grant is None:
                 if not gift_grants:
-                    await ctx.followup.send(
-                        "You don't have any active Patreon gift to edit.",
-                        ephemeral=True,
-                    )
+                    await ctx.followup.send(t(TEXT, "no_gift", language), ephemeral=True)
                 else:
                     await ctx.followup.send(
-                        f"You don't have an active Patreon gift for {recipient.mention}. "
-                        "Pick the member you currently have a gift for as `recipient`.",
-                        ephemeral=True,
+                        t(TEXT, "no_gift_for", language, recipient=recipient.mention), ephemeral=True
                     )
                 return
 
@@ -1181,17 +1302,13 @@ class PatreonWhitelistFlowCog(ReloadableCog):
 
             nickname = username.strip() if username is not None else old_nickname
             if not MC_NAME_RE.match(nickname):
-                await ctx.followup.send(
-                    "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
-                    ephemeral=True,
-                )
+                await ctx.followup.send(t(TEXT, "invalid_name", language), ephemeral=True)
                 return
             nickname_changed = old_nickname.casefold() != nickname.casefold()
 
             if not recipient_changed and not nickname_changed:
                 await ctx.followup.send(
-                    f"Nothing to change — {target.mention} already holds this gift as `{nickname}`.",
-                    ephemeral=True,
+                    t(TEXT, "nothing_to_change", language, target=target.mention, nickname=nickname), ephemeral=True
                 )
                 return
 
@@ -1211,16 +1328,12 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                             "new_nickname": nickname,
                         },
                     )
-                    await ctx.followup.send(
-                        "I could not submit the username update. Please ask staff to check the bot logs.",
-                        ephemeral=True,
-                    )
+                    await ctx.followup.send(t(TEXT, "gift_update_failed", language), ephemeral=True)
                     return
 
                 if commit_url is None:
                     await ctx.followup.send(
-                        f"`{nickname}` is already whitelisted. Nothing to update.",
-                        ephemeral=True,
+                        t(TEXT, "nothing_to_update", language, nickname=nickname), ephemeral=True
                     )
                     return
 
@@ -1249,6 +1362,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 target=target,
                 old_nickname=old_nickname,
                 nickname=nickname,
+                language=language,
             ),
             ephemeral=True,
         )
@@ -1270,20 +1384,13 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         target: discord.Member,
         old_nickname: str,
         nickname: str,
+        language: str = "en",
     ) -> str:
-        if recipient_changed and nickname_changed:
-            return (
-                f"Moved the Patreon beta gift from <@{old_recipient_id}> to {target.mention} "
-                f"and updated the Minecraft username from `{old_nickname}` to `{nickname}`."
-            )
-        if recipient_changed:
-            return (
-                f"Moved the Patreon beta gift from <@{old_recipient_id}> to {target.mention} "
-                f"(Minecraft username `{nickname}`)."
-            )
-        return (
-            f"Updated {target.mention}'s Patreon beta whitelist username "
-            f"from `{old_nickname}` to `{nickname}`."
+        key = "gift_moved_renamed" if recipient_changed and nickname_changed else (
+            "gift_moved" if recipient_changed else "gift_renamed"
+        )
+        return t(
+            TEXT, key, language, old=old_recipient_id, target=target.mention, old_nickname=old_nickname, nickname=nickname
         )
 
     async def _auto_update_gift_access(self, *, old_nickname: str, new_nickname: str) -> str | None:
@@ -1299,33 +1406,25 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         username: str,
     ) -> None:
         await ctx.defer(ephemeral=True)
+        language = reader_language(ctx)
         if not isinstance(ctx.author, discord.Member):
-            await ctx.followup.send(
-                "Use `/patreon gift` inside the DragonMineZ server.",
-                ephemeral=True,
-            )
+            await ctx.followup.send(t(TEXT, "in_server", language, command="/patreon gift"), ephemeral=True)
             return
         if recipient.bot:
-            await ctx.followup.send("You cannot gift beta access to a bot.", ephemeral=True)
+            await ctx.followup.send(t(TEXT, "bot_gift", language), ephemeral=True)
             return
 
         link = await get_patreon_link(ctx.author.id)
         if link is None or not _is_active_link(link, self.bot.settings):
-            await self._send_patreon_oauth_prompt(ctx.author, ctx.followup, ephemeral=True)
+            await self._send_patreon_oauth_prompt(ctx.author, ctx.followup, ephemeral=True, language=language)
             return
         if not has_patreon_access_role(ctx.author, settings=self.bot.settings):
-            await ctx.followup.send(
-                "Your Patreon account is linked, but you need the DragonMineZ Patreon access role in this server before gifting beta access.",
-                ephemeral=True,
-            )
+            await ctx.followup.send(t(TEXT, "need_role_gift", language), ephemeral=True)
             return
 
         nickname = username.strip() if username is not None else ""
         if not MC_NAME_RE.match(nickname):
-            await ctx.followup.send(
-                "Invalid Minecraft username. Use 3-16 letters, numbers, or underscores.",
-                ephemeral=True,
-            )
+            await ctx.followup.send(t(TEXT, "invalid_name", language), ephemeral=True)
             return
 
         gift_limit = _gift_limit_for_member(
@@ -1336,10 +1435,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
         async with self._beta_access_lock(ctx.author.id):
             used_gifts = await count_active_gifts_for_owner(ctx.author.id)
             if used_gifts >= gift_limit:
-                await ctx.followup.send(
-                    f"You have already used your active Patreon gift limit ({gift_limit}).",
-                    ephemeral=True,
-                )
+                await ctx.followup.send(t(TEXT, "gift_limit", language, limit=gift_limit), ephemeral=True)
                 return
 
             mojang_ok = await self._check_mojang_username(nickname)
@@ -1356,16 +1452,12 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                         "nickname": nickname,
                     },
                 )
-                await ctx.followup.send(
-                    "I could not submit the gift request. Please ask staff to check the bot logs.",
-                    ephemeral=True,
-                )
+                await ctx.followup.send(t(TEXT, "gift_failed", language), ephemeral=True)
                 return
 
             if commit_url is None:
                 await ctx.followup.send(
-                    f"`{nickname}` is already whitelisted. Nothing to do.",
-                    ephemeral=True,
+                    t(TEXT, "already_whitelisted", language, nickname=nickname), ephemeral=True
                 )
                 return
 
@@ -1381,8 +1473,7 @@ class PatreonWhitelistFlowCog(ReloadableCog):
                 )
             )
         await ctx.followup.send(
-            f"Gift approved automatically: {recipient.mention} as `{nickname}`.",
-            ephemeral=True,
+            t(TEXT, "gift_approved", language, recipient=recipient.mention, nickname=nickname), ephemeral=True
         )
         await self._log_staff_info(
             f"{ctx.author.mention} gifted Patreon beta access to {recipient.mention} as `{nickname}` "

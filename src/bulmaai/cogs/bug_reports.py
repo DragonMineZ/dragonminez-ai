@@ -26,8 +26,34 @@ from bulmaai.services.bug_reports import (
 from bulmaai.ui.bug_report_views import DUPLICATE_TITLE, FIXED_TITLE, message_text, restatus, triage_view
 from bulmaai.ui.v2 import while_busy
 from bulmaai.ui.ticket_views import CATEGORIES
+from bulmaai.utils.i18n import reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.log_parser import parse_log
+
+# "Open a ticket" answers go to the reporter (or staff), ephemerally, in their language. Staff triage replies stay English.
+OPEN_TEXT = table({
+    "en": {
+        "no_data": "No triage data found for this report.",
+        "not_reporter": "Only the person who posted this report can open a ticket from it.",
+        "unavailable": "Tickets aren't available right now.",
+        "opening": "That ticket is already being opened.",
+        "gone": "The reporter isn't in the server anymore.",
+    },
+    "es": {
+        "no_data": "No encontré datos de triage para este reporte.",
+        "not_reporter": "Solo quien publicó este reporte puede abrir un ticket desde él.",
+        "unavailable": "Los tickets no están disponibles ahora.",
+        "opening": "Ese ticket ya se está abriendo.",
+        "gone": "Quien hizo el reporte ya no está en el servidor.",
+    },
+    "pt": {
+        "no_data": "Não encontrei dados de triagem para este relatório.",
+        "not_reporter": "Só quem postou este relatório pode abrir um ticket a partir dele.",
+        "unavailable": "Os tickets não estão disponíveis agora.",
+        "opening": "Esse ticket já está sendo aberto.",
+        "gone": "Quem fez o relatório não está mais no servidor.",
+    },
+})
 from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
@@ -404,20 +430,19 @@ class BugReportsCog(ReloadableCog):
     async def _handle_open_ticket(self, interaction: discord.Interaction, thread_id: int) -> None:
         """Moves a game-breaking report into a private bug ticket owned by the reporter, then deletes the post.
         Only the reporter or staff (opening it on the reporter's behalf) can use it."""
+        language = reader_language(interaction, self.settings)
         report = await get_bug_report(thread_id)
         if report is None:
-            return await interaction.response.send_message("No triage data found for this report.", ephemeral=True)
+            return await interaction.response.send_message(t(OPEN_TEXT, "no_data", language), ephemeral=True)
         is_reporter = interaction.user.id == report.reporter_id
         if not is_reporter and not is_staff(interaction.user, settings=self.settings):
-            return await interaction.response.send_message(
-                "Only the person who posted this report can open a ticket from it.", ephemeral=True
-            )
+            return await interaction.response.send_message(t(OPEN_TEXT, "not_reporter", language), ephemeral=True)
         tickets = self.bot.get_cog(TICKETS_COG)
         thread = interaction.channel
         if tickets is None or interaction.guild is None or not isinstance(thread, discord.Thread):
-            return await interaction.response.send_message("Tickets aren't available right now.", ephemeral=True)
+            return await interaction.response.send_message(t(OPEN_TEXT, "unavailable", language), ephemeral=True)
         if thread_id in self._opening_tickets:
-            return await interaction.response.send_message("That ticket is already being opened.", ephemeral=True)
+            return await interaction.response.send_message(t(OPEN_TEXT, "opening", language), ephemeral=True)
 
         owner = interaction.user if is_reporter else interaction.guild.get_member(report.reporter_id or 0)
         if owner is None and report.reporter_id:
@@ -426,7 +451,7 @@ class BugReportsCog(ReloadableCog):
             except discord.HTTPException:
                 owner = None
         if owner is None:
-            return await interaction.response.send_message("The reporter isn't in the server anymore.", ephemeral=True)
+            return await interaction.response.send_message(t(OPEN_TEXT, "gone", language), ephemeral=True)
 
         self._opening_tickets.add(thread_id)
         try:

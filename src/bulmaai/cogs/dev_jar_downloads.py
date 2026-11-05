@@ -55,11 +55,49 @@ from bulmaai.ui.dev_jar_views import (
     build_dev_jar_review_view,
 )
 from bulmaai.ui.v2 import unbusy, while_busy
+from bulmaai.utils.i18n import reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import has_any_allowed_role, is_admin
 
 
 log = logging.getLogger(__name__)
+
+# Answers to the download button: ephemeral, so in the clicker's language. Staff review replies stay English.
+DOWNLOAD_TEXT = table({
+    "en": {
+        "in_server": "Use this download button inside the DragonMineZ Discord server.",
+        "not_allowed": "Your Discord account is not authorized for this download.",
+        "not_configured": "Download signing is not configured yet.",
+        "already": "You already downloaded `{file}`. Download links are one-time per user per jar, so this build "
+        "cannot be requested again. A newer dev jar announcement will come with a fresh download.",
+        "link": "One-time download link: {url}",
+        "missing": "Hmm.. It seems that the file to download is missing. Maybe this announcement is outdated? "
+        "Check for newer bot messages with the button.",
+        "failed": "I could not prepare that download link. Ask staff to check the bot logs.",
+    },
+    "es": {
+        "in_server": "Usa este botón de descarga dentro del servidor de Discord de DragonMineZ.",
+        "not_allowed": "Tu cuenta de Discord no tiene permiso para esta descarga.",
+        "not_configured": "La firma de descargas todavía no está configurada.",
+        "already": "Ya descargaste `{file}`. Los enlaces de descarga son de un solo uso por persona y por jar, así que "
+        "no puedes volver a pedir esta build. El próximo anuncio de dev jar traerá una descarga nueva.",
+        "link": "Enlace de descarga de un solo uso: {url}",
+        "missing": "Mmm... parece que falta el archivo a descargar. ¿Quizás este anuncio es viejo? "
+        "Busca mensajes más nuevos del bot con el botón.",
+        "failed": "No pude preparar ese enlace de descarga. Pídele al staff que revise los logs del bot.",
+    },
+    "pt": {
+        "in_server": "Use este botão de download dentro do servidor do Discord do DragonMineZ.",
+        "not_allowed": "Sua conta do Discord não tem permissão para este download.",
+        "not_configured": "A assinatura de downloads ainda não está configurada.",
+        "already": "Você já baixou `{file}`. Os links de download são de uso único por pessoa e por jar, então "
+        "esta build não pode ser pedida de novo. O próximo anúncio de dev jar trará um download novo.",
+        "link": "Link de download de uso único: {url}",
+        "missing": "Hmm... parece que o arquivo para baixar sumiu. Talvez este anúncio esteja desatualizado? "
+        "Procure mensagens mais novas do bot com o botão.",
+        "failed": "Não consegui preparar esse link de download. Peça à staff para verificar os logs do bot.",
+    },
+})
 
 DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:"
 MANUAL_DOWNLOAD_BUTTON_PREFIX = "dev_jar_download:manual:"
@@ -657,38 +695,29 @@ class DevJarDownloadsCog(ReloadableCog):
         *,
         is_manual: bool = False,
     ) -> None:
+        def say(key: str, **values) -> str:
+            return t(DOWNLOAD_TEXT, key, reader_language(interaction, self.settings), **values)
+
         try:
             artifact = parse_dev_jar_filename(file_name)
             self._artifact_path(artifact)
             guild_id = getattr(interaction, "guild_id", None)
             if guild_id is None:
-                await interaction.response.send_message(
-                    "Use this download button inside the DragonMineZ Discord server.",
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(say("in_server"), ephemeral=True)
                 return
             if not can_download_dev_jar(
                 interaction.user,
                 patreon_role_ids=tuple(self.settings.dev_jar_patreon_role_ids),
                 tester_role_ids=tuple(self.settings.dev_jar_tester_role_ids),
             ):
-                await interaction.response.send_message(
-                    "Your Discord account is not authorized for this download.",
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(say("not_allowed"), ephemeral=True)
                 return
             if not self.settings.release_webhook_secret:
-                await interaction.response.send_message(
-                    "Download signing is not configured yet.",
-                    ephemeral=True,
-                )
+                await interaction.response.send_message(say("not_configured"), ephemeral=True)
                 return
             if not is_manual and await self._user_already_downloaded(interaction.user.id, artifact.file_name):
                 await interaction.response.send_message(
-                    f"You already downloaded `{artifact.file_name}`. Download links are one-time "
-                    "per user per jar, so this build cannot be requested again. A newer dev jar "
-                    "announcement will come with a fresh download.",
-                    ephemeral=True,
+                    say("already", file=artifact.file_name), ephemeral=True
                 )
                 return
 
@@ -699,22 +728,13 @@ class DevJarDownloadsCog(ReloadableCog):
                 is_manual=is_manual,
             )
             url = self._direct_download_url(token)
-            await interaction.response.send_message(
-                f"One-time download link: {url}",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(say("link", url=url), ephemeral=True)
         except FileNotFoundError:
             log.exception("Dev jar artifact not found for download button")
-            await interaction.response.send_message(
-                "Hmm.. It seems that the file to download is missing. Maybe this announcement is outdated? Check for newer bot messages with the button.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(say("missing"), ephemeral=True)
         except Exception:
             log.exception("Failed to prepare dev jar download link")
-            await interaction.response.send_message(
-                "I could not prepare that download link. Ask staff to check the bot logs.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(say("failed"), ephemeral=True)
 
     async def _user_already_downloaded(self, user_id: int, file_name: str) -> bool:
         try:

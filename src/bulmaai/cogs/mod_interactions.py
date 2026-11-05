@@ -43,6 +43,7 @@ from bulmaai.ui.mod_views import (
 )
 from bulmaai.web.core import PERMISSIONS, tier_for
 from bulmaai.ui.v2 import card, unbusy, while_busy
+from bulmaai.utils.i18n import reader_language, t, table, user_language
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,199 @@ REPORT_COOLDOWN_SECONDS = 60
 NO_MENTIONS = discord.AllowedMentions.none()
 
 OnSubmit = Callable[[discord.Interaction, str], Awaitable[None]]
+
+# Ephemeral replies, forms and DMs are in the reader's language; the alert cards' handled lines stay English.
+TEXT = table({
+    "en": {
+        "failed": "Something went wrong, the bot logs have the details.",
+        "main_only": "That only works on the DragonMineZ server.",
+        "tier_denied": "Your staff tier can't do that.",
+        "details_gone": "The saved details for this alert are gone.",
+        "action_failed": "Something went wrong, the action may not have gone through.",
+        "quick_title": "{label} user {user_id}",
+        "reason": "Reason",
+        "done": "Done: {label}.",
+        "done_case": "Done: {label} (case #{case_id}).",
+        "not_dmed": " They couldn't be DMed.",
+        "ladder_hit": "\nThat hit the warn ladder: automatic {action}{case}.",
+        "ladder_skipped": "\nWarn ladder: {skipped}.",
+        "learned": "Deleted the message and learned {count} images.",
+        "learned_one": "Deleted the message and learned 1 image.",
+        "learned_none": "Deleted the message; nothing was learned.",
+        "no_hit": "No automod record was found for this alert; dismissed instead.",
+        "falsepos": "Marked as a false positive ({summary}).",
+        "nothing_undone": "nothing needed to be undone",
+        "allowlist_prompt": "Also stop flagging these domains?",
+        "allowlist_admin": "An admin can allowlist these domains in Settings.",
+        "channel_gone": "That channel is gone or the bot can't see it.",
+        "delete_forbidden": "The bot isn't allowed to delete messages in that channel.",
+        "discord_error": "Discord returned an error, try again.",
+        "no_domains": "That automod hit has no domains to allowlist any more.",
+        "allowlisted": "✅ Allowlisted: {domains}.",
+        "not_banned": "You're no longer banned from **{guild}**.",
+        "ban_check_failed": "Couldn't check your ban right now, try again later.",
+        "appeals_down": "Appeals are unavailable right now, try again later.",
+        "already_appealed": "You already appealed this ban; staff review each ban's appeal once.",
+        "appeal_site": "Appeals are made on the appeals website now: {url}",
+        "appeals_closed": "Ban appeals are closed right now.",
+        "server_gone": "I can't reach that server any more.",
+        "appeal_title": "Appeal your ban from {guild}",
+        "appeal_label": "Why should your ban be lifted?",
+        "appeal_save_failed": "Couldn't save your appeal, try again later.",
+        "appeal_sent": "Your appeal was sent to the **{guild}** staff.",
+        "appeal_failed": "Something went wrong, the appeal may not have been answered.",
+        "deny_title": "Deny appeal",
+        "deny_label": "Reason (optional, sent to the user)",
+        "appeal_accepted_dm": "Your ban appeal for **{guild}** was accepted, you can rejoin the server.",
+        "appeal_denied_dm": "Your ban appeal for **{guild}** was denied.",
+        "appeal_denied_reason": "\nReason: {reason}",
+        "accepted": "Accepted",
+        "denied": "Denied",
+        "report_main_only": "Reports only work on the DragonMineZ server.",
+        "report_bot": "You can't report a bot's message.",
+        "report_own": "You can't report your own message.",
+        "report_wait": "You just sent a report, try again in {wait}s.",
+        "report_title": "Report message",
+        "report_label": "What's wrong with it? (optional)",
+        "report_failed": "Couldn't reach the staff right now, try again later.",
+        "report_sent": "Thanks, staff will take a look.",
+        "quick_delete": "Delete message",
+        "quick_learn": "Delete & learn",
+        "quick_warn": "Warn",
+        "quick_timeout": "Timeout 24h",
+        "quick_untimeout": "Remove timeout",
+        "quick_kick": "Kick",
+        "quick_ban": "Ban",
+        "quick_dismiss": "Dismiss",
+        "quick_falsepos": "False positive",
+    },
+    "es": {
+        "failed": "Algo salió mal; los logs del bot tienen los detalles.",
+        "main_only": "Eso solo funciona en el servidor de DragonMineZ.",
+        "tier_denied": "Tu nivel de staff no puede hacer eso.",
+        "details_gone": "Los detalles guardados de esta alerta ya no están.",
+        "action_failed": "Algo salió mal, puede que la acción no se haya aplicado.",
+        "quick_title": "{label}: usuario {user_id}",
+        "reason": "Motivo",
+        "done": "Listo: {label}.",
+        "done_case": "Listo: {label} (caso #{case_id}).",
+        "not_dmed": " No se le pudo enviar MD.",
+        "ladder_hit": "\nEso activó la escalera de advertencias: {action} automático{case}.",
+        "ladder_skipped": "\nEscalera de advertencias: {skipped}.",
+        "learned": "Borré el mensaje y aprendí {count} imágenes.",
+        "learned_one": "Borré el mensaje y aprendí 1 imagen.",
+        "learned_none": "Borré el mensaje; no se aprendió nada.",
+        "no_hit": "No encontré un registro de automod para esta alerta; la descarté.",
+        "falsepos": "Marcado como falso positivo ({summary}).",
+        "nothing_undone": "no hubo nada que deshacer",
+        "allowlist_prompt": "¿Dejar también de marcar estos dominios?",
+        "allowlist_admin": "Un admin puede permitir estos dominios en la Configuración.",
+        "channel_gone": "Ese canal ya no existe o el bot no lo ve.",
+        "delete_forbidden": "El bot no tiene permiso para borrar mensajes en ese canal.",
+        "discord_error": "Discord devolvió un error, inténtalo de nuevo.",
+        "no_domains": "Ese registro de automod ya no tiene dominios que permitir.",
+        "allowlisted": "✅ Permitidos: {domains}.",
+        "not_banned": "Ya no estás baneado de **{guild}**.",
+        "ban_check_failed": "No pude revisar tu baneo ahora, inténtalo más tarde.",
+        "appeals_down": "Las apelaciones no están disponibles ahora, inténtalo más tarde.",
+        "already_appealed": "Ya apelaste este baneo; el staff revisa la apelación de cada baneo una sola vez.",
+        "appeal_site": "Las apelaciones ahora se hacen en la web de apelaciones: {url}",
+        "appeals_closed": "Las apelaciones de baneo están cerradas ahora.",
+        "server_gone": "Ya no puedo acceder a ese servidor.",
+        "appeal_title": "Apela tu baneo de {guild}",
+        "appeal_label": "¿Por qué deberían quitarte el baneo?",
+        "appeal_save_failed": "No pude guardar tu apelación, inténtalo más tarde.",
+        "appeal_sent": "Tu apelación se envió al staff de **{guild}**.",
+        "appeal_failed": "Algo salió mal, puede que la apelación no se haya respondido.",
+        "deny_title": "Rechazar apelación",
+        "deny_label": "Motivo (opcional, se le envía al usuario)",
+        "appeal_accepted_dm": "Tu apelación de baneo en **{guild}** fue aceptada, puedes volver a unirte al servidor.",
+        "appeal_denied_dm": "Tu apelación de baneo en **{guild}** fue rechazada.",
+        "appeal_denied_reason": "\nMotivo: {reason}",
+        "accepted": "Aceptada",
+        "denied": "Rechazada",
+        "report_main_only": "Los reportes solo funcionan en el servidor de DragonMineZ.",
+        "report_bot": "No puedes reportar el mensaje de un bot.",
+        "report_own": "No puedes reportar tu propio mensaje.",
+        "report_wait": "Acabas de enviar un reporte, inténtalo de nuevo en {wait}s.",
+        "report_title": "Reportar mensaje",
+        "report_label": "¿Qué tiene de malo? (opcional)",
+        "report_failed": "No pude contactar al staff ahora, inténtalo más tarde.",
+        "report_sent": "Gracias, el staff lo revisará.",
+        "quick_delete": "Borrar mensaje",
+        "quick_learn": "Borrar y aprender",
+        "quick_warn": "Advertir",
+        "quick_timeout": "Timeout 24h",
+        "quick_untimeout": "Quitar timeout",
+        "quick_kick": "Expulsar",
+        "quick_ban": "Banear",
+        "quick_dismiss": "Descartar",
+        "quick_falsepos": "Falso positivo",
+    },
+    "pt": {
+        "failed": "Algo deu errado; os logs do bot têm os detalhes.",
+        "main_only": "Isso só funciona no servidor do DragonMineZ.",
+        "tier_denied": "Seu nível de staff não pode fazer isso.",
+        "details_gone": "Os detalhes salvos deste alerta não existem mais.",
+        "action_failed": "Algo deu errado, a ação pode não ter sido aplicada.",
+        "quick_title": "{label}: usuário {user_id}",
+        "reason": "Motivo",
+        "done": "Feito: {label}.",
+        "done_case": "Feito: {label} (caso #{case_id}).",
+        "not_dmed": " Não foi possível enviar DM a ele.",
+        "ladder_hit": "\nIsso ativou a escada de advertências: {action} automático{case}.",
+        "ladder_skipped": "\nEscada de advertências: {skipped}.",
+        "learned": "Apaguei a mensagem e aprendi {count} imagens.",
+        "learned_one": "Apaguei a mensagem e aprendi 1 imagem.",
+        "learned_none": "Apaguei a mensagem; nada foi aprendido.",
+        "no_hit": "Nenhum registro de automod foi encontrado para este alerta; descartei.",
+        "falsepos": "Marcado como falso positivo ({summary}).",
+        "nothing_undone": "não havia nada para desfazer",
+        "allowlist_prompt": "Parar também de marcar estes domínios?",
+        "allowlist_admin": "Um admin pode liberar estes domínios nas Configurações.",
+        "channel_gone": "Esse canal não existe mais ou o bot não consegue vê-lo.",
+        "delete_forbidden": "O bot não tem permissão para apagar mensagens nesse canal.",
+        "discord_error": "O Discord retornou um erro, tente novamente.",
+        "no_domains": "Esse registro de automod não tem mais domínios para liberar.",
+        "allowlisted": "✅ Liberados: {domains}.",
+        "not_banned": "Você não está mais banido de **{guild}**.",
+        "ban_check_failed": "Não consegui verificar seu banimento agora, tente mais tarde.",
+        "appeals_down": "Os recursos estão indisponíveis agora, tente mais tarde.",
+        "already_appealed": "Você já recorreu deste banimento; a staff analisa o recurso de cada banimento uma vez.",
+        "appeal_site": "Os recursos agora são feitos no site de recursos: {url}",
+        "appeals_closed": "Os recursos de banimento estão fechados agora.",
+        "server_gone": "Não consigo mais acessar esse servidor.",
+        "appeal_title": "Recorra do seu banimento em {guild}",
+        "appeal_label": "Por que seu banimento deveria ser retirado?",
+        "appeal_save_failed": "Não consegui salvar seu recurso, tente mais tarde.",
+        "appeal_sent": "Seu recurso foi enviado à staff de **{guild}**.",
+        "appeal_failed": "Algo deu errado, o recurso pode não ter sido respondido.",
+        "deny_title": "Negar recurso",
+        "deny_label": "Motivo (opcional, enviado ao usuário)",
+        "appeal_accepted_dm": "Seu recurso de banimento em **{guild}** foi aceito, você pode voltar ao servidor.",
+        "appeal_denied_dm": "Seu recurso de banimento em **{guild}** foi negado.",
+        "appeal_denied_reason": "\nMotivo: {reason}",
+        "accepted": "Aceito",
+        "denied": "Negado",
+        "report_main_only": "Denúncias só funcionam no servidor do DragonMineZ.",
+        "report_bot": "Você não pode denunciar a mensagem de um bot.",
+        "report_own": "Você não pode denunciar sua própria mensagem.",
+        "report_wait": "Você acabou de enviar uma denúncia, tente de novo em {wait}s.",
+        "report_title": "Denunciar mensagem",
+        "report_label": "O que há de errado com ela? (opcional)",
+        "report_failed": "Não consegui falar com a staff agora, tente mais tarde.",
+        "report_sent": "Obrigado, a staff vai dar uma olhada.",
+        "quick_delete": "Apagar mensagem",
+        "quick_learn": "Apagar e aprender",
+        "quick_warn": "Advertir",
+        "quick_timeout": "Timeout 24h",
+        "quick_untimeout": "Remover timeout",
+        "quick_kick": "Expulsar",
+        "quick_ban": "Banir",
+        "quick_dismiss": "Dispensar",
+        "quick_falsepos": "Falso positivo",
+    },
+})
 
 
 class TextModal(discord.ui.Modal):
@@ -119,7 +313,7 @@ async def _fail(interaction: discord.Interaction, error: Exception, custom_id: s
         extra={"event": "mod_interaction_failed", "custom_id": custom_id, "user_id": interaction.user.id},
     )
     try:
-        await _reply(interaction, "Something went wrong, the bot logs have the details.")
+        await _reply(interaction, t(TEXT, "failed", reader_language(interaction)))
     except discord.HTTPException:
         pass
 
@@ -253,6 +447,10 @@ class ModInteractionsCog(commands.Cog):
     def settings(self):
         return self.bot.settings
 
+    def _say(self, interaction, key: str, **values) -> str:
+        """TEXT[key] in the language of whoever clicked, submitted or ran the command."""
+        return t(TEXT, key, reader_language(interaction, self.settings), **values)
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type != discord.InteractionType.component:
@@ -276,17 +474,19 @@ class ModInteractionsCog(commands.Cog):
     async def _staff(self, interaction: discord.Interaction, permission: str) -> bool:
         guild = interaction.guild
         if guild is None or guild.id != self.settings.panel_guild_id:
-            await _reply(interaction, "That only works on the DragonMineZ server.")
+            await _reply(interaction, self._say(interaction, "main_only"))
             return False
         if tier_for(interaction.user, self.settings) < PERMISSIONS[permission]:
-            await _reply(interaction, "Your staff tier can't do that.")
+            await _reply(interaction, self._say(interaction, "tier_denied"))
             return False
         return True
 
-    async def _dm(self, user_id: int, text: str) -> None:
+    async def _dm(self, user_id: int, *keys: str, **values) -> None:
+        """TEXT[keys] joined, in the user's own language."""
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-            await user.send(text)
+            language = user_language(user, self.settings, client=self.bot)
+            await user.send("".join(t(TEXT, key, language, **values) for key in keys))
         except discord.HTTPException:
             pass  # usually they share no server with the bot any more
 
@@ -304,7 +504,7 @@ class ModInteractionsCog(commands.Cog):
         if parts[0] == "show":
             details = await mod_alert_cards.load(message.id)
             if not details:
-                await _reply(interaction, "The saved details for this alert are gone.")
+                await _reply(interaction, self._say(interaction, "details_gone"))
                 return
             view = expanded_alert(details, lines, buttons)
         else:
@@ -325,19 +525,19 @@ class ModInteractionsCog(commands.Cog):
             async def run() -> None:
                 await self._run_quick(interaction, action, user_id, parts[2:], alert, custom_id, reason)
 
-            await while_busy(interaction, self._working, run, failed="Something went wrong, the action may not have gone through.")
+            await while_busy(interaction, self._working, run, failed=self._say(interaction, "action_failed"))
             return
 
         async def submit(modal_interaction: discord.Interaction, reason: str) -> None:
             message = modal_interaction.message or alert  # the fresher copy when Discord sends one
             await self._run_quick(modal_interaction, action, user_id, [], message, custom_id, reason)
 
-        label = QUICK_ACTIONS[action][0]
+        label = self._say(interaction, f"quick_{action}")
         await interaction.response.send_modal(
             TextModal(
-                title=f"{label} user {user_id}",
+                title=self._say(interaction, "quick_title", label=label, user_id=user_id),
                 custom_id=f"{QUICK}-reason:{action}:{user_id}",
-                label="Reason",
+                label=self._say(interaction, "reason"),
                 value=_alert_summary(alert),
                 on_submit=submit,
             )
@@ -362,11 +562,13 @@ class ModInteractionsCog(commands.Cog):
             await self._delete_and_learn(interaction, extra, alert, moderator)
             return
         label = QUICK_ACTIONS[action][0]
-        line = f"{label} by {moderator.mention}"
-        reply = f"Done: {label}."
+        line = f"{label} by {moderator.mention}"  # on the shared alert card: English
+        language = reader_language(interaction, self.settings)
+        label_here = t(TEXT, f"quick_{action}", language)
+        reply = t(TEXT, "done", language, label=label_here)
         if action == "delete":
             if error := await self._delete(int(extra[0]), int(extra[1]), moderator):
-                await interaction.followup.send(error, ephemeral=True)
+                await interaction.followup.send(t(TEXT, error, language), ephemeral=True)
                 return await _put_back(interaction)
         elif action != "dismiss":
             try:
@@ -381,20 +583,20 @@ class ModInteractionsCog(commands.Cog):
                     source="alert",
                 )
             except mod_actions.ModActionError as error:
-                await interaction.followup.send(str(error), ephemeral=True)
+                await interaction.followup.send(error.text(language), ephemeral=True)
                 return await _put_back(interaction)
             if result.case_id:
                 line += f" | case #{result.case_id}"
-                reply = f"Done: {label} (case #{result.case_id})."
+                reply = t(TEXT, "done_case", language, label=label_here, case_id=result.case_id)
             if result.dm_sent is False:
-                reply += " They couldn't be DMed."
+                reply += t(TEXT, "not_dmed", language)
             if escalation := result.escalation:
-                case = f" (case #{escalation.case_id})" if escalation.case_id else ""
+                case = f" (#{escalation.case_id})" if escalation.case_id else ""
                 line += f" -> automatic {escalation.action}"
-                reply += f"\nThat hit the warn ladder: automatic {escalation.action}{case}."
+                reply += t(TEXT, "ladder_hit", language, action=escalation.action, case=case)
             if result.ladder_skipped:
                 line += f" -> {result.ladder_skipped}"
-                reply += f"\nWarn ladder: {result.ladder_skipped}."
+                reply += t(TEXT, "ladder_skipped", language, skipped=result.ladder_skipped)
             if action in CONFIRM_HIT_ACTIONS:
                 await self._confirm_hit(alert, moderator.id)  # best-effort; never learns images on its own
         await _mark_handled(alert, line, None if action == "dismiss" else custom_id)
@@ -441,16 +643,13 @@ class ModInteractionsCog(commands.Cog):
         """The "Delete & learn" quick action on image alerts: delete like the plain delete action, then an
         explicit, staff-decided learn of the hit's images (mark_confirmed(..., learn=True))."""
         if error := await self._delete(int(extra[0]), int(extra[1]), moderator):
-            await interaction.followup.send(error, ephemeral=True)
+            await interaction.followup.send(self._say(interaction, error), ephemeral=True)
             return await _put_back(interaction)
         learned = await self._confirm_hit(alert, moderator.id, learn=True)
         plural = "s" if learned != 1 else ""
         line = f"Deleted & learned {learned} image{plural} by {moderator.mention}"
-        reply = (
-            f"Deleted the message and learned {learned} image{plural}."
-            if learned
-            else "Deleted the message; nothing was learned."
-        )
+        key = "learned_none" if not learned else "learned_one" if learned == 1 else "learned"
+        reply = self._say(interaction, key, count=learned)
         await _mark_handled(alert, line, None)
         await interaction.followup.send(reply, ephemeral=True, allowed_mentions=NO_MENTIONS)
 
@@ -471,42 +670,42 @@ class ModInteractionsCog(commands.Cog):
         if hit is None:
             await _mark_handled(alert, f"{QUICK_ACTIONS['dismiss'][0]} by {moderator.mention}", None)
             await interaction.followup.send(
-                "No automod record was found for this alert; dismissed instead.",
-                ephemeral=True,
-                allowed_mentions=NO_MENTIONS,
+                self._say(interaction, "no_hit"), ephemeral=True, allowed_mentions=NO_MENTIONS
             )
             return
         undone = await automod_hits.mark_false_positive(self.bot, interaction.guild, hit, moderator)
         summary = ", ".join(undone) if undone else "nothing needed to be undone"
         await _mark_handled(alert, f"False positive by {moderator.mention} ({summary})", None)
+        summary_here = ", ".join(undone) if undone else self._say(interaction, "nothing_undone")
         await interaction.followup.send(
-            f"Marked as a false positive ({summary}).", ephemeral=True, allowed_mentions=NO_MENTIONS
+            self._say(interaction, "falsepos", summary=summary_here), ephemeral=True, allowed_mentions=NO_MENTIONS
         )
         if hit.domains:
             if tier_for(moderator, self.settings) >= PERMISSIONS["settings.edit"]:
-                prompt = card("Also stop flagging these domains?", buttons=[allowlist_button(hit.id, hit.domains)])
+                buttons = [allowlist_button(hit.id, hit.domains)]
+                prompt = card(self._say(interaction, "allowlist_prompt"), buttons=buttons)
                 await interaction.followup.send(view=prompt, ephemeral=True)
             else:
-                await interaction.followup.send("An admin can allowlist these domains in Settings.", ephemeral=True)
+                await interaction.followup.send(self._say(interaction, "allowlist_admin"), ephemeral=True)
 
     async def _delete(self, channel_id: int, message_id: int, moderator: discord.Member) -> str | None:
-        """None when the message is deleted (or already gone), else what to tell the clicker."""
+        """None when the message is deleted (or already gone), else the TEXT key of what to tell the clicker."""
         channel = await mod_actions.resolve_channel(self.bot, channel_id)
         if channel is None or not hasattr(channel, "get_partial_message"):
-            return "That channel is gone or the bot can't see it."
+            return "channel_gone"
         try:
             await channel.get_partial_message(message_id).delete(reason=f"Staff alert quick action by {moderator.name}")
         except discord.NotFound:
             pass
         except discord.Forbidden:
-            return "The bot isn't allowed to delete messages in that channel."
+            return "delete_forbidden"
         except discord.HTTPException:
             log.warning(
                 "Quick-action delete failed",
                 exc_info=True,
                 extra={"event": "mod_quick_delete_failed", "channel_id": channel_id, "message_id": message_id},
             )
-            return "Discord returned an error, try again."
+            return "discord_error"
         return None
 
     # --- automod tuning (modtune:allow:<automod_hit_id>, offered after a false positive) ---
@@ -517,7 +716,7 @@ class ModInteractionsCog(commands.Cog):
             return
         hit = await automod_hits.get_hit(hit_id)
         if hit is None or not hit.domains:
-            await _reply(interaction, "That automod hit has no domains to allowlist any more.")
+            await _reply(interaction, self._say(interaction, "no_domains"))
             return
         current = list(self.settings.moderation_allowed_domains)
         merged = current + [domain for domain in hit.domains if domain not in current]
@@ -527,41 +726,43 @@ class ModInteractionsCog(commands.Cog):
             "Allowlisted domains from a false-positive automod hit",
             extra={"event": "mod_tune_allowlisted", "hit_id": hit_id, "domains": merged, "user_id": interaction.user.id},
         )
-        await interaction.response.edit_message(view=card(f"✅ Allowlisted: {', '.join(hit.domains)}.", color=discord.Color.green()))
+        done = self._say(interaction, "allowlisted", domains=", ".join(hit.domains))
+        await interaction.response.edit_message(view=card(done, color=discord.Color.green()))
 
     # --- appeals (modappeal:<guild_id> in the ban DM, modappeal-review:<accept|deny>:<user_id>) ---
 
     async def _appeal_check(self, guild: discord.Guild, user: discord.abc.User):
-        """(refusal or None, ban entry, the user's recent cases newest first)."""
+        """(refusal or None, ban entry, the user's recent cases newest first); the refusal is a TEXT key (it takes
+        guild=)."""
         try:
             ban = await guild.fetch_ban(user)
         except discord.NotFound:
-            return f"You're no longer banned from **{guild.name}**.", None, []
+            return "not_banned", None, []
         except discord.HTTPException:
             extra = {"event": "mod_appeal_ban_fetch_failed", "user_id": user.id}
             log.warning("Couldn't fetch a ban", exc_info=True, extra=extra)
-            return "Couldn't check your ban right now, try again later.", None, []
+            return "ban_check_failed", None, []
         try:
             cases = await mod_cases.list_cases(guild.id, user_id=user.id, limit=25)
         except Exception:
             extra = {"event": "mod_appeal_cases_failed", "user_id": user.id}
             log.exception("Couldn't load cases for an appeal", extra=extra)
-            return "Appeals are unavailable right now, try again later.", None, []
+            return "appeals_down", None, []
         latest = next((case for case in cases if case.action in ("ban", "appeal")), None)
         if latest is not None and latest.action == "appeal":
-            return "You already appealed this ban; staff review each ban's appeal once.", ban, cases
+            return "already_appealed", ban, cases
         return None, ban, cases
 
     async def _appeal(self, interaction: discord.Interaction, parts: list[str]) -> None:
         if (url := ban_appeals.site_url(self.settings)) and int(parts[0]) == getattr(self.settings, "panel_guild_id", None):
-            await _reply(interaction, f"Appeals are made on the appeals website now: {url}")
+            await _reply(interaction, self._say(interaction, "appeal_site", url=url))
             return
         if not self.settings.moderation_appeals_enabled:
-            await _reply(interaction, "Ban appeals are closed right now.")
+            await _reply(interaction, self._say(interaction, "appeals_closed"))
             return
         guild = self.bot.get_guild(int(parts[0]))
         if guild is None:
-            await _reply(interaction, "I can't reach that server any more.")
+            await _reply(interaction, self._say(interaction, "server_gone"))
             return
         try:
             # Discord drops the click unless the modal opens within 3s; the submit checks again anyway.
@@ -570,7 +771,7 @@ class ModInteractionsCog(commands.Cog):
             log.warning("Appeal check was slow; opening the form anyway", extra={"event": "mod_appeal_check_slow"})
             refusal = None
         if refusal:
-            await _reply(interaction, refusal)
+            await _reply(interaction, self._say(interaction, refusal, guild=guild.name))
             return
 
         async def submit(modal_interaction: discord.Interaction, text: str) -> None:
@@ -578,9 +779,9 @@ class ModInteractionsCog(commands.Cog):
 
         await interaction.response.send_modal(
             TextModal(
-                title=f"Appeal your ban from {guild.name}",
+                title=self._say(interaction, "appeal_title", guild=guild.name),
                 custom_id=f"{APPEAL}-form:{guild.id}",
-                label="Why should your ban be lifted?",
+                label=self._say(interaction, "appeal_label"),
                 min_length=20,
                 max_length=1000,
                 on_submit=submit,
@@ -592,7 +793,7 @@ class ModInteractionsCog(commands.Cog):
         user = interaction.user
         refusal, ban, cases = await self._appeal_check(guild, user)  # again: two modals could be open
         if refusal:
-            await interaction.followup.send(refusal, ephemeral=True)
+            await interaction.followup.send(self._say(interaction, refusal, guild=guild.name), ephemeral=True)
             return
         try:
             case_id = await mod_cases.record_case(
@@ -600,7 +801,7 @@ class ModInteractionsCog(commands.Cog):
             )
         except Exception:
             log.exception("Couldn't record an appeal", extra={"event": "mod_appeal_record_failed", "user_id": user.id})
-            await interaction.followup.send("Couldn't save your appeal, try again later.", ephemeral=True)
+            await interaction.followup.send(self._say(interaction, "appeal_save_failed"), ephemeral=True)
             return
         channel = await mod_actions.staff_channel(self.bot, self.settings.moderation_appeals_channel_id)
         try:
@@ -613,7 +814,7 @@ class ModInteractionsCog(commands.Cog):
         except (discord.HTTPException, LookupError):
             # The case is saved, so staff still see it in the case list.
             log.exception("Couldn't post an appeal", extra={"event": "mod_appeal_post_failed", "user_id": user.id})
-        await interaction.followup.send(f"Your appeal was sent to the **{guild.name}** staff.", ephemeral=True)
+        await interaction.followup.send(self._say(interaction, "appeal_sent", guild=guild.name), ephemeral=True)
 
     async def _review(self, interaction: discord.Interaction, parts: list[str]) -> None:
         decision, user_id = parts[0], int(parts[1])
@@ -625,7 +826,7 @@ class ModInteractionsCog(commands.Cog):
             async def accept() -> None:
                 await self._decide(interaction, user_id, staff_message, accepted=True, reason="")
 
-            await while_busy(interaction, self._working, accept, failed="Something went wrong, the appeal may not have been answered.")
+            await while_busy(interaction, self._working, accept, failed=self._say(interaction, "appeal_failed"))
             return
 
         async def submit(modal_interaction: discord.Interaction, reason: str) -> None:
@@ -634,9 +835,9 @@ class ModInteractionsCog(commands.Cog):
 
         await interaction.response.send_modal(
             TextModal(
-                title="Deny appeal",
+                title=self._say(interaction, "deny_title"),
                 custom_id=f"{APPEAL_REVIEW}-deny:{user_id}",
-                label="Reason (optional, sent to the user)",
+                label=self._say(interaction, "deny_label"),
                 required=False,
                 max_length=500,
                 on_submit=submit,
@@ -665,19 +866,20 @@ class ModInteractionsCog(commands.Cog):
                 source="appeal",
             )
         except mod_actions.ModActionError as error:
-            await interaction.followup.send(str(error), ephemeral=True)
+            await interaction.followup.send(error.text(reader_language(interaction, self.settings)), ephemeral=True)
             return await _put_back(interaction)
         if accepted:
-            await self._dm(user_id, f"Your ban appeal for **{guild.name}** was accepted, you can rejoin the server.")
+            await self._dm(user_id, "appeal_accepted_dm", guild=guild.name)
+        elif reason:
+            await self._dm(user_id, "appeal_denied_dm", "appeal_denied_reason", guild=guild.name, reason=reason)
         else:
-            await self._dm(
-                user_id, f"Your ban appeal for **{guild.name}** was denied." + (f"\nReason: {reason}" if reason else "")
-            )
+            await self._dm(user_id, "appeal_denied_dm", guild=guild.name)
         verdict = "Accepted" if accepted else "Denied"
         case = f" | case #{result.case_id}" if result.case_id else ""
         line = f"{verdict} by {interaction.user.mention}{case}" + (f": {reason}" if reason else "")
         await _mark_handled(staff_message, line)
-        await interaction.followup.send(f"{verdict}{case}.", ephemeral=True)
+        verdict_here = self._say(interaction, "accepted" if accepted else "denied")
+        await interaction.followup.send(f"{verdict_here}{case}.", ephemeral=True)
 
     # --- member reports ---
 
@@ -688,22 +890,22 @@ class ModInteractionsCog(commands.Cog):
     @discord.message_command(name="Report message")
     async def report_message(self, ctx: discord.ApplicationContext, message: discord.Message):
         if ctx.guild_id != self.settings.panel_guild_id:
-            return await ctx.respond("Reports only work on the DragonMineZ server.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "report_main_only"), ephemeral=True)
         if message.author.bot:
-            return await ctx.respond("You can't report a bot's message.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "report_bot"), ephemeral=True)
         if message.author.id == ctx.author.id:
-            return await ctx.respond("You can't report your own message.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "report_own"), ephemeral=True)
         if wait := self._cooldown_left(ctx.author.id):
-            return await ctx.respond(f"You just sent a report, try again in {wait}s.", ephemeral=True)
+            return await ctx.respond(self._say(ctx, "report_wait", wait=wait), ephemeral=True)
 
         async def submit(modal_interaction: discord.Interaction, reason: str) -> None:
             await self._submit_report(modal_interaction, message, reason)
 
         await ctx.send_modal(
             TextModal(
-                title="Report message",
+                title=self._say(ctx, "report_title"),
                 custom_id=f"modreport:{message.id}",
-                label="What's wrong with it? (optional)",
+                label=self._say(ctx, "report_label"),
                 required=False,
                 max_length=500,
                 on_submit=submit,
@@ -713,7 +915,7 @@ class ModInteractionsCog(commands.Cog):
     async def _submit_report(self, interaction: discord.Interaction, message: discord.Message, reason: str) -> None:
         reporter = interaction.user
         if wait := self._cooldown_left(reporter.id):
-            await _reply(interaction, f"You just sent a report, try again in {wait}s.")
+            await _reply(interaction, self._say(interaction, "report_wait", wait=wait))
             return
         now = time.monotonic()
         self._last_report = {uid: at for uid, at in self._last_report.items() if now - at < REPORT_COOLDOWN_SECONDS}
@@ -728,7 +930,7 @@ class ModInteractionsCog(commands.Cog):
             extra = {"event": "mod_report_post_failed", "message_id": message.id}
             log.exception("Couldn't post a message report", extra=extra)
             self._last_report.pop(reporter.id, None)
-            await interaction.followup.send("Couldn't reach the staff right now, try again later.", ephemeral=True)
+            await interaction.followup.send(self._say(interaction, "report_failed"), ephemeral=True)
             return
         try:
             await mod_cases.record_case(
@@ -741,7 +943,7 @@ class ModInteractionsCog(commands.Cog):
             )
         except Exception:
             log.exception("Couldn't record a report case", extra={"event": "mod_report_case_failed", "message_id": message.id})
-        await interaction.followup.send("Thanks, staff will take a look.", ephemeral=True)
+        await interaction.followup.send(self._say(interaction, "report_sent"), ephemeral=True)
 
 
 def setup(bot: discord.Bot):

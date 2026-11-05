@@ -1724,7 +1724,7 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
         with self._store(_ask_row(spec)) as store:
             await cog.on_interaction(interaction)
         store.claim.assert_awaited_once_with(55)
-        flow.send_link_prompt.assert_awaited_once_with(interaction.user, interaction.followup)
+        flow.send_link_prompt.assert_awaited_once_with(interaction.user, interaction.followup, language="en")
         self.assertEqual(texts(interaction.edit_original_response.await_args.kwargs["view"])[-1], "-# ↳ <@42>: **Link my Patreon**")
 
         flow.send_link_prompt = AsyncMock(side_effect=RuntimeError("boom"))

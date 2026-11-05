@@ -208,7 +208,7 @@ class CopilotGateTests(unittest.IsolatedAsyncioTestCase):
         cog = tickets_cog(ai)
         interaction = click(STAFF, views.SUMMARY_BUTTON_ID)
         await self.run_click(cog, interaction, "on_summary", ticket=make_ticket(status="closed"))
-        interaction.response.send_message.assert_awaited_once_with(views.MSG["already_closed"], ephemeral=True)
+        interaction.response.send_message.assert_awaited_once_with(views.t("en", "already_closed"), ephemeral=True)
         interaction = click(STAFF, views.DRAFT_BUTTON_ID)
         await self.run_click(cog, interaction, "on_draft", paused=True)
         interaction.response.send_message.assert_awaited_once_with("AI is paused for today.", ephemeral=True)
@@ -219,7 +219,7 @@ class CopilotGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_without_the_ai_cog_it_fails_quietly(self):
         interaction = click(STAFF, views.SUMMARY_BUTTON_ID)
         await self.run_click(tickets_cog(), interaction, "on_summary")
-        interaction.response.send_message.assert_awaited_once_with(views.MSG["failed"], ephemeral=True)
+        interaction.response.send_message.assert_awaited_once_with(views.t("en", "failed"), ephemeral=True)
 
 
 class SummaryTests(unittest.IsolatedAsyncioTestCase):
@@ -273,7 +273,7 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
             ai = fake_ai(ticket_summary=summary)
             interaction = click(STAFF, views.SUMMARY_BUTTON_ID)
             cog = await self.summarize(ai, interaction)
-            interaction.followup.send.assert_awaited_once_with(views.MSG["copilot_failed"], ephemeral=True)
+            interaction.followup.send.assert_awaited_once_with(views.t("en", "copilot_failed"), ephemeral=True)
             self.assertEqual(cog._copilot_working, set())
 
     async def test_the_model_reads_the_anonymized_transcript_and_its_output_is_defused(self):
@@ -423,7 +423,7 @@ class PostTests(unittest.IsolatedAsyncioTestCase):
     async def test_post_checks_the_gate_again(self):
         for user, ticket, refusal in (
             (OWNER, make_ticket(), "Only staff can do this."),
-            (STAFF, make_ticket(status="closed"), views.MSG["already_closed"]),
+            (STAFF, make_ticket(status="closed"), views.t("en", "already_closed")),
         ):
             interaction, _ = await self.press(user, "post", ticket=ticket)
             interaction.channel.send.assert_not_called()
@@ -444,7 +444,7 @@ class PostTests(unittest.IsolatedAsyncioTestCase):
         noted.assert_not_called()
         restored = button_states(interaction.edit_original_response.await_args.kwargs["view"])
         self.assertEqual(restored["staff_draft:post"], ("Post", False))
-        interaction.followup.send.assert_awaited_once_with(views.MSG["post_failed"], ephemeral=True)
+        interaction.followup.send.assert_awaited_once_with(views.t("en", "post_failed"), ephemeral=True)
 
     async def test_edit_opens_the_form_filled_with_the_draft(self):
         interaction, _ = await self.press(STAFF, "edit")

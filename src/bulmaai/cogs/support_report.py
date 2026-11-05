@@ -13,13 +13,22 @@ from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services import support_report as report
 from bulmaai.ui import feedback_fix
 from bulmaai.ui.support_report_views import support_report_card
+from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import in_main_guild, is_staff
 
 log = logging.getLogger(__name__)
 
-STAFF_ONLY_MSG = "Only staff can use this."
-FAILED_MSG = "Couldn't build the report. Try again."
+TEXT = table({
+    "en": {"staff_only": "Only staff can use this.", "failed": "Couldn't build the report. Try again."},
+    "es": {"staff_only": "Solo el staff puede usar esto.", "failed": "No pude armar el reporte. Inténtalo de nuevo."},
+    "pt": {"staff_only": "Só a staff pode usar isso.", "failed": "Não consegui montar o relatório. Tente novamente."},
+})
+DESC = table({
+    "en": {"support-report": "Staff: the support report for the last 7 days"},
+    "es": {"support-report": "Staff: el reporte de soporte de los últimos 7 días"},
+    "pt": {"support-report": "Staff: o relatório de suporte dos últimos 7 dias"},
+})
 MAX_ANSWERS_TO_FIX = 10
 
 
@@ -27,10 +36,10 @@ def _is_staff_member(user, settings) -> bool:
     return isinstance(user, discord.Member) and in_main_guild(user, settings) and is_staff(user, settings=settings)
 
 
-async def build_card(settings, now: datetime) -> discord.ui.DesignerView:
+async def build_card(settings, now: datetime, language: str = "en") -> discord.ui.DesignerView:
     """The report for the 7 days before now; the numbers always come, the AI sections only when the call works."""
     data = await report.collect(now - report.WINDOW, now)
-    return support_report_card(data, await report.generate_insights(data, settings))
+    return support_report_card(data, await report.generate_insights(data, settings), language)
 
 
 class SupportReportCog(ReloadableCog):
@@ -101,16 +110,17 @@ class SupportReportCog(ReloadableCog):
         except Exception:
             log.exception("Answers to fix failed")
 
-    @discord.slash_command(name="support-report", description="Staff: the support report for the last 7 days")
+    @discord.slash_command(name="support-report", **described(DESC, "support-report"))
     async def support_report(self, ctx: discord.ApplicationContext):
+        language = reader_language(ctx, self.bot.settings)
         if not _is_staff_member(ctx.author, self.bot.settings):
-            return await ctx.respond(STAFF_ONLY_MSG, ephemeral=True)
+            return await ctx.respond(t(TEXT, "staff_only", language), ephemeral=True)
         await ctx.defer(ephemeral=True)
         try:
-            view = await build_card(self.bot.settings, datetime.now(timezone.utc))
+            view = await build_card(self.bot.settings, datetime.now(timezone.utc), language)
         except Exception:
             log.exception("/support-report failed")
-            return await ctx.followup.send(FAILED_MSG, ephemeral=True)
+            return await ctx.followup.send(t(TEXT, "failed", language), ephemeral=True)
         await ctx.followup.send(view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 

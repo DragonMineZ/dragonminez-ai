@@ -22,6 +22,15 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 - `support_ai_traces` / `support_sessions` / `ticket_transcripts.openai_file_id` keep their OpenAI-era names as history. Don't rename them.
 - The mod source tools (`list_mod_files` / `read_mod_file`) read only the allowlist in `services/mod_source.AREAS` (config classes, shipped configs and quests, commands and permissions, `en_us.json`) on `mod_source_branch` (default `main`, since v2.2 was merged into it). The AI quotes keys, values and commands from them and never pastes code.
 
+## Language (Bruno, 2026-11-05)
+
+- Every command, button and modal answers in the reader's language (en/es/pt) through `utils/i18n`: per-language tables (`TEXT`, `DESC`, ...) next to each module, `t(table, key, language)` falls back to English. A new language is only new table entries (plus `i18n.LANGUAGES` / `DISCORD_LOCALES`).
+- Decision order (`user_language`): a single language role (`announcement_role_{en,es,pt}_id`) wins; several roles: the Discord locale if it is one of them, else the first in en, es, pt order; no role: the locale if supported (es-ES/es-419 → es, pt-BR → pt), else English. Roles are read off the main-server member, also in DMs.
+- Reader's language: ephemeral replies, errors and denials, confirm prompts, modals, buttons on ephemeral cards, DMs (a mod DM and its Appeal button use the target's language).
+- English: public results in shared channels (unless addressed to one person), mod-log, staff alert cards, staff-channel posts, the panel and AI prompts. Ticket-internal text keeps the ticket language.
+- Command descriptions carry `description_localizations` (es-ES, es-419, pt-BR) from the same tables (`i18n.described`); command names are never localized.
+- Spanish is Latin American (tú/ustedes), Portuguese Brazilian. Bruno-only and admin-only tools (`/database`, `/log-corpus`, VPS console, mail inbox) stay English.
+
 ## Discord UI: Components V2 only
 
 - Every bot message is native V2, built with `ui/v2.py` (card, head, facts, fit, trim, rows). Never send `discord.Embed` or a classic `discord.ui.View`.
@@ -75,7 +84,7 @@ Console actions are private to Bruno:
 
 - In-house tickets (`cogs/tickets.py`). Ticket Tool is gone and its compat code is deleted. Don't re-add it.
 - Language first (Bruno, 2026-11-05): the public panel is English plus one short ES/PT line. Picking a category opens its form in the member's language: their single language role (`announcement_role_{en,es,pt}_id`) opens it at once; no role or several get an ephemeral "Pick your language" card (🇬🇧/🇪🇸/🇧🇷, custom id `ticket_form:{category}:{lang}`, survives restarts) whose click opens the form. That language is the ticket's support language (no text detection, no in-ticket picker). Member-facing ephemeral replies of the flow are in it too. Strings live in per-language tables (`TEXT`, `CATEGORY_TEXT`); no `EN | ES` strings.
-  - Everything member-facing inside a ticket and its DMs (welcome, Close button, solved prompt, deletion notice, transcript/solved/reminder DMs) uses the ticket's support language (en/es/pt) only; staff-only buttons and notices stay English.
+  - Everything member-facing inside a ticket and its DMs (welcome, Close button, solved prompt, deletion notice, transcript/solved/reminder DMs) uses the ticket's support language (en/es/pt) only; staff buttons and notices posted in the ticket stay English, while ephemeral replies to staff follow the reader's language (see Language).
   - Tickets opened without the panel's form language (a bug report's "Open a ticket"): the single role decides, no role = detected from the form, several = a picker card in the ticket, and the AI's first answer waits for the pick. Owner or staff can switch it from the welcome card's select. The AI always answers in it.
 - Categories, in panel order (Other last): Game-Breaking Bug, Patreon & Beta Access, Installation & Setup, Server & Multiplayer, Report a Member, Appeal a Punishment (warns and timeouts; bans go to the appeal website), Partnership & Creators, Contributing to the Mod (translations too), Other. The AI's first answer only runs for bug, patreon, install, server and other.
 - Mod-only categories (`TicketCategory.mod_only`: Report a Member, Appeal a Punishment): Helpers get no access to the channel, open or closed; Moderators and up only.

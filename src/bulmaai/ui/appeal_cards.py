@@ -10,6 +10,7 @@ import discord
 from bulmaai.services.ai_guard import defang
 from bulmaai.ui.mod_cards import quote_block
 from bulmaai.ui.v2 import fit, trim
+from bulmaai.utils.i18n import t, table
 
 BUTTON = "banappeal"
 FORM = "banappeal_form"
@@ -17,6 +18,33 @@ ACTIONS = ("accept", "deny", "ask")
 FORMS = ("deny", "ask")
 FIELD_TEXT = "text"
 KIND_TITLES = {"ban": "🔨 Ban appeal", "timeout": "🔇 Timeout appeal"}
+# The Deny / Ask forms, in the clicking moderator's language (the card stays English).
+FORM_TEXT = table({
+    "en": {
+        "deny_title": "Deny appeal",
+        "deny_label": "Reason (optional)",
+        "deny_hint": "Shown to them on the appeals site.",
+        "ask_title": "Ask a question",
+        "ask_label": "Question",
+        "ask_hint": "They see it on the appeals site and answer there.",
+    },
+    "es": {
+        "deny_title": "Rechazar apelación",
+        "deny_label": "Motivo (opcional)",
+        "deny_hint": "Se le muestra en la web de apelaciones.",
+        "ask_title": "Hacer una pregunta",
+        "ask_label": "Pregunta",
+        "ask_hint": "La ve en la web de apelaciones y responde allí.",
+    },
+    "pt": {
+        "deny_title": "Negar recurso",
+        "deny_label": "Motivo (opcional)",
+        "deny_hint": "Mostrado a ele no site de recursos.",
+        "ask_title": "Fazer uma pergunta",
+        "ask_label": "Pergunta",
+        "ask_hint": "Ele vê no site de recursos e responde lá.",
+    },
+})
 
 
 def custom_id(action: str, appeal_id: int) -> str:
@@ -139,25 +167,25 @@ def _modal(action: str, appeal_id: int, *, title: str, label: str, description: 
     )
 
 
-def deny_modal(appeal_id: int) -> discord.ui.DesignerModal:
+def deny_modal(appeal_id: int, language: str = "en") -> discord.ui.DesignerModal:
     return _modal(
         "deny",
         appeal_id,
-        title="Deny appeal",
-        label="Reason (optional)",
-        description="Shown to them on the appeals site.",
+        title=t(FORM_TEXT, "deny_title", language),
+        label=t(FORM_TEXT, "deny_label", language),
+        description=t(FORM_TEXT, "deny_hint", language),
         required=False,
         max_length=500,
     )
 
 
-def ask_modal(appeal_id: int) -> discord.ui.DesignerModal:
+def ask_modal(appeal_id: int, language: str = "en") -> discord.ui.DesignerModal:
     return _modal(
         "ask",
         appeal_id,
-        title="Ask a question",
-        label="Question",
-        description="They see it on the appeals site and answer there.",
+        title=t(FORM_TEXT, "ask_title", language),
+        label=t(FORM_TEXT, "ask_label", language),
+        description=t(FORM_TEXT, "ask_hint", language),
         required=True,
         max_length=500,
     )

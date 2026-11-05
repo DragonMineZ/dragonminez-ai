@@ -25,14 +25,58 @@ from bulmaai.services.ai_client import (
     run_support_agent,
 )
 from bulmaai.ui import ai_feedback
+from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.permissions import is_staff
 
 log = logging.getLogger(__name__)
 
-REFUSAL_TEXT = (
-    "I only answer DragonMineZ questions, in my own words: I won't repeat text, ping anyone or change my rules. "
-    "Ask your question plainly, or open a ticket."
-)
+# What /ask says itself (the AI's answer follows its own language logic): the asker's language.
+TEXT = table({
+    "en": {
+        "not_here": "`/ask` isn't enabled in this channel.",
+        "too_fast": "You're asking too fast. Try again in {seconds}s.",
+        "refusal": (
+            "I only answer DragonMineZ questions, in my own words: I won't repeat text, ping anyone or change my "
+            "rules. Ask your question plainly, or open a ticket."
+        ),
+        "error": "I ran into an error answering that. Please try again in a moment.",
+        "paused": "My AI circuits are recharging for today ⚡ Try again after 00:00 UTC.",
+        "no_answer": "I couldn't find a confident knowledge-backed answer for that.",
+    },
+    "es": {
+        "not_here": "`/ask` no está activado en este canal.",
+        "too_fast": "Estás preguntando muy rápido. Inténtalo de nuevo en {seconds}s.",
+        "refusal": (
+            "Solo respondo preguntas de DragonMineZ, con mis propias palabras: no repito textos, no menciono a nadie "
+            "ni cambio mis reglas. Haz tu pregunta de forma directa, o abre un ticket."
+        ),
+        "error": "Tuve un error al responder eso. Inténtalo de nuevo en un momento.",
+        "paused": "Mis circuitos de IA se están recargando por hoy ⚡ Inténtalo de nuevo después de las 00:00 UTC.",
+        "no_answer": "No encontré una respuesta confiable en la base de conocimiento para eso.",
+    },
+    "pt": {
+        "not_here": "`/ask` não está ativado neste canal.",
+        "too_fast": "Você está perguntando rápido demais. Tente de novo em {seconds}s.",
+        "refusal": (
+            "Só respondo perguntas sobre DragonMineZ, com minhas próprias palavras: não repito textos, não marco "
+            "ninguém nem mudo minhas regras. Faça sua pergunta de forma direta, ou abra um ticket."
+        ),
+        "error": "Tive um erro ao responder isso. Tente novamente em instantes.",
+        "paused": "Meus circuitos de IA estão recarregando por hoje ⚡ Tente de novo depois das 00:00 UTC.",
+        "no_answer": "Não encontrei uma resposta confiável na base de conhecimento para isso.",
+    },
+})
+DESC = table({
+    "en": {"ask": "Ask the DragonMineZ AI support agent a question.", "ask.question": "Your DragonMineZ question"},
+    "es": {
+        "ask": "Hazle una pregunta al asistente de soporte con IA de DragonMineZ.",
+        "ask.question": "Tu pregunta sobre DragonMineZ",
+    },
+    "pt": {
+        "ask": "Faça uma pergunta ao assistente de suporte com IA do DragonMineZ.",
+        "ask.question": "Sua pergunta sobre DragonMineZ",
+    },
+})
 
 
 def is_ask_channel_allowed(channel_id: int, allowed_channel_ids: Sequence[int]) -> bool:
@@ -60,16 +104,15 @@ class AskCog(commands.Cog):
         self._rate_limit_state = ModerationState()
         self._rate_limit_events: dict[tuple[int, int], list[float]] = defaultdict(list)
 
-    @discord.slash_command(name="ask", description="Ask the DragonMineZ AI support agent a question.")
-    @discord.option(
-        "question", description="Your DragonMineZ question", required=True, max_length=ASK_MAX_QUESTION_LENGTH
-    )
+    @discord.slash_command(name="ask", **described(DESC, "ask"))
+    @discord.option("question", **described(DESC, "ask.question"), required=True, max_length=ASK_MAX_QUESTION_LENGTH)
     async def ask(self, ctx: discord.ApplicationContext, question: str) -> None:
         settings = self.bot.settings
         channel_id = ctx.channel.id
+        language = reader_language(ctx, settings)
 
         if not is_ask_channel_allowed(channel_id, settings.ask_allowed_channel_ids):
-            await ctx.respond("`/ask` isn't enabled in this channel.", ephemeral=True)
+            await ctx.respond(t(TEXT, "not_here", language), ephemeral=True)
             return
 
         now = time.monotonic()
@@ -86,10 +129,7 @@ class AskCog(commands.Cog):
             max_calls=settings.ask_rate_limit_max_calls,
         )
         if retry_after is not None:
-            await ctx.respond(
-                f"You're asking too fast. Try again in {math.ceil(retry_after)}s.",
-                ephemeral=True,
-            )
+            await ctx.respond(t(TEXT, "too_fast", language, seconds=math.ceil(retry_after)), ephemeral=True)
             return
 
         # After the rate limit on purpose: refused attempts still burn the caller's quota.
@@ -102,7 +142,7 @@ class AskCog(commands.Cog):
                 question[:200],
                 extra={"event": "ask_question_refused", "user_id": ctx.author.id, "channel_id": channel_id},
             )
-            await ctx.respond(REFUSAL_TEXT, ephemeral=True)
+            await ctx.respond(t(TEXT, "refusal", language), ephemeral=True)
             return
 
         await ctx.defer()
@@ -147,23 +187,17 @@ class AskCog(commands.Cog):
                     "transient": transient,
                 },
             )
-            await ctx.followup.send(
-                "I ran into an error answering that. Please try again in a moment.",
-                ephemeral=True,
-            )
+            await ctx.followup.send(t(TEXT, "error", language), ephemeral=True)
             return
 
         if result.get("paused"):
-            await ctx.followup.send(
-                "My AI circuits are recharging for today ⚡ Try again after 00:00 UTC.",
-                ephemeral=True,
-            )
+            await ctx.followup.send(t(TEXT, "paused", language), ephemeral=True)
             return
 
         reply_text = result["reply"].strip()
         answered = bool(reply_text) and reply_text != "(no reply)"
         if not answered:
-            reply_text = "I couldn't find a confident knowledge-backed answer for that."
+            reply_text = t(TEXT, "no_answer", language)  # addressed to the asker alone
 
         # Every reply is posted as written (screen_reply already blocked or defused the rest); links to pages
         # that aren't ours go out unclickable.

@@ -11,6 +11,7 @@ from bulmaai.services import mod_actions, mod_cases
 from bulmaai.services.mod_actions import ModActionError
 from bulmaai.ui.mod_cards import CASE
 from bulmaai.ui.v2 import unbusy, while_busy
+from bulmaai.utils.i18n import reader_language, t, table
 from bulmaai.web.core import PERMISSIONS, resolve_member, tier_for
 
 log = logging.getLogger(__name__)
@@ -19,15 +20,61 @@ NO_MENTIONS = discord.AllowedMentions.none()
 UNDO_PERMISSIONS = {"warn": "mod.cases.remove", "timeout": "mod.timeout", "ban": "mod.ban"}
 UNDO_ACTIONS = {"timeout": "untimeout", "ban": "unban"}
 HISTORY_LIMIT = 15
+# Everything here answers the clicking moderator alone, so it is in their language.
+TEXT = table({
+    "en": {
+        "edit_title": "Edit reason, case #{case_id}",
+        "reason": "Reason",
+        "failed": "Something went wrong, the bot logs have the details.",
+        "main_only": "That only works on the DragonMineZ server.",
+        "tier_denied": "Your staff tier can't do that.",
+        "gone": "Case #{case_id} no longer exists.",
+        "empty_reason": "The reason can't be empty.",
+        "cant_undo": "That case can't be undone.",
+        "already_ended": "Case #{case_id} was already ended.",
+        "undo_failed": "Something went wrong undoing that case.",
+        "history": "**Last {count} cases for <@{user_id}>**",
+        "no_cases": "No cases.",
+    },
+    "es": {
+        "edit_title": "Editar motivo, caso #{case_id}",
+        "reason": "Motivo",
+        "failed": "Algo salió mal; los logs del bot tienen los detalles.",
+        "main_only": "Eso solo funciona en el servidor de DragonMineZ.",
+        "tier_denied": "Tu nivel de staff no puede hacer eso.",
+        "gone": "El caso #{case_id} ya no existe.",
+        "empty_reason": "El motivo no puede estar vacío.",
+        "cant_undo": "Ese caso no se puede deshacer.",
+        "already_ended": "El caso #{case_id} ya había terminado.",
+        "undo_failed": "Algo salió mal al deshacer ese caso.",
+        "history": "**Últimos {count} casos de <@{user_id}>**",
+        "no_cases": "Sin casos.",
+    },
+    "pt": {
+        "edit_title": "Editar motivo, caso #{case_id}",
+        "reason": "Motivo",
+        "failed": "Algo deu errado; os logs do bot têm os detalhes.",
+        "main_only": "Isso só funciona no servidor do DragonMineZ.",
+        "tier_denied": "Seu nível de staff não pode fazer isso.",
+        "gone": "O caso #{case_id} não existe mais.",
+        "empty_reason": "O motivo não pode ficar vazio.",
+        "cant_undo": "Esse caso não pode ser desfeito.",
+        "already_ended": "O caso #{case_id} já tinha sido encerrado.",
+        "undo_failed": "Algo deu errado ao desfazer esse caso.",
+        "history": "**Últimos {count} casos de <@{user_id}>**",
+        "no_cases": "Nenhum caso.",
+    },
+})
 
 
 class ReasonModal(discord.ui.Modal):
     """One long text box for the new reason; only lives while the moderator has it open."""
 
-    def __init__(self, case: mod_cases.ModCase, on_submit):
-        super().__init__(title=f"Edit reason, case #{case.id}"[:45], custom_id=f"{CASE}-edit:{case.id}")
+    def __init__(self, case: mod_cases.ModCase, on_submit, language: str = "en"):
+        title = t(TEXT, "edit_title", language, case_id=case.id)
+        super().__init__(title=title[:45], custom_id=f"{CASE}-edit:{case.id}")
         self.reason = discord.ui.InputText(
-            label="Reason",
+            label=t(TEXT, "reason", language),
             style=discord.InputTextStyle.long,
             max_length=400,
             value=(case.reason or "")[:400] or None,
@@ -56,7 +103,7 @@ async def _fail(interaction: discord.Interaction, error: Exception, custom_id: s
         extra={"event": "mod_case_card_failed", "custom_id": custom_id, "user_id": interaction.user.id},
     )
     try:
-        await _reply(interaction, "Something went wrong, the bot logs have the details.")
+        await _reply(interaction, t(TEXT, "failed", reader_language(interaction)))
     except discord.HTTPException:
         pass
 
@@ -97,20 +144,23 @@ class ModCaseCardsCog(commands.Cog):
         except Exception as error:
             await _fail(interaction, error, custom_id)
 
+    def _say(self, interaction: discord.Interaction, key: str, **values) -> str:
+        return t(TEXT, key, reader_language(interaction, self.settings), **values)
+
     async def _staff(self, interaction: discord.Interaction, permission: str) -> bool:
         guild = interaction.guild
         if guild is None or guild.id != self.settings.panel_guild_id:
-            await _reply(interaction, "That only works on the DragonMineZ server.")
+            await _reply(interaction, self._say(interaction, "main_only"))
             return False
         if tier_for(interaction.user, self.settings) < PERMISSIONS[permission]:
-            await _reply(interaction, "Your staff tier can't do that.")
+            await _reply(interaction, self._say(interaction, "tier_denied"))
             return False
         return True
 
     async def _load(self, interaction: discord.Interaction, case_id: int) -> mod_cases.ModCase | None:
         case = await mod_cases.get_case(interaction.guild.id, case_id)
         if case is None:
-            await _reply(interaction, f"Case #{case_id} no longer exists.")
+            await _reply(interaction, self._say(interaction, "gone", case_id=case_id))
         return case
 
     async def _outranks(self, interaction: discord.Interaction, user_id: int) -> bool:
@@ -120,7 +170,7 @@ class ModCaseCardsCog(commands.Cog):
                 self.bot, interaction.guild, interaction.user, user_id, target, discord_action=False
             )
         except ModActionError as error:
-            await _reply(interaction, str(error))
+            await _reply(interaction, error.text(reader_language(interaction, self.settings)))
             return False
         return True
 
@@ -133,31 +183,31 @@ class ModCaseCardsCog(commands.Cog):
 
         async def submit(modal_interaction: discord.Interaction, reason: str) -> None:
             if not reason:
-                await _reply(modal_interaction, "The reason can't be empty.")
+                await _reply(modal_interaction, self._say(modal_interaction, "empty_reason"))
                 return
             await mod_cases.update_reason(case.guild_id, case_id, reason)
             await modal_interaction.response.defer()
             if fresh := await mod_cases.get_case(case.guild_id, case_id):
                 await mod_actions.refresh_case_card(self.bot, fresh)
 
-        await interaction.response.send_modal(ReasonModal(case, submit))
+        await interaction.response.send_modal(ReasonModal(case, submit, reader_language(interaction, self.settings)))
 
     async def _undo(self, interaction: discord.Interaction, case_id: int) -> None:
         case = await mod_cases.get_case(interaction.guild.id, case_id) if interaction.guild else None
         permission = UNDO_PERMISSIONS.get(case.action) if case else None
         if permission is None:
-            await _reply(interaction, "That case can't be undone.")
+            await _reply(interaction, self._say(interaction, "cant_undo"))
             return
         if not await self._staff(interaction, permission) or not await self._outranks(interaction, case.user_id):
             return
         if not case.active:
-            await _reply(interaction, f"Case #{case_id} was already ended.")
+            await _reply(interaction, self._say(interaction, "already_ended", case_id=case_id))
             return
         async def undo() -> None:  # ending the case re-renders this card
             try:
                 if case.action == "warn":
                     if await mod_actions.end_case(self.bot, case.guild_id, case_id, ended_by=interaction.user.id) is None:
-                        await _reply(interaction, f"Case #{case_id} was already ended.")
+                        await _reply(interaction, self._say(interaction, "already_ended", case_id=case_id))
                         return await unbusy(interaction)
                 else:
                     await mod_actions.perform(
@@ -170,13 +220,13 @@ class ModCaseCardsCog(commands.Cog):
                         source="case card",
                     )
             except ModActionError as error:
-                await _reply(interaction, str(error))
+                await _reply(interaction, error.text(reader_language(interaction, self.settings)))
                 return await unbusy(interaction)
             if interaction.message.id != case.log_message_id:  # a /case copy: the refresh only reached the mod-log card
                 fresh = await mod_cases.get_case(case.guild_id, case_id) or case
                 await interaction.edit_original_response(view=await mod_actions.render_case_card(self.bot, fresh))
 
-        await while_busy(interaction, self._working, undo, failed="Something went wrong undoing that case.")
+        await while_busy(interaction, self._working, undo, failed=self._say(interaction, "undo_failed"))
 
     async def _history(self, interaction: discord.Interaction, case_id: int) -> None:
         if not await self._staff(interaction, "mod.cases.view"):
@@ -185,7 +235,10 @@ class ModCaseCardsCog(commands.Cog):
         if case is None:
             return
         cases = await mod_cases.list_cases(case.guild_id, user_id=case.user_id, limit=HISTORY_LIMIT)
-        text = f"**Last {len(cases)} cases for <@{case.user_id}>**\n{_history_lines(cases)}" if cases else "No cases."
+        if cases:
+            text = f"{self._say(interaction, 'history', count=len(cases), user_id=case.user_id)}\n{_history_lines(cases)}"
+        else:
+            text = self._say(interaction, "no_cases")
         await _reply(interaction, text)
 
 

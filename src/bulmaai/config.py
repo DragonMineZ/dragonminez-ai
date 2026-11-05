@@ -466,9 +466,9 @@ class Settings:
     # Closed tickets move here; re-opening moves them back to ai_ticket_category_id.
     ticket_closed_category_id: int | None = 1303543643377893466
     # Public channel where the active temporary support info is posted every 24h (cogs/support_info.py).
-    support_info_channel_id: int | None = 1349074976241745960
+    support_info_channel_id: int | None = 1567803358432067735
     # Staff channel for AI-suggested support info review cards; None falls back to moderation_log_channel_id.
-    support_info_review_channel_id: int | None = 1349074976241745960
+    support_info_review_channel_id: int | None = 1567803358432067735
     # Staff channel for the weekly support report (Mondays 09:00 UTC, cogs/support_report.py); None disables it.
     support_report_channel_id: int | None = None
     # Staff channel for a record of every ticket close (owner, summary, transcript link); None turns it off.
@@ -850,8 +850,8 @@ def _build_settings_from_env() -> Settings:
         ai_ticket_resolve_prompt_exponent=_get_env_float_default("AI_TICKET_RESOLVE_PROMPT_EXPONENT", DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT),
         ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
         ticket_closed_category_id=_get_env_int("TICKET_CLOSED_CATEGORY_ID", 1303543643377893466),
-        support_info_channel_id=_get_env_int("SUPPORT_INFO_CHANNEL_ID", 1349074976241745960),
-        support_info_review_channel_id=_get_env_int("SUPPORT_INFO_REVIEW_CHANNEL_ID", 1349074976241745960),
+        support_info_channel_id=_get_env_int("SUPPORT_INFO_CHANNEL_ID", 1567803358432067735),
+        support_info_review_channel_id=_get_env_int("SUPPORT_INFO_REVIEW_CHANNEL_ID", 1567803358432067735),
         support_report_channel_id=_get_env_int("SUPPORT_REPORT_CHANNEL_ID"),
         ticket_log_channel_id=_get_env_int("TICKET_LOG_CHANNEL_ID", 1567803358432067735),
         welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID", DEFAULT_WELCOME_CHANNEL_ID),

@@ -1,8 +1,10 @@
 """Ticket panel, intake modals and the in-ticket Components V2 cards (cogs/tickets.py does the work).
 
-The panel, forms and ephemeral replies are English | Spanish (with some Portuguese). Member-facing messages inside a
-ticket and its DMs are in the ticket's support language only (TEXT). Staff-only buttons and notices are English. Buttons are stateless: TicketsCog.on_interaction routes them by custom id and
-looks the ticket up by channel, so they survive bot restarts.
+The public panel is English with a short Spanish/Portuguese line. Each member's form and ephemeral replies are in their
+language (one language role, or the one they pick on form_language_card), which becomes the ticket's support language.
+Member-facing messages inside a ticket and its DMs are in that language only (TEXT, CATEGORY_TEXT: one table entry per
+language). Staff-only buttons and notices are English. Buttons are stateless: TicketsCog.on_interaction routes them by
+custom id and looks the ticket up by channel, so they survive bot restarts.
 """
 
 from dataclasses import dataclass
@@ -29,6 +31,9 @@ LANG_SELECT_ID = "ticket_lang_select"
 # + language code; the language picker posted in a new ticket whose owner has several language roles.
 LANG_BUTTON_PREFIX = "ticket_lang:"
 LANG_ROW_ID = 801  # the support-language select on the welcome card
+# + "{category key}:{language}"; the language buttons the panel answers with when a member has no or several
+# language roles. The click opens that category's form in that language.
+FORM_BUTTON_PREFIX = "ticket_form:"
 COG_NAME = "TicketsCog"
 
 LANGUAGES = {"en": ("🇬🇧", "English"), "es": ("🇪🇸", "Español"), "pt": ("🇧🇷", "Português")}
@@ -55,6 +60,20 @@ TEXT: dict[str, dict[str, str]] = {
         "pick_language": "Which language do you want support in?",
         "language_set": "Support language: {name}.",
         "language_changed": "Support language changed to {name} by {mention}.",
+        "creating": "🎫 Creating your ticket…",
+        "failed": "❌ Something went wrong creating your ticket. Please try again or contact staff.",
+        "still_creating": "Your ticket is still being created. Please wait a moment.",
+        "already_open": "You already have an open ticket: <#{channel_id}>. Please continue there.",
+        "ready": "✅ Your ticket is ready: {channel}",
+        "no_permission": "You can't do that here.",
+        "close": "Close",
+        "cancel": "Cancel",
+        "cancelled": "Cancelled.",
+        "close_title": "Close this ticket?",
+        "close_body": "Once closed, only staff can see this channel. A transcript of the conversation is shown here and sent by DM.",
+        "reopened": "Ticket re-opened",
+        "reopened_by": "Re-opened by {mention}.",
+        "transcript_of": "Transcript of ticket #{number}",
     },
     "es": {
         "greeting": "¡Hola {mention}! El staff te atenderá pronto. Puedes añadir capturas o más detalles mientras esperas.",
@@ -76,6 +95,20 @@ TEXT: dict[str, dict[str, str]] = {
         "pick_language": "¿En qué idioma quieres recibir soporte?",
         "language_set": "Idioma de soporte: {name}.",
         "language_changed": "Idioma de soporte cambiado a {name} por {mention}.",
+        "creating": "🎫 Creando tu ticket…",
+        "failed": "❌ Algo salió mal al crear tu ticket. Inténtalo de nuevo o contacta al staff.",
+        "still_creating": "Tu ticket todavía se está creando. Espera un momento.",
+        "already_open": "Ya tienes un ticket abierto: <#{channel_id}>. Continúa allí.",
+        "ready": "✅ Tu ticket está listo: {channel}",
+        "no_permission": "No puedes hacer eso aquí.",
+        "close": "Cerrar",
+        "cancel": "Cancelar",
+        "cancelled": "Cancelado.",
+        "close_title": "¿Cerrar este ticket?",
+        "close_body": "Después de cerrarlo, solo el staff podrá ver este canal. La transcripción de la conversación aparece aquí y te llega por MD.",
+        "reopened": "Ticket reabierto",
+        "reopened_by": "Reabierto por {mention}.",
+        "transcript_of": "Transcripción del ticket #{number}",
     },
     "pt": {
         "greeting": "Olá {mention}! A staff vai te atender em breve. Adicione capturas ou mais detalhes enquanto espera.",
@@ -97,6 +130,20 @@ TEXT: dict[str, dict[str, str]] = {
         "pick_language": "Em qual idioma você quer receber suporte?",
         "language_set": "Idioma do suporte: {name}.",
         "language_changed": "Idioma do suporte alterado para {name} por {mention}.",
+        "creating": "🎫 Criando seu ticket…",
+        "failed": "❌ Algo deu errado ao criar seu ticket. Tente novamente ou fale com a staff.",
+        "still_creating": "Seu ticket ainda está sendo criado. Aguarde um momento.",
+        "already_open": "Você já tem um ticket aberto: <#{channel_id}>. Continue nele.",
+        "ready": "✅ Seu ticket está pronto: {channel}",
+        "no_permission": "Você não pode fazer isso aqui.",
+        "close": "Fechar",
+        "cancel": "Cancelar",
+        "cancelled": "Cancelado.",
+        "close_title": "Fechar este ticket?",
+        "close_body": "Depois de fechado, só a staff pode ver este canal. A transcrição da conversa aparece aqui e é enviada por DM.",
+        "reopened": "Ticket reaberto",
+        "reopened_by": "Reaberto por {mention}.",
+        "transcript_of": "Transcrição do ticket #{number}",
     },
 }
 
@@ -111,121 +158,411 @@ REOPENED_GREEN = discord.Color.from_rgb(87, 242, 135)
 REQUEST_GREY = discord.Color.from_rgb(79, 84, 92)
 
 
-def tri(en: str, es: str, pt: str | None = None) -> str:
-    """Omit pt when Spanish already reads fine for Portuguese speakers."""
-    return " | ".join(part for part in (en, es, pt) if part)
-
-
-OPTIONAL = tri("Optional", "Opcional")
-
-
 @dataclass(frozen=True, slots=True)
 class FormField:
-    label: str
-    placeholder: str
+    """A form input's shape; its label and placeholder per language are in CATEGORY_TEXT."""
+
     paragraph: bool = False
     required: bool = True
     max_length: int = 100
 
 
 @dataclass(frozen=True, slots=True)
+class CategoryText:
+    """A category's member-facing words in one language. fields: (label, placeholder) per FormField, same order.
+    Discord limits: label/description 100, title and field labels 45, placeholders 100 characters."""
+
+    label: str
+    description: str
+    title: str
+    fields: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TicketCategory:
     key: str
     emoji: str
-    label: str
-    description: str
-    modal_title: str
     fallback_slug: str
     ai_reply: bool
     fields: tuple[FormField, ...]
+    # Moderators and up only: Helpers don't see the channel, and an escalation pings moderators instead of helpers.
+    mod_only: bool = False
+
+    def text(self, language: str) -> CategoryText:
+        """The category's words in language (English for an unknown one)."""
+        return CATEGORY_TEXT.get(language, CATEGORY_TEXT["en"])[self.key]
 
     @property
     def name(self) -> str:
         """English name, for everything inside a ticket."""
-        return self.label.split(" | ")[0]
+        return self.text("en").label
+
+    @property
+    def description(self) -> str:
+        """English description (the panel and the AI's open_ticket tool)."""
+        return self.text("en").description
 
 
+# The panel lists them in this order; Other stays last.
 CATEGORIES: dict[str, TicketCategory] = {
     category.key: category
     for category in (
         TicketCategory(
             key="bug",
             emoji="⚙️",
-            label=tri("Game-Breaking Bug", "Bug que rompe el juego", "Bug que quebra o jogo"),
-            description=tri("Crashes, corrupted worlds", "Cierres, mundos dañados", "Crashes, mundos corrompidos"),
-            modal_title=tri("Bug Report", "Reporte de bug"),
             fallback_slug="bug",
             ai_reply=True,
             fields=(
-                FormField(tri("Summary", "Resumen"), tri("Crash when...", "Se cierra al...", "Fecha ao...")),
-                FormField(
-                    tri("What happened?", "¿Qué pasó?", "O que houve?"),
-                    tri("Describe it", "Descríbelo"),
-                    paragraph=True,
-                    max_length=1000,
-                ),
-                FormField(
-                    tri("Steps to reproduce", "Pasos"),
-                    "1. ...\n2. ...",
-                    paragraph=True,
-                    required=False,
-                    max_length=800,
-                ),
-                FormField(tri("Mod & Minecraft version", "Versión"), "DMZ 2.2 / MC 1.20.1"),
-                FormField(tri("Other mods", "Otros mods"), OPTIONAL, required=False, max_length=200),
+                FormField(),
+                FormField(paragraph=True, max_length=1000),
+                FormField(paragraph=True, required=False, max_length=800),
+                FormField(),
+                FormField(required=False, max_length=200),
             ),
+        ),
+        TicketCategory(
+            key="patreon",
+            emoji="💎",
+            fallback_slug="patreon",
+            ai_reply=True,
+            fields=(FormField(), FormField(), FormField(paragraph=True, max_length=1000)),
+        ),
+        TicketCategory(
+            key="install",
+            emoji="📦",
+            fallback_slug="install",
+            ai_reply=True,
+            fields=(FormField(), FormField(), FormField(paragraph=True, max_length=1000)),
+        ),
+        TicketCategory(
+            key="server",
+            emoji="🖥️",
+            fallback_slug="server",
+            ai_reply=True,
+            fields=(FormField(), FormField(), FormField(paragraph=True, max_length=1000)),
+        ),
+        TicketCategory(
+            key="report",
+            emoji="🚨",
+            fallback_slug="report",
+            ai_reply=False,
+            mod_only=True,
+            fields=(
+                FormField(),
+                FormField(paragraph=True, max_length=1000),
+                FormField(paragraph=True, required=False, max_length=500),
+            ),
+        ),
+        TicketCategory(
+            key="appeal",
+            emoji="⚖️",
+            fallback_slug="appeal",
+            ai_reply=False,
+            mod_only=True,
+            fields=(FormField(max_length=200), FormField(paragraph=True, max_length=1000)),
+        ),
+        TicketCategory(
+            key="partner",
+            emoji="🤝",
+            fallback_slug="partner",
+            ai_reply=False,
+            fields=(FormField(max_length=200), FormField(), FormField(paragraph=True, max_length=1000)),
         ),
         TicketCategory(
             key="contribute",
             emoji="🙌",
-            label=tri("Contributing to the Mod", "Contribuir al mod"),
-            description=tri("Code, art, translations", "Código, arte, traducciones"),
-            modal_title=tri("Contribute", "Contribuir"),
             fallback_slug="contribute",
             ai_reply=False,
             fields=(
-                FormField(
-                    tri("How to help?", "¿Cómo ayudar?"),
-                    tri("Code, art, translation...", "Código, arte, traducción..."),
-                ),
-                FormField(
-                    tri("Experience", "Experiencia"),
-                    tri("Tell us about yourself", "Cuéntanos de ti", "Conte sobre você"),
-                    paragraph=True,
-                    max_length=800,
-                ),
-                FormField(tri("Links (GitHub, portfolio)", "Enlaces"), OPTIONAL, required=False, max_length=200),
+                FormField(),
+                FormField(paragraph=True, max_length=800),
+                FormField(required=False, max_length=200),
             ),
         ),
         TicketCategory(
             key="other",
             emoji="💠",
-            label=tri("Other", "Otro"),
-            description=tri("Anything else", "Cualquier otra cosa"),
-            modal_title=tri("Other", "Otro"),
             fallback_slug="help",
             ai_reply=True,
-            fields=(
-                FormField(tri("Subject", "Asunto"), tri("What is it about?", "¿De qué trata?", "Sobre o quê?")),
-                FormField(
-                    tri("Details", "Detalles"),
-                    tri("Explain", "Explica"),
-                    paragraph=True,
-                    max_length=1000,
-                ),
-            ),
+            fields=(FormField(), FormField(paragraph=True, max_length=1000)),
         ),
     )
 }
 
+# Every category's words, per language. A new language is one more entry here and in TEXT and LANGUAGES.
+CATEGORY_TEXT: dict[str, dict[str, CategoryText]] = {
+    "en": {
+        "bug": CategoryText(
+            "Game-Breaking Bug",
+            "Crashes, corrupted worlds",
+            "Bug Report",
+            (
+                ("Summary", "Crash when..."),
+                ("What happened?", "Describe it"),
+                ("Steps to reproduce", "1. ...\n2. ..."),
+                ("Mod & Minecraft version", "DMZ 2.2 / MC 1.20.1"),
+                ("Other mods", "Optional"),
+            ),
+        ),
+        "patreon": CategoryText(
+            "Patreon & Beta Access",
+            "Whitelist not working, account linking, dev jar access",
+            "Patreon & Beta Access",
+            (
+                ("Patreon email or name", "The email or name on your Patreon account"),
+                ("Minecraft username", "Your in-game name"),
+                ("What's wrong?", "Describe the problem"),
+            ),
+        ),
+        "install": CategoryText(
+            "Installation & Setup",
+            "Won't launch (no crash), which version, modpack help",
+            "Installation & Setup",
+            (
+                ("Launcher", "CurseForge, Modrinth, Prism, vanilla..."),
+                ("Mod & Forge version", "DMZ 2.2 / Forge 47.3.0"),
+                ("What did you try?", "What happens, and what you tried so far"),
+            ),
+        ),
+        "server": CategoryText(
+            "Server & Multiplayer",
+            "For server owners: configs, permissions, commands, sync",
+            "Server & Multiplayer",
+            (
+                ("Server type", "Host (which one), self-hosted or LAN"),
+                ("Versions", "DMZ 2.2 / Forge 47.3.0 / MC 1.20.1"),
+                ("The issue", "What's going wrong?"),
+            ),
+        ),
+        "report": CategoryText(
+            "Report a Member",
+            "Scams, harassment, DM ads",
+            "Report a Member",
+            (
+                ("Who? (username or ID)", "Their username or user ID"),
+                ("What happened?", "Tell us what they did"),
+                ("Proof (links)", "Message or screenshot links (you can also upload them in the ticket)"),
+            ),
+        ),
+        "appeal": CategoryText(
+            "Appeal a Punishment",
+            "Warns and timeouts. Bans go through the ban appeal website",
+            "Appeal a Punishment",
+            (
+                ("Which punishment?", "Warn or timeout, when, and the reason given"),
+                ("Why should it be lifted?", "Explain"),
+            ),
+        ),
+        "partner": CategoryText(
+            "Partnership & Creators",
+            "Partnerships, YouTubers and streamers",
+            "Partnership & Creators",
+            (
+                ("Channel or server link", "https://..."),
+                ("Audience size", "Subscribers, followers or members"),
+                ("Proposal", "What do you have in mind?"),
+            ),
+        ),
+        "contribute": CategoryText(
+            "Contributing to the Mod",
+            "Code, art, translations",
+            "Contribute",
+            (
+                ("How to help?", "Code, art, translation..."),
+                ("Experience", "Tell us about yourself"),
+                ("Links (GitHub, portfolio)", "Optional"),
+            ),
+        ),
+        "other": CategoryText(
+            "Other",
+            "Anything else",
+            "Other",
+            (("Subject", "What is it about?"), ("Details", "Explain")),
+        ),
+    },
+    "es": {
+        "bug": CategoryText(
+            "Bug que rompe el juego",
+            "Cierres, mundos dañados",
+            "Reporte de bug",
+            (
+                ("Resumen", "Se cierra al..."),
+                ("¿Qué pasó?", "Descríbelo"),
+                ("Pasos para reproducirlo", "1. ...\n2. ..."),
+                ("Versión del mod y de Minecraft", "DMZ 2.2 / MC 1.20.1"),
+                ("Otros mods", "Opcional"),
+            ),
+        ),
+        "patreon": CategoryText(
+            "Patreon y acceso beta",
+            "La whitelist no funciona, vinculación de cuenta, acceso a dev jars",
+            "Patreon y acceso beta",
+            (
+                ("Correo o nombre de Patreon", "El correo o nombre de tu cuenta de Patreon"),
+                ("Usuario de Minecraft", "Tu nombre en el juego"),
+                ("¿Qué pasa?", "Describe el problema"),
+            ),
+        ),
+        "install": CategoryText(
+            "Instalación y configuración",
+            "No abre (sin crash), qué versión usar, ayuda con modpacks",
+            "Instalación y configuración",
+            (
+                ("Launcher", "CurseForge, Modrinth, Prism, vanilla..."),
+                ("Versión del mod y de Forge", "DMZ 2.2 / Forge 47.3.0"),
+                ("¿Qué intentaste?", "Qué pasa y qué intentaste hasta ahora"),
+            ),
+        ),
+        "server": CategoryText(
+            "Servidor y multijugador",
+            "Para dueños de servidores: configs, permisos, comandos, sincronización",
+            "Servidor y multijugador",
+            (
+                ("Tipo de servidor", "Host (cuál), propio o LAN"),
+                ("Versiones", "DMZ 2.2 / Forge 47.3.0 / MC 1.20.1"),
+                ("El problema", "¿Qué está fallando?"),
+            ),
+        ),
+        "report": CategoryText(
+            "Reportar a un miembro",
+            "Estafas, acoso, publicidad por MD",
+            "Reportar a un miembro",
+            (
+                ("¿Quién? (usuario o ID)", "Su nombre de usuario o ID"),
+                ("¿Qué pasó?", "Cuéntanos qué hizo"),
+                ("Pruebas (enlaces)", "Enlaces a mensajes o capturas (también puedes subirlas en el ticket)"),
+            ),
+        ),
+        "appeal": CategoryText(
+            "Apelar una sanción",
+            "Advertencias y timeouts. Los baneos van por la web de apelaciones",
+            "Apelar una sanción",
+            (
+                ("¿Qué sanción?", "Advertencia o timeout, cuándo y el motivo que te dieron"),
+                ("¿Por qué debería quitarse?", "Explícalo"),
+            ),
+        ),
+        "partner": CategoryText(
+            "Alianzas y creadores",
+            "Alianzas, YouTubers y streamers",
+            "Alianzas y creadores",
+            (
+                ("Enlace del canal o servidor", "https://..."),
+                ("Tamaño de la audiencia", "Suscriptores, seguidores o miembros"),
+                ("Propuesta", "¿Qué tienes en mente?"),
+            ),
+        ),
+        "contribute": CategoryText(
+            "Contribuir al mod",
+            "Código, arte, traducciones",
+            "Contribuir",
+            (
+                ("¿Cómo quieres ayudar?", "Código, arte, traducción..."),
+                ("Experiencia", "Cuéntanos de ti"),
+                ("Enlaces (GitHub, portafolio)", "Opcional"),
+            ),
+        ),
+        "other": CategoryText(
+            "Otro",
+            "Cualquier otra cosa",
+            "Otro",
+            (("Asunto", "¿De qué se trata?"), ("Detalles", "Explícalo")),
+        ),
+    },
+    "pt": {
+        "bug": CategoryText(
+            "Bug que quebra o jogo",
+            "Crashes, mundos corrompidos",
+            "Relatório de bug",
+            (
+                ("Resumo", "Fecha ao..."),
+                ("O que aconteceu?", "Descreva"),
+                ("Passos para reproduzir", "1. ...\n2. ..."),
+                ("Versão do mod e do Minecraft", "DMZ 2.2 / MC 1.20.1"),
+                ("Outros mods", "Opcional"),
+            ),
+        ),
+        "patreon": CategoryText(
+            "Patreon e acesso beta",
+            "Whitelist não funciona, vinculação de conta, acesso a dev jars",
+            "Patreon e acesso beta",
+            (
+                ("E-mail ou nome do Patreon", "O e-mail ou nome da sua conta do Patreon"),
+                ("Usuário do Minecraft", "Seu nome no jogo"),
+                ("Qual é o problema?", "Descreva o problema"),
+            ),
+        ),
+        "install": CategoryText(
+            "Instalação e configuração",
+            "Não abre (sem crash), qual versão usar, ajuda com modpacks",
+            "Instalação e configuração",
+            (
+                ("Launcher", "CurseForge, Modrinth, Prism, vanilla..."),
+                ("Versão do mod e do Forge", "DMZ 2.2 / Forge 47.3.0"),
+                ("O que você tentou?", "O que acontece e o que você já tentou"),
+            ),
+        ),
+        "server": CategoryText(
+            "Servidor e multiplayer",
+            "Para donos de servidor: configs, permissões, comandos, sincronização",
+            "Servidor e multiplayer",
+            (
+                ("Tipo de servidor", "Host (qual), próprio ou LAN"),
+                ("Versões", "DMZ 2.2 / Forge 47.3.0 / MC 1.20.1"),
+                ("O problema", "O que está dando errado?"),
+            ),
+        ),
+        "report": CategoryText(
+            "Denunciar um membro",
+            "Golpes, assédio, divulgação por DM",
+            "Denunciar um membro",
+            (
+                ("Quem? (usuário ou ID)", "O nome de usuário ou ID da pessoa"),
+                ("O que aconteceu?", "Conte o que a pessoa fez"),
+                ("Provas (links)", "Links de mensagens ou prints (você também pode enviá-los no ticket)"),
+            ),
+        ),
+        "appeal": CategoryText(
+            "Recorrer de uma punição",
+            "Advertências e timeouts. Banimentos vão pelo site de recurso",
+            "Recorrer de uma punição",
+            (
+                ("Qual punição?", "Advertência ou timeout, quando e o motivo informado"),
+                ("Por que deveria ser retirada?", "Explique"),
+            ),
+        ),
+        "partner": CategoryText(
+            "Parcerias e criadores",
+            "Parcerias, YouTubers e streamers",
+            "Parcerias e criadores",
+            (
+                ("Link do canal ou servidor", "https://..."),
+                ("Tamanho do público", "Inscritos, seguidores ou membros"),
+                ("Proposta", "O que você tem em mente?"),
+            ),
+        ),
+        "contribute": CategoryText(
+            "Contribuir com o mod",
+            "Código, arte, traduções",
+            "Contribuir",
+            (
+                ("Como quer ajudar?", "Código, arte, tradução..."),
+                ("Experiência", "Conte sobre você"),
+                ("Links (GitHub, portfólio)", "Opcional"),
+            ),
+        ),
+        "other": CategoryText(
+            "Outro",
+            "Qualquer outra coisa",
+            "Outro",
+            (("Assunto", "Sobre o quê?"), ("Detalhes", "Explique")),
+        ),
+    },
+}
+
+# Staff-facing (English) replies; member-facing ones are in TEXT.
 MSG = {
-    "creating": tri("🎫 Creating your ticket…", "Creando tu ticket…", "Criando seu ticket…"),
-    "failed": tri(
-        "❌ Something went wrong creating your ticket. Please try again or contact staff.",
-        "Algo salió mal al crear tu ticket. Inténtalo de nuevo o contacta al staff.",
-        "Algo deu errado ao criar seu ticket. Tente novamente ou fale com a staff.",
-    ),
-    "no_permission": tri("You can't do that here.", "No puedes hacer eso aquí.", "Você não pode fazer isso aqui."),
+    "failed": TEXT["en"]["failed"],
     "staff_only": "Only staff can do this.",
     "mod_only": "Only moderators and admins can do this.",
     "not_ticket": "This isn't an open ticket channel.",
@@ -242,23 +579,48 @@ MSG = {
 }
 
 
-def msg_already_open(channel_id: int | None) -> str:
+def msg_already_open(channel_id: int | None, language: str = "en") -> str:
     """channel_id is None while their other ticket is still being created."""
     if channel_id is None:
-        return tri(
-            "Your ticket is still being created. Please wait a moment.",
-            "Tu ticket todavía se está creando. Espera un momento.",
-            "Seu ticket ainda está sendo criado. Aguarde um momento.",
-        )
-    return tri(
-        f"You already have an open ticket: <#{channel_id}>. Please continue there.",
-        f"Ya tienes un ticket abierto: <#{channel_id}>. Continúa allí.",
-        f"Você já tem um ticket aberto: <#{channel_id}>. Continue nele.",
+        return t(language, "still_creating")
+    return t(language, "already_open", channel_id=channel_id)
+
+
+def msg_created(channel_mention: str, language: str = "en") -> str:
+    return t(language, "ready", channel=channel_mention)
+
+
+def form_custom_id(category_key: str, language: str) -> str:
+    return f"{FORM_BUTTON_PREFIX}{category_key}:{language}"
+
+
+def parse_form_custom_id(custom_id: str) -> tuple[TicketCategory, str] | None:
+    """(category, language) of a form_language_card button, None when it isn't one (or names an unknown one)."""
+    if not custom_id.startswith(FORM_BUTTON_PREFIX):
+        return None
+    key, _, language = custom_id.removeprefix(FORM_BUTTON_PREFIX).partition(":")
+    category = CATEGORIES.get(key)
+    if category is None or language not in LANGUAGES:
+        return None
+    return category, language
+
+
+def form_language_card(category: TicketCategory) -> discord.ui.DesignerView:
+    """The panel's ephemeral answer to a member with no or several language roles: their pick opens the form."""
+    buttons = [
+        discord.ui.Button(label=name, emoji=flag, custom_id=form_custom_id(category.key, code))
+        for code, (flag, name) in LANGUAGES.items()
+    ]
+    return _card(
+        discord.ui.TextDisplay(
+            f"### 🌐 Pick your language — a form will appear next\n"
+            f"-# 🇪🇸 Elige tu idioma: el formulario aparecerá después. "
+            f"🇧🇷 Escolha seu idioma: o formulário vem em seguida.\n"
+            f"-# {category.emoji} {category.name}"
+        ),
+        discord.ui.ActionRow(*buttons),
+        color=BLURPLE,
     )
-
-
-def msg_created(channel_mention: str) -> str:
-    return f"✅ {tri('Your ticket is ready', 'Tu ticket está listo', 'Seu ticket está pronto')}: {channel_mention}"
 
 
 # ---- Components V2 cards -----------------------------------------------------------------------
@@ -386,9 +748,10 @@ def language_changed(language: str, mention: str) -> discord.ui.DesignerView:
     return notice(f"🌐 {t(language, 'language_changed', name=LANGUAGES[language][1], mention=mention)}")
 
 
-def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
-    """Staff-only AI toggle (doubles as its status), Solved, Summary and Draft reply, plus Close, while the ticket is
-    open. Every state change swaps this whole row, so all five buttons stay."""
+def control_row(ai_enabled: bool = True, language: str = "en") -> discord.ui.ActionRow:
+    """Staff-only AI toggle (doubles as its status), Solved, Summary and Draft reply, plus Close (in the ticket's
+    language, the owner uses it too), while the ticket is open. Every state change swaps this whole row, so all five
+    buttons stay."""
     return discord.ui.ActionRow(
         discord.ui.Button(
             label="AI support: On" if ai_enabled else "AI support: Off",
@@ -397,7 +760,7 @@ def control_row(ai_enabled: bool = True) -> discord.ui.ActionRow:
             custom_id=AI_BUTTON_ID,
         ),
         discord.ui.Button(
-            label=tri("Close", "Cerrar"), emoji="🔒", style=discord.ButtonStyle.danger, custom_id=CLOSE_BUTTON_ID
+            label=t(language, "close"), emoji="🔒", style=discord.ButtonStyle.danger, custom_id=CLOSE_BUTTON_ID
         ),
         discord.ui.Button(label="Solved", emoji="✅", style=discord.ButtonStyle.primary, custom_id=SOLVED_BUTTON_ID),
         discord.ui.Button(label="Summary", emoji="📋", style=discord.ButtonStyle.secondary, custom_id=SUMMARY_BUTTON_ID),
@@ -453,16 +816,23 @@ def welcome_view(
         discord.ui.TextDisplay(greeting_text(number, category, mention, language)), color=BLURPLE
     )
     request = discord.ui.Container(discord.ui.TextDisplay(request_text(answers)[:3000]), color=REQUEST_GREY)
-    return discord.ui.DesignerView(greeting, request, language_row(language), control_row(ai_enabled), timeout=None)
+    return discord.ui.DesignerView(
+        greeting, request, language_row(language), control_row(ai_enabled, language), timeout=None
+    )
 
 
 def relanguage_welcome(
     view: discord.ui.DesignerView, *, number: int, category: TicketCategory, mention: str, language: str
 ) -> discord.ui.DesignerView:
-    """The posted welcome card (read back with DesignerView.from_message) with its greeting and select in language."""
+    """The posted welcome card (read back with DesignerView.from_message) with its greeting, select and Close button
+    in language."""
     view.children[0].items[0].content = greeting_text(number, category, mention, language)
     if (row := view.get_item(LANG_ROW_ID)) is not None:
         row.children[0].options = language_row(language).children[0].options
+    if (actions := view.get_item(ACTIONS_ID)) is not None:
+        for button in actions.children:
+            if getattr(button, "custom_id", None) == CLOSE_BUTTON_ID:
+                button.label = t(language, "close")
     return view
 
 
@@ -476,30 +846,35 @@ def closed_view(mention: str | None, reason: str | None) -> discord.ui.DesignerV
     )
 
 
-def reopened_view(mention: str) -> discord.ui.DesignerView:
+def reopened_view(mention: str, language: str = "en") -> discord.ui.DesignerView:
+    """Public in the ticket, so in its language."""
     return _card(
-        discord.ui.TextDisplay(f"### 🔓 {tri('Ticket re-opened', 'Ticket reabierto')}\nRe-opened by {mention}."),
+        discord.ui.TextDisplay(f"### 🔓 {t(language, 'reopened')}\n{t(language, 'reopened_by', mention=mention)}"),
         color=REOPENED_GREEN,
     )
 
 
 def panel_view() -> discord.ui.DesignerView:
+    """The public panel everyone sees: English, plus one short line for Spanish and Portuguese speakers. The form that
+    follows a pick is in the member's own language."""
     select = discord.ui.Select(
         custom_id=PANEL_SELECT_ID,
-        placeholder=tri("Select a category", "Selecciona una categoría"),
+        placeholder="Select a category",
         options=[
-            discord.SelectOption(label=c.label, value=c.key, description=c.description, emoji=c.emoji)
+            discord.SelectOption(label=c.name, value=c.key, description=c.description, emoji=c.emoji)
             for c in CATEGORIES.values()
         ],
     )
     return _card(
         discord.ui.TextDisplay(
-            f"## 🎫 {tri('Support Tickets', 'Tickets de Soporte')}\n"
-            "Need help? Pick a category below and fill in the short form. A private channel will be created for you.\n"
-            "-# ¿Necesitas ayuda? Elige una categoría abajo y rellena el formulario. Se creará un canal privado para ti."
+            "## 🎫 Support Tickets\n"
+            "Need help? Pick a category below. A short form opens in your language, then a private channel is "
+            "created for you.\n"
+            "-# 🇪🇸 Elige una categoría: el formulario aparece en tu idioma. "
+            "🇧🇷 Escolha uma categoria: o formulário aparece no seu idioma."
         ),
         discord.ui.ActionRow(select),
-        discord.ui.TextDisplay(f"-# {tri('Please don’t open duplicate tickets', 'No abras tickets duplicados')}"),
+        discord.ui.TextDisplay("-# Please don’t open duplicate tickets."),
         color=BLURPLE,
     )
 
@@ -509,22 +884,17 @@ def notice(text: str, color: discord.Color = BLURPLE) -> discord.ui.DesignerView
 
 
 class ClosePrompt(discord.ui.DesignerView):
-    """Private "close this ticket?" card; confirming runs on_confirm(interaction). Every close saves a transcript."""
+    """Private "close this ticket?" card in the clicker's language; confirming runs on_confirm(interaction). Every close
+    saves a transcript."""
 
-    def __init__(self, on_confirm) -> None:
-        close = discord.ui.Button(label=tri("Close", "Cerrar"), emoji="🔒", style=discord.ButtonStyle.danger)
-        cancel = discord.ui.Button(label=tri("Cancel", "Cancelar"))
+    def __init__(self, on_confirm, language: str = "en") -> None:
+        close = discord.ui.Button(label=t(language, "close"), emoji="🔒", style=discord.ButtonStyle.danger)
+        cancel = discord.ui.Button(label=t(language, "cancel"))
         close.callback = self._confirm
         cancel.callback = self._cancel
         super().__init__(
             discord.ui.Container(
-                discord.ui.TextDisplay(
-                    "### 🔒 Close this ticket?\n"
-                    "Once closed, only staff can see this channel. A transcript of the conversation is shown here "
-                    "and sent by DM.\n"
-                    "-# ¿Cerrar este ticket? Después solo el staff podrá ver el canal. "
-                    "La transcripción aparece aquí y te llega por MD."
-                ),
+                discord.ui.TextDisplay(f"### 🔒 {t(language, 'close_title')}\n{t(language, 'close_body')}"),
                 discord.ui.ActionRow(close, cancel),
                 color=CLOSED_RED,
             ),
@@ -532,6 +902,7 @@ class ClosePrompt(discord.ui.DesignerView):
             disable_on_timeout=True,
         )
         self._on_confirm = on_confirm
+        self._language = language
         self._close_id = close.custom_id
         self._working = False
 
@@ -544,52 +915,62 @@ class ClosePrompt(discord.ui.DesignerView):
             await interaction.response.edit_message(view=busy(self, self._close_id))
             await self._on_confirm(interaction)
         except Exception:
-            await interaction.edit_original_response(view=ClosePrompt(self._on_confirm))
-            await interaction.followup.send(MSG["failed"], ephemeral=True)
+            await interaction.edit_original_response(view=ClosePrompt(self._on_confirm, self._language))
+            await interaction.followup.send(t(self._language, "failed"), ephemeral=True)
             raise  # View.on_error logs it
         finally:
             self.stop()
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         self.stop()
-        await interaction.response.edit_message(view=notice(tri("Cancelled.", "Cancelado."), discord.Color.dark_grey()))
+        await interaction.response.edit_message(view=notice(t(self._language, "cancelled"), discord.Color.dark_grey()))
 
 
-def transcript_link_view(number: int, url: str) -> discord.ui.DesignerView:
+def transcript_link_view(number: int, url: str, language: str = "en") -> discord.ui.DesignerView:
     return _card(
-        discord.ui.TextDisplay(f"📄 {tri(f'Transcript of ticket #{number:04d}', f'Transcripción del ticket #{number:04d}')}"),
-        _link_row(tri("View transcript", "Ver transcripción"), "📄", url),
+        discord.ui.TextDisplay(f"📄 {t(language, 'transcript_of', number=f'{number:04d}')}"),
+        _link_row(t(language, "view_transcript"), "📄", url),
         color=BLURPLE,
     )
 
 
 class TicketModal(discord.ui.DesignerModal):
+    """A category's intake form, entirely in language; the ticket it opens gets that support language."""
+
     # Label-wrapped inputs: Discord shows legacy action-row inputs as required even with required=false.
-    def __init__(self, category: TicketCategory) -> None:
+    def __init__(self, category: TicketCategory, language: str = "en") -> None:
+        text = category.text(language)
         labels = [
             discord.ui.Label(
-                field.label,
+                label,
                 discord.ui.InputText(
-                    placeholder=field.placeholder,
+                    placeholder=placeholder,
                     style=discord.InputTextStyle.paragraph if field.paragraph else discord.InputTextStyle.short,
                     required=field.required,
                     max_length=field.max_length,
                 ),
             )
-            for field in category.fields
+            for field, (label, placeholder) in zip(category.fields, text.fields)
         ]
         for field, label in zip(category.fields, labels):
             # py-cord 2.7.x drops required=False in the constructor (`required or self.required`), leaving None.
             label.item.required = field.required
-        super().__init__(*labels, title=category.modal_title)
+        super().__init__(*labels, title=text.title)
         self.category = category
+        self.language = language if language in LANGUAGES else "en"
 
     async def callback(self, interaction: discord.Interaction) -> None:
         cog = interaction.client.get_cog(COG_NAME)
         if cog is None:
-            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
+            return await interaction.response.send_message(t(self.language, "failed"), ephemeral=True)
+        # The request card and the AI read English field labels, whatever language the form was in.
         answers = [
-            (field.label.split(" | ")[0], (label.item.value or "").strip())
-            for field, label in zip(self.category.fields, self.children)
+            (label, (item.item.value or "").strip())
+            for (label, _), item in zip(self.category.text("en").fields, self.children)
         ]
-        await cog.create_ticket(interaction, self.category, [(label, value) for label, value in answers if value])
+        await cog.create_ticket(
+            interaction,
+            self.category,
+            [(label, value) for label, value in answers if value],
+            language=self.language,
+        )

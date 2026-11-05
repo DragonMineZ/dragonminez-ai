@@ -141,6 +141,17 @@ class OverwriteTests(unittest.TestCase):
         self.assertEqual((h.view_channel, h.send_messages, h.read_message_history), (True,) * 3)
         self.assertIs(h.manage_messages, False)
 
+    def test_mod_only_tickets_leave_helpers_out(self):
+        roles = {role_id: Snow(role_id) for role_id in (OWNER_ROLE, ADMIN_ROLE, MOD_ROLE, HELPER_ROLE)}
+        guild = SimpleNamespace(default_role=Snow(1), me=Snow(2), get_role=roles.get)
+        for closed in (False, True):
+            overwrites = build_overwrites(guild, Snow(OWNER_ID), SETTINGS, closed=closed, mod_only=True)
+            self.assertNotIn(roles[HELPER_ROLE], overwrites)
+            for role_id in (OWNER_ROLE, ADMIN_ROLE, MOD_ROLE):
+                self.assertIs(overwrites[roles[role_id]].view_channel, True)
+        self.assertTrue(cog_module.is_mod_only("report") and cog_module.is_mod_only("appeal"))
+        self.assertFalse(cog_module.is_mod_only("bug") or cog_module.is_mod_only(None) or cog_module.is_mod_only("gone"))
+
     def test_missing_roles_are_skipped(self):
         guild = SimpleNamespace(default_role=Snow(1), me=Snow(2), get_role=lambda _id: None)
         overwrites = build_overwrites(guild, Snow(OWNER_ID), SETTINGS)
@@ -148,37 +159,135 @@ class OverwriteTests(unittest.TestCase):
 
 
 class FormTests(unittest.IsolatedAsyncioTestCase):
-    async def test_modals_fit_discord_limits(self):
-        self.assertEqual({"bug", "contribute", "other"}, set(views.CATEGORIES))
-        for category in views.CATEGORIES.values():
-            modal = views.TicketModal(category)
-            self.assertLessEqual(len(modal.title), 45)
-            self.assertLessEqual(len(modal.children), 5)
-            self.assertLessEqual(len(category.label), 100)
-            self.assertLessEqual(len(category.description), 100)
-            for field, child in zip(category.fields, modal.children):
-                self.assertLessEqual(len(child.label), 45, child.label)
-                self.assertLessEqual(len(child.item.placeholder), 100, child.item.placeholder)
-                self.assertIs(child.item.required, field.required)
-                # EN | ES, plus PT only where it differs from Spanish
-                self.assertIn(field.label.count(" | "), (1, 2), field.label)
+    async def test_categories_in_panel_order_with_other_last(self):
+        self.assertEqual(
+            list(views.CATEGORIES),
+            ["bug", "patreon", "install", "server", "report", "appeal", "partner", "contribute", "other"],
+        )
+        options = custom_ids(views.panel_view())
+        self.assertEqual(options, [views.PANEL_SELECT_ID])
+        select = next(item for item in walk(views.panel_view()) if isinstance(item, discord.ui.Select))
+        self.assertEqual([o.value for o in select.options], list(views.CATEGORIES))
+        self.assertLessEqual(len(select.options), 25)
+        self.assertEqual(select.options[-1].label, "Other")
+
+    def test_only_report_and_appeal_are_mod_only_and_skip_the_ai(self):
+        self.assertEqual({k for k, c in views.CATEGORIES.items() if c.mod_only}, {"report", "appeal"})
+        self.assertEqual(
+            {k for k, c in views.CATEGORIES.items() if not c.ai_reply}, {"report", "appeal", "partner", "contribute"}
+        )
+        self.assertIn("appeal website", views.CATEGORIES["appeal"].description)
+
+    def test_every_language_has_every_category_and_message(self):
+        for language in views.LANGUAGES:
+            self.assertEqual(list(views.CATEGORY_TEXT[language]), list(views.CATEGORIES))
+            self.assertEqual(set(views.TEXT[language]), set(views.TEXT["en"]))
+            for key, category in views.CATEGORIES.items():
+                self.assertEqual(len(views.CATEGORY_TEXT[language][key].fields), len(category.fields), (language, key))
+
+    async def test_modals_fit_discord_limits_in_every_language(self):
+        for language in views.LANGUAGES:
+            for category in views.CATEGORIES.values():
+                text = category.text(language)
+                modal = views.TicketModal(category, language)
+                self.assertEqual(modal.title, text.title)
+                self.assertLessEqual(len(modal.title), 45)
+                self.assertLessEqual(len(modal.children), 5)
+                self.assertLessEqual(len(text.label), 100)
+                self.assertLessEqual(len(text.description), 100)
+                for field, child, (label, placeholder) in zip(category.fields, modal.children, text.fields):
+                    self.assertEqual((child.label, child.item.placeholder), (label, placeholder))
+                    self.assertLessEqual(len(child.label), 45, child.label)
+                    self.assertLessEqual(len(child.item.placeholder), 100, child.item.placeholder)
+                    self.assertIs(child.item.required, field.required)
+                    self.assertNotIn(" | ", child.label)
+
+    async def test_the_form_is_in_one_language(self):
+        modal = views.TicketModal(views.CATEGORIES["patreon"], "es")
+        self.assertEqual(modal.title, "Patreon y acceso beta")
+        self.assertEqual([child.label for child in modal.children][1], "Usuario de Minecraft")
+        self.assertEqual(views.TicketModal(views.CATEGORIES["patreon"], "xx").language, "en")
 
     async def test_bug_form_optional_fields(self):
-        optional = {field.label.split(" | ")[0] for field in views.CATEGORIES["bug"].fields if not field.required}
+        bug = views.CATEGORIES["bug"]
+        optional = {label for field, (label, _) in zip(bug.fields, bug.text("en").fields) if not field.required}
         self.assertEqual(optional, {"Steps to reproduce", "Other mods"})
-        payload = views.TicketModal(views.CATEGORIES["bug"]).to_dict()["components"]
+        payload = views.TicketModal(bug).to_dict()["components"]
         self.assertEqual([c["type"] for c in payload], [discord.ComponentType.label.value] * 5)
 
-    async def test_the_panel_select_opens_the_form_and_resets_only_the_public_panel(self):
+    async def test_submitting_a_form_opens_the_ticket_in_its_language_with_english_labels(self):
+        modal = views.TicketModal(views.CATEGORIES["other"], "pt")
+        modal.children[0].item.value, modal.children[1].item.value = "Ajuda", "  "
+        cog = SimpleNamespace(create_ticket=AsyncMock())
+        interaction = SimpleNamespace(client=SimpleNamespace(get_cog=lambda name: cog))
+        await modal.callback(interaction)
+        cog.create_ticket.assert_awaited_once_with(
+            interaction, views.CATEGORIES["other"], [("Subject", "Ajuda")], language="pt"
+        )
+
+    def panel_pick(self, user, ephemeral=False, key="bug"):
+        message = SimpleNamespace(flags=discord.MessageFlags(ephemeral=ephemeral), edit=AsyncMock())
+        return SimpleNamespace(
+            user=user,
+            data={"values": [key]},
+            message=message,
+            channel=make_channel(),
+            response=SimpleNamespace(send_modal=AsyncMock(), send_message=AsyncMock()),
+        )
+
+    async def test_one_language_role_opens_the_form_in_it_and_resets_only_the_public_panel(self):
         cog = make_cog()
         for ephemeral in (False, True):  # an ephemeral copy is Bulma's open_ticket offer
-            message = SimpleNamespace(flags=discord.MessageFlags(ephemeral=ephemeral), edit=AsyncMock())
-            interaction = SimpleNamespace(
-                data={"values": ["bug"]}, message=message, channel=make_channel(), response=SimpleNamespace(send_modal=AsyncMock())
-            )
+            interaction = self.panel_pick(member(OWNER_ID, ES_ROLE), ephemeral)
             await cog.on_panel_select(interaction)
-            self.assertEqual(interaction.response.send_modal.await_args.args[0].category.key, "bug")
-            self.assertEqual(message.edit.await_count, 0 if ephemeral else 1)
+            modal = interaction.response.send_modal.await_args.args[0]
+            self.assertEqual((modal.category.key, modal.language, modal.title), ("bug", "es", "Reporte de bug"))
+            interaction.response.send_message.assert_not_awaited()
+            self.assertEqual(interaction.message.edit.await_count, 0 if ephemeral else 1)
+
+    async def test_no_or_several_language_roles_get_the_language_card_first(self):
+        cog = make_cog()
+        for roles in ((), (ES_ROLE, PT_ROLE)):
+            interaction = self.panel_pick(member(OWNER_ID, *roles), key="report")
+            await cog.on_panel_select(interaction)
+            interaction.response.send_modal.assert_not_awaited()
+            card = interaction.response.send_message.await_args
+            self.assertIs(card.kwargs["ephemeral"], True)
+            self.assertEqual(custom_ids(card.kwargs["view"]), ["ticket_form:report:en", "ticket_form:report:es", "ticket_form:report:pt"])
+            self.assertIn("Pick your language", texts(card.kwargs["view"]))
+            self.assertEqual(interaction.message.edit.await_count, 1)
+
+    def test_form_custom_ids_round_trip_and_refuse_unknown_parts(self):
+        self.assertEqual(views.form_custom_id("server", "pt"), "ticket_form:server:pt")
+        self.assertEqual(views.parse_form_custom_id("ticket_form:server:pt"), (views.CATEGORIES["server"], "pt"))
+        for bad in ("ticket_form:server:xx", "ticket_form:nope:en", "ticket_form:server", "ticket_lang:es"):
+            self.assertIsNone(views.parse_form_custom_id(bad))
+
+    async def test_a_language_button_opens_the_form_in_that_language_even_after_a_restart(self):
+        cog = make_cog()  # a fresh cog: nothing in memory, the custom id carries it all
+        card = views.form_language_card(views.CATEGORIES["appeal"])
+        interaction = click(member(OWNER_ID), "ticket_form:appeal:pt", card)
+        interaction.response.send_modal = AsyncMock()
+        await cog.on_interaction(interaction)
+        modal = interaction.response.send_modal.await_args.args[0]
+        self.assertEqual((modal.category.key, modal.language, modal.title), ("appeal", "pt", "Recorrer de uma punição"))
+
+    async def test_a_broken_language_button_answers_in_the_clickers_language(self):
+        cog = make_cog()
+        interaction = click(member(OWNER_ID, ES_ROLE), "ticket_form:nope:es", views.form_language_card(views.CATEGORIES["bug"]))
+        interaction.response.send_modal = AsyncMock()
+        await cog.on_form_language(interaction)
+        interaction.response.send_message.assert_awaited_once_with(views.t("es", "failed"), ephemeral=True)
+        interaction.response.send_modal.assert_not_awaited()
+
+    async def test_ephemeral_replies_are_in_the_members_language(self):
+        self.assertEqual(views.msg_already_open(900, "es"), "Ya tienes un ticket abierto: <#900>. Continúa allí.")
+        self.assertEqual(views.msg_already_open(None, "pt"), "Seu ticket ainda está sendo criado. Aguarde um momento.")
+        self.assertEqual(views.msg_created("<#900>", "pt"), "✅ Seu ticket está pronto: <#900>")
+        prompt = views.ClosePrompt(AsyncMock(), "es")
+        self.assertIn("¿Cerrar este ticket?", texts(prompt))
+        self.assertNotIn("Close this ticket", texts(prompt))
+        self.assertIn("Transcrição do ticket #0042", texts(views.transcript_link_view(42, "https://t/x", "pt")))
 
     async def test_cards_have_fixed_custom_ids(self):
         self.assertEqual(custom_ids(views.panel_view()), [views.PANEL_SELECT_ID])
@@ -1133,7 +1242,7 @@ class AiToggleTests(unittest.IsolatedAsyncioTestCase):
         labels = [(item.label, item.disabled) for item in walk(busy) if isinstance(item, discord.ui.Button)]
         self.assertEqual(
             labels,
-            [(v2.WORKING, True), ("Close | Cerrar", True), ("Solved", True), ("Summary", True), ("Draft reply", True)],
+            [(v2.WORKING, True), ("Close", True), ("Solved", True), ("Summary", True), ("Draft reply", True)],
         )
 
 
@@ -1364,7 +1473,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         unset = SimpleNamespace(announcement_role_en_id=None, announcement_role_es_id=ES_ROLE, announcement_role_pt_id=None)
         self.assertEqual(role_languages(member(1, EN_ROLE, ES_ROLE), unset), ["es"])
 
-    async def create(self, *role_ids):
+    async def create(self, *role_ids, language=None, category="bug"):
         cog = make_cog()
         owner = MagicMock(spec=discord.Member)
         owner.id, owner.mention = OWNER_ID, f"<@{OWNER_ID}>"
@@ -1388,11 +1497,13 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(cog_module, "reserve_ticket", AsyncMock(return_value=make_ticket(channel_id=None, status="creating"))) as reserve,
             patch.object(cog_module, "attach_channel", AsyncMock()) as attach,
-            patch.object(cog_module, "build_overwrites", return_value={}),
+            patch.object(cog_module, "build_overwrites", return_value={}) as overwrites,
             patch.object(cog, "_triage", AsyncMock(return_value=intake)),
         ):
-            await cog.create_ticket(interaction, views.CATEGORIES["bug"], [("Summary", "boom")])
+            await cog.create_ticket(interaction, views.CATEGORIES[category], [("Summary", "boom")], language=language)
         return SimpleNamespace(
+            mod_only=overwrites.call_args.kwargs["mod_only"],
+            replies=[call.kwargs["content"] for call in interaction.edit_original_response.await_args_list],
             reserve=reserve.await_args.kwargs["language"],
             attach=attach.await_args.kwargs["language"],
             answer=(call := ai_cog.answer_new_ticket.await_args) and call.kwargs["language"],
@@ -1420,6 +1531,20 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(custom_ids(picker["view"]), ["ticket_lang:en", "ticket_lang:pt"])
         self.assertIn("<@100>", texts(picker["view"]))
         self.assertEqual(picker["allowed_mentions"].users, [made.owner])
+
+    async def test_the_forms_language_is_the_ticket_language_and_skips_the_picker(self):
+        for roles in ((), (PT_ROLE, EN_ROLE)):  # no role: no text detection; several: no in-ticket picker
+            made = await self.create(*roles, language="es")
+            self.assertEqual((made.reserve, made.attach, made.answer), ("es", "es", "es"))
+            self.assertEqual(len(made.sends), 1)
+            self.assertIn("¡Hola <@100>!", texts(made.sends[0].kwargs["view"]))
+            self.assertEqual(made.replies, ["🎫 Creando tu ticket…", "✅ Tu ticket está listo: <#900>"])
+
+    async def test_mod_only_categories_open_without_helpers_and_without_a_first_ai_answer(self):
+        made = await self.create(EN_ROLE, language="en", category="report")
+        self.assertIs(made.mod_only, True)
+        self.assertIsNone(made.answer)
+        self.assertIs((await self.create(EN_ROLE, language="en")).mod_only, False)
 
     def welcome_message(self):
         welcome = views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@100>", language="en")
@@ -1481,7 +1606,11 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_others_cannot_change_the_language(self):
         done = await self.change(member(555), views.LANG_SELECT_ID, ["es"])
-        done.interaction.response.send_message.assert_awaited_once_with(views.MSG["no_permission"], ephemeral=True)
+        done.interaction.response.send_message.assert_awaited_once_with(views.t("en", "no_permission"), ephemeral=True)
+
+    async def test_others_are_refused_in_their_own_language(self):
+        done = await self.change(member(555, PT_ROLE), views.LANG_SELECT_ID, ["es"])
+        done.interaction.response.send_message.assert_awaited_once_with(views.t("pt", "no_permission"), ephemeral=True)
         done.set_language.assert_not_called()
 
     async def test_on_interaction_routes_the_language_controls(self):

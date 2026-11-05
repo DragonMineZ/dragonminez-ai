@@ -726,6 +726,18 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<@&111> <@&222>", ping.args[0])
         self.assertTrue(ping.kwargs["allowed_mentions"].roles)
 
+    async def test_escalation_in_a_mod_only_ticket_pings_moderators_not_helpers(self) -> None:
+        cog = self._cog()
+        cog.bot.settings.panel_moderator_role_ids = (333,)
+        for category, expected in (("report", [333]), ("appeal", [333]), ("bug", [111, 222])):
+            channel = types.SimpleNamespace(id=13, send=AsyncMock())
+            ticket = types.SimpleNamespace(category=category)
+            with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=ticket)):
+                await cog._ping_escalation_roles(channel, 42)
+            ping = channel.send.await_args
+            self.assertEqual([role.id for role in ping.kwargs["allowed_mentions"].roles], expected)
+            self.assertEqual(ping.args[0].split(" <@42>")[0], " ".join(f"<@&{role_id}>" for role_id in expected))
+
 
 CHOICES = {"kind": "choices", "choices": ["Stats", "Raza"]}
 SELECT = {"kind": "select", "options": [{"label": "1.20.1"}, {"label": "1.21"}]}
@@ -765,6 +777,9 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
             ticket_closed_category_id=None,
             ai_support_history_limit=10,
             discord_staff_role_ids=(),
+            announcement_role_en_id=None,
+            announcement_role_es_id=None,
+            announcement_role_pt_id=None,
         )
         values.update(settings)
         self.bot_user = types.SimpleNamespace(id=999, bot=True, name="BulmaAI", display_name="BulmaAI")
@@ -1746,7 +1761,7 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
         store.claim.assert_awaited_once_with(55)
         modal = interaction.response.send_modal.await_args.args[0]
         self.assertIsInstance(modal, ticket_views.TicketModal)
-        self.assertEqual(modal.category.key, "bug")
+        self.assertEqual((modal.category.key, modal.language), ("bug", "es"))  # no language role: the conversation's
         edit = interaction.message.edit.await_args.kwargs
         self.assertEqual(texts(edit["view"])[-1], "-# ↳ <@42>: **Abrir un ticket**")
         self.assertEqual((buttons(edit["view"]), edit["allowed_mentions"].to_dict()["parse"]), ([], []))
@@ -1764,7 +1779,7 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
         interaction = self._offer(spec, channel=self._public_channel())
         with offered(_ask_row(spec), open_tickets=[types.SimpleNamespace(channel_id=77)]) as store:
             await cog.on_interaction(interaction)
-        interaction.response.send_message.assert_awaited_once_with(ticket_views.msg_already_open(77), ephemeral=True)
+        interaction.response.send_message.assert_awaited_once_with(ticket_views.msg_already_open(77, "en"), ephemeral=True)
         store.claim.assert_not_called()
         interaction.message.edit.assert_not_called()
 

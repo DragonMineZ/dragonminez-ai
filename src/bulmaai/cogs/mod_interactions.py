@@ -12,7 +12,7 @@ import discord
 from discord.ext import commands
 
 from bulmaai.config import set_setting_override
-from bulmaai.services import automod_hits, joiner_alerts, mod_actions, mod_alert_cards, mod_cases
+from bulmaai.services import automod_hits, ban_appeals, joiner_alerts, mod_actions, mod_alert_cards, mod_cases
 from bulmaai.services.ai_guard import defang
 from bulmaai.ui.mod_cards import (
     ALERT,
@@ -553,6 +553,9 @@ class ModInteractionsCog(commands.Cog):
         return None, ban, cases
 
     async def _appeal(self, interaction: discord.Interaction, parts: list[str]) -> None:
+        if (url := ban_appeals.site_url(self.settings)) and int(parts[0]) == getattr(self.settings, "panel_guild_id", None):
+            await _reply(interaction, f"Appeals are made on the appeals website now: {url}")
+            return
         if not self.settings.moderation_appeals_enabled:
             await _reply(interaction, "Ban appeals are closed right now.")
             return

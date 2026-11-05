@@ -83,7 +83,10 @@ class AIClientToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(properties["action"]["enum"], ["get_staff", "open_ticket", "link_patreon", "report_bug"])
         self.assertIn("report_bug (public channels and DMs, never in tickets)", action["description"])
-        self.assertEqual(properties["category"]["enum"], ["bug", "contribute", "other"])
+        self.assertEqual(
+            properties["category"]["enum"],
+            ["bug", "patreon", "install", "server", "report", "appeal", "partner", "contribute", "other"],
+        )
         self.assertIn("bug (Game-Breaking Bug: Crashes, corrupted worlds)", properties["category"]["description"])
         self.assertNotIn("channel_kind", properties)  # set from Discord, never by the model
         # The source schemas stay untouched.

@@ -58,6 +58,7 @@ from bulmaai.ui.ticket_views import (
     CLOSE_BUTTON_ID,
     DELETE_BUTTON_ID,
     DRAFT_BUTTON_ID,
+    FORM_BUTTON_PREFIX,
     LANG_BUTTON_PREFIX,
     LANG_SELECT_ID,
     LANGUAGES,
@@ -81,6 +82,7 @@ from bulmaai.ui.ticket_views import (
     dm_reminder,
     dm_solved,
     dm_transcript,
+    form_language_card,
     language_changed,
     language_picker,
     language_set,
@@ -88,6 +90,7 @@ from bulmaai.ui.ticket_views import (
     msg_already_open,
     notice,
     panel_view,
+    parse_form_custom_id,
     relanguage_welcome,
     reopened_view,
     t,
@@ -151,12 +154,25 @@ def member_rank(member: discord.abc.User, owner_id: int | None, settings) -> Ran
     return Rank.NONE
 
 
+def member_language(member: discord.abc.User, settings) -> str:
+    """The language for replies to someone outside a ticket's language: their single language role, else English."""
+    languages = role_languages(member, settings)
+    return languages[0] if len(languages) == 1 else "en"
+
+
+def is_mod_only(category_key: str | None) -> bool:
+    """Tickets of a mod-only category (Report a Member, Appeal a Punishment) are for moderators and up only."""
+    category = CATEGORIES.get(category_key or "")
+    return category is not None and category.mod_only
+
+
 def build_overwrites(
-    guild: discord.Guild, owner: discord.Member | None, settings, *, closed: bool = False
+    guild: discord.Guild, owner: discord.Member | None, settings, *, closed: bool = False, mod_only: bool = False
 ) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
-    """closed: staff only, so the owner and anyone /ticket add-ed lose the channel."""
+    """closed: staff only, so the owner and anyone /ticket add-ed lose the channel. mod_only: Helpers get no access
+    (is_mod_only), only moderators and up."""
     mods = _ids(settings.panel_owner_role_ids, settings.panel_admin_role_ids, settings.panel_moderator_role_ids)
-    helpers = _ids(settings.panel_helper_role_ids) - mods
+    helpers = set() if mod_only else _ids(settings.panel_helper_role_ids) - mods
 
     overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -333,6 +349,8 @@ class TicketsCog(ReloadableCog):
             handler = self.on_solved_reopen
         elif custom_id.startswith(LANG_BUTTON_PREFIX):
             handler = self.on_language
+        elif custom_id.startswith(FORM_BUTTON_PREFIX):
+            handler = self.on_form_language
         elif custom_id.startswith(staff_copilot.DRAFT_PREFIX):
             handler = self.on_draft_button
         else:
@@ -355,7 +373,8 @@ class TicketsCog(ReloadableCog):
         except Exception:
             log.exception("Ticket interaction failed", extra={"channel_id": interaction.channel_id})
             if not interaction.response.is_done():
-                await interaction.response.send_message(MSG["failed"], ephemeral=True)
+                language = member_language(interaction.user, self.settings)
+                await interaction.response.send_message(t(language, "failed"), ephemeral=True)
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
@@ -396,10 +415,10 @@ class TicketsCog(ReloadableCog):
 
     # ---- ticket creation -------------------------------------------------------------------------
 
-    async def _already_open(self, owner_id: int) -> str:
+    async def _already_open(self, owner_id: int, language: str = "en") -> str:
         """One open ticket per member: point them at it (it has no channel yet while still being created)."""
         open_tickets = await get_open_tickets_by_owner(owner_id)
-        return msg_already_open(open_tickets[0].channel_id if open_tickets else None)
+        return msg_already_open(open_tickets[0].channel_id if open_tickets else None, language)
 
     async def create_ticket(
         self,
@@ -409,35 +428,40 @@ class TicketsCog(ReloadableCog):
         *,
         owner: discord.Member | None = None,
         files: list[discord.File] | None = None,
+        language: str | None = None,
     ) -> discord.TextChannel | None:
         """owner: open it for someone else (staff acting for a bug reporter). files go in right after the welcome,
-        before the AI reads the ticket. Returns the channel, or None after telling the clicker why not."""
+        before the AI reads the ticket. language: the form's language (the panel's: their one language role or their
+        pick), which is the ticket's support language; without it, a single language role decides, else the form's
+        text, and several roles get the in-ticket picker. Returns the channel, or None after telling the clicker why
+        not (in language, else the clicker's role language)."""
         guild, member, settings = interaction.guild, owner or interaction.user, self.settings
         # invisible=False: a modal submit's default ("invisible") defer would edit the public panel message instead.
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True, invisible=False)
         if guild is None or not isinstance(member, discord.Member):
             return None
-        await interaction.edit_original_response(content=MSG["creating"])
+        reply_language = language or member_language(interaction.user, settings)
+        await interaction.edit_original_response(content=t(reply_language, "creating"))
 
         form_text = "\n".join(f"{label}: {value}" for label, value in answers)
-        # One language role decides the support language; with none or several the form's language does (several
-        # also get a picker below).
-        role_langs = role_languages(member, settings)
+        role_langs = [] if language else role_languages(member, settings)
+        if language is None:
+            language = role_langs[0] if len(role_langs) == 1 else None
         ticket = await reserve_ticket(
             guild_id=guild.id,
             owner_id=member.id,
             category=category.key,
-            language=role_langs[0] if len(role_langs) == 1 else detect_language_from_text(form_text),
+            language=language or detect_language_from_text(form_text),
         )
         if ticket is None:
-            await interaction.edit_original_response(content=await self._already_open(member.id))
+            await interaction.edit_original_response(content=await self._already_open(member.id, reply_language))
             return None
 
         channel: discord.TextChannel | None = None
         try:
             intake = await self._triage(category, answers, ticket)
-            language = role_langs[0] if len(role_langs) == 1 else intake.language
+            language = language or intake.language
             parent = guild.get_channel(settings.ai_ticket_category_id) if settings.ai_ticket_category_id else None
             if not isinstance(parent, discord.CategoryChannel):
                 raise RuntimeError("ai_ticket_category_id is not a category channel")
@@ -445,7 +469,7 @@ class TicketsCog(ReloadableCog):
             channel = await guild.create_text_channel(
                 name,
                 category=parent,
-                overwrites=build_overwrites(guild, member, settings),
+                overwrites=build_overwrites(guild, member, settings, mod_only=category.mod_only),
                 topic=f"Ticket #{ticket.ticket_id:04d} · {category.key} · owner {member.id}",
                 reason=f"Ticket #{ticket.ticket_id:04d} opened",
             )
@@ -470,7 +494,7 @@ class TicketsCog(ReloadableCog):
                 except discord.HTTPException:
                     pass
             await abandon_ticket(ticket.ticket_id)
-            await interaction.edit_original_response(content=MSG["failed"])
+            await interaction.edit_original_response(content=t(reply_language, "failed"))
             return None
 
         if files:
@@ -487,7 +511,7 @@ class TicketsCog(ReloadableCog):
                 ),
                 channel,
             )
-        await interaction.edit_original_response(content=msg_created(channel.mention))
+        await interaction.edit_original_response(content=msg_created(channel.mention, reply_language))
         try:
             await member.send(view=dm_created(ticket.ticket_id, category, channel, language))
         except discord.HTTPException:
@@ -539,7 +563,12 @@ class TicketsCog(ReloadableCog):
         if (ai_cog := self.bot.get_cog(AI_COG)) is not None:
             await ai_cog.ticket_closed(channel.id)  # drops an answer or "solved?" prompt still in flight
         await self._safely(
-            channel.edit(overwrites=build_overwrites(channel.guild, None, self.settings, closed=True), reason="Ticket closed"),
+            channel.edit(
+                overwrites=build_overwrites(
+                    channel.guild, None, self.settings, closed=True, mod_only=is_mod_only(ticket.category)
+                ),
+                reason="Ticket closed",
+            ),
             channel,
         )
         await self._move(channel, self.settings.ticket_closed_category_id)
@@ -573,14 +602,19 @@ class TicketsCog(ReloadableCog):
         # ponytail: back to the creation overwrites; anyone /ticket add-ed before the close needs adding again.
         owner = channel.guild.get_member(ticket.owner_id)
         await self._safely(
-            channel.edit(overwrites=build_overwrites(channel.guild, owner, self.settings), reason="Ticket re-opened"),
+            channel.edit(
+                overwrites=build_overwrites(channel.guild, owner, self.settings, mod_only=is_mod_only(ticket.category)),
+                reason="Ticket re-opened",
+            ),
             channel,
         )
         await self._move(channel, self.settings.ai_ticket_category_id)
         await self._rename(channel, ticket.channel_name or open_channel_name("ticket", ticket.ticket_id))
-        await self._set_buttons(channel, ticket, control_row(self._ai_enabled(channel.id)))
+        await self._set_buttons(channel, ticket, control_row(self._ai_enabled(channel.id), ticket.language))
         await self._safely(
-            channel.send(view=reopened_view(f"<@{opener_id}>"), allowed_mentions=discord.AllowedMentions.none()),
+            channel.send(
+                view=reopened_view(f"<@{opener_id}>", ticket.language), allowed_mentions=discord.AllowedMentions.none()
+            ),
             channel,
         )
         return ticket
@@ -634,7 +668,12 @@ class TicketsCog(ReloadableCog):
             await interaction.response.send_message(MSG["not_ticket"], ephemeral=True)
             return None
         if member_rank(interaction.user, ticket.owner_id, self.settings) < minimum:
-            await interaction.response.send_message(MSG[denied], ephemeral=True)
+            text = (
+                t(member_language(interaction.user, self.settings), denied)
+                if denied == "no_permission"  # members' denial; the others are staff gates, in English
+                else MSG[denied]
+            )
+            await interaction.response.send_message(text, ephemeral=True)
             return None
         if want_open is not None and (ticket.status == STATUS_OPEN) != want_open:
             await interaction.response.send_message(MSG["already_closed" if want_open else "not_closed"], ephemeral=True)
@@ -642,20 +681,44 @@ class TicketsCog(ReloadableCog):
         return ticket
 
     async def on_panel_select(self, interaction: discord.Interaction) -> None:
+        """A category picked on the panel: a member with one language role gets its form in that language at once;
+        anyone else first picks a language (form_language_card, then on_form_language)."""
         category = CATEGORIES.get(((interaction.data or {}).get("values") or [""])[0])
+        languages = role_languages(interaction.user, self.settings)
         if category is None:
-            return await interaction.response.send_message(MSG["failed"], ephemeral=True)
-        await interaction.response.send_modal(TicketModal(category))
+            language = languages[0] if len(languages) == 1 else "en"
+            return await interaction.response.send_message(t(language, "failed"), ephemeral=True)
+        if len(languages) == 1:
+            await interaction.response.send_modal(TicketModal(category, languages[0]))
+        else:
+            await interaction.response.send_message(view=form_language_card(category), ephemeral=True)
         # An ephemeral copy (Bulma's open_ticket offer) can't be edited through the channel, and only its viewer sees it.
         message = interaction.message
         if message is not None and not getattr(getattr(message, "flags", None), "ephemeral", False):
-            # Re-sending the card clears the option the dropdown still shows as picked.
+            # Re-sending the card clears the option the dropdown still shows as picked (and brings old panels up to
+            # date with the current categories).
             await self._safely(message.edit(view=panel_view()), interaction.channel)
 
+    async def on_form_language(self, interaction: discord.Interaction) -> None:
+        """A language button of form_language_card: that category's form in that language. The custom id carries
+        both, so it works after a restart. The modal must be the click's first response."""
+        parsed = parse_form_custom_id((interaction.data or {}).get("custom_id") or "")
+        if parsed is None:
+            language = member_language(interaction.user, self.settings)
+            return await interaction.response.send_message(t(language, "failed"), ephemeral=True)
+        category, language = parsed
+        await interaction.response.send_modal(TicketModal(category, language))
+
+    def _reply_language(self, user: discord.abc.User, ticket: Ticket) -> str:
+        """The owner reads the ticket's language; anyone else (staff) their own role language, else English."""
+        return ticket.language if user.id == ticket.owner_id else member_language(user, self.settings)
+
     async def on_close(self, interaction: discord.Interaction) -> None:
-        if await self._gate(interaction, Rank.OWNER) is None:
+        ticket = await self._gate(interaction, Rank.OWNER)
+        if ticket is None:
             return
-        await interaction.response.send_message(view=ClosePrompt(self._close_from_prompt), ephemeral=True)
+        prompt = ClosePrompt(self._close_from_prompt, self._reply_language(interaction.user, ticket))
+        await interaction.response.send_message(view=prompt, ephemeral=True)
 
     async def _close_from_prompt(self, interaction: discord.Interaction) -> None:
         channel = interaction.channel
@@ -663,7 +726,8 @@ class TicketsCog(ReloadableCog):
         page = await get_page_for_channel(channel.id) if ticket is not None else None
         if page is not None:
             # Also shown here: the owner can't see the channel any more and their DMs may be closed.
-            link = transcript_link_view(ticket.ticket_id, page_url(self.settings, page.token))
+            language = self._reply_language(interaction.user, ticket)
+            link = transcript_link_view(ticket.ticket_id, page_url(self.settings, page.token), language)
             await interaction.edit_original_response(view=link)
         else:
             text = MSG["already_closed"] if ticket is None else MSG["transcript_failed"]
@@ -695,7 +759,7 @@ class TicketsCog(ReloadableCog):
         ticket = await get_ticket_by_channel(channel_id)
         channel = self.bot.get_channel(channel_id)
         if ticket is not None and ticket.status == STATUS_OPEN and isinstance(channel, discord.TextChannel):
-            await self._set_buttons(channel, ticket, control_row(enabled))
+            await self._set_buttons(channel, ticket, control_row(enabled, ticket.language))
 
     async def on_language(self, interaction: discord.Interaction) -> None:
         """The welcome card's language select or the new-ticket picker: owner or staff set the support language."""
@@ -1164,7 +1228,8 @@ class TicketsCog(ReloadableCog):
             await ctx.respond(MSG["not_ticket"], ephemeral=True)
             return None
         if member_rank(ctx.author, ticket.owner_id, self.settings) < minimum:
-            await ctx.respond(MSG[denied], ephemeral=True)
+            text = t(member_language(ctx.author, self.settings), denied) if denied == "no_permission" else MSG[denied]
+            await ctx.respond(text, ephemeral=True)
             return None
         return ticket
 
@@ -1239,7 +1304,8 @@ class TicketsCog(ReloadableCog):
         closed = await self.close_ticket(ctx.channel, closer_id=ctx.author.id, reason=reason)
         page = await get_page_for_channel(ctx.channel.id) if closed else None
         if page is not None:
-            link = transcript_link_view(closed.ticket_id, page_url(self.settings, page.token))
+            language = self._reply_language(ctx.author, closed)
+            link = transcript_link_view(closed.ticket_id, page_url(self.settings, page.token), language)
             await ctx.interaction.edit_original_response(view=link)
         else:
             await ctx.respond(MSG["transcript_failed" if closed else "already_closed"], ephemeral=True)

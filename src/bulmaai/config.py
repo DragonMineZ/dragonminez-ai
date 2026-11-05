@@ -74,6 +74,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.moderation",
     "bulmaai.cogs.mod_commands",
     "bulmaai.cogs.mod_interactions",
+    "bulmaai.cogs.ban_appeals",
     "bulmaai.cogs.raid_guard",
     "bulmaai.cogs.welcome",
     "bulmaai.cogs.mod_digest",
@@ -512,6 +513,12 @@ class Settings:
     moderation_appeals_enabled: bool = True
     moderation_appeals_channel_id: int | None = None  # empty = the moderation log channel
     moderation_reports_channel_id: int | None = None  # empty = the moderation log channel
+    # Ban/timeout appeal website (web/routes_appeals.py, cogs/ban_appeals.py) on the appeals host of the panel's tunnel.
+    # Staff cards go to appeals_channel_id; None turns the site off. Discord login reuses DISCORD_OAUTH_CLIENT_ID/SECRET.
+    appeals_channel_id: int | None = None
+    appeals_public_url: str = "https://appeals.dragonminez.com"
+    appeals_invite_url: str = ""  # shown on an accepted appeal; empty = no link
+    appeals_cooldown_days: int = 30  # after a denial, how long before the same person can appeal again
     moderation_lockdown_channel_ids: Sequence[int] = ()  # empty = every text channel @everyone can talk in
     # Extra automod filters; 0 turns a count/limit off. Banned words accept * wildcards.
     moderation_banned_words: Sequence[str] = ()

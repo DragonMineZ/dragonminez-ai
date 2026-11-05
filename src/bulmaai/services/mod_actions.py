@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 
 import discord
 
-from bulmaai.services import mod_cases, panel_logs
+from bulmaai.services import ban_appeals, mod_cases, panel_logs
 from bulmaai.ui import mod_cards
-from bulmaai.ui.mod_views import appeal_button
+from bulmaai.ui.mod_views import appeal_button, appeal_link_button
 from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
 from bulmaai.ui.v2 import card
 
@@ -254,6 +254,15 @@ async def _dm(member: discord.Member, text: str, button: discord.ui.Button | Non
     return True
 
 
+def _appeal_button(settings, guild: discord.Guild, action: str) -> discord.ui.Button | None:
+    """Bans and timeouts in the main guild link to the appeals website while it is on; otherwise bans keep the old
+    in-Discord appeal button."""
+    url = ban_appeals.site_url(settings) if guild.id == getattr(settings, "panel_guild_id", None) else None
+    if url and action in ("ban", "timeout"):
+        return appeal_link_button(url)
+    return appeal_button(guild.id) if action == "ban" and settings.moderation_appeals_enabled else None
+
+
 async def resolve_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc.Messageable | None:
     if channel_id is None:
         return None
@@ -471,7 +480,7 @@ async def perform(
     dm_sent = None
     if notify and settings.moderation_dm_on_action and member is not None and action in DM_ACTIONS:
         # Before kick/ban on purpose: once they share no server with the bot the DM can't be delivered.
-        button = appeal_button(guild.id) if action == "ban" and settings.moderation_appeals_enabled else None
+        button = _appeal_button(settings, guild, action)
         dm_sent = await _dm(member, dm_text(guild.name, action, reason, duration_seconds), button)
 
     try:

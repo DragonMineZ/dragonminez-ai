@@ -721,3 +721,32 @@ CREATE TABLE IF NOT EXISTS code_notes (
 
 CREATE INDEX IF NOT EXISTS idx_code_notes_tsv ON code_notes USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS idx_code_notes_committed_at ON code_notes (committed_at DESC);
+
+-- Ban/timeout appeals from the appeals website (web/routes_appeals.py, cogs/ban_appeals.py). One open appeal per user
+-- (outcome NULL); staff Accept/Deny claim the row WHERE outcome IS NULL (first click wins). A staff question waits for
+-- the user's reply on the status page; card_* is the staff card in appeals_channel_id.
+CREATE TABLE IF NOT EXISTS ban_appeals (
+    id                BIGSERIAL PRIMARY KEY,
+    user_id           BIGINT NOT NULL,
+    user_name         TEXT NOT NULL DEFAULT '',
+    kind              TEXT NOT NULL CHECK (kind IN ('ban', 'timeout')),
+    ban_reason        TEXT,
+    punished_at       TIMESTAMPTZ,
+    ends_at           TIMESTAMPTZ,
+    answers           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    outcome           TEXT CHECK (outcome IN ('accepted', 'denied')),
+    outcome_by        BIGINT,
+    outcome_at        TIMESTAMPTZ,
+    staff_note        TEXT,
+    question          TEXT,
+    question_by       BIGINT,
+    question_asked_at TIMESTAMPTZ,
+    user_reply        TEXT,
+    reply_at          TIMESTAMPTZ,
+    card_channel_id   BIGINT,
+    card_message_id   BIGINT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ban_appeals_one_open ON ban_appeals (user_id) WHERE outcome IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ban_appeals_user ON ban_appeals (user_id, created_at DESC);

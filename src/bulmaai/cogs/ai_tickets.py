@@ -77,10 +77,11 @@ from bulmaai.services.tickets import (
     note_ticket_message,
 )
 from bulmaai.ui import ai_asks, ai_feedback, staff_copilot
-from bulmaai.ui.ticket_views import CATEGORIES, TicketModal, msg_already_open, panel_view
+from bulmaai.ui.ticket_views import CATEGORIES, LANGUAGES, TicketModal, msg_already_open, panel_view
 from bulmaai.ui.v2 import trim, while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.lifecycle import ReloadableCog
+from bulmaai.utils.language import role_languages
 from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content
 from bulmaai.utils.log_parser import parse_log
 from bulmaai.utils.permissions import (
@@ -1476,7 +1477,18 @@ class AITicketsCog(ReloadableCog):
         await self._send_messages_with_typing(channel, [AI_PAUSED_TEXT])
 
     async def _ping_escalation_roles(self, channel: discord.TextChannel, requester_id: int) -> None:
-        role_ids = self.bot.settings.ai_ticket_escalation_role_ids
+        """The escalation roles (Helpers), except in a mod-only ticket (Report a Member, Appeal a Punishment), which
+        Helpers can't see: there the moderator roles."""
+        settings = self.bot.settings
+        role_ids = settings.ai_ticket_escalation_role_ids
+        try:
+            ticket = await get_ticket_by_channel(channel.id)
+        except Exception:
+            log.warning("Couldn't look up the escalated ticket's category", exc_info=True, extra={"channel_id": channel.id})
+            ticket = None
+        category = CATEGORIES.get(getattr(ticket, "category", None) or "")
+        if category is not None and category.mod_only:
+            role_ids = settings.panel_moderator_role_ids
         if not role_ids:
             return
         try:
@@ -2331,13 +2343,18 @@ class AITicketsCog(ReloadableCog):
             log.exception("Could not start a ticket from an offer", extra={"message_id": message.id})
             return await interaction.response.send_message(ai_asks.text(language, "failed"), ephemeral=True)
         if open_tickets:
-            return await interaction.response.send_message(msg_already_open(open_tickets[0].channel_id), ephemeral=True)
+            return await interaction.response.send_message(
+                msg_already_open(open_tickets[0].channel_id, language), ephemeral=True
+            )
         if not claimed:
             return await interaction.response.send_message(ai_asks.text(language, "answered"), ephemeral=True)
         category = CATEGORIES.get(row.spec.get("category"))
+        # The form (and so the ticket) is in their one language role's language, else the conversation's.
+        roles = role_languages(user, self.bot.settings)
+        form_language = roles[0] if len(roles) == 1 else language if language in LANGUAGES else "en"
         try:
             if category is not None:
-                await interaction.response.send_modal(TicketModal(category))
+                await interaction.response.send_modal(TicketModal(category, form_language))
             else:
                 await interaction.response.send_message(view=panel_view(), ephemeral=True)
         except Exception:

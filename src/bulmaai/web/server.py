@@ -14,6 +14,7 @@ from aiohttp import web
 from bulmaai.services.discord_oauth import DiscordOAuthClient, build_discord_authorization_url
 from bulmaai.web import (
     routes_announce,
+    routes_appeals,
     routes_log_pages,
     routes_logs,
     routes_moderation,
@@ -60,6 +61,7 @@ MODULES = (
     routes_templates,
     routes_announce,
     routes_support_info,
+    routes_appeals,
 )
 
 CSP = (
@@ -72,15 +74,18 @@ CSP = (
 
 @web.middleware
 async def security_middleware(request: web.Request, handler) -> web.StreamResponse:
-    # The tickets and logs hostnames share this process (and tunnel) with the panel but may only ever serve
-    # /t/<token> and /l/<token>.
+    # The tickets, logs and appeals hostnames share this process (and tunnel) with the panel but may only ever serve
+    # /t/<token>, /l/<token> and /appeal/ (whose bare root sends people to /appeal/).
     settings = request.app[BOT].settings
     public_hosts = {
         urlparse(settings.ticket_transcript_public_url).netloc: "/t/",
         urlparse(settings.log_page_public_url).netloc: "/l/",
+        urlparse(settings.appeals_public_url or "").netloc: routes_appeals.PREFIX,
     }
     prefix = public_hosts.get(request.host)
     if prefix and request.host != urlparse(settings.panel_public_url).netloc and not request.path.startswith(prefix):
+        if prefix == routes_appeals.PREFIX and request.path in ("/", "/appeal") and request.method == "GET":
+            return web.Response(status=302, headers={"Location": routes_appeals.PREFIX})
         return web.Response(status=404, text="Not found.")
     # Cross-site write protection: every non-GET must come from this origin. The public URL's host
     # is accepted too, so it works behind proxies/tunnels that rewrite Host (e.g. cloudflared).
@@ -104,7 +109,7 @@ async def security_middleware(request: web.Request, handler) -> web.StreamRespon
 def _harden(request: web.Request, response: web.StreamResponse) -> None:
     response.headers.setdefault("Content-Security-Policy", CSP)  # hosted transcripts bring their own
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers.setdefault("Referrer-Policy", "no-referrer")  # appeal pages send same-origin: forms need Origin
     response.headers["X-Frame-Options"] = "DENY"
     if request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"

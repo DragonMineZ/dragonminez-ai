@@ -14,6 +14,12 @@
     "open": "abierto",
     "closed": "cerrado",
     "Game-Breaking Bug": "Bug que rompe el juego",
+    "Patreon & Beta Access": "Patreon y acceso beta",
+    "Installation & Setup": "Instalación y configuración",
+    "Server & Multiplayer": "Servidor y multijugador",
+    "Report a Member": "Reportar a un miembro",
+    "Appeal a Punishment": "Apelar una sanción",
+    "Partnership & Creators": "Alianzas y creadores",
     "Contributing to the Mod": "Contribuir al mod",
     "Other": "Otro",
     "Requester": "Solicitante",
@@ -80,7 +86,17 @@
     return h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label);
   }
 
-  const CATEGORY_NAMES = { bug: "Game-Breaking Bug", contribute: "Contributing to the Mod", other: "Other" };
+  const CATEGORY_NAMES = {
+    bug: "Game-Breaking Bug",
+    patreon: "Patreon & Beta Access",
+    install: "Installation & Setup",
+    server: "Server & Multiplayer",
+    report: "Report a Member",
+    appeal: "Appeal a Punishment",
+    partner: "Partnership & Creators",
+    contribute: "Contributing to the Mod",
+    other: "Other",
+  };
 
   function outcome(resolved) {
     return resolved ? badge(t("solved"), "ok") : badge(t("unresolved"), "warn");

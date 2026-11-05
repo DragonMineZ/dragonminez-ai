@@ -47,6 +47,11 @@ def appeal_button(guild_id: int) -> discord.ui.Button:
     return discord.ui.Button(label="Appeal", style=discord.ButtonStyle.primary, custom_id=f"{APPEAL}:{guild_id}")
 
 
+def appeal_link_button(url: str) -> discord.ui.Button:
+    """The ban/timeout DM's link to the appeals website."""
+    return discord.ui.Button(label="Appeal", style=discord.ButtonStyle.link, url=url)
+
+
 def appeal_review_buttons(user_id: int) -> list[discord.ui.Button]:
     return [
         discord.ui.Button(label="Unban", style=discord.ButtonStyle.success, custom_id=f"{APPEAL_REVIEW}:accept:{user_id}"),

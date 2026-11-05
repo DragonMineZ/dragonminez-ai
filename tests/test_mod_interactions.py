@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import unittest
@@ -12,7 +11,6 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
 from discord.components import _component_factory
-from discord.guild import BanEntry
 
 from bulmaai.cogs.mod_interactions import ModInteractionsCog, TextModal, _alert_summary
 from bulmaai.services.automod_hits import AutomodHit
@@ -27,7 +25,7 @@ from bulmaai.ui.mod_cards import (
     collapsed_alert,
     handled_lines,
 )
-from bulmaai.ui.mod_views import allowlist_button, appeal_review_buttons, quick_action_buttons
+from bulmaai.ui.mod_views import allowlist_button, quick_action_buttons
 
 GUILD_ID = 1
 HELPER_ROLE, MOD_ROLE, ADMIN_ROLE = 10, 20, 30
@@ -134,8 +132,6 @@ class Base(unittest.IsolatedAsyncioTestCase):  # py-cord Views/Modals need a run
             panel_moderator_role_ids=(MOD_ROLE,),
             panel_helper_role_ids=(HELPER_ROLE,),
             panel_owner_role_ids=(),
-            moderation_appeals_enabled=True,
-            moderation_appeals_channel_id=None,
             moderation_reports_channel_id=None,
             moderation_allowed_domains=("existing.com",),
         )
@@ -287,102 +283,6 @@ class QuickActionTests(Base):
         command.type = discord.InteractionType.application_command
         await self.cog.on_interaction(command)
         self.assertFalse(command.response.done)
-
-
-class AppealTests(Base):
-    async def test_not_banned_any_more(self):
-        self.guild.fetch_ban.side_effect = NOT_FOUND
-        inter = self.interaction(f"modappeal:{GUILD_ID}", self.banned)
-        await self.cog.on_interaction(inter)
-        self.assertIn("no longer banned", inter.response.send_message.await_args.args[0])
-        inter.response.send_modal.assert_not_awaited()
-
-    async def test_duplicate_appeal_refused(self):
-        self.guild.fetch_ban.return_value = BanEntry(reason="spam", user=self.banned)
-        inter = self.interaction(f"modappeal:{GUILD_ID}", self.banned)
-        with patch(LIST_CASES, AsyncMock(return_value=[case(9, "appeal"), case(8, "ban")])):
-            await self.cog.on_interaction(inter)
-        self.assertIn("already appealed", inter.response.send_message.await_args.args[0])
-        inter.response.send_modal.assert_not_awaited()
-
-    async def test_slow_check_still_opens_the_form(self):
-        async def slow(*_args, **_kwargs):
-            await asyncio.sleep(1)
-
-        self.guild.fetch_ban.side_effect = slow
-        inter = self.interaction(f"modappeal:{GUILD_ID}", self.banned)
-        with patch("bulmaai.cogs.mod_interactions.APPEAL_CHECK_SECONDS", 0.01):
-            await self.cog.on_interaction(inter)
-        inter.response.send_modal.assert_awaited_once()
-
-    async def test_appeals_disabled(self):
-        self.settings.moderation_appeals_enabled = False
-        inter = self.interaction(f"modappeal:{GUILD_ID}", self.banned)
-        await self.cog.on_interaction(inter)
-        self.assertIn("closed", inter.response.send_message.await_args.args[0])
-
-    async def test_submit_records_case_and_posts_review_buttons(self):
-        self.guild.fetch_ban.return_value = BanEntry(reason="spam (via command by mod)", user=self.banned)
-        inter = self.interaction(f"modappeal:{GUILD_ID}", self.banned)
-        # An appeal from an earlier ban doesn't block a new one.
-        cases = [case(8, "ban"), case(4, "appeal"), case(3, "ban")]
-        with (
-            patch(LIST_CASES, AsyncMock(return_value=cases)),
-            patch(RECORD_CASE, AsyncMock(return_value=12)) as record,
-            patch(STAFF_CHANNEL, AsyncMock(return_value=self.channel)),
-        ):
-            await self.cog.on_interaction(inter)
-            modal = inter.response.send_modal.await_args.args[0]
-            modal.text.value = "I'm sorry, it won't happen again."
-            submit = self.modal_interaction(self.banned)
-            await modal.callback(submit)
-
-        record.assert_awaited_once_with(
-            guild_id=GUILD_ID, user_id=5, moderator_id=None, action="appeal",
-            reason="I'm sorry, it won't happen again.", source="appeal",
-        )
-        sent = self.channel.send.await_args.kwargs
-        self.assertEqual(all_ids(sent["view"]), ["modappeal-review:accept:5", "modappeal-review:deny:5"])
-        text = all_text(sent["view"])
-        self.assertIn("**Case** #12", text)
-        self.assertIn("**Ban reason** spam (via command by mod)", text)
-        self.assertIn("#8 ban", text)
-        self.assertIn("> I'm sorry, it won't happen again.", text)
-        self.assertIn("sent", submit.followup.send.await_args.args[0])
-
-    async def test_accept_unbans_and_closes_the_review(self):
-        admin = self.member(2, ADMIN_ROLE)
-        review = staff_message(appeal_review_buttons(5))
-        inter = self.interaction("modappeal-review:accept:5", admin, guild=self.guild, message=review)
-        self.banned.send.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason=""), "")
-        with patch(PERFORM, AsyncMock(return_value=ActionResult(action="unban", case_id=13))) as perform:
-            await self.cog.on_interaction(inter)
-        kwargs = perform.await_args.kwargs
-        self.assertEqual(
-            (kwargs["action"], kwargs["target_id"], kwargs["reason"], kwargs["source"], kwargs["moderator"]),
-            ("unban", 5, "Appeal accepted", "appeal", admin),
-        )
-        self.banned.send.assert_awaited_once()  # tried, the failure is ignored
-        self.assertEqual(disabled_ids(review), {"modappeal-review:accept:5", "modappeal-review:deny:5"})
-        self.assertEqual(handled(review), "Accepted by <@2> | case #13")
-
-    async def test_deny_needs_mod_ban_and_records_a_note(self):
-        helper = self.member(3, HELPER_ROLE)
-        inter = self.interaction("modappeal-review:deny:5", helper, guild=self.guild)
-        await self.cog.on_interaction(inter)
-        inter.response.send_modal.assert_not_awaited()
-
-        admin = self.member(2, MOD_ROLE)
-        review = staff_message(appeal_review_buttons(5))
-        inter = self.interaction("modappeal-review:deny:5", admin, guild=self.guild, message=review)
-        with patch(PERFORM, AsyncMock(return_value=ActionResult(action="note", case_id=14))) as perform:
-            await self.cog.on_interaction(inter)
-            modal = inter.response.send_modal.await_args.args[0]
-            modal.text.value = "ban evasion"
-            await modal.callback(self.modal_interaction(admin, guild=self.guild))
-        self.assertEqual(perform.await_args.kwargs["action"], "note")
-        self.assertEqual(perform.await_args.kwargs["reason"], "Appeal denied: ban evasion")
-        self.assertIn("Denied by <@2>", handled(review))
 
 
 class ReportTests(Base):

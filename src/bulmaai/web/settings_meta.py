@@ -57,8 +57,6 @@ META: dict[str, tuple[str, str, str]] = {
     "moderation_warn_ladder": ("moderation", "Warn ladder", "What active warns lead to, as \"count[/window]=action\" pairs, e.g. 1=1h, 2=1d, 3=3d, 4=ban:7d; the highest matched step wins."),
     "moderation_warn_expiry": ("moderation", "Warn expiry", "How long the 1st, 2nd, 3rd… active warn lasts, e.g. 2w, 3w, 4w, 60d; the last value covers every later warn."),
     "moderation_dm_on_action": ("moderation", "DM on action", "DM members when they are warned, timed out, kicked or banned."),
-    "moderation_appeals_enabled": ("moderation", "Ban appeals (old DM button)", "Adds the old in-Discord appeal button to ban DMs while the appeals website is off (no appeals website channel)."),
-    "moderation_appeals_channel_id": ("moderation", "Appeals channel (old DM button)", "Channel where appeals from the old DM button are posted; empty = the moderation log channel."),
     "appeals_channel_id": ("moderation", "Appeals website channel", "Staff channel for appeals sent through the appeals website, with Accept / Deny / Ask a question; empty turns the website off and ban DMs keep the old button."),
     "appeals_cooldown_days": ("moderation", "Appeal cooldown (days)", "After a denied appeal, how many days before the same person can appeal again."),
     "moderation_reports_channel_id": ("moderation", "Reports channel", "Channel where member reports are posted; empty = the moderation log channel."),

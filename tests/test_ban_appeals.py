@@ -389,7 +389,6 @@ class AppealDmTests(unittest.TestCase):
     def test_ban_and_timeout_dms_link_to_the_site(self):
         settings = SimpleNamespace(
             appeals_public_url="https://appeals.dmz", appeals_channel_id=5, panel_guild_id=1,
-            moderation_appeals_enabled=True,
         )
         guild = SimpleNamespace(id=1)
         for action in ("ban", "timeout"):
@@ -397,7 +396,7 @@ class AppealDmTests(unittest.TestCase):
             self.assertEqual(button.url, "https://appeals.dmz/appeal/")
         self.assertIsNone(mod_actions._appeal_button(settings, guild, "warn"))
         settings.appeals_channel_id = None
-        self.assertEqual(mod_actions._appeal_button(settings, guild, "ban").custom_id, "modappeal:1")
+        self.assertIsNone(mod_actions._appeal_button(settings, guild, "ban"))
         self.assertIsNone(mod_actions._appeal_button(settings, guild, "timeout"))
 
 

@@ -514,8 +514,6 @@ class Settings:
     # How long the Nth active warn lasts before it expires (the last value covers every warn past the list).
     moderation_warn_expiry: str = "2w, 3w, 4w, 60d"
     moderation_dm_on_action: bool = True
-    moderation_appeals_enabled: bool = True
-    moderation_appeals_channel_id: int | None = None  # empty = the moderation log channel
     moderation_reports_channel_id: int | None = None  # empty = the moderation log channel
     # Ban/timeout appeal website (web/routes_appeals.py, cogs/ban_appeals.py) on the appeals host of the panel's tunnel.
     # Staff cards go to appeals_channel_id; None turns the site off. Discord login reuses DISCORD_OAUTH_CLIENT_ID/SECRET.

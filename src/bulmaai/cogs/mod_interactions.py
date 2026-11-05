@@ -1,8 +1,6 @@
-"""The clickable side of moderation: quick-action buttons on staff alerts, ban appeals and member message
-reports. The views in ui/mod_views.py have no callbacks; their custom ids carry the target, so the
-on_interaction listener below routes clicks by prefix and they keep working after a restart."""
+"""The clickable side of moderation: quick-action buttons on staff alerts and member message reports. The views in ui/mod_views.py have no callbacks; their
+custom ids carry the target, so the on_interaction listener below routes clicks by prefix and they keep working after a restart."""
 
-import asyncio
 import logging
 import math
 import time
@@ -12,7 +10,7 @@ import discord
 from discord.ext import commands
 
 from bulmaai.config import set_setting_override
-from bulmaai.services import automod_hits, ban_appeals, joiner_alerts, mod_actions, mod_alert_cards, mod_cases
+from bulmaai.services import automod_hits, joiner_alerts, mod_actions, mod_alert_cards, mod_cases
 from bulmaai.services.ai_guard import defang
 from bulmaai.ui.mod_cards import (
     ALERT,
@@ -31,19 +29,16 @@ from bulmaai.ui.mod_cards import (
     user_line,
 )
 from bulmaai.ui.mod_views import (
-    APPEAL,
-    APPEAL_REVIEW,
     QUICK,
     QUICK_ACTIONS,
     TUNE,
     allowlist_button,
-    appeal_review_buttons,
     parse_custom_id,
     quick_action_buttons,
 )
 from bulmaai.web.core import PERMISSIONS, tier_for
 from bulmaai.ui.v2 import card, unbusy, while_busy
-from bulmaai.utils.i18n import reader_language, t, table, user_language
+from bulmaai.utils.i18n import reader_language, t, table
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +55,6 @@ QUICK_PERMISSIONS = {
 }
 ASK_REASON = {"warn", "kick", "ban"}  # the reason modal doubles as a misclick guard
 CONFIRM_HIT_ACTIONS = {"warn", "timeout", "kick", "ban"}  # punitive clicks confirm an automod hit, without learning
-APPEAL_CHECK_SECONDS = 2
 QUICK_TIMEOUT_SECONDS = 86400
 REPORT_ACTIONS = ("delete", "warn", "timeout", "ban", "dismiss")
 REPORT_COOLDOWN_SECONDS = 60
@@ -96,25 +90,6 @@ TEXT = table({
         "discord_error": "Discord returned an error, try again.",
         "no_domains": "That automod hit has no domains to allowlist any more.",
         "allowlisted": "✅ Allowlisted: {domains}.",
-        "not_banned": "You're no longer banned from **{guild}**.",
-        "ban_check_failed": "Couldn't check your ban right now, try again later.",
-        "appeals_down": "Appeals are unavailable right now, try again later.",
-        "already_appealed": "You already appealed this ban; staff review each ban's appeal once.",
-        "appeal_site": "Appeals are made on the appeals website now: {url}",
-        "appeals_closed": "Ban appeals are closed right now.",
-        "server_gone": "I can't reach that server any more.",
-        "appeal_title": "Appeal your ban from {guild}",
-        "appeal_label": "Why should your ban be lifted?",
-        "appeal_save_failed": "Couldn't save your appeal, try again later.",
-        "appeal_sent": "Your appeal was sent to the **{guild}** staff.",
-        "appeal_failed": "Something went wrong, the appeal may not have been answered.",
-        "deny_title": "Deny appeal",
-        "deny_label": "Reason (optional, sent to the user)",
-        "appeal_accepted_dm": "Your ban appeal for **{guild}** was accepted, you can rejoin the server.",
-        "appeal_denied_dm": "Your ban appeal for **{guild}** was denied.",
-        "appeal_denied_reason": "\nReason: {reason}",
-        "accepted": "Accepted",
-        "denied": "Denied",
         "report_main_only": "Reports only work on the DragonMineZ server.",
         "report_bot": "You can't report a bot's message.",
         "report_own": "You can't report your own message.",
@@ -159,25 +134,6 @@ TEXT = table({
         "discord_error": "Discord devolvió un error, inténtalo de nuevo.",
         "no_domains": "Ese registro de automod ya no tiene dominios que permitir.",
         "allowlisted": "✅ Permitidos: {domains}.",
-        "not_banned": "Ya no estás baneado de **{guild}**.",
-        "ban_check_failed": "No pude revisar tu baneo ahora, inténtalo más tarde.",
-        "appeals_down": "Las apelaciones no están disponibles ahora, inténtalo más tarde.",
-        "already_appealed": "Ya apelaste este baneo; el staff revisa la apelación de cada baneo una sola vez.",
-        "appeal_site": "Las apelaciones ahora se hacen en la web de apelaciones: {url}",
-        "appeals_closed": "Las apelaciones de baneo están cerradas ahora.",
-        "server_gone": "Ya no puedo acceder a ese servidor.",
-        "appeal_title": "Apela tu baneo de {guild}",
-        "appeal_label": "¿Por qué deberían quitarte el baneo?",
-        "appeal_save_failed": "No pude guardar tu apelación, inténtalo más tarde.",
-        "appeal_sent": "Tu apelación se envió al staff de **{guild}**.",
-        "appeal_failed": "Algo salió mal, puede que la apelación no se haya respondido.",
-        "deny_title": "Rechazar apelación",
-        "deny_label": "Motivo (opcional, se le envía al usuario)",
-        "appeal_accepted_dm": "Tu apelación de baneo en **{guild}** fue aceptada, puedes volver a unirte al servidor.",
-        "appeal_denied_dm": "Tu apelación de baneo en **{guild}** fue rechazada.",
-        "appeal_denied_reason": "\nMotivo: {reason}",
-        "accepted": "Aceptada",
-        "denied": "Rechazada",
         "report_main_only": "Los reportes solo funcionan en el servidor de DragonMineZ.",
         "report_bot": "No puedes reportar el mensaje de un bot.",
         "report_own": "No puedes reportar tu propio mensaje.",
@@ -222,25 +178,6 @@ TEXT = table({
         "discord_error": "O Discord retornou um erro, tente novamente.",
         "no_domains": "Esse registro de automod não tem mais domínios para liberar.",
         "allowlisted": "✅ Liberados: {domains}.",
-        "not_banned": "Você não está mais banido de **{guild}**.",
-        "ban_check_failed": "Não consegui verificar seu banimento agora, tente mais tarde.",
-        "appeals_down": "Os recursos estão indisponíveis agora, tente mais tarde.",
-        "already_appealed": "Você já recorreu deste banimento; a staff analisa o recurso de cada banimento uma vez.",
-        "appeal_site": "Os recursos agora são feitos no site de recursos: {url}",
-        "appeals_closed": "Os recursos de banimento estão fechados agora.",
-        "server_gone": "Não consigo mais acessar esse servidor.",
-        "appeal_title": "Recorra do seu banimento em {guild}",
-        "appeal_label": "Por que seu banimento deveria ser retirado?",
-        "appeal_save_failed": "Não consegui salvar seu recurso, tente mais tarde.",
-        "appeal_sent": "Seu recurso foi enviado à staff de **{guild}**.",
-        "appeal_failed": "Algo deu errado, o recurso pode não ter sido respondido.",
-        "deny_title": "Negar recurso",
-        "deny_label": "Motivo (opcional, enviado ao usuário)",
-        "appeal_accepted_dm": "Seu recurso de banimento em **{guild}** foi aceito, você pode voltar ao servidor.",
-        "appeal_denied_dm": "Seu recurso de banimento em **{guild}** foi negado.",
-        "appeal_denied_reason": "\nMotivo: {reason}",
-        "accepted": "Aceito",
-        "denied": "Negado",
         "report_main_only": "Denúncias só funcionam no servidor do DragonMineZ.",
         "report_bot": "Você não pode denunciar a mensagem de um bot.",
         "report_own": "Você não pode denunciar sua própria mensagem.",
@@ -386,34 +323,8 @@ async def _mark_card_handled(message: discord.Message, line: str, custom_id: str
         )
 
 
-def _case_summary(cases: list[mod_cases.ModCase]) -> str:
-    lines = [
-        f"#{case.id} {case.action} {discord.utils.format_dt(case.created_at, 'd')}"
-        + (f": {case.reason[:60]}" if case.reason else "")
-        for case in cases[:5]
-    ]
-    return "\n".join(lines)[:1024] or "None"
-
-
 def _avatar(user) -> str | None:
     return getattr(getattr(user, "display_avatar", None), "url", None)
-
-
-def _appeal_card(user: discord.abc.User, ban: discord.guild.BanEntry, text: str, cases, case_id: int | None):
-    head = [
-        "### 📨 Ban appeal",
-        (f"**Case** #{case_id}　" if case_id else "") + f"**Ban reason** {defang(ban.reason or 'No reason given')[:500]}",
-        f"**Recent cases**\n{_case_summary(cases)}",
-    ]
-    # Member-written text in a staff channel: quoted, defanged (no clickable or masked phishing links).
-    return alert_card(
-        "\n".join(head),
-        _avatar(user),
-        appeal_review_buttons(user.id),
-        color=discord.Color.blurple(),
-        snapshot=user_line(user, f"Account created {discord.utils.format_dt(user.created_at, 'R')}"),
-        quote=quote_block(text, 1000),
-    )
 
 
 def _report_card(reporter: discord.abc.User, message: discord.Message, reason: str) -> discord.ui.DesignerView:
@@ -459,8 +370,6 @@ class ModInteractionsCog(commands.Cog):
         parsed = parse_custom_id(custom_id)
         handler = parsed and {
             QUICK: self._quick,
-            APPEAL: self._appeal,
-            APPEAL_REVIEW: self._review,
             TUNE: self._tune,
             ALERT: self._card,
         }.get(parsed[0])
@@ -480,15 +389,6 @@ class ModInteractionsCog(commands.Cog):
             await _reply(interaction, self._say(interaction, "tier_denied"))
             return False
         return True
-
-    async def _dm(self, user_id: int, *keys: str, **values) -> None:
-        """TEXT[keys] joined, in the user's own language."""
-        try:
-            user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-            language = user_language(user, self.settings, client=self.bot)
-            await user.send("".join(t(TEXT, key, language, **values) for key in keys))
-        except discord.HTTPException:
-            pass  # usually they share no server with the bot any more
 
     # --- alert cards (modcard:<show|hide>) ---
 
@@ -728,158 +628,6 @@ class ModInteractionsCog(commands.Cog):
         )
         done = self._say(interaction, "allowlisted", domains=", ".join(hit.domains))
         await interaction.response.edit_message(view=card(done, color=discord.Color.green()))
-
-    # --- appeals (modappeal:<guild_id> in the ban DM, modappeal-review:<accept|deny>:<user_id>) ---
-
-    async def _appeal_check(self, guild: discord.Guild, user: discord.abc.User):
-        """(refusal or None, ban entry, the user's recent cases newest first); the refusal is a TEXT key (it takes
-        guild=)."""
-        try:
-            ban = await guild.fetch_ban(user)
-        except discord.NotFound:
-            return "not_banned", None, []
-        except discord.HTTPException:
-            extra = {"event": "mod_appeal_ban_fetch_failed", "user_id": user.id}
-            log.warning("Couldn't fetch a ban", exc_info=True, extra=extra)
-            return "ban_check_failed", None, []
-        try:
-            cases = await mod_cases.list_cases(guild.id, user_id=user.id, limit=25)
-        except Exception:
-            extra = {"event": "mod_appeal_cases_failed", "user_id": user.id}
-            log.exception("Couldn't load cases for an appeal", extra=extra)
-            return "appeals_down", None, []
-        latest = next((case for case in cases if case.action in ("ban", "appeal")), None)
-        if latest is not None and latest.action == "appeal":
-            return "already_appealed", ban, cases
-        return None, ban, cases
-
-    async def _appeal(self, interaction: discord.Interaction, parts: list[str]) -> None:
-        if (url := ban_appeals.site_url(self.settings)) and int(parts[0]) == getattr(self.settings, "panel_guild_id", None):
-            await _reply(interaction, self._say(interaction, "appeal_site", url=url))
-            return
-        if not self.settings.moderation_appeals_enabled:
-            await _reply(interaction, self._say(interaction, "appeals_closed"))
-            return
-        guild = self.bot.get_guild(int(parts[0]))
-        if guild is None:
-            await _reply(interaction, self._say(interaction, "server_gone"))
-            return
-        try:
-            # Discord drops the click unless the modal opens within 3s; the submit checks again anyway.
-            refusal, _, _ = await asyncio.wait_for(self._appeal_check(guild, interaction.user), APPEAL_CHECK_SECONDS)
-        except TimeoutError:
-            log.warning("Appeal check was slow; opening the form anyway", extra={"event": "mod_appeal_check_slow"})
-            refusal = None
-        if refusal:
-            await _reply(interaction, self._say(interaction, refusal, guild=guild.name))
-            return
-
-        async def submit(modal_interaction: discord.Interaction, text: str) -> None:
-            await self._submit_appeal(modal_interaction, guild, text)
-
-        await interaction.response.send_modal(
-            TextModal(
-                title=self._say(interaction, "appeal_title", guild=guild.name),
-                custom_id=f"{APPEAL}-form:{guild.id}",
-                label=self._say(interaction, "appeal_label"),
-                min_length=20,
-                max_length=1000,
-                on_submit=submit,
-            )
-        )
-
-    async def _submit_appeal(self, interaction: discord.Interaction, guild: discord.Guild, text: str) -> None:
-        await interaction.response.defer(ephemeral=True, invisible=False)
-        user = interaction.user
-        refusal, ban, cases = await self._appeal_check(guild, user)  # again: two modals could be open
-        if refusal:
-            await interaction.followup.send(self._say(interaction, refusal, guild=guild.name), ephemeral=True)
-            return
-        try:
-            case_id = await mod_cases.record_case(
-                guild_id=guild.id, user_id=user.id, moderator_id=None, action="appeal", reason=text, source="appeal"
-            )
-        except Exception:
-            log.exception("Couldn't record an appeal", extra={"event": "mod_appeal_record_failed", "user_id": user.id})
-            await interaction.followup.send(self._say(interaction, "appeal_save_failed"), ephemeral=True)
-            return
-        channel = await mod_actions.staff_channel(self.bot, self.settings.moderation_appeals_channel_id)
-        try:
-            if channel is None:
-                raise LookupError("no appeals or moderation log channel configured")
-            await channel.send(
-                view=_appeal_card(user, ban, text, cases, case_id),
-                allowed_mentions=NO_MENTIONS,
-            )
-        except (discord.HTTPException, LookupError):
-            # The case is saved, so staff still see it in the case list.
-            log.exception("Couldn't post an appeal", extra={"event": "mod_appeal_post_failed", "user_id": user.id})
-        await interaction.followup.send(self._say(interaction, "appeal_sent", guild=guild.name), ephemeral=True)
-
-    async def _review(self, interaction: discord.Interaction, parts: list[str]) -> None:
-        decision, user_id = parts[0], int(parts[1])
-        if decision not in ("accept", "deny") or not await self._staff(interaction, "mod.ban"):
-            return
-        staff_message = interaction.message
-        if decision == "accept":
-
-            async def accept() -> None:
-                await self._decide(interaction, user_id, staff_message, accepted=True, reason="")
-
-            await while_busy(interaction, self._working, accept, failed=self._say(interaction, "appeal_failed"))
-            return
-
-        async def submit(modal_interaction: discord.Interaction, reason: str) -> None:
-            message = modal_interaction.message or staff_message
-            await self._decide(modal_interaction, user_id, message, accepted=False, reason=reason)
-
-        await interaction.response.send_modal(
-            TextModal(
-                title=self._say(interaction, "deny_title"),
-                custom_id=f"{APPEAL_REVIEW}-deny:{user_id}",
-                label=self._say(interaction, "deny_label"),
-                required=False,
-                max_length=500,
-                on_submit=submit,
-            )
-        )
-
-    async def _decide(
-        self,
-        interaction: discord.Interaction,
-        user_id: int,
-        staff_message: discord.Message | None,
-        *,
-        accepted: bool,
-        reason: str,
-    ) -> None:
-        await _start(interaction)
-        guild = interaction.guild
-        try:
-            result = await mod_actions.perform(
-                self.bot,
-                guild,
-                action="unban" if accepted else "note",
-                target_id=user_id,
-                moderator=interaction.user,
-                reason="Appeal accepted" if accepted else f"Appeal denied: {reason or 'no reason given'}",
-                source="appeal",
-            )
-        except mod_actions.ModActionError as error:
-            await interaction.followup.send(error.text(reader_language(interaction, self.settings)), ephemeral=True)
-            return await _put_back(interaction)
-        if accepted:
-            await self._dm(user_id, "appeal_accepted_dm", guild=guild.name)
-        elif reason:
-            await self._dm(user_id, "appeal_denied_dm", "appeal_denied_reason", guild=guild.name, reason=reason)
-        else:
-            await self._dm(user_id, "appeal_denied_dm", guild=guild.name)
-        verdict = "Accepted" if accepted else "Denied"
-        case = f" | case #{result.case_id}" if result.case_id else ""
-        line = f"{verdict} by {interaction.user.mention}{case}" + (f": {reason}" if reason else "")
-        await _mark_handled(staff_message, line)
-        verdict_here = self._say(interaction, "accepted" if accepted else "denied")
-        await interaction.followup.send(f"{verdict_here}{case}.", ephemeral=True)
 
     # --- member reports ---
 

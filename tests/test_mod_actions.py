@@ -113,7 +113,6 @@ class PerformTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patcher.stop)
         settings = SimpleNamespace(
             moderation_dm_on_action=True,
-            moderation_appeals_enabled=True,
             moderation_warn_ladder="",
             moderation_log_channel_id=None,
             panel_guild_id=1,

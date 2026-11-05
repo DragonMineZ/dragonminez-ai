@@ -12,7 +12,7 @@ import discord
 
 from bulmaai.services import ban_appeals, mod_cases, panel_logs
 from bulmaai.ui import mod_cards
-from bulmaai.ui.mod_views import appeal_button, appeal_link_button
+from bulmaai.ui.mod_views import appeal_link_button
 from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
 from bulmaai.ui.v2 import card
 from bulmaai.utils.i18n import t, table, user_language
@@ -343,13 +343,13 @@ async def _dm(member: discord.Member, text: str, button: discord.ui.Button | Non
 
 
 def _appeal_button(settings, guild: discord.Guild, action: str, language: str = "en") -> discord.ui.Button | None:
-    """Bans and timeouts in the main guild link to the appeals website while it is on; otherwise bans keep the old
-    in-Discord appeal button. Labelled in the member's language."""
+    """Bans and timeouts in the main guild link to the appeals website while it is on; otherwise no button.
+    Labelled in the member's language."""
     url = ban_appeals.site_url(settings) if guild.id == getattr(settings, "panel_guild_id", None) else None
     label = t(DM, "appeal", language)
     if url and action in ("ban", "timeout"):
         return appeal_link_button(url, label)
-    return appeal_button(guild.id, label) if action == "ban" and settings.moderation_appeals_enabled else None
+    return None
 
 
 async def resolve_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc.Messageable | None:

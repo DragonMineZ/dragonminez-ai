@@ -6,8 +6,6 @@ import discord
 from bulmaai.ui.mod_cards import ALERT
 
 QUICK = "modqa"  # modqa:<action>:<user_id>[:<channel_id>:<message_id>]
-APPEAL = "modappeal"  # modappeal:<guild_id>, on the ban DM
-APPEAL_REVIEW = "modappeal-review"  # modappeal-review:<accept|deny>:<user_id>
 RAID = "modraid"  # modraid:<lockdown|unlock|end>, on raid alerts
 TUNE = "modtune"  # modtune:allow:<automod_hit_id>, offered after a false positive on a link filter
 
@@ -43,20 +41,9 @@ def quick_action_buttons(
     return buttons
 
 
-def appeal_button(guild_id: int, label: str = "Appeal") -> discord.ui.Button:
-    return discord.ui.Button(label=label, style=discord.ButtonStyle.primary, custom_id=f"{APPEAL}:{guild_id}")
-
-
 def appeal_link_button(url: str, label: str = "Appeal") -> discord.ui.Button:
     """The ban/timeout DM's link to the appeals website (label: in the member's language)."""
     return discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=url)
-
-
-def appeal_review_buttons(user_id: int) -> list[discord.ui.Button]:
-    return [
-        discord.ui.Button(label="Unban", style=discord.ButtonStyle.success, custom_id=f"{APPEAL_REVIEW}:accept:{user_id}"),
-        discord.ui.Button(label="Deny", style=discord.ButtonStyle.danger, custom_id=f"{APPEAL_REVIEW}:deny:{user_id}"),
-    ]
 
 
 def raid_buttons(*, locked: bool) -> list[discord.ui.Button]:
@@ -76,6 +63,6 @@ def allowlist_button(hit_id: int, domains: tuple[str, ...]) -> discord.ui.Button
 def parse_custom_id(custom_id: str | None) -> tuple[str, list[str]] | None:
     """('modqa', ['ban', '123']) for our buttons, None for anyone else's."""
     prefix, _, rest = (custom_id or "").partition(":")
-    if prefix not in (QUICK, APPEAL, APPEAL_REVIEW, RAID, TUNE, ALERT) or not rest:
+    if prefix not in (QUICK, RAID, TUNE, ALERT) or not rest:
         return None
     return prefix, rest.split(":")

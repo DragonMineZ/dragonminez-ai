@@ -191,7 +191,7 @@ class ModerationPanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.record.await_args.kwargs["duration_seconds"], 7 * 86400)
         self.assertIsNotNone(self.record.await_args.kwargs["expires_at"])
         dm_view = self.members[RANDOM_ID].send.await_args.kwargs["view"]
-        self.assertTrue(buttons(dm_view)[0].custom_id.startswith("modappeal:"))
+        self.assertEqual(buttons(dm_view), [])
 
         self.guild.unban.reset_mock()
         response = await self.post(f"/api/users/{RANDOM_ID}/softban", {"reason": "spam"})

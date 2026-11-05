@@ -66,7 +66,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 - Grants work only in the main guild (and the dev guild) (`permissions.in_main_guild`).
   - `/database` is Bruno-only.
   - GitHub PR merge/close needs panel ADMIN; issue actions need staff.
-- Bans (and timeouts) are appealed only through the appeals website (`appeals.` host) while `appeals_channel_id` is set; ban/timeout DMs link there, and the old in-Discord appeal button only points to it. Staff Accept/Deny on the card: first click wins (`WHERE outcome IS NULL`), Accept lifts through `perform()`. The bot never DMs the outcome; the site's status page is the answer.
+- Bans (and timeouts) are appealed only through the appeals website (`appeals.` host) while `appeals_channel_id` is set; ban/timeout DMs link there. The old in-Discord appeal button and its flow are gone (2026-11-05); without the site a ban DM has no appeal button. Staff Accept/Deny on the card: first click wins (`WHERE outcome IS NULL`), Accept lifts through `perform()`. The bot never DMs the outcome; the site's status page is the answer.
 - Known gaps, left on purpose: Cyrillic confusables in banned words, replay protection on `/dmz-release` and `/dmz-dev-jar`, panel session revocation, XP for automod-deleted messages.
 
 ## Anything that must survive a restart

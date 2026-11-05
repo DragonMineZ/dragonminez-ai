@@ -801,6 +801,8 @@ async def _run_once(
                         hits = await _run_knowledge_tool(args, settings)
                         output = {"results": [{"filename": hit["filename"], "title": hit["title"]} for hit in hits]}
                 else:
+                    if call.name in ai_tools.STAFF_TOOL_NAMES and call.name not in enabled_tools:
+                        raise PermissionError(call.name)
                     args = _hydrate_tool_args(
                         name=call.name,
                         args=args,

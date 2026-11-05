@@ -20,11 +20,12 @@ from bulmaai.cogs.ai_tickets import AITicketsCog
 from bulmaai.cogs.tickets import TicketsCog
 from bulmaai.services import staff_copilot as copilot
 from bulmaai.services import tickets as db
-from bulmaai.services.ai_tools import LOOKUP_TOOL_NAMES
+from bulmaai.services.ai_tools import STAFF_DRAFT_TOOL_NAMES
 from bulmaai.services.ticket_transcripts import TranscriptLine
 from bulmaai.ui import staff_copilot, v2
 from bulmaai.ui import ticket_views as views
 from v2_helpers import buttons, sent_message, texts
+from v2_helpers import walk as v2_walk
 
 OWNER_ID, STAFF_ID, BOT_ID = 100, 200, 999
 HELPER_ROLE, STAFF_ROLE = 14, 31
@@ -346,7 +347,7 @@ class DraftTests(unittest.IsolatedAsyncioTestCase):
         text, kwargs, history = await self.draft({"reply": "Prueba a borrar la carpeta config.", "tool_results": []})
         self.assertEqual(text, "Prueba a borrar la carpeta config.")
         self.assertIs(kwargs["messages"], history)
-        self.assertEqual(kwargs["enabled_tools"], LOOKUP_TOOL_NAMES)  # no controls in a draft
+        self.assertEqual(kwargs["enabled_tools"], STAFF_DRAFT_TOOL_NAMES)  # lookups and the dev log, no controls
         self.assertEqual(kwargs["workflow_prefix"], "staff_draft")
         self.assertEqual(kwargs["language_hint"], "es")
         self.assertEqual(kwargs["user_id"], OWNER_ID)  # lookups are the owner's, as in their own ticket
@@ -542,11 +543,19 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_signed_post_is_the_staff_members_turn_and_translations_are_skipped(self):
         guild = types.SimpleNamespace(get_member=lambda _id: STAFF if _id == STAFF_ID else None)
+        hooked = card_message(
+            staff_copilot.translation_card("Envía también tu latest.log", "en", "es", original="Send your latest.log too"),
+            5,
+            author=types.SimpleNamespace(id=777, bot=True, name="Vegeta", display_name="Vegeta"),
+            guild=guild,
+        )
+        hooked.webhook_id = 777
         items = [
             typed(1, OWNER, "My game crashes"),
             card_message(staff_copilot.posted_card("Borra la carpeta config.", STAFF_ID), 2, guild=guild),
             typed(3, STAFF, "Send your latest.log too"),
             card_message(staff_copilot.translation_card("Envía también tu latest.log", "en", "es"), 4, guild=guild),
+            hooked,
         ]
         turns, lines = await self.read(items)
         self.assertEqual(
@@ -583,6 +592,19 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(staff_copilot.is_translation(sent_message(staff_copilot.translation_card("Hola", "en", "es"))))
         self.assertEqual(staff_copilot.draft_text(posted), "")
 
+    async def test_a_webhook_translation_is_recognised_and_other_webhooks_are_not(self):
+        cog = AITicketsCog(types.SimpleNamespace(settings=SETTINGS, user=BOT, get_cog=lambda name: None))
+        hook_author = types.SimpleNamespace(id=777, bot=True, name="Vegeta", display_name="Vegeta")
+        translation = card_message(staff_copilot.translation_card("Hola", "en", "es", original="Hi"), 1, author=hook_author)
+        translation.webhook_id = 777
+        self.assertTrue(cog._is_translation(translation))
+        other = card_message(staff_copilot.posted_card("Hi", STAFF_ID), 2, author=hook_author)
+        other.webhook_id = 777
+        self.assertFalse(cog._is_translation(other))
+        stranger = card_message(staff_copilot.translation_card("Hola", "en", "es"), 3, author=OWNER)
+        stranger.webhook_id = None
+        self.assertFalse(cog._is_translation(stranger))  # only a webhook or Bulma posts one
+
 
 class TranslationRuleTests(unittest.IsolatedAsyncioTestCase):
     def test_only_clear_other_language_prose_is_worth_translating(self):
@@ -609,14 +631,28 @@ class TranslationRuleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_card_says_where_it_came_from_in_the_tickets_language(self):
         view = staff_copilot.translation_card("Envía tu latest.log", "en", "es")
-        self.assertEqual(texts(view), ["🌐 Envía tu latest.log\n-# Traducido del inglés"])
+        self.assertEqual(texts(view), ["Envía tu latest.log", "-# 🌐 Traducido del inglés"])
+        self.assertFalse([item for item in v2_walk(view) if isinstance(item, discord.ui.Separator)])
         for source, language, expected in (
-            ("pt", "en", "🌐 Send it\n-# Translated from Portuguese"),
-            ("es", "pt", "🌐 Send it\n-# Traduzido do espanhol"),
+            ("pt", "en", "-# 🌐 Translated from Portuguese"),
+            ("es", "pt", "-# 🌐 Traduzido do espanhol"),
         ):
-            self.assertEqual(texts(staff_copilot.translation_card("Send it", source, language)), [expected])
-        long = texts(staff_copilot.translation_card("z" * 5000, "en", "es"))[0]
-        self.assertLessEqual(len(long), v2.TEXT_LIMIT)
+            self.assertEqual(texts(staff_copilot.translation_card("Send it", source, language)), ["Send it", expected])
+        long = texts(staff_copilot.translation_card("z" * 5000, "en", "es", original="y" * 5000))
+        self.assertLessEqual(sum(map(len, long)), v2.TEXT_LIMIT)
+        self.assertLessEqual(len(long[0]), staff_copilot.ORIGINAL_LIMIT + 2)
+
+    async def test_the_webhook_card_quotes_the_original_above_a_separator(self):
+        view = staff_copilot.translation_card("Envía tu log\nporfa", "en", "es", original="Send your log\nplease")
+        self.assertEqual(texts(view), ["> Send your log\n> please", "Envía tu log\nporfa", "-# 🌐 Traducido del inglés"])
+        container = view.children[0]
+        self.assertIsInstance(container, discord.ui.Container)
+        self.assertIsNotNone(container.color)
+        self.assertEqual(
+            [type(item).__name__ for item in container.items],
+            ["TextDisplay", "Separator", "TextDisplay", "TextDisplay"],
+        )
+        self.assertTrue(staff_copilot.is_translation(sent_message(view)))
 
 
 class TranslateCallTests(unittest.IsolatedAsyncioTestCase):
@@ -646,16 +682,26 @@ class TranslateCallTests(unittest.IsolatedAsyncioTestCase):
             client.messages.create.assert_awaited_once()
 
 
-class StaffTranslationTests(unittest.IsolatedAsyncioTestCase):
+def hook(user_id=BOT_ID, token="t", hook_id=55):
+    return types.SimpleNamespace(id=hook_id, token=token, user=types.SimpleNamespace(id=user_id), send=AsyncMock())
+
+
+class TranslationTests(unittest.IsolatedAsyncioTestCase):
     def cog(self, **overrides):
         settings = types.SimpleNamespace(**{**vars(SETTINGS), **overrides})
         cog = AITicketsCog(types.SimpleNamespace(settings=settings, user=BOT, get_cog=lambda name: None, guilds=[]))
         cog._ticket_languages[900] = "es"
+        cog._ticket_owners[900] = OWNER_ID
         return cog
 
-    def message(self, text="Can you send me your latest log please?"):
+    def message(self, text="Can you send me your latest log please?", author=STAFF, hooks=None):
+        channel = ticket_channel()
+        channel.webhooks = AsyncMock(return_value=[hook()] if hooks is None else hooks)
+        channel.create_webhook = AsyncMock(return_value=hook(hook_id=66))
+        writer = types.SimpleNamespace(**vars(author), display_avatar=types.SimpleNamespace(url="https://cdn/avatar.png"))
         return types.SimpleNamespace(
-            id=5, content=text, clean_content=text, channel=ticket_channel(), to_reference=MagicMock(return_value="ref")
+            id=5, author=writer, content=text, clean_content=text, channel=channel,
+            to_reference=MagicMock(return_value="ref"),
         )
 
     async def translate(self, cog, message, result="¿Puedes enviarme tu latest.log?", *, paused=False):
@@ -663,51 +709,110 @@ class StaffTranslationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ai_tickets.ai_budget, "is_paused", return_value=paused),
             patch.object(ai_tickets, "translate_staff_text", AsyncMock(return_value=result)) as call,
         ):
-            await cog._translate_staff_message(message)
+            await cog._translate_message(message)
         return call
 
-    async def test_a_staff_message_in_another_language_gets_a_translation_reply(self):
+    def assert_no_pings(self, none):
+        self.assertEqual((none.everyone, none.users, none.roles, none.replied_user), (False, False, False, False))
+
+    async def test_it_goes_out_through_the_tickets_webhook_as_its_author(self):
         message = self.message()
-        call = await self.translate(self.cog(), message)
+        cog = self.cog()
+        call = await self.translate(cog, message)
         self.assertEqual(call.await_args.args, (message.clean_content, "en", "es"))
         self.assertEqual(call.await_args.kwargs, {"model": "claude-haiku-5-5", "timeout_seconds": 5})
-        kwargs = message.channel.send.await_args.kwargs
-        self.assertEqual(texts(kwargs["view"]), ["🌐 ¿Puedes enviarme tu latest.log?\n-# Traducido del inglés"])
-        message.to_reference.assert_called_once_with(fail_if_not_exists=False)
-        self.assertEqual(kwargs["reference"], "ref")
-        none = kwargs["allowed_mentions"]
-        self.assertEqual((none.everyone, none.users, none.roles, none.replied_user), (False, False, False, False))
+        webhook = cog._translate_webhooks[900]
+        kwargs = webhook.send.await_args.kwargs
+        self.assertEqual(
+            texts(kwargs["view"]),
+            ["> Can you send me your latest log please?", "¿Puedes enviarme tu latest.log?", "-# 🌐 Traducido del inglés"],
+        )
+        self.assertEqual((kwargs["username"], kwargs["avatar_url"]), ("Vegeta", "https://cdn/avatar.png"))
+        self.assert_no_pings(kwargs["allowed_mentions"])
+        message.channel.send.assert_not_called()  # the original stays; no reply from Bulma
+        message.channel.create_webhook.assert_not_called()  # the bot's own webhook there is reused
+        await self.translate(cog, message)
+        message.channel.webhooks.assert_awaited_once()  # then cached
+        self.assertEqual(webhook.send.await_count, 2)
+
+    async def test_a_webhook_is_made_when_the_bot_has_none_there(self):
+        foreign = [hook(user_id=4242), hook(token=None)]  # someone else's, and one without a token
+        message = self.message(hooks=foreign)
+        cog = self.cog()
+        await self.translate(cog, message)
+        message.channel.create_webhook.assert_awaited_once()
+        self.assertEqual(message.channel.create_webhook.await_args.kwargs["name"], ai_tickets.TRANSLATE_WEBHOOK_NAME)
+        self.assertEqual(cog._translate_webhooks[900].id, 66)
+        cog._translate_webhooks[900].send.assert_awaited_once()
+        for other in foreign:
+            other.send.assert_not_called()
+
+    async def test_without_a_webhook_it_falls_back_to_a_reply(self):
+        for failing in ("list", "send"):
+            message = self.message()
+            cog = self.cog()
+            if failing == "list":
+                message.channel.webhooks.side_effect = discord.Forbidden(MagicMock(status=403), "Missing Permissions")
+            else:
+                message.channel.webhooks.return_value[0].send.side_effect = discord.HTTPException(
+                    MagicMock(status=500), "boom"
+                )
+            with self.assertNoLogs(ai_tickets.log, level="WARNING"):
+                await self.translate(cog, message)
+            self.assertNotIn(900, cog._translate_webhooks)  # tried afresh next time
+            kwargs = message.channel.send.await_args.kwargs
+            self.assertEqual(texts(kwargs["view"]), ["¿Puedes enviarme tu latest.log?", "-# 🌐 Traducido del inglés"])
+            message.to_reference.assert_called_once_with(fail_if_not_exists=False)
+            self.assertEqual(kwargs["reference"], "ref")
+            self.assert_no_pings(kwargs["allowed_mentions"])
+
+    async def test_anyone_but_the_owner_is_translated(self):
+        helper = person(300, name="Bulla")  # a member added to the ticket, not staff
+        message = self.message(author=helper)
+        cog = self.cog()
+        await self.translate(cog, message)
+        self.assertEqual(cog._translate_webhooks[900].send.await_args.kwargs["username"], "Bulla")
+        message = self.message(author=OWNER)
+        call = await self.translate(self.cog(), message)
+        call.assert_not_called()
+        message.channel.webhooks.assert_not_called()
+        message.channel.send.assert_not_called()
 
     async def test_off_paused_or_same_language_does_nothing(self):
         for cog, kwargs in ((self.cog(ai_ticket_translate_staff=False), {}), (self.cog(), {"paused": True})):
             message = self.message()
             call = await self.translate(cog, message, **kwargs)
             call.assert_not_called()
-            message.channel.send.assert_not_called()
+            message.channel.webhooks.assert_not_called()
         message = self.message("Puedes enviarme el log por favor")
         call = await self.translate(self.cog(), message)
         call.assert_not_called()  # the cheap check already sees the ticket's language
         message = self.message()
         await self.translate(self.cog(), message, result=None)  # translate_staff_text dropped the model's text
+        message.channel.webhooks.assert_not_called()
         message.channel.send.assert_not_called()
 
     async def test_the_guard_and_a_close_meanwhile_stop_the_card(self):
         message = self.message()
         await self.translate(self.cog(), message, result="Usa badword aquí")
-        message.channel.send.assert_not_called()
+        message.channel.webhooks.assert_not_called()
         message = self.message()
         message.channel.category = types.SimpleNamespace(id=2)  # closed while the model was translating
         await self.translate(self.cog(), message)
-        message.channel.send.assert_not_called()
+        message.channel.webhooks.assert_not_called()
 
-    async def test_mentions_in_the_translation_are_defused(self):
-        message = self.message()
-        await self.translate(self.cog(), message, result="Hola <@123> y @everyone, envía el log")
-        body = texts(message.channel.send.await_args.kwargs["view"])[0]
-        self.assertNotIn("<@123>", body)
-        self.assertNotIn("@everyone", body)
+    async def test_mentions_in_the_translation_and_the_original_are_defused(self):
+        original = "Hi @​everyone and @Goku, send me your latest log please"  # clean_content's form
+        message = self.message(original)
+        message.content = "Hi @everyone and <@100>, send me your latest log please"
+        cog = self.cog()
+        await self.translate(cog, message, result="Hola <@123> y @everyone, envía el log")
+        quoted, body, _footer = texts(cog._translate_webhooks[900].send.await_args.kwargs["view"])
+        for part in (quoted, body):
+            self.assertNotIn("<@", part)
+            self.assertNotIn("@everyone", part)
 
-    async def test_only_staff_messages_in_tickets_are_sent_for_translation(self):
+    async def test_human_messages_in_tickets_are_sent_for_translation(self):
         cog = self.cog()
         channel = ticket_channel()
 
@@ -732,9 +837,29 @@ class StaffTranslationTests(unittest.IsolatedAsyncioTestCase):
             schedule.assert_called_once()
             answer.assert_not_called()  # the AI never answers staff
             schedule.reset_mock()
-            await cog.on_message(posted(OWNER))
-            schedule.assert_not_called()
+            await cog.on_message(posted(person(300, name="Bulla")))
+            schedule.assert_called_once()  # a member added to the ticket: translated, and handled as before
             answer.assert_called_once()
+            schedule.reset_mock()
+            answer.reset_mock()
+            await cog.on_message(posted(OWNER))
+            schedule.assert_called_once()  # _translate_message itself skips the owner
+            answer.assert_called_once()
+            schedule.reset_mock()
+            hooked = posted(STAFF)
+            hooked.author = types.SimpleNamespace(id=777, bot=True, name="Vegeta", display_name="Vegeta")
+            hooked.webhook_id = 777  # our own translation coming back through the gateway
+            await cog.on_message(hooked)
+            schedule.assert_not_called()
+
+    async def test_other_listeners_ignore_the_webhook_post(self):
+        hooked = types.SimpleNamespace(
+            author=types.SimpleNamespace(id=777, bot=True), webhook_id=777, channel=ticket_channel(), guild=object()
+        )
+        hooked.channel.category_id = TICKET_CATEGORY
+        with patch.object(tickets_module, "note_ticket_message", AsyncMock()) as noted:
+            await tickets_cog().on_message(hooked)
+        noted.assert_not_called()  # the owner-reply countdown only counts people
 
 
 if __name__ == "__main__":

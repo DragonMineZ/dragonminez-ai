@@ -698,3 +698,26 @@ CREATE INDEX IF NOT EXISTS idx_ai_feedback_created_at ON ai_feedback (created_at
 ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
 ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS reviewed_by BIGINT;
 ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS info_id BIGINT;
+
+-- Private notes on what each push to the mod repo changed (services/code_notes.py); staff only (/devlog and the
+-- staff draft's search_code_notes tool), never posted to GitHub and never copied into knowledge_docs.
+CREATE TABLE IF NOT EXISTS code_notes (
+    sha          TEXT PRIMARY KEY,
+    repo         TEXT NOT NULL,
+    branch       TEXT NOT NULL DEFAULT '',
+    author_login TEXT,
+    author_name  TEXT NOT NULL DEFAULT '',
+    committed_at TIMESTAMPTZ,
+    message      TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL,
+    files        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    paths        TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tsv          tsvector GENERATED ALWAYS AS (
+        to_tsvector('english', message || ' ' || note || ' ' || author_name || ' ' || coalesce(author_login, '') || ' ' || paths)
+        || to_tsvector('simple', message || ' ' || note || ' ' || paths)
+    ) STORED
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_notes_tsv ON code_notes USING GIN (tsv);
+CREATE INDEX IF NOT EXISTS idx_code_notes_committed_at ON code_notes (committed_at DESC);

@@ -29,7 +29,7 @@ from bulmaai.services.ai_guard import (
     screen_reply,
     strip_links,
 )
-from bulmaai.services.ai_tools import LOOKUP_TOOL_NAMES, SUPPORT_TOOL_NAMES
+from bulmaai.services.ai_tools import STAFF_DRAFT_TOOL_NAMES, SUPPORT_TOOL_NAMES
 from bulmaai.services.staff_copilot import (
     TicketSoFar,
     summarize_so_far,
@@ -140,6 +140,9 @@ SOLVED_CLOSE_TEXT = {
 }
 # A ticket's support language, as the model is told to answer in it.
 LANGUAGE_NAMES = {"en": "English", "es": "Latin American Spanish", "pt": "Portuguese"}
+# The webhook translations go through (_translation_webhook); a webhook message's name holds at most 80 characters.
+TRANSLATE_WEBHOOK_NAME = "Bulma Translate"
+WEBHOOK_NAME_LIMIT = 80
 # ponytail: public-channel context window; widen if pings keep missing earlier chatter.
 GENERAL_CONTEXT_MESSAGE_LIMIT = 15
 # ponytail: a thread is one conversation, so no age cutoff there; its newest N messages plus what led into it.
@@ -688,7 +691,9 @@ class AITicketsCog(ReloadableCog):
         self._ticket_languages: dict[int, str | None] = {}
         # Bulma's thread → the member it is for (None: not a help thread); see _help_thread_requester.
         self._thread_requesters: dict[int, int | None] = {}
-        self._translations: set[asyncio.Task[None]] = set()  # staff messages being translated (kept so none is GC'd)
+        self._translations: set[asyncio.Task[None]] = set()  # messages being translated (kept so none is GC'd)
+        # Ticket channel → the webhook translations are posted through (_translation_webhook); refilled after a restart.
+        self._translate_webhooks: dict[int, discord.Webhook] = {}
 
     async def on_startup(self) -> None:
         try:
@@ -1069,8 +1074,10 @@ class AITicketsCog(ReloadableCog):
         return self._member_turn(entry, staff_id, requester_id, content, getattr(entry, "created_at", None), "staff")
 
     def _is_translation(self, entry: discord.Message) -> bool:
-        """Bulma's translation of a staff message (ui/staff_copilot.translation_card)."""
-        return entry.author == self.bot.user and staff_copilot.is_translation(entry)
+        """A translation of someone's message (ui/staff_copilot.translation_card), posted through the ticket's
+        webhook or, as the fallback, by Bulma herself."""
+        ours = entry.author == self.bot.user or getattr(entry, "webhook_id", None) is not None
+        return ours and staff_copilot.is_translation(entry)
 
     def _member_turn(
         self,
@@ -1839,7 +1846,7 @@ class AITicketsCog(ReloadableCog):
         ]
         result = await run_support_agent(
             messages=history,
-            enabled_tools=LOOKUP_TOOL_NAMES,
+            enabled_tools=STAFF_DRAFT_TOOL_NAMES,
             language_hint=language,
             user_id=owner_id,
             channel_id=channel.id,
@@ -1863,18 +1870,22 @@ class AITicketsCog(ReloadableCog):
 
     def _schedule_translation(self, message: discord.Message) -> None:
         """In the background, so on_message never waits on the model; one per message (edits aren't translated)."""
-        task = asyncio.create_task(self._translate_staff_message(message))
+        task = asyncio.create_task(self._translate_message(message))
         self._translations.add(task)
         task.add_done_callback(self._translations.discard)
 
-    async def _translate_staff_message(self, message: discord.Message) -> None:
-        """A staff message in an open ticket, written in another language than the ticket's: Bulma replies to it with
-        its translation (ui/staff_copilot.translation_card, no ping), so the owner can read it. Off with
-        ai_ticket_translate_staff or a paused budget; skipped when translation_source finds no clear other language,
-        when translate_staff_text drops the model's text, or when the guard blocks it."""
+    async def _translate_message(self, message: discord.Message) -> None:
+        """A human message in an open ticket from anyone but its owner (staff, a member added to it), written in
+        another language than the ticket's: its translation (ui/staff_copilot.translation_card) is posted through the
+        ticket's webhook as its author, under a quote of the original, so the owner can read it (_post_translation).
+        Off with ai_ticket_translate_staff or a paused budget; skipped for the owner (or when the owner is unknown),
+        when translation_source finds no clear other language, when translate_staff_text drops the model's text, or
+        when the guard blocks it."""
         settings = self.bot.settings
         channel = message.channel
         if not getattr(settings, "ai_ticket_translate_staff", False) or ai_budget.is_paused(settings):
+            return
+        if await self._is_ticket_owner(channel, message.author.id):
             return
         text = message.clean_content.strip()
         language = await self._ticket_language(channel.id)
@@ -1890,14 +1901,37 @@ class AITicketsCog(ReloadableCog):
                 timeout_seconds=settings.ai_support_timeout_seconds,
             )
         except Exception:
-            log.exception("Staff message translation failed", extra={"channel_id": channel.id, "message_id": message.id})
+            log.exception("Ticket message translation failed", extra={"channel_id": channel.id, "message_id": message.id})
             return
         if translation is None:
             return
-        # The staff member's own links are theirs to keep, so they count as ours.
+        # The author's own links are theirs to keep, so they count as ours.
         translation, flags = screen_reply(translation, settings, link_targets(text))
         if flags & BLOCKING_FLAGS or not translation.strip() or not _is_ticket_channel(channel, settings=settings):
             return
+        await self._post_translation(message, text, translation, source, language)
+
+    async def _post_translation(
+        self, message: discord.Message, original: str, translation: str, source: str, language: str
+    ) -> None:
+        """Through the ticket's webhook, with the author's name and avatar, quoting original (clean_content, so no
+        mentions); if the webhook can't be had or used, as Bulma's reply to the message instead. Never pings."""
+        channel = message.channel
+        author = message.author
+        try:
+            webhook = await self._translation_webhook(channel)
+            await webhook.send(
+                view=staff_copilot.translation_card(translation, source, language, original=original),
+                username=trim(getattr(author, "display_name", None) or author.name, WEBHOOK_NAME_LIMIT),
+                avatar_url=author.display_avatar.url,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        except discord.DiscordException:
+            self._translate_webhooks.pop(channel.id, None)
+            log.info(
+                "Couldn't post a translation through the ticket's webhook", exc_info=True, extra={"channel_id": channel.id}
+            )
         try:
             await channel.send(
                 view=staff_copilot.translation_card(translation, source, language),
@@ -1905,7 +1939,20 @@ class AITicketsCog(ReloadableCog):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
-            log.info("Couldn't post a staff message's translation", exc_info=True, extra={"channel_id": channel.id})
+            log.info("Couldn't post a message's translation", exc_info=True, extra={"channel_id": channel.id})
+
+    async def _translation_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
+        """The ticket channel's webhook for translations: one the bot made there already, else a new one (needs Manage
+        Webhooks). Raises discord errors; _post_translation falls back on them."""
+        if (webhook := self._translate_webhooks.get(channel.id)) is not None:
+            return webhook
+        bot_id = getattr(self.bot.user, "id", None)
+        webhook = next(
+            (hook for hook in await channel.webhooks() if hook.token and getattr(hook.user, "id", None) == bot_id),
+            None,
+        ) or await channel.create_webhook(name=TRANSLATE_WEBHOOK_NAME, reason="Ticket translations")
+        self._translate_webhooks[channel.id] = webhook
+        return webhook
 
     async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
         """The tickets cog's welcome message mentions the owner; only they may get the "solved?" buttons."""
@@ -2976,10 +3023,11 @@ class AITicketsCog(ReloadableCog):
             self._cancel_pending_task_for_message(message, in_ticket=in_ticket)
 
         if message.author.bot or not isinstance(message.author, discord.Member):
-            return
+            return  # webhooks too: our translations come back through here
+        if in_ticket:
+            self._schedule_translation(message)  # anyone but the owner may get translated for the owner
         if _is_staff_ticket_message(message, in_ticket=in_ticket, settings=settings):
-            self._schedule_translation(message)  # the AI never answers staff; it may translate them for the owner
-            return
+            return  # the AI never answers staff
         if in_ticket and channel.id in self._escalated_ticket_channels:
             await self._maybe_close_solved(channel, message)
             return

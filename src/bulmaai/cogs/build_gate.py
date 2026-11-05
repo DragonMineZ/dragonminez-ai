@@ -19,7 +19,7 @@ from discord.ext import commands, tasks
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
-from bulmaai.services import build_gate
+from bulmaai.services import ai_budget, build_gate, code_notes
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
     register_extra_raw_webhook_route,
@@ -128,6 +128,7 @@ class BuildGateCog(ReloadableCog):
                 payload = json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return text_http_response(400, "Invalid JSON body")
+            self._queue_code_notes(payload, loop)
             push = build_gate.parse_push(
                 payload, repo_full_name=self.repo_full_name, ignore_branches=(self.settings.GITHUB_BASE_BRANCH,)
             )
@@ -146,6 +147,29 @@ class BuildGateCog(ReloadableCog):
 
         self._route_path = self.settings.build_gate_webhook_path
         register_extra_raw_webhook_route(path=self._route_path, handle_request=handle)
+
+    def _queue_code_notes(self, payload: dict, loop: asyncio.AbstractEventLoop) -> None:
+        """Every verified push to the mod repo, whatever the branch or files, gets private code notes written in the
+        background (services/code_notes). Never affects the build gate: failures are only logged."""
+        try:
+            if not self.settings.code_notes_enabled or ai_budget.is_paused(self.settings):
+                return
+            commits = code_notes.push_commits(payload, repo_full_name=self.repo_full_name)
+            if not commits:
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                code_notes.process_commits(self.settings, self.github, commits, repo=self.repo_full_name), loop
+            )
+
+            def log_result(done: "asyncio.Future[int]") -> None:
+                try:
+                    done.result()
+                except Exception:
+                    log.warning("Code notes failed", exc_info=True)
+
+            future.add_done_callback(log_result)
+        except Exception:
+            log.warning("Couldn't queue code notes", exc_info=True)
 
     async def _handle_push(self, push: build_gate.PushInfo) -> None:
         async with self._lock:

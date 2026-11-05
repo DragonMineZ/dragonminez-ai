@@ -4,8 +4,9 @@ show, the staff-signed card a draft becomes when it is posted, and the card that
 Summary and the draft are ephemeral cards for the staff member who clicked (English). The draft's text lives on its
 own card (DRAFT_TEXT_ID), so Post and Edit & post read it back from there: no DB row. A posted draft is a public card
 of the text plus a "-# ✍️ <@staff>" line (SIGNED_TEXT_ID); history and transcripts read it as that staff member's turn.
-A translation (TRANSLATION_TEXT_ID) is in the ticket's language and replies to the staff message it translates;
-history and transcripts skip it, since it repeats that message.
+A translation (TRANSLATION_TEXT_ID) is in the ticket's language, posted through the ticket's webhook as the person
+who wrote the message (or, failing that, as Bulma's reply to it); history and transcripts skip it, since it repeats
+that message.
 
 Pure helpers only (custom ids, cards, the modal, readback); the Discord wiring is in cogs/tickets.py (buttons, gates,
 posting) and cogs/ai_tickets.py (the AI work, history and transcripts)."""
@@ -26,6 +27,7 @@ EDIT_FIELD_ID = "text"
 DRAFT_TEXT_ID = 820  # the draft on its ephemeral card
 SIGNED_TEXT_ID = 821  # the signature line of a posted draft
 TRANSLATION_TEXT_ID = 822  # a translation card's text
+ORIGINAL_LIMIT = 1000  # the quoted original on a translation card
 # A posted reply's text; the signature line fits in what's left of the message's 4000 characters.
 POST_LIMIT = TEXT_LIMIT
 SIGNATURE_RE = re.compile(r"^-# ✍️ <@!?(\d+)>$")
@@ -165,14 +167,23 @@ def translated_from(source: str, language: str) -> str:
     return TRANSLATED_FROM.get(language, TRANSLATED_FROM["en"])[source]
 
 
-def translation_card(translation: str, source: str, language: str) -> discord.ui.DesignerView:
-    """A staff message (in source) in the ticket's language: "🌐 {translation}" and "-# Translated from {source}"."""
-    footer = f"-# {translated_from(source, language)}"
-    body = trim(translation, TEXT_LIMIT - len(footer) - 4)
-    return discord.ui.DesignerView(
-        discord.ui.Container(discord.ui.TextDisplay(f"🌐 {body}\n{footer}", id=TRANSLATION_TEXT_ID), color=COLOR),
-        timeout=None,
-    )
+def quote(text: str) -> str:
+    """text (already mention-free, e.g. clean_content) as a quote block, cut to ORIGINAL_LIMIT."""
+    return "\n".join(f"> {line}" for line in trim(text, ORIGINAL_LIMIT).splitlines())
+
+
+def translation_card(
+    translation: str, source: str, language: str, original: str | None = None
+) -> discord.ui.DesignerView:
+    """A message (in source) in the ticket's language. Sent through the ticket's webhook as its author, it quotes the
+    original above a separator; as a reply (the fallback) it has only the translation. "-# 🌐 Translated from {source}"
+    closes it."""
+    footer = f"-# 🌐 {translated_from(source, language)}"
+    head = quote(original) if original and original.strip() else ""
+    body = trim(translation, TEXT_LIMIT - len(head) - len(footer))
+    items: list[discord.ui.Item] = [discord.ui.TextDisplay(head), discord.ui.Separator()] if head else []
+    items += [discord.ui.TextDisplay(body, id=TRANSLATION_TEXT_ID), discord.ui.TextDisplay(footer)]
+    return discord.ui.DesignerView(discord.ui.Container(*items, color=COLOR), timeout=None)
 
 
 def is_translation(message: Any) -> bool:

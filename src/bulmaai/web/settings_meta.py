@@ -50,6 +50,7 @@ META: dict[str, tuple[str, str, str]] = {
     "support_info_channel_id": ("tickets", "Support info channel", "Where the active temporary support info is posted every 24h."),
     "support_info_review_channel_id": ("tickets", "Support info review channel", "Staff channel where AI-suggested support info waits for approval."),
     "support_report_channel_id": ("tickets", "Support report channel", "Staff channel for the weekly support report (Mondays 09:00 UTC); empty disables it."),
+    "ticket_log_channel_id": ("tickets", "Ticket log channel", "Staff channel that gets a record of every ticket close (owner, AI summary, transcript link); empty disables it."),
     "ticket_transcript_retention_days": ("tickets", "Transcript retention", "Days a hosted ticket transcript stays online; 0 keeps them forever."),
     # Moderation
     "moderation_enabled": ("moderation", "Automod & raid guard", "Master switch: off stops every automod filter and the raid guard."),

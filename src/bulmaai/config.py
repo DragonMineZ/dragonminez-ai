@@ -471,6 +471,8 @@ class Settings:
     support_info_review_channel_id: int | None = 1349074976241745960
     # Staff channel for the weekly support report (Mondays 09:00 UTC, cogs/support_report.py); None disables it.
     support_report_channel_id: int | None = None
+    # Staff channel for a record of every ticket close (owner, summary, transcript link); None turns it off.
+    ticket_log_channel_id: int | None = 1567803358432067735
     ticket_dm_transcript: bool = True
     # HTML transcripts are files under ticket_transcript_dir, served at ticket_transcript_public_url/t/<token>
     # (a public hostname on the same cloudflared tunnel as the panel). 0 retention days keeps them forever.
@@ -851,6 +853,7 @@ def _build_settings_from_env() -> Settings:
         support_info_channel_id=_get_env_int("SUPPORT_INFO_CHANNEL_ID", 1349074976241745960),
         support_info_review_channel_id=_get_env_int("SUPPORT_INFO_REVIEW_CHANNEL_ID", 1349074976241745960),
         support_report_channel_id=_get_env_int("SUPPORT_REPORT_CHANNEL_ID"),
+        ticket_log_channel_id=_get_env_int("TICKET_LOG_CHANNEL_ID", 1567803358432067735),
         welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID", DEFAULT_WELCOME_CHANNEL_ID),
         member_role_id=_get_env_int("MEMBER_ROLE_ID", DEFAULT_MEMBER_ROLE_ID),
         member_role_name=_get_env("MEMBER_ROLE_NAME", "Member") or "Member",

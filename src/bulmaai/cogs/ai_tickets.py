@@ -80,7 +80,7 @@ from bulmaai.services.tickets import (
     note_ticket_message,
 )
 from bulmaai.ui import ai_asks, ai_feedback, staff_copilot
-from bulmaai.ui.ticket_views import CATEGORIES, LANGUAGES, TicketModal, msg_already_open, panel_view
+from bulmaai.ui.ticket_views import CATEGORIES, LANGUAGES, TicketModal, msg_already_open, panel_view, ticket_log_card
 from bulmaai.ui.v2 import trim, while_busy
 from bulmaai.utils.dmzdebug_parser import looks_like_dmzdebug, parse_debug
 from bulmaai.utils.i18n import LANGUAGES, described, reader_language, t, table, user_language
@@ -3013,12 +3013,37 @@ class AITicketsCog(ReloadableCog):
                 archived = True  # the panel's transcript row is the archive now
             except Exception:
                 log.exception("Failed to record ticket transcript", extra={"channel_id": channel.id})
+            if archived:
+                await self._post_ticket_log(
+                    channel.id,
+                    closed_by_id=closed_by_id,
+                    resolved=resolved,
+                    message_count=message_count,
+                    summary=summary,
+                    url=page_url(settings, page.token) if page else None,
+                )
 
             self._archived_channels.add(channel.id)
             self._resolve_prompts.pop(channel.id, None)
         finally:
             self._closing_channels.discard(channel.id)
         return archived
+
+    async def _post_ticket_log(self, channel_id: int, *, url: str | None, **details) -> None:
+        """A staff record of the close in ticket_log_channel_id; never breaks the close."""
+        log_channel_id = getattr(self.bot.settings, "ticket_log_channel_id", None)
+        if not log_channel_id:
+            return
+        try:
+            ticket = await get_ticket_by_channel(channel_id)
+            if ticket is None:
+                return
+            await self.bot.get_partial_messageable(log_channel_id).send(
+                view=ticket_log_card(ticket, url=url, **details),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            log.exception("Could not post the ticket log", extra={"channel_id": channel_id})
 
     async def _process_message_after_debounce(
         self,

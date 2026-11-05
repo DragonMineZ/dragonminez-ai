@@ -13,7 +13,7 @@ from datetime import datetime
 
 import discord
 
-from bulmaai.ui.v2 import already_working, busy
+from bulmaai.ui.v2 import already_working, busy, card, facts, trim
 from bulmaai.utils import i18n
 
 PANEL_SELECT_ID = "ticket_panel_select"
@@ -1005,3 +1005,33 @@ class TicketModal(discord.ui.DesignerModal):
             [(label, value) for label, value in answers if value],
             language=self.language,
         )
+
+
+def ticket_log_card(
+    ticket,
+    *,
+    closed_by_id: int | None,
+    resolved: bool,
+    message_count: int,
+    summary,
+    url: str | None,
+) -> discord.ui.DesignerView:
+    """The staff record of a close in ticket_log_channel_id (English): who, what, the AI summary and the transcript."""
+    category = CATEGORIES.get(ticket.category)
+    opened = f"<t:{int(ticket.created_at.timestamp())}:f>" if ticket.created_at else None
+    head = f"### {'✅' if resolved else '📁'} Ticket #{ticket.ticket_id:04d}" + (
+        f" · {category.emoji} {category.name}" if category else ""
+    )
+    info = facts(
+        ("Owner", f"<@{ticket.owner_id}>"),
+        ("Closed by", f"<@{closed_by_id}>" if closed_by_id else "automatic"),
+        ("Language", ticket.language),
+        ("Opened", opened),
+        ("Messages", message_count),
+        ("Solved", "yes" if resolved else "no"),
+    )
+    body = None
+    if summary is not None:
+        body = trim(f"**{summary.title}**\n**Problem:** {summary.problem}\n**Resolution:** {summary.resolution}", 3000)
+    buttons = [discord.ui.Button(label="Transcript", emoji="📄", url=url)] if url else None
+    return card(head, info, body, color=0x2ECC71 if resolved else 0x95A5A6, buttons=buttons)

@@ -1041,10 +1041,11 @@ class AITicketsCog(ReloadableCog):
         requester_id: int | None,
         image_analyses: dict[int, str] | None = None,
     ) -> ConversationMessage | None:
+        if self._is_translation(message):
+            # One standing in for its deleted original is the author's turn; any other repeats the message it follows.
+            return self._translated_turn(message, requester_id)
         if message.author.bot and message.author != self.bot.user:
             return None
-        if self._is_translation(message):
-            return None  # it repeats the staff message it replies to
         if (uploaded := self._upload_turn(message, requester_id, image_analyses)) is not None:
             return uploaded
         if (signed := self._signed_turn(message, requester_id, image_analyses)) is not None:
@@ -1103,6 +1104,16 @@ class AITicketsCog(ReloadableCog):
         if not (content := _message_content(entry, analyses)):
             return None
         return self._member_turn(entry, staff_id, requester_id, content, getattr(entry, "created_at", None), "staff")
+
+    def _translated_turn(self, entry: discord.Message, requester_id: int | None) -> ConversationMessage | None:
+        """A translation card whose original was deleted (_post_translation): the author's turn, in their own words."""
+        if (found := staff_copilot.translated_original(entry)) is None:
+            return None
+        author_id, original = found
+        guild = getattr(entry, "guild", None)
+        member = guild.get_member(author_id) if guild is not None else None
+        kind = "staff" if member is not None and is_staff(member, settings=self.bot.settings) else None
+        return self._member_turn(entry, author_id, requester_id, original, getattr(entry, "created_at", None), kind)
 
     def _is_translation(self, entry: discord.Message) -> bool:
         """A translation of someone's message (ui/staff_copilot.translation_card), posted through the ticket's
@@ -1984,6 +1995,8 @@ class AITicketsCog(ReloadableCog):
             if author.bot or getattr(entry, "webhook_id", None) is not None:
                 if author == self.bot.user and (staff_id := staff_copilot.signed_by(entry)) is not None:
                     found.add(staff_id)
+                elif self._is_translation(entry) and (translated := staff_copilot.translated_original(entry)):
+                    found.add(translated[0])  # its original was deleted
                 continue
             if isinstance(author, discord.Member):
                 found.add(author.id)
@@ -2006,23 +2019,39 @@ class AITicketsCog(ReloadableCog):
         self, message: discord.Message, original: str, translations: dict[str, str], source: str
     ) -> None:
         """Through the ticket's webhook, with the author's name and avatar, quoting original (clean_content, so no
-        mentions); if the webhook can't be had or used, as Bulma's reply to the message instead. Never pings."""
+        mentions); if the webhook can't be had or used, as Bulma's reply to the message instead. Never pings.
+        When the card holds all of the message (text only, within ORIGINAL_LIMIT) it carries the author's id and the
+        original is deleted: the card is read back as the author's turn (staff_copilot.translated_original)."""
         channel = message.channel
         author = message.author
+        replaces = (
+            len(original) <= staff_copilot.ORIGINAL_LIMIT
+            and not message.attachments
+            and not message.stickers
+            and getattr(message, "poll", None) is None
+        )
         try:
             webhook = await self._translation_webhook(channel)
             await webhook.send(
-                view=staff_copilot.translations_card(translations, source, original=original),
+                view=staff_copilot.translations_card(
+                    translations, source, original=original, author_id=author.id if replaces else None
+                ),
                 username=trim(getattr(author, "display_name", None) or author.name, WEBHOOK_NAME_LIMIT),
                 avatar_url=author.display_avatar.url,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-            return
         except discord.DiscordException:
             self._translate_webhooks.pop(channel.id, None)
             log.info(
                 "Couldn't post a translation through the ticket's webhook", exc_info=True, extra={"channel_id": channel.id}
             )
+        else:
+            if replaces:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    log.info("Couldn't delete a translated message", exc_info=True, extra={"channel_id": channel.id})
+            return
         try:
             await channel.send(
                 view=staff_copilot.translations_card(translations, source),
@@ -2866,9 +2895,13 @@ class AITicketsCog(ReloadableCog):
             if isinstance(entry, ClosedGap):
                 lines.append(TranscriptLine(entry.created_at, "system", "System", entry.notice))
                 continue
-            if (entry.author.bot and entry.author != self.bot.user) or self._is_translation(entry):
-                continue  # other bots; our translations repeat the staff message they reply to
-            turn = self._upload_turn(entry, requester_id, analyses) or self._signed_turn(entry, requester_id, analyses)
+            if self._is_translation(entry):
+                if (turn := self._translated_turn(entry, requester_id)) is None:
+                    continue  # it repeats the message it follows
+            elif entry.author.bot and entry.author != self.bot.user:
+                continue  # other bots
+            else:
+                turn = self._upload_turn(entry, requester_id, analyses) or self._signed_turn(entry, requester_id, analyses)
             if turn is not None:
                 lines.append(TranscriptLine(entry.created_at, turn["speaker_kind"], turn["speaker_name"], turn["content"]))
                 continue

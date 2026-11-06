@@ -31,7 +31,9 @@ EDIT_FIELD_ID = "text"
 DRAFT_TEXT_ID = 820  # the draft on its ephemeral card
 SIGNED_TEXT_ID = 821  # the signature line of a posted draft
 TRANSLATION_TEXT_ID = 822  # a translation card's text
+ORIGINAL_TEXT_ID = 823  # the quoted original on a translation card
 ORIGINAL_LIMIT = 1000  # the quoted original on a translation card
+TRANSLATED_BY_RE = re.compile(r"^-# 🌐 .* · <@!?(\d+)>$")  # the footer of a card standing in for its original
 # A posted reply's text; the signature line fits in what's left of the message's 4000 characters.
 POST_LIMIT = TEXT_LIMIT
 SIGNATURE_RE = re.compile(r"^-# ✍️ <@!?(\d+)>$")
@@ -219,18 +221,28 @@ def quote(text: str) -> str:
     return "\n".join(f"> {line}" for line in trim(text, ORIGINAL_LIMIT).splitlines())
 
 
+def _footer(source: str, language: str, author_id: int | None) -> str:
+    """"-# 🌐 Translated from {source}", plus " · <@author>" (never pings: sent with no mentions allowed) on a card that
+    stands in for its deleted original (translated_original)."""
+    by = f" · <@{author_id}>" if author_id else ""
+    return f"-# 🌐 {translated_from(source, language)}{by}"
+
+
+def _translation_view(head: str, body: str, footer: str) -> discord.ui.DesignerView:
+    items: list[discord.ui.Item] = [discord.ui.TextDisplay(head, id=ORIGINAL_TEXT_ID), discord.ui.Separator()] if head else []
+    items += [discord.ui.TextDisplay(body, id=TRANSLATION_TEXT_ID), discord.ui.TextDisplay(footer)]
+    return discord.ui.DesignerView(discord.ui.Container(*items, color=COLOR), timeout=None)
+
+
 def translation_card(
-    translation: str, source: str, language: str, original: str | None = None
+    translation: str, source: str, language: str, original: str | None = None, author_id: int | None = None
 ) -> discord.ui.DesignerView:
     """A message (in source) in the ticket's language. Sent through the ticket's webhook as its author, it quotes the
     original above a separator; as a reply (the fallback) it has only the translation. "-# 🌐 Translated from {source}"
     closes it."""
-    footer = f"-# 🌐 {translated_from(source, language)}"
+    footer = _footer(source, language, author_id)
     head = quote(original) if original and original.strip() else ""
-    body = trim(translation, TEXT_LIMIT - len(head) - len(footer))
-    items: list[discord.ui.Item] = [discord.ui.TextDisplay(head), discord.ui.Separator()] if head else []
-    items += [discord.ui.TextDisplay(body, id=TRANSLATION_TEXT_ID), discord.ui.TextDisplay(footer)]
-    return discord.ui.DesignerView(discord.ui.Container(*items, color=COLOR), timeout=None)
+    return _translation_view(head, trim(translation, TEXT_LIMIT - len(head) - len(footer)), footer)
 
 
 def translation_label(language: str) -> str:
@@ -250,24 +262,35 @@ def _share(parts: list[str], room: int) -> list[str]:
 
 
 def translations_card(
-    translations: dict[str, str], source: str, original: str | None = None
+    translations: dict[str, str], source: str, original: str | None = None, author_id: int | None = None
 ) -> discord.ui.DesignerView:
     """A ticket owner's message (in source) for the staff: one translation is translation_card; several share one
     text (TRANSLATION_TEXT_ID), each under its language's label ("-# 🇬🇧 English"), the long ones sharing the room
     evenly (_share), and the footer is English, the staff's shared language."""
     if len(translations) == 1:
         (language, translation), = translations.items()
-        return translation_card(translation, source, language, original=original)
-    footer = f"-# 🌐 {translated_from(source, 'en')}"
+        return translation_card(translation, source, language, original=original, author_id=author_id)
+    footer = _footer(source, "en", author_id)
     head = quote(original) if original and original.strip() else ""
     labels = [translation_label(language) for language in translations]
     room = TEXT_LIMIT - len(head) - len(footer) - sum(len(label) + 3 for label in labels)
     bodies = _share([text.strip() for text in translations.values()], room)
     body = "\n\n".join(f"{label}\n{text}" for label, text in zip(labels, bodies))
-    items: list[discord.ui.Item] = [discord.ui.TextDisplay(head), discord.ui.Separator()] if head else []
-    items += [discord.ui.TextDisplay(body, id=TRANSLATION_TEXT_ID), discord.ui.TextDisplay(footer)]
-    return discord.ui.DesignerView(discord.ui.Container(*items, color=COLOR), timeout=None)
+    return _translation_view(head, body, footer)
 
 
 def is_translation(message: Any) -> bool:
     return any(component_id == TRANSLATION_TEXT_ID for component_id, _text in _texts(message))
+
+
+def translated_original(message: Any) -> tuple[int, str] | None:
+    """(author id, original text) of a translation card that stands in for its deleted original; None for any
+    other card, the reply fallback included."""
+    texts = _texts(message)
+    if not any(component_id == TRANSLATION_TEXT_ID for component_id, _text in texts):
+        return None
+    author = next((m for component_id, text in texts if (m := TRANSLATED_BY_RE.search(text))), None)
+    original = next((text for component_id, text in texts if component_id == ORIGINAL_TEXT_ID), None)
+    if author is None or original is None:
+        return None
+    return int(author[1]), "\n".join(line.removeprefix(">").removeprefix(" ") for line in original.splitlines())

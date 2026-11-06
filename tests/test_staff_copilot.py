@@ -606,6 +606,20 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
         stranger.webhook_id = None
         self.assertFalse(cog._is_translation(stranger))  # only a webhook or Bulma posts one
 
+    async def test_a_card_standing_in_for_its_deleted_original_is_the_authors_turn(self):
+        cog = AITicketsCog(types.SimpleNamespace(settings=SETTINGS, user=BOT, get_cog=lambda name: None))
+        hook_author = types.SimpleNamespace(id=777, bot=True, name="Goku", display_name="Goku")
+        view = staff_copilot.translation_card("Hello\nthere", "es", "en", original="Hola\n\nahí", author_id=OWNER_ID)
+        card = card_message(view, 1, author=hook_author)
+        card.webhook_id = 777
+        self.assertEqual(staff_copilot.translated_original(card), (OWNER_ID, "Hola\n\nahí"))
+        turn = cog._serialize_message(card, requester_id=OWNER_ID)
+        self.assertEqual((turn["speaker_id"], turn["speaker_kind"], turn["content"]), (str(OWNER_ID), "requester", "Hola\n\nahí"))
+        # Without the author on it (the original stays), the card only repeats the message.
+        kept = card_message(staff_copilot.translation_card("Hello", "es", "en", original="Hola"), 2, author=hook_author)
+        kept.webhook_id = 777
+        self.assertIsNone(cog._serialize_message(kept, requester_id=OWNER_ID))
+
 
 class TranslationRuleTests(unittest.IsolatedAsyncioTestCase):
     def test_only_clear_other_language_prose_is_worth_translating(self):
@@ -736,7 +750,7 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         writer = types.SimpleNamespace(**vars(author), display_avatar=types.SimpleNamespace(url="https://cdn/avatar.png"))
         return types.SimpleNamespace(
             id=5, author=writer, content=text, clean_content=text, channel=channel,
-            to_reference=MagicMock(return_value="ref"),
+            to_reference=MagicMock(return_value="ref"), attachments=[], stickers=[], delete=AsyncMock(),
         )
 
     async def translate(self, cog, message, result="¿Puedes enviarme tu latest.log?", *, paused=False, owner_result=None):
@@ -763,11 +777,16 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         kwargs = webhook.send.await_args.kwargs
         self.assertEqual(
             texts(kwargs["view"]),
-            ["> Can you send me your latest log please?", "¿Puedes enviarme tu latest.log?", "-# 🌐 Traducido del inglés"],
+            [
+                "> Can you send me your latest log please?",
+                "¿Puedes enviarme tu latest.log?",
+                f"-# 🌐 Traducido del inglés · <@{STAFF_ID}>",
+            ],
         )
         self.assertEqual((kwargs["username"], kwargs["avatar_url"]), ("Vegeta", "https://cdn/avatar.png"))
         self.assert_no_pings(kwargs["allowed_mentions"])
-        message.channel.send.assert_not_called()  # the original stays; no reply from Bulma
+        message.channel.send.assert_not_called()  # no reply from Bulma
+        message.delete.assert_awaited_once()  # the card holds all of it, so it replaces the original
         message.channel.create_webhook.assert_not_called()  # the bot's own webhook there is reused
         await self.translate(cog, message)
         message.channel.webhooks.assert_awaited_once()  # then cached
@@ -803,6 +822,17 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             message.to_reference.assert_called_once_with(fail_if_not_exists=False)
             self.assertEqual(kwargs["reference"], "ref")
             self.assert_no_pings(kwargs["allowed_mentions"])
+            message.delete.assert_not_called()  # the reply only works with the original still there
+
+    async def test_the_original_stays_when_the_card_cant_hold_all_of_it(self):
+        long = "Can you send me your latest log please? " * 30  # past ORIGINAL_LIMIT
+        for message in (self.message(long), self.message()):
+            if len(message.content) < 1000:
+                message.attachments = ["latest.log"]
+            await self.translate(self.cog(), message)
+            footer = texts(message.channel.webhooks.return_value[0].send.await_args.kwargs["view"])[-1]
+            self.assertNotIn("<@", footer)
+            message.delete.assert_not_called()
 
     async def test_anyone_but_the_owner_is_translated(self):
         helper = person(300, name="Bulla")  # a member added to the ticket, not staff
@@ -923,7 +953,7 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         kwargs = cog._translate_webhooks[900].send.await_args.kwargs
         self.assertEqual(
             texts(kwargs["view"]),
-            [f"> {self.SPANISH}", "You don't need to do anything, just wait", "-# 🌐 Translated from Spanish"],
+            [f"> {self.SPANISH}", "You don't need to do anything, just wait", f"-# 🌐 Translated from Spanish · <@{OWNER_ID}>"],
         )  # one language: the same card as a staff translation
         self.assertEqual(kwargs["username"], "Goku")
         self.assert_no_pings(kwargs["allowed_mentions"])
@@ -956,7 +986,7 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             [
                 f"> {self.ENGLISH}",
                 "-# 🇪🇸 Español\n¿Puedes enviarme tu latest.log?\n\n-# 🇧🇷 Português\nVocê pode me mandar seu latest.log?",
-                "-# 🌐 Translated from English",
+                f"-# 🌐 Translated from English · <@{OWNER_ID}>",
             ],
         )
         self.assertTrue(staff_copilot.is_translation(sent_message(view)))

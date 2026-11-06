@@ -721,7 +721,6 @@ class AITicketsCog(ReloadableCog):
         self._translations: set[asyncio.Task[None]] = set()  # messages being translated (kept so none is GC'd)
         # Ticket channel → the webhook translations are posted through (_translation_webhook); refilled after a restart.
         self._translate_webhooks: dict[int, discord.Webhook] = {}
-        self._warned_webhook_permission = False
         # Ticket channel -> the humans besides its owner who wrote there (_ticket_participants): read off the channel
         # once, then kept up to date by _translate_message and staff_replied; a restart reads it again.
         self._participants: dict[int, set[int]] = {}
@@ -2019,12 +2018,8 @@ class AITicketsCog(ReloadableCog):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
-        except discord.DiscordException as error:
+        except discord.DiscordException:
             self._translate_webhooks.pop(channel.id, None)
-            if isinstance(error, discord.Forbidden) and not getattr(self, "_warned_webhook_permission", False):
-                # Once per run, so staff learn the bot's role needs it; every miss after that stays at INFO.
-                self._warned_webhook_permission = True
-                log.warning("Ticket translations need Manage Webhooks for the bot in the ticket category")
             log.info(
                 "Couldn't post a translation through the ticket's webhook", exc_info=True, extra={"channel_id": channel.id}
             )

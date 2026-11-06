@@ -2075,17 +2075,19 @@ class AITicketsCog(ReloadableCog):
         return webhook
 
     async def _is_ticket_owner(self, channel: discord.TextChannel, user_id: int) -> bool:
-        """The tickets cog's welcome message mentions the owner; only they may get the "solved?" buttons."""
-        if channel.id not in self._ticket_owners:
-            owner_id = None
-            async for entry in channel.history(limit=5, oldest_first=True):
-                if entry.author.id == getattr(self.bot.user, "id", None):
-                    owner_id = next((mentioned.id for mentioned in entry.mentions if not mentioned.bot), None)
-                    if owner_id is not None:
-                        break
-            self._ticket_owners[channel.id] = owner_id
-        owner_id = self._ticket_owners[channel.id]
-        return owner_id is None or owner_id == user_id
+        """The tickets row's owner; only they may get the "solved?" buttons. Unknown (no row, lookup failed) counts
+        as the owner and isn't cached. Not read off the welcome card: its edits (allowed_mentions none) empty its
+        mentions."""
+        if self._ticket_owners.get(channel.id) is None:
+            try:
+                ticket = await get_ticket_by_channel(channel.id)
+            except Exception:
+                log.exception("Could not look up ticket owner", extra={"channel_id": channel.id})
+                ticket = None
+            if ticket is None:
+                return True
+            self._ticket_owners[channel.id] = ticket.owner_id
+        return self._ticket_owners[channel.id] == user_id
 
     async def _maybe_prompt_resolution(
         self,

@@ -554,18 +554,21 @@ class CloseTicketTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_only_the_ticket_owner_gets_the_solved_buttons(self) -> None:
         cog = self._cog()
-        cog.bot.user = types.SimpleNamespace(id=1)  # our tickets cog posts the welcome that mentions the owner
-        welcome = types.SimpleNamespace(
-            author=types.SimpleNamespace(id=1),
-            mentions=[types.SimpleNamespace(id=42, bot=False)],
-        )
+        channel = types.SimpleNamespace(id=12)
+        ticket = types.SimpleNamespace(owner_id=42)
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=ticket)) as lookup:
+            self.assertTrue(await cog._is_ticket_owner(channel, 42))
+            self.assertFalse(await cog._is_ticket_owner(channel, 7))
+        lookup.assert_awaited_once()
 
-        async def history(**_kwargs):
-            yield welcome
-
-        channel = types.SimpleNamespace(id=12, history=history)
-        self.assertTrue(await cog._is_ticket_owner(channel, 42))
-        self.assertFalse(await cog._is_ticket_owner(channel, 7))
+    async def test_ticket_owner_unknown_is_not_cached(self) -> None:
+        # The welcome card's mentions go empty once it is edited; a missing row must not stick as "no owner".
+        cog = self._cog()
+        channel = types.SimpleNamespace(id=12)
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=None)):
+            self.assertTrue(await cog._is_ticket_owner(channel, 7))
+        with patch("bulmaai.cogs.ai_tickets.get_ticket_by_channel", AsyncMock(return_value=types.SimpleNamespace(owner_id=42))):
+            self.assertFalse(await cog._is_ticket_owner(channel, 7))
 
     async def test_tickets_without_staff_never_become_knowledge(self) -> None:
         cog = self._cog()

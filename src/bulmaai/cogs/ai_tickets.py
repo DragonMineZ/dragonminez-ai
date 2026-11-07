@@ -2030,13 +2030,16 @@ class AITicketsCog(ReloadableCog):
             and not message.stickers
             and getattr(message, "poll", None) is None
         )
+        name = getattr(author, "display_name", None) or author.name
+        staff = isinstance(author, discord.Member) and is_staff(author, settings=self.bot.settings)
+        tag = " 🛡️ Staff" if staff else ""
         try:
             webhook = await self._translation_webhook(channel)
             await webhook.send(
                 view=staff_copilot.translations_card(
                     translations, source, original=original, author_id=author.id if replaces else None
                 ),
-                username=trim(getattr(author, "display_name", None) or author.name, WEBHOOK_NAME_LIMIT),
+                username=trim(name, WEBHOOK_NAME_LIMIT - len(tag)) + tag,
                 avatar_url=author.display_avatar.url,
                 allowed_mentions=discord.AllowedMentions.none(),
             )

@@ -792,6 +792,14 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         message.channel.webhooks.assert_awaited_once()  # then cached
         self.assertEqual(webhook.send.await_count, 2)
 
+    async def test_a_staff_members_translation_is_tagged_staff(self):
+        message = self.message()
+        message.author = as_member(STAFF)
+        message.author.display_avatar.url = "https://cdn/avatar.png"
+        cog = self.cog()
+        await self.translate(cog, message)
+        self.assertEqual(cog._translate_webhooks[900].send.await_args.kwargs["username"], "Vegeta 🛡️ Staff")
+
     async def test_a_webhook_is_made_when_the_bot_has_none_there(self):
         foreign = [hook(user_id=4242), hook(token=None)]  # someone else's, and one without a token
         message = self.message(hooks=foreign)

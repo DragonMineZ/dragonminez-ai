@@ -30,7 +30,7 @@ DRAFT_BUTTON_ID = "ticket_btn_draft"
 SOLVED_REOPEN_PREFIX = "ticket_solved_reopen:"
 ACTIONS_ID = 800  # the button row on the welcome / closed cards
 LANG_SELECT_ID = "ticket_lang_select"
-# + language code; the language picker posted in a new ticket whose owner has several language roles.
+# + language code; the old in-ticket language picker (no longer posted; ones already in open tickets still work).
 LANG_BUTTON_PREFIX = "ticket_lang:"
 LANG_ROW_ID = 801  # the support-language select on the welcome card
 # + "{category key}:{language}"; the language buttons the panel answers with when a member has no or several
@@ -59,7 +59,6 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "deleting": "This ticket will be deleted {when}.",
         "reminder_title": "your ticket is waiting for your reply",
         "reminder": "Your ticket got an answer and is waiting for yours. Reply there so we can keep helping you.",
-        "pick_language": "Which language do you want support in?",
         "language_set": "Support language: {name}.",
         "language_changed": "Support language changed to {name} by {mention}.",
         "creating": "🎫 Creating your ticket…",
@@ -109,7 +108,6 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "deleting": "Este ticket se eliminará {when}.",
         "reminder_title": "tu ticket espera tu respuesta",
         "reminder": "Tu ticket recibió una respuesta y espera la tuya. Responde allí para que podamos seguir ayudándote.",
-        "pick_language": "¿En qué idioma quieres recibir soporte?",
         "language_set": "Idioma de soporte: {name}.",
         "language_changed": "Idioma de soporte cambiado a {name} por {mention}.",
         "creating": "🎫 Creando tu ticket…",
@@ -159,7 +157,6 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "deleting": "Este ticket será excluído {when}.",
         "reminder_title": "seu ticket está esperando sua resposta",
         "reminder": "Seu ticket recebeu uma resposta e está esperando a sua. Responda lá para continuarmos te ajudando.",
-        "pick_language": "Em qual idioma você quer receber suporte?",
         "language_set": "Idioma do suporte: {name}.",
         "language_changed": "Idioma do suporte alterado para {name} por {mention}.",
         "creating": "🎫 Criando seu ticket…",
@@ -758,16 +755,6 @@ def language_row(language: str) -> discord.ui.ActionRow:
         ),
         id=LANG_ROW_ID,
     )
-
-
-def language_picker(mention: str, languages: list[str]) -> discord.ui.DesignerView:
-    """Asks an owner with several language roles, in each of them, which one they want support in."""
-    questions = "\n".join(f"🌐 **{t(code, 'pick_language')}**" for code in languages)
-    buttons = [
-        discord.ui.Button(label=LANGUAGES[code][1], emoji=LANGUAGES[code][0], custom_id=f"{LANG_BUTTON_PREFIX}{code}")
-        for code in languages
-    ]
-    return _card(discord.ui.TextDisplay(f"{mention}\n{questions}"), discord.ui.ActionRow(*buttons), color=BLURPLE)
 
 
 def language_set(language: str) -> discord.ui.DesignerView:

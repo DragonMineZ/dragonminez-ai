@@ -351,13 +351,6 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(" | ", texts(view))
             self.assertIn(label, [item.label for item in walk(view) if isinstance(item, discord.ui.Button)])
 
-    async def test_language_picker_asks_in_each_of_the_owners_languages(self):
-        view = views.language_picker("<@1>", ["es", "pt"])
-        self.assertIn("<@1>", texts(view))
-        self.assertIn("¿En qué idioma", texts(view))
-        self.assertIn("Em qual idioma", texts(view))
-        self.assertEqual(custom_ids(view), ["ticket_lang:es", "ticket_lang:pt"])
-
 
 class FakeConn:
     def __init__(self, last, active):
@@ -1525,13 +1518,10 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((made.attach, made.answer), ("pt", "pt"))
         self.assertEqual(len(made.sends), 1)
 
-    async def test_several_language_roles_get_a_picker_that_pings_the_owner(self):
+    async def test_several_language_roles_use_the_form_language_without_a_picker(self):
         made = await self.create(PT_ROLE, EN_ROLE)
-        self.assertEqual((made.attach, made.answer), ("pt", None))  # the form's language; the answer waits for the pick
-        picker = made.sends[1].kwargs
-        self.assertEqual(custom_ids(picker["view"]), ["ticket_lang:en", "ticket_lang:pt"])
-        self.assertIn("<@100>", texts(picker["view"]))
-        self.assertEqual(picker["allowed_mentions"].users, [made.owner])
+        self.assertEqual((made.attach, made.answer), ("pt", "pt"))  # the welcome card's select switches it
+        self.assertEqual(len(made.sends), 1)
 
     async def test_the_forms_language_is_the_ticket_language_and_skips_the_picker(self):
         for roles in ((), (PT_ROLE, EN_ROLE)):  # no role: no text detection; several: no in-ticket picker
@@ -1560,7 +1550,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         channel.fetch_message = AsyncMock(return_value=welcome)
         ai_cog = SimpleNamespace(forget_ticket_language=MagicMock(), answer_picked_ticket=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
-        card = views.language_picker("<@100>", ["en", "es"]) if custom_id != views.LANG_SELECT_ID else None
+        card = views.language_set("en") if custom_id != views.LANG_SELECT_ID else None
         interaction = click(user, custom_id, card) if card else SimpleNamespace(
             user=user,
             channel_id=900,
@@ -1620,7 +1610,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
     async def test_on_interaction_routes_the_language_controls(self):
         cog = make_cog()
         for custom_id in (views.LANG_SELECT_ID, "ticket_lang:es"):
-            interaction = click(member(OWNER_ID), custom_id, views.language_picker("<@100>", ["es"]))
+            interaction = click(member(OWNER_ID), custom_id, views.language_set("en"))
             with patch.object(cog, "on_language", AsyncMock()) as handler:
                 await cog.on_interaction(interaction)
             handler.assert_awaited_once_with(interaction)

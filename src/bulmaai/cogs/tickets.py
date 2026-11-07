@@ -83,7 +83,6 @@ from bulmaai.ui.ticket_views import (
     dm_transcript,
     form_language_card,
     language_changed,
-    language_picker,
     language_set,
     msg_created,
     msg_already_open,
@@ -474,7 +473,7 @@ class TicketsCog(ReloadableCog):
         """owner: open it for someone else (staff acting for a bug reporter). files go in right after the welcome,
         before the AI reads the ticket. language: the form's language (the panel's: their one language role or their
         pick), which is the ticket's support language; without it, a single language role decides, else the form's
-        text, and several roles get the in-ticket picker. Returns the channel, or None after telling the clicker why
+        text (the welcome card's select switches it). Returns the channel, or None after telling the clicker why
         not (in language, else the clicker's role language)."""
         guild, member, settings = interaction.guild, owner or interaction.user, self.settings
         # invisible=False: a modal submit's default ("invisible") defer would edit the public panel message instead.
@@ -487,8 +486,8 @@ class TicketsCog(ReloadableCog):
 
         form_text = "\n".join(f"{label}: {value}" for label, value in answers)
         role_langs = [] if language else role_languages(member, settings)
-        if language is None:
-            language = role_langs[0] if len(role_langs) == 1 else None
+        if language is None and len(role_langs) == 1:
+            language = role_langs[0]
         ticket = await reserve_ticket(
             guild_id=guild.id,
             owner_id=member.id,
@@ -543,26 +542,16 @@ class TicketsCog(ReloadableCog):
                 await channel.send(files=files)
             except discord.HTTPException:
                 log.warning("Could not post carried-over files", extra={"ticket_id": ticket.ticket_id})
-        picker = None
-        if len(role_langs) > 1:
-            picker = await self._safely(
-                channel.send(
-                    view=language_picker(member.mention, role_langs),
-                    allowed_mentions=discord.AllowedMentions(users=[member]),
-                ),
-                channel,
-            )
         await interaction.edit_original_response(content=msg_created(channel.mention, reply_language))
         try:
             await member.send(view=dm_created(ticket.ticket_id, category, channel, language))
         except discord.HTTPException:
             pass  # DMs closed; the ephemeral message above already has the link
 
-        # With a picker the first answer waits for the pick (on_language), so it comes in the chosen language.
         ai_cog = self.bot.get_cog(AI_COG)
         if ai_cog is not None and category.mod_only:
             await ai_cog.set_ticket_ai_enabled(channel.id, False)  # moderators handle these; staff may turn it back on
-        if ai_cog is not None and category.ai_reply and picker is None:
+        if ai_cog is not None and category.ai_reply:
             await ai_cog.answer_new_ticket(
                 channel, member, category_label=category.name, form_text=form_text, language=language
             )
@@ -803,7 +792,9 @@ class TicketsCog(ReloadableCog):
             await self._set_buttons(channel, ticket, control_row(enabled, ticket.language))
 
     async def on_language(self, interaction: discord.Interaction) -> None:
-        """The welcome card's language select or the new-ticket picker: owner or staff set the support language."""
+        """The welcome card's language select or a new-ticket picker: owner or staff set the support language.
+        Pickers are no longer posted; the button path stays for ones already in open tickets, whose first AI answer
+        waits for the pick."""
         data = interaction.data or {}
         picker = data.get("custom_id") != LANG_SELECT_ID
         language = data["custom_id"].removeprefix(LANG_BUTTON_PREFIX) if picker else (data.get("values") or [""])[0]

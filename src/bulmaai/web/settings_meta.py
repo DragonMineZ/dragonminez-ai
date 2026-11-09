@@ -27,7 +27,7 @@ META: dict[str, tuple[str, str, str]] = {
     "ai_support_timeout_seconds": ("ai", "Reply timeout", "Seconds to wait for an AI reply before giving up."),
     "ai_support_typing_lead_seconds": ("ai", "Typing delay", "Seconds the bot shows \"typing…\" before posting an AI reply; 0 posts right away."),
     "ai_support_debounce_seconds": ("ai", "Message debounce", "Seconds to wait for more messages from the same person before the AI replies, so split messages get one answer."),
-    "ai_support_escalation_confidence": ("ai", "Escalation confidence", "A first-pass answer below this confidence (0 to 1) gets a second opinion from the bigger model."),
+    "ai_support_escalation_confidence": ("ai", "Escalation confidence", "A first-pass answer below this confidence (0 to 1) gets a second opinion (Haiku at high effort, then the bigger model). Handoffs never go to the bigger model."),
     "ai_ticket_resolve_min_confidence": ("ai", "\"Solved?\" prompt: minimum confidence", "Below this AI confidence (0 to 1) a ticket never gets the \"Have I solved your problem?\" buttons."),
     "ai_ticket_resolve_prompt_exponent": ("ai", "\"Solved?\" prompt: curve", "Chance of the \"solved?\" buttons is confidence to this power; higher asks less often (3: 0.8 confidence → 51%)."),
     "ai_ticket_escalation_role_ids": ("ai", "Escalation roles", "Roles pinged in a ticket when the member says the AI didn't solve it (Helpers only by default)."),

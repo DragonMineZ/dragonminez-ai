@@ -43,7 +43,8 @@ class ConfigSettingsTests(unittest.TestCase):
         self.assertEqual(settings.ai_model, "claude-haiku-5-5")
         self.assertEqual(settings.ai_support_model, "claude-haiku-5-5")
         self.assertEqual(settings.ai_support_escalation_model, "claude-sonnet-5-5")
-        self.assertEqual(settings.ai_support_escalation_confidence, 0.7)
+        self.assertEqual(settings.ai_support_escalation_confidence, 0.6)
+        self.assertEqual(settings.ai_support_effort, "low")
         self.assertEqual(settings.ai_daily_small_token_limit, 2_250_000)
         self.assertEqual(settings.ai_daily_big_token_limit, 5000)
         for name in ("ai_vision_model", "ai_translation_model", "ai_bugreport_model", "ai_faq_suggestion_model"):

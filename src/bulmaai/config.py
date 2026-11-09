@@ -106,14 +106,16 @@ DEFAULT_AI_MODEL = "claude-haiku-5-5"
 # First pass runs on the small model; unsure answers go to the small model at high effort, then the big model.
 DEFAULT_AI_SUPPORT_MODEL = "claude-haiku-5-5"
 DEFAULT_AI_SUPPORT_ESCALATION_MODEL = "claude-sonnet-5-5"
-DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE = 0.7
+# Matches the prompt's scale: below 0.6 is guessing, 0.6-0.8 is a reasoned answer that Haiku can send.
+DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE = 0.6
 # Daily token caps per pool (UTC day): small = haiku models, big = everything else.
 DEFAULT_AI_DAILY_SMALL_TOKEN_LIMIT = 2_250_000
 DEFAULT_AI_DAILY_BIG_TOKEN_LIMIT = 225_000
 # Monthly Claude API credit shown on the panel's AI usage page, renewing on this UTC day of the month (1-28).
 DEFAULT_AI_MONTHLY_BUDGET_USD = 100.0
 DEFAULT_AI_BUDGET_CYCLE_DAY = 1
-DEFAULT_AI_SUPPORT_EFFORT = "medium"
+# Effort of the big-model escalation; low keeps Sonnet's thinking and tool calls short for chat answers.
+DEFAULT_AI_SUPPORT_EFFORT = "low"
 DEFAULT_AI_SUPPORT_FAST_EFFORT = "low"
 # Thinking tokens count against max_tokens, so keep this roomy.
 DEFAULT_AI_SUPPORT_MAX_OUTPUT_TOKENS = 8000

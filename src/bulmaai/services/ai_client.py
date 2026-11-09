@@ -416,7 +416,7 @@ def _hydrate_tool_args(
 
 
 def _select_reasoning_effort(settings: Any, *, high_confidence: bool = False) -> str:
-    default_effort = getattr(settings, "ai_support_effort", "medium")
+    default_effort = getattr(settings, "ai_support_effort", "low")
     fast_effort = getattr(settings, "ai_support_fast_effort", default_effort)
     if high_confidence:
         return fast_effort
@@ -568,18 +568,25 @@ def _reply_suppressed(tool_results: list[ToolCallResult]) -> bool:
     return any(isinstance(r["output"], dict) and r["output"].get("suppress_ai_reply") is True for r in tool_results)
 
 
-def _needs_escalation(result: AgentResult, *, repeat: bool, threshold: float, clarify_loop: bool = False) -> bool:
+def _escalation_reason(result: AgentResult, *, repeat: bool, threshold: float, clarify_loop: bool = False) -> str | None:
+    """Why this reply needs a second opinion (stored on the escalation's trace), or None when it can be sent."""
     if _reply_suppressed(result.get("tool_results") or []):
-        return False
-    if repeat or clarify_loop or result.get("reply") == "(no reply)":
-        return True
+        return None
+    if repeat:
+        return "repeat"
+    if clarify_loop:
+        return "clarify_loop"
+    if result.get("reply") == "(no reply)":
+        return "no_reply"
     kind = result.get("kind")
     confidence = result.get("confidence")
     if kind is None and confidence is None:
-        return True  # no output-contract markers at all
+        return "no_markers"
     if kind == "handoff":
-        return True
-    return kind == "answer" and confidence is not None and confidence < threshold
+        return "handoff"
+    if kind == "answer" and confidence is not None and confidence < threshold:
+        return "low_confidence"
+    return None
 
 
 async def run_support_agent(
@@ -662,12 +669,16 @@ async def run_support_agent(
     previous_replies = _assistant_replies(messages)
     repeat = _is_repeat(result["reply"], previous_replies)
     clarify_loop = _is_clarify_loop(result, previous_replies)
-    threshold = float(getattr(runtime_settings, "ai_support_escalation_confidence", 0.7))
+    threshold = float(getattr(runtime_settings, "ai_support_escalation_confidence", 0.6))
     notes = [*([REPEAT_NOTE] if repeat else []), *([CLARIFY_LOOP_NOTE] if clarify_loop else [])]
     drafts: list[SupportAITrace] = []
     # Haiku at high effort settles most escalations; Sonnet only sees what it still can't.
     for escalation_model, effort, use_tools in ai_budget.escalation_routes(runtime_settings):
-        if not _needs_escalation(result, repeat=repeat, threshold=threshold, clarify_loop=clarify_loop):
+        reason = _escalation_reason(result, repeat=repeat, threshold=threshold, clarify_loop=clarify_loop)
+        if reason is None:
+            break
+        # A handoff needs staff, not a pricier model: Sonnet handed off again in ~1 of 5 such runs.
+        if reason == "handoff" and ai_budget.pool_for(escalation_model) == ai_budget.BIG:
             break
         if (escalation_model, effort) == (model, fast_effort):
             continue
@@ -681,6 +692,7 @@ async def run_support_agent(
             # A failed second opinion should not lose the answer so far.
             log.exception("Support escalation failed", extra={"event": "support_escalation_failed", "channel_id": channel_id})
             break
+        second_trace.request_metadata["escalation_reason"] = reason
         if second["reply"] == "(no reply)" and not any(
             call["name"] not in (SEARCH_KNOWLEDGE_TOOL, *ai_tools.CONTROL_TOOLS) for call in second["tool_results"]
         ):

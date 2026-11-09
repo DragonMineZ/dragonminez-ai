@@ -514,12 +514,43 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             [
                 _message("I'll pass this to staff.\n[kind: handoff]\n[confidence: 0.2]"),
                 _message("Alright, I'll pass this to staff.", response_id="r2"),
-                _message("Staff will take it from here.", response_id="r3", model=SONNET),
             ]
         )
 
-        self.assertEqual(create_message.await_count, 3)
+        self.assertEqual(create_message.await_count, 2)
         self.assertEqual((result["kind"], result["escalated"]), ("handoff", True))
+
+    async def test_handoff_never_goes_to_the_big_model(self) -> None:
+        result, create_message, record_trace = await self._run(
+            [
+                _message("Staff should look at this.\n[kind: handoff]\n[confidence: 0.3]"),
+                _message("This needs staff.\n[kind: handoff]\n[confidence: 0.4]", response_id="r2"),
+            ]
+        )
+
+        self.assertEqual([call.kwargs["model"] for call in create_message.await_args_list], [HAIKU, HAIKU])
+        self.assertEqual(result["kind"], "handoff")
+        self.assertEqual(ai_budget.used(ai_budget.BIG), 0)
+        sent = record_trace.await_args_list[-1].args[0]
+        self.assertEqual(sent.request_metadata["escalation_reason"], "handoff")
+
+    async def test_answer_at_the_threshold_is_sent_and_reason_is_recorded_below_it(self) -> None:
+        _, create_message, _ = await self._run(
+            [_message("Update GeckoLib.\n[kind: answer]\n[confidence: 0.6]")], ai_support_escalation_confidence=0.6
+        )
+        create_message.assert_awaited_once()
+
+        _, create_message, record_trace = await self._run(
+            [
+                _message("Maybe update GeckoLib.\n[kind: answer]\n[confidence: 0.5]"),
+                _message("Update GeckoLib to 4.4.\n[kind: answer]\n[confidence: 0.9]", response_id="r2"),
+            ],
+            ai_support_escalation_confidence=0.6,
+        )
+        self.assertEqual(create_message.await_count, 2)
+        draft, sent = (call.args[0] for call in record_trace.await_args_list)
+        self.assertNotIn("escalation_reason", draft.request_metadata)
+        self.assertEqual(sent.request_metadata["escalation_reason"], "low_confidence")
 
     async def test_confident_clarify_does_not_escalate(self) -> None:
         _, create_message, _ = await self._run([_message("Which Minecraft version?\n[kind: clarify]\n[confidence: 0.4]")])
@@ -643,12 +674,11 @@ class SupportAgentTests(unittest.IsolatedAsyncioTestCase):
             [
                 _message("Do you mean the dev builds channel?\n[kind: clarify]\n[confidence: 0.9]"),
                 _message("Which channel exactly?\n[kind: clarify]\n[confidence: 0.9]", response_id="r2"),
-                _message("Which one do you mean?\n[kind: clarify]\n[confidence: 0.9]", response_id="r3", model=SONNET),
             ],
             messages=messages,
         )
 
-        self.assertEqual(create_message.await_count, 3)
+        self.assertEqual(create_message.await_count, 2)
         self.assertIn("Do not ask another one", create_message.await_args_list[1].kwargs["system"][1]["text"])
         self.assertEqual((result["kind"], result["escalated"]), ("handoff", True))
 

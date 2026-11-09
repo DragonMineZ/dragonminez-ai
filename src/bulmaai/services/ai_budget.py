@@ -107,7 +107,7 @@ def escalation_routes(settings: Any) -> list[tuple[str, str, bool]]:
         routes.append((getattr(settings, "ai_model", "claude-haiku-5-5"), "high", True))
     if has_room(BIG, settings):
         routes.append(
-            (getattr(settings, "ai_support_escalation_model", "claude-sonnet-5-5"), getattr(settings, "ai_support_effort", "medium"), True)
+            (getattr(settings, "ai_support_escalation_model", "claude-sonnet-5-5"), getattr(settings, "ai_support_effort", "low"), True)
         )
     return routes
 

@@ -250,3 +250,54 @@ class DiagnosisFlowTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_HINT_LOG = (
+    "[12:00:00] [main/INFO]: ModLauncher running: args [--fml.forgeVersion, 47.4.10, --fml.mcVersion, 1.20.1]\n"
+    "[12:00:05] [Render thread/ERROR]: Crash\n"
+    "java.lang.RuntimeException: boom\n"
+    "Caused by: java.lang.NoSuchMethodError: 'double com.dragonminez.common.config.CombatConfig.getDefenseReductionScale()'\n"
+    "\tat com.example.addon.Foo.bar(Foo.java:1) ~[dmzcompanions-2.0.5.jar%2312!/:2.0.5]\n"
+)
+_JAR_LOG = (
+    "[12:00:00] [main/INFO]: ModLauncher running: args [--fml.forgeVersion, 47.4.10, --fml.mcVersion, 1.20.1]\n"
+    + "".join(
+        f"[12:00:01] [main/DEBUG] [net.minecraftforge.fml.loading.moddiscovery.ModDiscoverer/SCAN]: "
+        f"Found mod file mod{i}-1.0.jar of type MOD with provider\n"
+        for i in range(25)
+    )
+)
+
+
+class KnownFixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hint_block_between_cause_and_diagnosis(self) -> None:
+        report = parse_log(_HINT_LOG)
+        self.assertTrue(report.hints)
+        blocks = texts(_build_card(report, "latest.log", diagnosis="Update the addon."))
+        starts = [b.split("\n", 1)[0] for b in blocks]
+        cause, hint, ai = starts.index(CAUSE_HEADER), starts.index(log_parser.HINT_HEADER), starts.index(AI_HEADER)
+        self.assertEqual((hint, ai), (cause + 1, cause + 2))
+        self.assertTrue(blocks[hint].split("\n")[1].startswith("• "))
+
+    async def test_no_hints_no_block(self) -> None:
+        report = parse_log(_CRASH_LOG)
+        self.assertFalse(report.hints)
+        self.assertNotIn(log_parser.HINT_HEADER, "\n".join(texts(_build_card(report, "latest.log"))))
+
+    async def test_summary_has_known_fix_line(self) -> None:
+        report = parse_log(_HINT_LOG)
+        summary = summary_for_ai(report)
+        self.assertIn(f"Known fix (from past cases): {report.hints[0]}", summary)
+        self.assertLessEqual(len(summary), log_parser.SUMMARY_LIMIT)
+
+    async def test_jar_fallback_in_card_and_summary(self) -> None:
+        report = parse_log(_JAR_LOG)
+        self.assertFalse(report.mods)
+        self.assertEqual(len(report.jars), 25)
+        card = "\n".join(texts(_build_card(report, "latest.log")))
+        self.assertIn("**🧩 Mod files (25)**", card)
+        self.assertIn("`mod0-1.0.jar`", card)
+        self.assertIn("…and **10** more", card)
+        summary = summary_for_ai(report)
+        self.assertIn("Mod files (25): mod0-1.0.jar", summary)
+        self.assertNotIn("Mod list: not in this file.", summary)

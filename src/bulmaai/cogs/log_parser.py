@@ -55,6 +55,7 @@ SUMMARY_LIMIT = 1500
 _SUMMARY_MODS_LIMIT = 400
 _SUMMARY_CHAIN_LIMIT = 700
 CAUSE_HEADER = "**🎯 Likely cause**"
+HINT_HEADER = "**💡 Known fix**"
 MIXIN_HINT = "-# Usually fixed by updating or removing that mod, or reporting it to its author."
 
 
@@ -121,10 +122,10 @@ def _code(text: str) -> str:
     return "`" + text.replace("`", "'") + "`"
 
 
-def _mod_names(mods: dict[str, str], limit: int) -> str:
+def _mod_names(mods: dict[str, str], limit: int, label: str = "Mods", names: list[str] | None = None) -> str:
     """'Mods (N): a, b, c, +M more' within limit characters."""
-    names = sorted(mods)
-    text = f"Mods ({len(names)}): "
+    names = sorted(mods) if names is None else names
+    text = f"{label} ({len(names)}): "
     for i, name in enumerate(names):
         piece = (", " if i else "") + name
         # Room for the "+N more" tail is kept at every step, so cutting off here still fits.
@@ -157,13 +158,20 @@ def summary_for_ai(report: LogReport) -> str:
     elif report.stacktrace and (summary := _summarise_stacktrace(report.stacktrace)):
         head.append("Exception summary:\n" + _truncate(summary, _SUMMARY_CHAIN_LIMIT))
 
+    head += [f"Known fix (from past cases): {hint}" for hint in report.hints]
+
     tail = []
     bad_addons = [a for a in check_addons(report.mods, report.dragonminez_version) if a.compatible is False]
     if bad_addons:
         tail.append(trim("Incompatible DMZ addons: " + ", ".join(
             f"{a.mod_id} {a.version} (needs DMZ >= {a.min_dmz_version})" for a in bad_addons
         ), 300))
-    tail.append(_mod_names(report.mods, _SUMMARY_MODS_LIMIT) if report.mods else "Mod list: not in this file.")
+    if report.mods:
+        tail.append(_mod_names(report.mods, _SUMMARY_MODS_LIMIT))
+    elif report.jars:
+        tail.append(_mod_names({}, _SUMMARY_MODS_LIMIT, "Mod files", sorted(report.jars)))
+    else:
+        tail.append("Mod list: not in this file.")
 
     # Errors get whatever room the cause and the mod list leave.
     room = SUMMARY_LIMIT - sum(len(line) + 1 for line in head + tail)
@@ -200,6 +208,10 @@ def _cause_block(cause: RootCause | None) -> str:
     if culprit and cause.kind == "mixin":
         lines.append(MIXIN_HINT)
     return "\n".join(lines)
+
+
+def _hint_block(hints: list[str]) -> str:
+    return "\n".join([HINT_HEADER, *(f"• {hint}" for hint in hints)]) if hints else ""
 
 
 def _limit_note(limit: int, patron_limit: int, *, patron: bool) -> str:
@@ -242,6 +254,7 @@ def _build_card(
     if report.stacktrace and (summary := _summarise_stacktrace(report.stacktrace)):
         problems += f"\n**📋 Exception Summary**\n```\n{_truncate(summary, 800)}\n```"
     likely_cause = _cause_block(report.root_cause)
+    known_fix = _hint_block(report.hints)
 
     # ── Environment ───────────────────────────────────────────────────────────
     env_lines = [
@@ -268,6 +281,12 @@ def _build_card(
             mods += f"\n*…and **{mod_count - 15}** more*"
         if not report.dragonminez_version:
             mods += "\n-# ℹ️ DragonMineZ was not detected among the loaded mods."
+    elif report.jars:
+        jar_count = len(report.jars)
+        shown_jars = report.jars if jar_count <= 20 else report.jars[:15]
+        mods = f"**🧩 Mod files ({jar_count})**\n" + "\n".join(f"`{jar}`" for jar in shown_jars)
+        if jar_count > 20:
+            mods += f"\n*…and **{jar_count - 15}** more*"
     else:
         mods = "**🧩 Mods**\n*No mod list in this file (Forge's latest.log doesn't print one; debug.log and crash reports do).*"
     addons = check_addons(report.mods, report.dragonminez_version)
@@ -285,9 +304,12 @@ def _build_card(
     second = diagnosis or limit_note
     if diagnosis:
         budget -= len(AI_HEADER) + len(AI_FOOTER) + 2
-    blocks = fit([defang(problems), defang(likely_cause), second or "", defang(environment), defang(mods)], budget)
+    blocks = fit(
+        [defang(problems), defang(likely_cause), defang(known_fix), second or "", defang(environment), defang(mods)],
+        budget,
+    )
     if diagnosis:
-        at = 2 if likely_cause else 1
+        at = 1 + bool(likely_cause) + bool(known_fix)
         blocks[at] = f"{AI_HEADER}\n{blocks[at]}\n{AI_FOOTER}"
     items: list = [title]
     for block in blocks:

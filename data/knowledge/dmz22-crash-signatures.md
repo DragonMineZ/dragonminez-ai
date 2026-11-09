@@ -1,0 +1,16 @@
+# DMZ crash signatures and fixes (learned from real crash logs)
+
+- Addon built for another DMZ version: `NoSuchMethodError`/`NoSuchFieldError`/`NoClassDefFoundError` naming `com.dragonminez...`, or a mixin "could not find any targets"/"failed injection check" in a DMZ class, from an addon (DMZ Companions, DMZ Sparking, DMZ Plus, DMZ Revamp/Overhaul, Auto Training, Weapon Guard, Hollow addons...). Fix: update the addon to the build for your DMZ version, or remove it. Example: `CombatConfig.getDefenseReductionScale()` crashes from DMZ Companions 2.0.5 and DMZ Sparking 1.5.0.9 on DMZ 2.2.1 when a companion takes damage or a screen renders; updated addons fix it.
+- `ClassMetadataNotFoundException: com.dragonminez...` (e.g. `HairRenderer`): an addon mixes into a DMZ class that no longer exists. Update DMZ addons, or remove them one at a time to find it.
+- "DragonMineZ (dragonminez) has failed to load correctly" with a `MixinTransformerError`: usually not DMZ itself. The crash report's `Exception message:` line names the addon's mixin config (e.g. `dmzplus.mixins.json`, `dmzweaponguard`). Update or remove that addon.
+- Auto Training (`dragonminez_autotraining`) crashes on a click in training minigames (`ControlGameScreen`, `tickGame`): not updated for DMZ 2.2; remove it.
+- DMZ Sparking and DragonMineZ Super can't be installed together ("cannot run alongside DragonMineZ Super"); keep one.
+- Rubidium is abandoned: it causes `Pose stack not empty` crashes and Oculus mixin failures (`SodiumGameOptions`, `writeToDisk`). Use Embeddium (or Xenon) instead.
+- Equipping armor crashes with `ResourceLocationException: Non [a-z0-9/._-] character ... iron_layer_١.png`: GeckoLib builds the armor path with the system's digits (Arabic-Indic and similar). Set Windows' region format to English, or add `-Duser.language=en -Duser.country=US` to the launcher's Java arguments.
+- `NullPointerException ... "trader" is null` in `CapsuleCorpMapTrade` with Just Enough Resources installed: JER triggers a DMZ bug. Remove Just Enough Resources until it's fixed.
+- `NullPointerException ... HeldVictim.release() because "state.victim" is null` (DMZ 2.2.1): dying to a grab combo (Meteor Burst from Turles, Mystic Ball Combo from Kid Buu) crashes the game. Known DMZ bug; report it in the bug forum with the crash report if it isn't reported yet.
+- `FileNotFoundException: dragonminez:textures/...` or `GeckoLibException: dragonminez:animations/... Unable to find animation file`: an addon or resource pack made for another DMZ version points to assets this version doesn't have (purple/black model). Update or remove the addon/resource pack.
+- DMZ Revamp (Overhaul) fusion crash (`allowConfiguredAndroidFusion`, `FusionLogicCosmeticArmorMixin`) on DMZ 2.2: fixed in an Overhaul update.
+- No crash report and the game closes right after start: send `logs/latest.log` and `logs/debug.log`; a corrupted or badly downloaded jar can do this, so re-download the mod. On CurseForge: right-click the modpack, Open Folder; logs are in `logs/`, crash reports in `crash-reports/`.
+
+Keywords: crash, crash report, latest.log, mixin, NoSuchMethodError, addon, outdated addon, Sparking, Super, Companions, Rubidium, Embeddium, Oculus, GeckoLib, armor crash, Just Enough Resources, Pose stack not empty, Mod Loading has failed, failed to load correctly

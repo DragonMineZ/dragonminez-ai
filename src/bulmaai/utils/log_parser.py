@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import unquote
 
+from bulmaai.utils.crash_hints import hints_for
+
 # ── Java version ─────────────────────────────────────────────────────────────
 # Matches: "ModLauncher 10.0.9 starting: java version 17.0.3 by Microsoft"
 _RE_JAVA_VERSION = re.compile(
@@ -51,6 +53,15 @@ _RE_MOD_DISCOVERY = re.compile(
     r"Found valid mod file \S+ with \{([a-z0-9_-]+)} mods - versions \{([^}]+)}",
     re.IGNORECASE,
 )
+# Most latest.log files print the list instead: "[main/INFO]: Loading 149 mods:" then one "\t- appleskin 2.5.1" line
+# per mod, "\t\t|-- flywheel 1.0.5" / "\t\t\-- kuma_api 20.1.12" for mods bundled inside another jar. Read line by line
+# from the header with match() at a position, so a hostile file can't make it scan the rest of the text from every line.
+_RE_LOADING_MODS = re.compile(r"Loading \d+ mods:[ \t\r]*\n")
+_RE_LOADING_MOD_LINE = re.compile(r"\t+(?:- |[|\\]-- )([a-z0-9_]+)[ \t]+([^ \t\r\n]+)[^\n]*\n?", re.IGNORECASE)
+# "Found mod file appleskin-forge-mc1.20.1-2.5.1.jar of type MOD with provider {...}": printed even when the mod
+# list isn't. Jar names may hold spaces ("DMZCompanions-2.0.5 (3).jar").
+_RE_MOD_FILE = re.compile(r"Found mod file ([^\n]{1,200}?\.jar) of type MOD\b")
+_MAX_JARS = 1000
 
 # ── Mod list fallbacks ────────────────────────────────────────────────────────
 
@@ -170,9 +181,20 @@ _MAX_FRAMES = 200
 _MAX_LINE = 1000
 # "Caused by: org.x.FooError: msg" / 'Exception in thread "main" java.lang.Error: msg' -> "FooError: msg".
 _RE_HEADER_NAME = re.compile(r'^(?:Exception in thread "[^"]*" )?(?:[\w$]+\.)*([\w$]+)')
-# "in noeabosses.mixins.json:client.Foo" / "from mod noeabosses" in a mixin failure message.
+# "in noeabosses.mixins.json:client.Foo" / "from mod noeabosses" in a mixin failure message. "from mod (unknown)"
+# never matches. Some configs put the id first: "mixins.oculus.compat.sodium.json" -> "oculus".
 _RE_MIXIN_CONFIG = re.compile(r"([\w.\-]+?)\.mixins\.json\b")
+_RE_MIXIN_CONFIG_PREFIX = re.compile(r"(?<![\w.\-])mixins\.([\w\-]+)(?:\.[\w\-]+)*\.json\b")
 _RE_MIXIN_FROM_MOD = re.compile(r"\bfrom mod ([a-z0-9_\-]+)", re.IGNORECASE)
+# A mixin targeting a DragonMineZ class that doesn't exist: an addon's fault, even though DMZ's frames sit above it.
+_RE_MISSING_DMZ_CLASS = re.compile(r"ClassMetadataNotFoundException: com[./]dragonminez[./]")
+# Forge "Mod Loading has failed" crash reports keep the real cause in one "-- MOD <id> --" section per failed mod:
+# "Caused by 0: <header>" lines with frames, then "Exception message: <deepest cause>".
+_RE_MOD_SECTION = re.compile(r"-- MOD [^ \t]+ --$")
+_RE_SECTION_CAUSE = re.compile(r"Caused by \d+:")
+_MAX_SECTIONS = 20
+# Class names of the first non-platform frames, kept on the RootCause for the known-issue hints.
+_MAX_ROOT_FRAMES = 8
 # A frame's jar: "~[Noea-1.2.0-DMZ-2.1.3.jar%23275!/:1.1.0]" -> "Noea-1.2.0-DMZ-2.1.3.jar" ("%20" is a space).
 _RE_FRAME_JAR = re.compile(r"\[([^\[\]/:!]+?\.jar)(?:%23\d+)*[!:\]]")
 
@@ -186,6 +208,7 @@ class RootCause:
     culprit_mod: str | None = None
     culprit_jar: str | None = None
     kind: str = "exception"  # "mixin" when a mixin config or "from mod" names the culprit, else "exception"
+    frames: tuple[str, ...] = ()  # class names of the first non-platform frames, top first
 
 
 @dataclass
@@ -203,6 +226,10 @@ class LogReport:
     stacktrace: str | None = None
     root_cause: RootCause | None = None
     is_forge: bool = False
+    # "Found mod file X.jar of type MOD" names, in log order: the only mod list some latest.log files have.
+    jars: list[str] = field(default_factory=list)
+    # Known-issue hints for this crash (utils/crash_hints), short English sentences.
+    hints: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -246,6 +273,19 @@ class _Block:
                 self.frames.append((len(self.chain) - 1, stripped[:_MAX_LINE]))
         elif _RE_EXCEPTION_HEADER.match(stripped) and len(self.chain) < _MAX_CHAIN:
             self.chain.append(stripped[:_MAX_LINE])
+
+    def add_section_line(self, stripped: str) -> None:
+        """A '-- MOD <id> --' section line: "Caused by N:" headers and their frames, then the "Exception message:"
+        as the deepest cause. Everything else (Mod File, Failure message, ...) is skipped."""
+        m = _RE_SECTION_CAUSE.match(stripped)
+        if m:
+            self._note_cause("Caused by:" + stripped[m.end():])
+        elif stripped.startswith("at "):
+            self._note_cause(stripped)
+        elif stripped.startswith("Exception message:"):
+            message = stripped[len("Exception message:"):].strip()[:_MAX_LINE]
+            if message and len(self.chain) < _MAX_CHAIN and (not self.chain or self.chain[-1] != message):
+                self.chain.append(message)
 
 
 def _frame_class(frame: str) -> str:
@@ -306,39 +346,51 @@ def _frame_jar(frame: str) -> str | None:
     return unquote(m.group(1)) if m else None
 
 
+def _mixin_culprit(header: str, mods: dict[str, str]) -> str | None:
+    """The mod a mixin failure message names: "from mod X", else the mod id its config belongs to, else the config's
+    own prefix (latest.log often has no mod list, and the prefix is usually the id)."""
+    m = _RE_MIXIN_FROM_MOD.search(header)
+    if m:
+        return m.group(1).lower()
+    configs = [c.group(1) for c in _RE_MIXIN_CONFIG.finditer(header)]
+    configs += [c.group(1) for c in _RE_MIXIN_CONFIG_PREFIX.finditer(header)]
+    for config in configs:
+        mod_id = _mod_for_name(config, mods)
+        if mod_id:
+            return mod_id
+    return configs[0].lower() if configs else None
+
+
 def _root_cause(block: _Block, mods: dict[str, str]) -> RootCause | None:
     if not block.chain:
         return None
     chain = tuple(_short_header(h, MAX_CHAIN_ITEM_LEN) for h in block.chain)
     exception = _short_header(block.chain[-1], MAX_CAUSE_LEN)
+    frames = tuple(_frame_class(f) for _, f in block.frames[:_MAX_ROOT_FRAMES])
     kind = "exception"
     culprit_mod = culprit_jar = None
 
     # (a) A mixin failure names its config ("noeabosses.mixins.json") or mod ("from mod noeabosses"); deepest first.
     for header in reversed(block.chain):
-        m = _RE_MIXIN_FROM_MOD.search(header)
-        if m:
-            culprit_mod = m.group(1).lower()
-        else:
-            for config in _RE_MIXIN_CONFIG.finditer(header):
-                culprit_mod = _mod_for_name(config.group(1), mods)
-                if culprit_mod:
-                    break
+        culprit_mod = _mixin_culprit(header, mods)
         if culprit_mod:
             kind = "mixin"
+            # A fallback id from the config prefix isn't in mods; add it so its own frames and jar can still match.
+            known = mods if culprit_mod in mods else {**mods, culprit_mod: ""}
             culprit_jar = next(
-                (jar for _, f in block.frames if _frame_mod(f, mods) == culprit_mod and (jar := _frame_jar(f))), None
+                (jar for _, f in block.frames if _frame_mod(f, known) == culprit_mod and (jar := _frame_jar(f))), None
             )
             break
 
     # (b) Otherwise the first mod frame of the deepest cause that has one (shared "... N more" frames sit above).
-    if culprit_mod is None:
+    # Not for a mixin aimed at a missing DragonMineZ class: DMZ's frames sit above it, but an addon is to blame.
+    if culprit_mod is None and not _RE_MISSING_DMZ_CLASS.search(block.chain[-1]):
         for index in range(len(block.chain) - 1, -1, -1):
             frame = next((f for i, f in block.frames if i == index), None)
             if frame:
                 culprit_mod, culprit_jar = _frame_mod(frame, mods), _frame_jar(frame)
                 break
-    return RootCause(exception, chain, culprit_mod, culprit_jar, kind)
+    return RootCause(exception, chain, culprit_mod, culprit_jar, kind, frames)
 
 
 def _continues_trace(line: str, stripped: str) -> bool:
@@ -418,6 +470,21 @@ def parse_log(text: str) -> LogReport:
         version = m.group(2).strip()
         report.mods[mod_id] = version
 
+    # 1b. latest.log "Loading N mods:" list, bundled mods included
+    for header in _RE_LOADING_MODS.finditer(text):
+        pos = header.end()
+        while m := _RE_LOADING_MOD_LINE.match(text, pos):
+            report.mods.setdefault(m.group(1).lower(), m.group(2))
+            pos = m.end()
+
+    # Jar names from "Found mod file ... of type MOD", de-duplicated in log order
+    jars: dict[str, None] = {}
+    for m in _RE_MOD_FILE.finditer(text):
+        if len(jars) >= _MAX_JARS:
+            break
+        jars.setdefault(m.group(1).strip(), None)
+    report.jars = list(jars)
+
     # 2. Crash Report Table (found in crash-*.txt files)
     # Captures 3rd column (Mod ID) and 4th column (Version)
     for m in _RE_MOD_CRASH_REPORT_TABLE.finditer(text):
@@ -463,6 +530,9 @@ def parse_log(text: str) -> LogReport:
     seen_errors: set[str] = set()
     blocks: list[_Block] = []
     current: _Block | None = None
+    # "-- MOD <id> --" sections of a "Mod Loading has failed" crash report; blank lines don't end one.
+    sections: list[_Block] = []
+    section: _Block | None = None
     saw_log_line = False
 
     def add_error(stripped: str, line_no: int) -> None:
@@ -482,7 +552,7 @@ def parse_log(text: str) -> LogReport:
         m = _RE_LOG_LINE.match(line)
         if m:
             saw_log_line = True
-            current = None
+            current = section = None
             if m.group(1).upper() in ("ERROR", "FATAL"):
                 noisy = is_noise(stripped)
                 if not noisy:
@@ -490,6 +560,20 @@ def parse_log(text: str) -> LogReport:
                 current = _Block([], anchored=True, noise=noisy)
                 current.add(stripped)
                 blocks.append(current)
+            continue
+
+        # A MOD section runs until its "Stacktrace:" or the next "-- x --" / "---- x ----" heading.
+        if section is not None:
+            if stripped == "Stacktrace:" or stripped.startswith(("-- ", "---- ")):
+                section = None
+            else:
+                section.add_section_line(stripped)
+                continue
+        if is_crash_report and _RE_MOD_SECTION.match(stripped):
+            current = None
+            if len(sections) < _MAX_SECTIONS:
+                section = _Block([])
+                sections.append(section)
             continue
 
         # Crash report "Description:" opens the crash block; its exception follows after a blank line.
@@ -523,6 +607,11 @@ def parse_log(text: str) -> LogReport:
         if len(full_trace) > MAX_STACKTRACE_LEN:
             full_trace = full_trace[:MAX_STACKTRACE_LEN] + "\n... (truncated)"
         report.stacktrace = full_trace
+        # "Mod Loading has failed" says nothing; the first failed mod's section holds the real cause. The card keeps
+        # the crash block as its stacktrace.
+        if block.crash and block.chain and "Mod Loading has failed" in block.chain[-1]:
+            block = next((s for s in sections if s.chain), block)
         report.root_cause = _root_cause(block, report.mods)
 
+    report.hints = hints_for(report)
     return report

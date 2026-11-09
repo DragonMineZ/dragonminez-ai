@@ -128,6 +128,7 @@ Console actions are private to Bruno:
 - Temporary and redacted: `log_pages.redact` plus the chat around it with @user/@role/#channel labels, no Discord ids or names in the files. Files are deleted once their .zip is posted, or after 60 days.
 - Only Bruno or admins download (the ping card's Download .zip); `/log-corpus` is Bruno-only. Only admins Exclude/Include. Bruno is the only one pinged, once per version at `log_corpus_ping_threshold`.
 - The .zip goes to Bruno's PC for Claude Code sessions; delete it there once the analyzer work is done.
+- Studying a corpus zip = run `scripts/log_corpus_eval.py`, add rules to `utils/crash_hints.py` and fixes to `data/knowledge/dmz22-crash-signatures.md` only for crashes staff answered (no guesses), then delete the zip and extracted files.
 
 ## Patreon beta whitelist
 

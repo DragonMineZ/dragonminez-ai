@@ -217,3 +217,192 @@ class RootCauseTests(unittest.TestCase):
 
     def test_no_trace_means_no_root_cause(self) -> None:
         self.assertIsNone(parse_log("[19:07:35] [main/ERROR]: Something failed\n").root_cause)
+
+
+def _mixin_log(cause: str, *frames: str) -> str:
+    """A latest.log mixin crash without any mod list, so the culprit can only come from the message."""
+    return (
+        "[10:00:00] [Render thread/ERROR]: Error loading class: x/Y\n"
+        "org.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError: An unexpected critical error was "
+        "encountered\n"
+        "\tat org.spongepowered.asm.mixin.transformer.MixinProcessor.applyMixins(MixinProcessor.java:392) "
+        "~[mixin-0.8.5.jar:0.8.5]\n"
+        f"Caused by: {cause}\n"
+        + "".join(f"\tat {frame}\n" for frame in frames)
+        + "\t... 12 more\n"
+    )
+
+
+class ModListTests(unittest.TestCase):
+    def test_loading_mods_block_is_read(self) -> None:
+        report = parse_log(
+            "[15:14:58] [main/INFO]: Found valid mod file appleskin.jar with {appleskin} mods - versions {9.9}\n"
+            "[15:14:59] [main/INFO]: Loading 4 mods:\n"
+            "\t- ad_astra 1.15.21\n"
+            "\t- appleskin 2.5.1+mc1.20.1\n"
+            "\t- Create 6.0.8\n"
+            "\t\t|-- flywheel 1.0.5\n"
+            "\t\t\\-- ponder 1.0.91\n"
+            "[15:15:00] [main/INFO]: Launching target 'forgeclient'\n"
+            "\t- notamod 1.0\n"
+        )
+        self.assertEqual(
+            report.mods,
+            {"appleskin": "9.9", "ad_astra": "1.15.21", "create": "6.0.8", "flywheel": "1.0.5", "ponder": "1.0.91"},
+        )
+
+    def test_loading_mods_block_parses_in_linear_time(self) -> None:
+        started = time.perf_counter()
+        parse_log("Loading 1 mods:\n" + ("\t" * 200_000 + "x\n") * 3)
+        parse_log("Loading 1 mods:\n" + "\t- a 1\n" * 100_000)
+        parse_log("Found mod file " + "a" * 200_000 + "\n")
+        self.assertLess(time.perf_counter() - started, 3.0)
+
+    def test_found_mod_files_become_jars(self) -> None:
+        provider = " with provider {mods folder locator at C:\\mods}\n"
+        report = parse_log(
+            f"[20:27:55] [main/INFO]: Found mod file appleskin-forge-mc1.20.1-2.5.1.jar of type MOD{provider}"
+            f"[20:27:55] [main/INFO]: Found mod file DMZCompanions-2.0.5 (3).jar of type MOD{provider}"
+            "[20:27:55] [main/INFO]: Found mod file HikariCP-7.1.0.jar of type GAMELIBRARY with provider x\n"
+            f"[20:27:56] [main/INFO]: Found mod file appleskin-forge-mc1.20.1-2.5.1.jar of type MOD{provider}"
+        )
+        self.assertEqual(report.jars, ["appleskin-forge-mc1.20.1-2.5.1.jar", "DMZCompanions-2.0.5 (3).jar"])
+        self.assertEqual(report.mods, {})
+
+
+class MixinCulpritFallbackTests(unittest.TestCase):
+    def test_config_prefix_is_the_culprit_without_a_mod_list(self) -> None:
+        cause = parse_log(_mixin_log(
+            "org.spongepowered.asm.mixin.injection.throwables.InjectionError: Critical injection failure: Redirector "
+            "stat(Lcom/dragonminez/common/stats/StatsData;Ljava/lang/String;)D in dmzfoo255.mixins.json:Tooltip"
+            "Mixin failed injection check, (0/1) succeeded. Scanned 1 target(s). No refMap loaded.",
+            "org.spongepowered.asm.mixin.injection.struct.InjectionInfo.validateTargets(InjectionInfo.java:656) "
+            "~[mixin-0.8.5.jar:0.8.5]",
+        )).root_cause
+        self.assertEqual((cause.culprit_mod, cause.culprit_jar, cause.kind), ("dmzfoo255", None, "mixin"))
+
+    def test_mixin_config_wins_over_the_mixed_into_jar(self) -> None:
+        cause = parse_log(_mixin_log(
+            "org.spongepowered.asm.mixin.injection.throwables.InvalidInjectionException: Critical injection failure: "
+            "@Inject annotation on checkNullPlayer could not find any targets matching 'handleKeyPress' in "
+            "com.github.kay9.dragonmounts.client.KeyMappings. Using refmap dragon_mounts_patches.refmap.json "
+            "[PREINJECT Applicator Phase -> dragon_mounts_patches.mixins.json:KeyMappingsMixin -> Parse]",
+            "com.github.kay9.dragonmounts.client.KeyMappings.<init>(KeyMappings.java:1) "
+            "~[dragonmounts-1.20.1-10022.jar%23200!/:?]",
+        )).root_cause
+        self.assertEqual((cause.culprit_mod, cause.culprit_jar, cause.kind), ("dragon_mounts_patches", None, "mixin"))
+
+    def test_prefix_style_config_and_its_jar(self) -> None:
+        cause = parse_log(_mixin_log(
+            "org.spongepowered.asm.mixin.injection.throwables.InvalidInjectionException: Critical injection failure: "
+            "@Inject annotation on iris$writeIrisConfig could not find any targets matching 'writeToDisk' in "
+            "me.jellysquid.mods.sodium.client.gui.SodiumGameOptions. [PREINJECT Applicator Phase -> "
+            "mixins.oculus.compat.sodium.json:options.MixinSodiumGameOptions from mod (unknown) -> Parse]",
+            "net.irisshaders.iris.compat.Foo.bar(Foo.java:1) ~[oculus-mc1.20.1-1.8.0.jar%23150!/:?]",
+        )).root_cause
+        self.assertEqual(
+            (cause.culprit_mod, cause.culprit_jar, cause.kind), ("oculus", "oculus-mc1.20.1-1.8.0.jar", "mixin")
+        )
+
+    def test_from_mod_is_preferred_over_the_config(self) -> None:
+        cause = parse_log(_mixin_log(
+            "org.spongepowered.asm.mixin.injection.throwables.InjectionError: Critical injection failure: Redirector "
+            "x in sharedcfg.mixins.json:FooMixin from mod realmod failed injection check, (0/1) succeeded."
+        )).root_cause
+        self.assertEqual((cause.culprit_mod, cause.kind), ("realmod", "mixin"))
+
+
+# Shaped like Forge's "Mod Loading has failed" crash report (synthetic, trimmed).
+_FML_CRASH = """\
+---- Minecraft Crash Report ----
+// Ouch. That hurt :(
+
+Description: Mod loading error has occurred
+
+java.lang.Exception: Mod Loading has failed
+\tat net.minecraftforge.logging.CrashReportExtender.dumpModLoadingCrashReport(CrashReportExtender.java:60) ~[forge.jar%23200!/:?] {}
+\tat net.minecraft.client.Minecraft.m_91374_(Minecraft.java:718) ~[client-1.20.1-srg.jar%23199!/:?] {}
+
+
+A detailed walkthrough of the error, its code path and all known details is as follows:
+---------------------------------------------------------------------------------------
+
+-- Head --
+Thread: Render thread
+Suspected Mods: NONE
+Stacktrace:
+\tat org.spongepowered.asm.mixin.injection.struct.InjectionInfo.validateTargets(InjectionInfo.java:656) ~[mixin-0.8.5.jar%23152!/:0.8.5] {}
+-- MOD jei --
+Details:
+\tMod File: /C:/Users/<user>/mods/jei.jar
+\tFailure message: none
+Stacktrace:
+\tat java.lang.Thread.run(Unknown Source) ~[?:?] {}
+-- MOD dragonminez --
+Details:
+\tCaused by 0: org.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError: An unexpected critical error was encountered
+\t\tat org.spongepowered.asm.mixin.transformer.MixinProcessor.applyMixins(MixinProcessor.java:392) ~[mixin-0.8.5.jar:0.8.5] {}
+
+\tCaused by 1: org.spongepowered.asm.mixin.throwables.MixinApplyError: Mixin [dmzplus.mixins.json:GrantWishZunoGuardMixin] from phase [DEFAULT] in config [dmzplus.mixins.json] FAILED during APPLY
+\t\tat com.example.Loader.load(Loader.java:5) ~[example-1.0.jar%2310!/:1.0] {}
+
+\tMod File: /C:/Users/<user>/mods/dragonminez-2.2.jar
+\tFailure message: DragonMineZ (dragonminez) has failed to load correctly
+\t\torg.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError: An unexpected critical error was encountered
+\tMod Version: 2.2
+\tMod Issue URL: https://discord.dragonminez.com
+\tException message: org.spongepowered.asm.mixin.injection.throwables.InvalidInjectionException: Critical injection failure: @Inject annotation on dmzplus$guardZunoRevive could not find any targets matching 'lambda$handle$1' in com.dragonminez.common.network.C2S.GrantWishC2S. No refMap loaded. [PREINJECT Applicator Phase -> dmzplus.mixins.json:GrantWishZunoGuardMixin from mod dmzplus -> Prepare Injections]
+Stacktrace:
+\tat org.spongepowered.asm.mixin.injection.struct.InjectionInfo.validateTargets(InjectionInfo.java:656) ~[mixin-0.8.5.jar%23152!/:0.8.5] {}
+
+-- System Details --
+Details:
+\tMinecraft Version: 1.20.1
+"""
+
+
+class ModLoadingCrashTests(unittest.TestCase):
+    def test_mod_section_holds_the_root_cause(self) -> None:
+        report = parse_log(_FML_CRASH)
+        cause = report.root_cause
+        self.assertEqual((cause.culprit_mod, cause.kind), ("dmzplus", "mixin"))
+        self.assertTrue(cause.exception.startswith(
+            "InvalidInjectionException: Critical injection failure: @Inject annotation on dmzplus$guardZunoRevive"
+        ))
+        self.assertEqual(cause.chain[0], "MixinTransformerError: An unexpected critical error was encountered")
+        self.assertTrue(cause.chain[1].startswith("MixinApplyError: Mixin [dmzplus.mixins.json"))
+        self.assertEqual(len(cause.chain), 3)
+        self.assertEqual(cause.frames, ("com.example.Loader.load",))
+        # The card's stacktrace is still the crash block.
+        self.assertTrue(report.stacktrace.startswith("Description: Mod loading error has occurred"))
+
+    def test_other_crashes_ignore_mod_sections(self) -> None:
+        report = parse_log(_FML_CRASH.replace("java.lang.Exception: Mod Loading has failed", "java.lang.Exception: boom"))
+        self.assertEqual(report.root_cause.exception, "Exception: boom")
+        self.assertIsNone(report.root_cause.culprit_mod)
+
+
+class MissingDmzClassTests(unittest.TestCase):
+    def test_dmz_frames_are_not_blamed_for_a_missing_dmz_class(self) -> None:
+        report = parse_log(
+            "---- Minecraft Crash Report ----\n"
+            "Description: Rendering entity in world\n"
+            "\n"
+            "java.lang.NoClassDefFoundError: com/dragonminez/client/render/hair/HairRenderer\n"
+            "\tat com.dragonminez.client.render.layer.HairLayer.render(HairLayer.java:10) ~[dragonminez-2.2.jar%23300!/:2.2]\n"
+            "Caused by: java.lang.ClassNotFoundException: com.dragonminez.client.render.hair.HairRenderer\n"
+            "\tat com.dragonminez.client.render.layer.HairLayer.render(HairLayer.java:10) ~[dragonminez-2.2.jar%23300!/:2.2]\n"
+            "Caused by: org.spongepowered.asm.mixin.throwables.ClassMetadataNotFoundException: "
+            "com.dragonminez.client.render.hair.HairRenderer\n"
+            "\tat org.spongepowered.asm.mixin.transformer.MixinInfo.x(MixinInfo.java:1) ~[mixin-0.8.5.jar:0.8.5]\n"
+            "\n"
+            "-- System Details --\n"
+            "\tMod List: \n"
+            "\t\tdragonminez-2.2.jar |DragonMineZ |dragonminez |2.2 |DONE |Manifest: NOSIGNATURE\n"
+            "\t\tdmzfoo-1.0.jar |DMZ Foo |dmzfoo |1.0 |DONE |Manifest: NOSIGNATURE\n"
+        )
+        cause = report.root_cause
+        self.assertTrue(cause.exception.startswith("ClassMetadataNotFoundException: com.dragonminez."))
+        self.assertEqual((cause.culprit_mod, cause.culprit_jar), (None, None))
+        self.assertEqual(len(report.hints), 1)
+        self.assertIn("`dmzfoo`", report.hints[0])

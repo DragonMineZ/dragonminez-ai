@@ -25,6 +25,7 @@ from bulmaai.web import (
     routes_templates,
     routes_tickets,
     routes_transcripts,
+    routes_usage,
 )
 from bulmaai.web.core import (
     BOT,
@@ -62,6 +63,7 @@ MODULES = (
     routes_announce,
     routes_support_info,
     routes_appeals,
+    routes_usage,
 )
 
 CSP = (

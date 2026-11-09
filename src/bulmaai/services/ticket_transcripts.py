@@ -279,7 +279,7 @@ async def summarize_ticket(
         resolved_client.messages.create(**request_kwargs),
         timeout=timeout_seconds,
     )
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "ticket_summary")
     return _normalize_ticket_summary(response_json(response, "ticket_summary"))
 
 

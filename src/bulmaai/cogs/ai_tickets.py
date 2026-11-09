@@ -1462,7 +1462,7 @@ class AITicketsCog(ReloadableCog):
                 ),
                 timeout=settings.ai_support_timeout_seconds,
             )
-            ai_budget.record_response(response)
+            ai_budget.record_response(response, "image_reading")
             text = response_text(response, "image_context").strip()
             if text:
                 return text

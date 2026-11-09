@@ -122,7 +122,7 @@ async def summarize_so_far(
         ),
         timeout=timeout_seconds,
     )
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "ticket_copilot_summary")
     payload = response_json(response, "ticket_so_far")
     payload = payload if isinstance(payload, dict) else {}
     return TicketSoFar(*(_field(payload, key) for key in ("problem", "tried", "current_state", "next_step")))
@@ -188,7 +188,7 @@ async def translate_staff_text(
         ),
         timeout=timeout_seconds,
     )
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "ticket_translation")
     payload = response_json(response, "staff_translation")
     translation = str((payload if isinstance(payload, dict) else {}).get("translation") or "").strip()
     if not translation or translation_source(translation, target_language) is not None:
@@ -261,7 +261,7 @@ async def translate_owner_text(
         ),
         timeout=timeout_seconds,
     )
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "ticket_owner_translation")
     payload = response_json(response, "owner_translation")
     found = (payload if isinstance(payload, dict) else {}).get("translations")
     found = found if isinstance(found, dict) else {}

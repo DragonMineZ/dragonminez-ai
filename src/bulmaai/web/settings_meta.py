@@ -183,6 +183,8 @@ META: dict[str, tuple[str, str, str]] = {
     "ai_support_max_output_tokens": ("advanced", "Max output tokens", "Most tokens one AI support reply may use, thinking included."),
     "ai_daily_small_token_limit": ("advanced", "Daily small-model tokens", "Tokens per UTC day for Haiku models; when spent the AI pauses until midnight UTC."),
     "ai_daily_big_token_limit": ("advanced", "Daily big-model tokens", "Tokens per UTC day for bigger Claude models; when spent replies fall back to the small model."),
+    "ai_monthly_budget_usd": ("advanced", "Monthly AI budget (USD)", "Claude API credit per month; the AI usage page measures spending against it."),
+    "ai_budget_cycle_day": ("advanced", "AI budget renewal day", "UTC day of the month (1-28) the Claude API credit renews; the AI usage page's cycle starts on it."),
     "ai_knowledge_max_results": ("advanced", "Knowledge results", "Most knowledge entries (wiki, closed tickets, FAQ) one search returns to the support AI."),
     "ai_ticket_summary_model": ("advanced", "Ticket summary model", "Claude model that writes the summary when a ticket closes."),
     "ai_vision_model": ("advanced", "Vision model", "Claude model that reads images posted in support conversations."),

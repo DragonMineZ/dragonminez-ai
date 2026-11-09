@@ -86,7 +86,7 @@ async def translate_text(cog: "AiAnnTranslation", text: str, target_language: st
         max_tokens=8000,
         output_config={"effort": "low"},
     )
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "announcement_translation")
 
     return response_text(response, "announcement_translation").strip()
 

@@ -10,13 +10,13 @@ import discord
 from dotenv import load_dotenv
 
 from .config import Settings, load_settings
-from .database.db import close_db_pool, init_db_pool
+from .database.db import close_db_pool, get_pool, init_db_pool
 from .logging_setup import setup_logging
 from .services.discord_log_forwarding import (
     DiscordLogForwarder,
     install_discord_log_forwarder,
 )
-from .services import ai_budget, db_schema, message_templates, support_traces
+from .services import ai_budget, ai_usage, db_schema, message_templates, support_traces
 from .services.release_webhook import ReleaseWebhookServer
 from .utils import permissions
 from .utils.lifecycle import lifecycle_cogs
@@ -170,16 +170,25 @@ class BulmaAI(discord.Bot):
                 min_level_name=self.settings.discord_log_min_level,
             )
         try:
-            await init_db_pool()
+            pool = await init_db_pool()
             await db_schema.ensure_schema()
         except Exception:
             # Non-fatal: get_pool() retries lazily, same as before this hook actually ran.
             log.exception("Database setup failed (pool or scripts/schema.sql); continuing")
+        else:
+            try:
+                await ai_usage.prepare(pool)
+            except Exception:
+                log.exception("Failed to prepare the AI usage ledger")
+            ai_usage.start_flusher()
         try:
             midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            ai_budget.seed(await support_traces.sum_tokens_by_model_since(midnight))
+            spent = await ai_usage.tokens_by_model_since(await get_pool(), midnight)
+            if spent is None:
+                spent = await support_traces.sum_tokens_by_model_since(midnight)
+            ai_budget.seed(spent)
         except Exception:
-            log.exception("Failed to seed today's AI token budget from traces")
+            log.exception("Failed to seed today's AI token budget")
         message_templates.ensure_message_templates_file()
 
     def reload_settings(self) -> Settings:
@@ -285,6 +294,7 @@ class BulmaAI(discord.Bot):
         if self._discord_log_forwarder is not None:
             await self._discord_log_forwarder.stop()
             self._discord_log_forwarder = None
+        await ai_usage.stop_flusher()
         log.info("Closing database pool...")
         await close_db_pool()
         log.info("Database pool closed")

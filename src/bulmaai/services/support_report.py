@@ -321,7 +321,7 @@ async def generate_insights(data: ReportData, settings: Any, *, client: Any | No
             ),
             timeout=AI_TIMEOUT_SECONDS,
         )
-        ai_budget.record_response(response)
+        ai_budget.record_response(response, "weekly_report")
         return parse_insights(response_json(response, "support_report"))
     except Exception:
         log.exception("Weekly support report: AI summary failed; posting numbers only")

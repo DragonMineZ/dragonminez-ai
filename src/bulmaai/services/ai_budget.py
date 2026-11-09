@@ -8,12 +8,14 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any
 
+from bulmaai.services import ai_usage
+
 log = logging.getLogger(__name__)
 
 SMALL, BIG = "small", "big"
 
-# ponytail: in-memory, seeded from today's support traces at startup; non-support calls made
-# before a restart are forgotten, the default limits leave headroom for that.
+# In memory, seeded at startup from today's rows in the ai_usage ledger (every call), or from today's support
+# traces while the ledger is still empty.
 _day: date | None = None
 _used: dict[str, int] = {}
 
@@ -66,8 +68,10 @@ def usage_total(usage: Any) -> int | None:
         return None
 
 
-def record_response(response: Any) -> None:
+def record_response(response: Any, feature: str = "other") -> None:
+    """Counts the call toward its pool and queues it for the ai_usage ledger under `feature`. Never raises."""
     record(getattr(response, "model", None), usage_total(getattr(response, "usage", None)))
+    ai_usage.record_response(response, feature)
 
 
 def used(pool: str) -> int:

@@ -172,7 +172,7 @@ async def analyze_bug_report(
     }
 
     response = await client.messages.create(**request_kwargs)
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "bug_report_triage")
     raw = response_text(response, "bug_triage").strip()
     try:
         data = json.loads(raw)
@@ -224,7 +224,7 @@ async def assess_duplicate(
 
     try:
         response = await client.messages.create(**request_kwargs)
-        ai_budget.record_response(response)
+        ai_budget.record_response(response, "bug_report_duplicates")
         data = json.loads(response_text(response, "bug_duplicate").strip())
     except (json.JSONDecodeError, TypeError):
         log.warning("Duplicate assessment returned non-JSON output")

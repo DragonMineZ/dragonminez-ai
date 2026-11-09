@@ -63,7 +63,7 @@ async def triage_intake(
     }
 
     response = await asyncio.wait_for(resolved_client.messages.create(**request_kwargs), timeout=timeout_seconds)
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "ticket_intake")
     payload = response_json(response, "ticket_intake")
     payload = payload if isinstance(payload, dict) else {}
     language = str(payload.get("language") or "en")
@@ -112,6 +112,6 @@ async def owner_says_solved(
     }
 
     response = await asyncio.wait_for(resolved_client.messages.create(**request_kwargs), timeout=timeout_seconds)
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "ticket_solved_check")
     payload = response_json(response, "ticket_solved")
     return isinstance(payload, dict) and payload.get("solved") is True

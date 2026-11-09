@@ -293,7 +293,7 @@ async def write_note(settings: Any, github: Any, commit: PushCommit, *, client: 
         ),
         timeout=settings.ai_support_timeout_seconds,
     )
-    ai_budget.record_response(response)
+    ai_budget.record_response(response, "code_notes")
     note = parse_note(response_json(response, "code_note"))
     return (note, kept) if note else None
 

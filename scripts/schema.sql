@@ -798,3 +798,21 @@ CREATE TABLE IF NOT EXISTS news_items (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (task_id, url)
 );
+
+-- AI usage ledger (services/ai_usage.py): one row per Claude call, priced at list prices when recorded. Rows with
+-- backfilled = TRUE were copied once from support_ai_traces (support calls only, approximate).
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id                 BIGSERIAL PRIMARY KEY,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    feature            TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    input_tokens       INT NOT NULL DEFAULT 0,
+    output_tokens      INT NOT NULL DEFAULT 0,
+    cache_read_tokens  INT NOT NULL DEFAULT 0,
+    cache_write_tokens INT NOT NULL DEFAULT 0,
+    web_searches       INT NOT NULL DEFAULT 0,
+    cost_usd           NUMERIC(12,6) NOT NULL DEFAULT 0,
+    backfilled         BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_created_at ON ai_usage (created_at);

@@ -31,6 +31,7 @@
     "no limit": "sin límite",
     "disabled": "deshabilitado",
     "Refresh": "Actualizar",
+    "See detailed usage →": "Ver el uso detallado →",
     "Extensions ({count})": "Extensiones ({count})",
     "Extension": "Extensión",
     "Reload": "Recargar",
@@ -132,6 +133,7 @@
           h("p", { class: "muted small" },
             b.paused ? badge(t("AI paused: small pool spent"), "danger") : null, " ", t("Pools reset "), time(b.resets_at), t(" (00:00 UTC).")),
           h("div", { class: "grid" }, b.pools.map(budgetCard)),
+          h("p", { class: "small" }, h("a", { href: "#/usage" }, t("See detailed usage →"))),
           updatesCard(data),
           extensionsCard(data, reload));
       };

@@ -110,6 +110,9 @@ DEFAULT_AI_SUPPORT_ESCALATION_CONFIDENCE = 0.7
 # Daily token caps per pool (UTC day): small = haiku models, big = everything else.
 DEFAULT_AI_DAILY_SMALL_TOKEN_LIMIT = 2_250_000
 DEFAULT_AI_DAILY_BIG_TOKEN_LIMIT = 225_000
+# Monthly Claude API credit shown on the panel's AI usage page, renewing on this UTC day of the month (1-28).
+DEFAULT_AI_MONTHLY_BUDGET_USD = 100.0
+DEFAULT_AI_BUDGET_CYCLE_DAY = 1
 DEFAULT_AI_SUPPORT_EFFORT = "medium"
 DEFAULT_AI_SUPPORT_FAST_EFFORT = "low"
 # Thinking tokens count against max_tokens, so keep this roomy.
@@ -316,6 +319,8 @@ class Settings:
     ai_support_escalation_confidence: float
     ai_daily_small_token_limit: int
     ai_daily_big_token_limit: int
+    ai_monthly_budget_usd: float
+    ai_budget_cycle_day: int
     ai_support_effort: str
     ai_support_fast_effort: str
     ai_support_max_output_tokens: int
@@ -645,6 +650,8 @@ def _build_settings_from_env() -> Settings:
         ai_daily_big_token_limit=_get_env_int(
             "AI_DAILY_BIG_TOKEN_LIMIT", DEFAULT_AI_DAILY_BIG_TOKEN_LIMIT
         ),
+        ai_monthly_budget_usd=_get_env_float_default("AI_MONTHLY_BUDGET_USD", DEFAULT_AI_MONTHLY_BUDGET_USD),
+        ai_budget_cycle_day=_get_env_int("AI_BUDGET_CYCLE_DAY", DEFAULT_AI_BUDGET_CYCLE_DAY),
         ai_support_effort=(
             _get_env("AI_SUPPORT_EFFORT", DEFAULT_AI_SUPPORT_EFFORT)
             or DEFAULT_AI_SUPPORT_EFFORT

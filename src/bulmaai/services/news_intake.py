@@ -269,7 +269,7 @@ async def search(
             ),
             timeout=ROUND_TIMEOUT,
         )
-        ai_budget.record_response(response)
+        ai_budget.record_response(response, "news_intake")
         allowed |= result_urls(getattr(response, "content", None))
         if getattr(response, "stop_reason", None) != "pause_turn":
             break

@@ -842,7 +842,7 @@ async def _run_once(
         responses.append(response)
 
     for each in responses:
-        ai_budget.record_response(each)
+        ai_budget.record_response(each, workflow)
 
     stop_reason = getattr(response, "stop_reason", None)
     if stop_reason == "refusal":

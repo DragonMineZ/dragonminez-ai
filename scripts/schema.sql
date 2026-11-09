@@ -771,34 +771,6 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     reply_text      TEXT
 );
 
--- News intake (services/news_intake.py, cogs/news_intake.py): admin-defined topics searched with Haiku + web search
--- every interval_hours. The loop claims due tasks by moving next_run_at (so no task runs twice); news_items holds every
--- posted item, one row per (task, normalized url), so an item is only ever posted once.
-CREATE TABLE IF NOT EXISTS news_tasks (
-    id             BIGSERIAL PRIMARY KEY,
-    name           TEXT UNIQUE NOT NULL,
-    prompt         TEXT NOT NULL,
-    interval_hours INT NOT NULL DEFAULT 6,
-    enabled        BOOLEAN NOT NULL DEFAULT TRUE,
-    next_run_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_run_at    TIMESTAMPTZ,
-    last_error     TEXT,
-    created_by     BIGINT,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS news_items (
-    id         BIGSERIAL PRIMARY KEY,
-    task_id    BIGINT NOT NULL REFERENCES news_tasks(id) ON DELETE CASCADE,
-    url        TEXT NOT NULL,
-    title      TEXT NOT NULL,
-    summary    TEXT,
-    published  TEXT,
-    message_id BIGINT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (task_id, url)
-);
-
 -- AI usage ledger (services/ai_usage.py): one row per Claude call, priced at list prices when recorded. Rows with
 -- backfilled = TRUE were copied once from support_ai_traces (support calls only, approximate).
 CREATE TABLE IF NOT EXISTS ai_usage (

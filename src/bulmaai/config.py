@@ -99,7 +99,6 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.knowledge_sync",
     "bulmaai.cogs.devlog",
     "bulmaai.cogs.mail_inbox",
-    "bulmaai.cogs.news_intake",
 )
 
 DEFAULT_AI_MODEL = "claude-haiku-5-5"
@@ -514,12 +513,6 @@ class Settings:
     # read them through /devlog and the staff draft's search_code_notes tool.
     code_notes_enabled: bool = True
     code_notes_model: str = "claude-haiku-5-5"
-    # News intake (services/news_intake, cogs/news_intake): admins define topics with /news; Haiku with web search
-    # looks for fresh items every few hours per topic and posts each new one to news_channel_id (None = off).
-    news_enabled: bool = True
-    news_channel_id: int | None = 1216431954291851415
-    news_model: str = "claude-haiku-5-5"
-    news_max_searches: int = 5
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"

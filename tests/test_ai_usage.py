@@ -92,10 +92,10 @@ class RecordTests(unittest.TestCase):
             cache_creation_input_tokens=2,
             server_tool_use={"web_search_requests": 2},
         )
-        ai_budget.record_response(response, "news_intake")
+        ai_budget.record_response(response, "other")
         self.assertEqual(ai_budget.used(ai_budget.SMALL), 20)
         [row] = ai_usage.pending()
-        self.assertEqual(row[1:8], ("news_intake", "claude-haiku-5-5", 10, 5, 3, 2, 2))
+        self.assertEqual(row[1:8], ("other", "claude-haiku-5-5", 10, 5, 3, 2, 2))
         self.assertAlmostEqual(row[8], ai_usage.cost("claude-haiku-5-5", 10, 5, 3, 2, 2))
 
     def test_default_feature_and_bad_usage_never_raise(self) -> None:

@@ -231,6 +231,8 @@ class TicketCategory:
     fields: tuple[FormField, ...]
     # Moderators and up only: Helpers don't see the channel, and an escalation pings moderators instead of helpers.
     mod_only: bool = False
+    # The owner's messages are translated for the staff present; off where the team handling it shares their language.
+    translate_owner: bool = True
 
     def text(self, language: str) -> CategoryText:
         """The category's words in language (English for an unknown one)."""
@@ -310,6 +312,7 @@ CATEGORIES: dict[str, TicketCategory] = {
             emoji="🤝",
             fallback_slug="partner",
             ai_reply=False,
+            translate_owner=False,
             fields=(FormField(max_length=200), FormField(), FormField(paragraph=True, max_length=1000)),
         ),
         TicketCategory(
@@ -317,6 +320,7 @@ CATEGORIES: dict[str, TicketCategory] = {
             emoji="🙌",
             fallback_slug="contribute",
             ai_reply=False,
+            translate_owner=False,
             fields=(
                 FormField(),
                 FormField(paragraph=True, max_length=800),

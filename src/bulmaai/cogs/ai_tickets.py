@@ -716,6 +716,7 @@ class AITicketsCog(ReloadableCog):
         self._ticket_owners: dict[int, int | None] = {}
         # Ticket channel → its support language (None: no tickets row); TicketsCog drops an entry when it changes.
         self._ticket_languages: dict[int, str | None] = {}
+        self._ticket_categories: dict[int, str | None] = {}  # filled with _ticket_languages
         # Bulma's thread → the member it is for (None: not a help thread); see _help_thread_requester.
         self._thread_requesters: dict[int, int | None] = {}
         self._translations: set[asyncio.Task[None]] = set()  # messages being translated (kept so none is GC'd)
@@ -927,10 +928,12 @@ class AITicketsCog(ReloadableCog):
                 log.exception("Could not look up ticket language", extra={"channel_id": channel_id})
                 return None
             self._ticket_languages[channel_id] = ticket.language if ticket else None
+            self._ticket_categories[channel_id] = getattr(ticket, "category", None)
         return self._ticket_languages[channel_id]
 
     def forget_ticket_language(self, channel_id: int) -> None:
         self._ticket_languages.pop(channel_id, None)
+        self._ticket_categories.pop(channel_id, None)
 
     async def _awaiting_owner(self, channel_id: int) -> None:
         """Our answer in a ticket starts the owner's reply countdown (TicketsCog._remind_owners)."""
@@ -1935,8 +1938,8 @@ class AITicketsCog(ReloadableCog):
         (_post_translation).
         - Anyone but the owner (staff, a member added to it), written in another language than the ticket's: into
           the ticket's language (translation_source, translate_staff_text).
-        - The owner: into the languages of everyone else who has written in the ticket (_staff_languages; English
-          before anyone has), minus the message's own (text_language, else the ticket's), all in one call
+        - The owner: into the languages of everyone else who has written in the ticket (_staff_languages; nothing
+          before anyone with a language role has, and nothing in a category without translate_owner), minus the message's own (text_language, else the ticket's), all in one call
           (translate_owner_text). Bulma's answers are never translated: she answers in the asker's language.
         Off with ai_ticket_translate_staff or a paused budget; skipped when the owner is unknown, for short texts,
         when there is no other language to translate into, when the model's text is dropped, or when the guard
@@ -1962,6 +1965,9 @@ class AITicketsCog(ReloadableCog):
             else:
                 if self._ticket_owners.get(channel.id) is None:
                     return  # nobody is known to be the owner
+                category = CATEGORIES.get(self._ticket_categories.get(channel.id) or "")
+                if category is not None and not category.translate_owner:
+                    return
                 source = text_language(text) or language
                 targets = [code for code in await self._staff_languages(channel) if code != source]
                 if not targets:
@@ -2004,16 +2010,16 @@ class AITicketsCog(ReloadableCog):
         return self._participants.setdefault(channel.id, found)
 
     async def _staff_languages(self, channel: discord.TextChannel) -> list[str]:
-        """The languages (utils/i18n.user_language: their language role, else English) of everyone besides the owner
-        who has written in the ticket and is still in the server, in LANGUAGES order; English when nobody has."""
+        """The languages (utils/i18n.user_language) of everyone besides the owner who has written in the ticket, is
+        still in the server and has a language role, in LANGUAGES order. Nobody like that: none (no guessing English)."""
         settings = self.bot.settings
         guild = channel.guild
         languages = {
             user_language(member, settings, client=self.bot)
             for user_id in await self._ticket_participants(channel)
-            if (member := guild.get_member(user_id)) is not None
+            if (member := guild.get_member(user_id)) is not None and role_languages(member, settings)
         }
-        return [code for code in LANGUAGES if code in languages] or ["en"]
+        return [code for code in LANGUAGES if code in languages]
 
     async def _post_translation(
         self, message: discord.Message, original: str, translations: dict[str, str], source: str

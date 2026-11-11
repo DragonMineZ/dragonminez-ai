@@ -950,9 +950,30 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
     SPANISH = "No debes hacer nada, es problema de la plataforma, solo toca esperar hasta que ellos lo solucionen"
     ENGLISH = "Can you send me your latest log please?"
 
-    async def test_before_anyone_else_writes_the_owner_is_translated_into_english(self):
-        message = self.message(self.SPANISH, author=OWNER)
-        cog = self.cog()
+    async def test_no_staff_with_a_language_role_means_no_owner_translation(self):
+        cog = self.cog(**LANGUAGE_ROLES)
+        await self.translate(cog, self.message(self.SPANISH, author=OWNER))
+        self.owner_call.assert_not_called()  # nobody wrote yet: no English guess
+        self.assertEqual(cog._participants[900], set())
+        roleless = as_member(STAFF)
+        message = self.message(self.SPANISH, author=OWNER, history=(posted_by(roleless),), members=(roleless,))
+        await self.translate(self.cog(**LANGUAGE_ROLES), message)
+        self.owner_call.assert_not_called()  # staff without a language role add no language
+        message.channel.webhooks.assert_not_called()
+
+    async def test_some_categories_never_translate_the_owner(self):
+        english_staff = as_member(STAFF, EN_ROLE)
+        for key, translated in (("contribute", False), ("partner", False), ("bug", True)):
+            cog = self.cog(**LANGUAGE_ROLES)
+            cog._ticket_categories[900] = key
+            message = self.message(self.SPANISH, author=OWNER, history=(posted_by(english_staff),), members=(english_staff,))
+            await self.translate(cog, message, owner_result={"en": "Just wait"})
+            self.assertEqual(self.owner_call.await_count, int(translated), key)
+
+    async def test_english_staff_get_the_owners_message_in_english(self):
+        english_staff = as_member(STAFF, EN_ROLE)
+        message = self.message(self.SPANISH, author=OWNER, history=(posted_by(english_staff),), members=(english_staff,))
+        cog = self.cog(**LANGUAGE_ROLES)
         call = await self.translate(cog, message, owner_result={"en": "You don't need to do anything, just wait"})
         call.assert_not_called()
         self.owner_call.assert_awaited_once()
@@ -965,7 +986,6 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         )  # one language: the same card as a staff translation
         self.assertEqual(kwargs["username"], "Goku")
         self.assert_no_pings(kwargs["allowed_mentions"])
-        self.assertEqual(cog._participants[900], set())
 
     async def test_the_staff_present_get_it_in_their_languages_in_one_card(self):
         members = (as_member(STAFF, PT_ROLE), as_member(person(300, name="Bulla")), as_member(person(400), ES_ROLE))
@@ -1010,13 +1030,12 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             message.channel.webhooks.assert_not_called()
 
     async def test_the_guard_blocks_the_whole_owner_card(self):
-        message = self.message(self.ENGLISH, author=OWNER)
-        cog = self.cog()
+        spanish_staff = as_member(STAFF, ES_ROLE)
+        message = self.message(self.ENGLISH, author=OWNER, history=(posted_by(spanish_staff),), members=(spanish_staff,))
+        cog = self.cog(**LANGUAGE_ROLES)
         cog._ticket_languages[900] = "pt"
-        cog._participants[900] = set()
-        cog.bot.guilds = []
-        message.channel.guild = types.SimpleNamespace(get_member=lambda _id: None)
-        await self.translate(cog, message, owner_result={"en": "Usa badword aquí"})
+        await self.translate(cog, message, owner_result={"es": "Usa badword aquí"})
+        self.owner_call.assert_awaited_once()
         message.channel.webhooks.assert_not_called()
 
     async def test_new_writers_join_the_set_once_it_is_known(self):

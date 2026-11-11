@@ -788,3 +788,13 @@ CREATE TABLE IF NOT EXISTS ai_usage (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_usage_created_at ON ai_usage (created_at);
+
+-- /tag: staff-written canned text answers by category (services/tags.py).
+CREATE TABLE IF NOT EXISTS tags (
+    category    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    updated_by  BIGINT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (category, name)
+);

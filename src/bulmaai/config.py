@@ -98,6 +98,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.support_report",
     "bulmaai.cogs.knowledge_sync",
     "bulmaai.cogs.devlog",
+    "bulmaai.cogs.tags",
     "bulmaai.cogs.mail_inbox",
 )
 

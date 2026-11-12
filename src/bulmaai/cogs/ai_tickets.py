@@ -3160,6 +3160,9 @@ class AITicketsCog(ReloadableCog):
                 return
             if full_content(message).startswith(("!", "/", ".")):
                 return
+            staff = self.bot.get_cog("StaffAssistantCog")
+            if staff is not None and await staff.handles(message):
+                return
             if not await self._can_use_support_from_message(message, settings=settings):
                 return
             self._schedule_support_response(message, in_ticket=False)
@@ -3198,6 +3201,10 @@ class AITicketsCog(ReloadableCog):
             return
         if full_content(message).startswith(("!", "/", ".")) and not mention_request:
             return
+        if mention_request:
+            staff = self.bot.get_cog("StaffAssistantCog")
+            if staff is not None and await staff.handles(message):
+                return
         self._schedule_support_response(message, in_ticket=in_ticket)
 
 

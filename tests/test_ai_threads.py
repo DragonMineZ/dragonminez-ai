@@ -50,7 +50,7 @@ def _settings(**overrides):
 
 def _cog(**settings) -> AITicketsCog:
     bot_user = types.SimpleNamespace(id=BOT_ID, bot=True, name="BulmaAI", display_name="BulmaAI", mention=f"<@{BOT_ID}>")
-    return AITicketsCog(types.SimpleNamespace(settings=_settings(**settings), user=bot_user, guilds=[]))
+    return AITicketsCog(types.SimpleNamespace(settings=_settings(**settings), user=bot_user, guilds=[], get_cog=lambda name: None))
 
 
 def _member(user_id: int = 42, *role_ids: int, name: str = "Goku") -> MagicMock:

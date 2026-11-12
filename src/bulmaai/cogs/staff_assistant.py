@@ -1,13 +1,22 @@
 """Staff Bulma in Discord: /bulma (ask, settings, forget, export, connect), the onboarding form, confirm cards for the
 actions she proposes, and the sweeps (expired cards, reminders, memory distilling). Logic lives in services/staff_*."""
 
+import asyncio
 import io
 import json
 import logging
 from datetime import datetime, timezone
 
 import discord
-from discord.ext import tasks
+from discord.ext import commands, tasks
+
+from bulmaai.cogs.ai_tickets import (
+    _card_text,
+    _has_support_request_content,
+    _is_pinging_bot,
+    _is_ticket_channel,
+    _strip_bot_mentions,
+)
 
 from bulmaai.services import ai_budget, staff_assistant, staff_store, staff_tools
 from bulmaai.ui import staff_assistant as ui
@@ -20,6 +29,11 @@ from bulmaai.services.mod_actions import ModActionError
 log = logging.getLogger(__name__)
 
 NO_MENTIONS = discord.AllowedMentions.none()
+LEARN_CHANNELS = 40
+LEARN_PER_CHANNEL = 200
+LEARN_MESSAGES = 100
+HISTORY_MESSAGES = 10
+COMMAND_PREFIXES = ("!", "/", ".")
 CONTEXTS = {discord.InteractionContextType.guild, discord.InteractionContextType.bot_dm}
 
 DESC = table({
@@ -64,12 +78,18 @@ class StaffAssistantCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self._working: set[int] = set()
+        self._onboarded: set[int] = set()  # cache of staff_profiles.user_id; the table is the truth
+        self._locks: dict[int, asyncio.Lock] = {}
 
     @property
     def settings(self):
         return self.bot.settings
 
     async def on_startup(self) -> None:
+        try:
+            self._onboarded = set(await staff_store.list_profile_ids())
+        except Exception:
+            log.exception("Couldn't load the Staff Bulma profile ids")
         for loop in (self.sweep_actions, self.send_reminders, self.distill_all):
             if not loop.is_running():
                 loop.start()
@@ -82,16 +102,17 @@ class StaffAssistantCog(ReloadableCog):
 
     async def _staff_member(self, interaction: discord.Interaction) -> discord.Member | None:
         """The interaction's user as a main-guild member of tier HELPER+ with Staff Bulma on, else None (also from DMs)."""
+        return await self._gate(interaction.user, getattr(interaction, "guild_id", None))
+
+    async def _gate(self, user, guild_id: int | None) -> discord.Member | None:
         settings = self.settings
         if not getattr(settings, "staff_ai_enabled", True):
             return None
-        guild_id = getattr(interaction, "guild_id", None)
         if guild_id is not None and guild_id != settings.panel_guild_id:
             return None
         guild = self.bot.get_guild(settings.panel_guild_id)
         if guild is None:
             return None
-        user = interaction.user
         member = user if isinstance(user, discord.Member) and user.guild.id == guild.id else await resolve_member(guild, user.id)
         if member is None or tier_for(member, settings) < Tier.HELPER:
             return None
@@ -133,6 +154,212 @@ class StaffAssistantCog(ReloadableCog):
             log.info("Couldn't DM a confirm card to %s", member.id, exc_info=True)
             return False
         return True
+
+    # --- vault: what onboarded staff write where members can read it ---
+
+    def _member_role(self, guild: discord.Guild | None) -> discord.Role | None:
+        role_id = getattr(self.settings, "member_role_id", None)
+        return guild.get_role(role_id) if guild is not None and role_id else None
+
+    def _is_ticket(self, channel) -> bool:
+        if _is_ticket_channel(channel, settings=self.settings):
+            return True
+        closed = getattr(self.settings, "ticket_closed_category_id", None)
+        return closed is not None and getattr(channel, "category_id", None) == closed
+
+    def _visible_to_members(self, channel, guild: discord.Guild | None) -> bool:
+        """True when the Member role can see the channel (a thread follows its parent; private threads never count).
+        No Member role found = False, so nothing is stored."""
+        if isinstance(channel, discord.Thread):
+            if channel.type == discord.ChannelType.private_thread:
+                return False
+            channel = channel.parent
+        if channel is None or self._is_ticket(channel):
+            return False
+        role = self._member_role(guild)
+        if role is None:
+            return False
+        return bool(channel.permissions_for(role).view_channel)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        try:
+            await self._capture(message)
+        except Exception:
+            log.info("Staff vault capture failed", exc_info=True)
+        try:
+            if await self.handles(message):
+                await self._answer_message(message)
+        except Exception:
+            log.exception("Staff Bulma couldn't answer a message")
+
+    async def _capture(self, message: discord.Message) -> None:
+        guild = message.guild
+        author = message.author
+        if (
+            guild is None
+            or guild.id != self.settings.panel_guild_id
+            or author.id not in self._onboarded
+            or author.bot
+            or getattr(message, "webhook_id", None)
+            or not (message.content or "").strip()
+            or not self._visible_to_members(message.channel, guild)
+        ):
+            return
+        await staff_store.store_message(
+            message.id, author.id, guild.id, message.channel.id, message.content, message.created_at
+        )
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        cached = payload.cached_message
+        if cached is not None and cached.author.id not in self._onboarded:
+            return
+        content = (payload.data or {}).get("content")
+        if content is None:
+            return
+        try:
+            await staff_store.edit_message(payload.message_id, content, datetime.now(timezone.utc))
+        except Exception:
+            log.info("Staff vault edit failed", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        cached = payload.cached_message
+        if cached is not None and cached.author.id not in self._onboarded:
+            return
+        try:
+            await staff_store.delete_message(payload.message_id)
+        except Exception:
+            log.info("Staff vault delete failed", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        cached = {m.id: m for m in payload.cached_messages}
+        for message_id in payload.message_ids:
+            if message_id in cached and cached[message_id].author.id not in self._onboarded:
+                continue
+            try:
+                await staff_store.delete_message(message_id)
+            except Exception:
+                log.info("Staff vault delete failed", exc_info=True)
+
+    # --- first-run learning ---
+
+    @commands.Cog.listener()
+    async def on_staff_onboarded(self, member: discord.Member) -> None:
+        asyncio.create_task(self._learn(member))
+
+    def _learn_sources(self, guild: discord.Guild) -> list:
+        sources = [c for c in guild.text_channels if self._visible_to_members(c, guild)]
+        sources += [th for th in guild.threads if self._visible_to_members(th, guild)]
+        sources.sort(key=lambda c: getattr(c, "last_message_id", None) or 0, reverse=True)
+        return sources[:LEARN_CHANNELS]
+
+    async def _still_onboarded(self, user_id: int) -> bool:
+        return user_id in self._onboarded and await staff_store.get_profile(user_id) is not None
+
+    async def _learn(self, member: discord.Member) -> None:
+        user_id = member.id
+        try:
+            guild = self.bot.get_guild(self.settings.panel_guild_id)
+            if guild is None:
+                return
+            stored = scanned = 0
+            for channel in self._learn_sources(guild):
+                if stored >= LEARN_MESSAGES or not await self._still_onboarded(user_id):
+                    break
+                scanned += 1
+                found = []
+                try:
+                    async for message in channel.history(limit=LEARN_PER_CHANNEL):
+                        if message.author.id == user_id and (message.content or "").strip():
+                            found.append(message)
+                            if stored + len(found) >= LEARN_MESSAGES:
+                                break
+                except (discord.Forbidden, discord.HTTPException):
+                    continue
+                if not await self._still_onboarded(user_id):
+                    break
+                for message in found:
+                    await staff_store.store_message(
+                        message.id, user_id, guild.id, channel.id, message.content, message.created_at
+                    )
+                    stored += 1
+                await asyncio.sleep(0.5)
+            if not await self._still_onboarded(user_id):
+                return
+            await staff_store.mark_learned(user_id)
+            await staff_assistant.distill(self.bot, user_id)
+            log.info("Staff Bulma learned %s messages from %s channels for %s", stored, scanned, user_id)
+        except Exception:
+            log.exception("Staff Bulma first-run learning failed", extra={"user_id": user_id})
+
+    # --- DMs and pings in staff-only channels ---
+
+    async def handles(self, message: discord.Message) -> bool:
+        """True when Staff Bulma answers this message instead of the support AI: an onboarded staff member's DM, or
+        their ping in a main-guild channel members can't see (never a ticket)."""
+        author = message.author
+        if author.bot or getattr(message, "webhook_id", None) or author.id not in self._onboarded:
+            return False
+        channel = message.channel
+        if isinstance(channel, discord.DMChannel):
+            text = (message.content or "").strip()
+            if not text or text.startswith(COMMAND_PREFIXES):
+                return False
+            guild_id = None
+        else:
+            guild = message.guild
+            if guild is None or guild.id != self.settings.panel_guild_id:
+                return False
+            if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                return False
+            if self._visible_to_members(channel, guild) or self._member_role(guild) is None:
+                return False
+            base = channel.parent if isinstance(channel, discord.Thread) else channel
+            if base is None or self._is_ticket(base):
+                return False
+            bot_user = self.bot.user
+            if not (_is_pinging_bot(message, bot_user) and _has_support_request_content(message, bot_user)):
+                return False
+            guild_id = guild.id
+        if await staff_store.get_profile(author.id) is None:
+            return False
+        return await self._gate(author, guild_id) is not None
+
+    async def _history(self, message: discord.Message) -> list[dict]:
+        bot_id = getattr(self.bot.user, "id", None)
+        turns = []
+        async for old in message.channel.history(limit=HISTORY_MESSAGES * 3, before=message):
+            if old.author.id == bot_id:
+                content, role = _card_text(old) or old.content, "assistant"
+            elif old.author.id == message.author.id:
+                content, role = _strip_bot_mentions(old.content or "", self.bot.user), "user"
+            else:
+                continue
+            if content and content.strip():
+                turns.append({"role": role, "content": content.strip()})
+            if len(turns) >= HISTORY_MESSAGES:
+                break
+        turns.reverse()
+        return turns
+
+    async def _answer_message(self, message: discord.Message) -> None:
+        member = await self._gate(message.author, getattr(message.guild, "id", None))
+        if member is None:
+            return
+        channel = message.channel
+        text = _strip_bot_mentions(message.content or "", self.bot.user)
+        lock = self._locks.setdefault(member.id, asyncio.Lock())
+        async with lock:
+            async with channel.typing():
+                history = await self._history(message)
+                reply, rows = await self.answer_text(member, text, history, origin="discord", channel_id=channel.id)
+            await message.reply(view=ui.reply_view(reply), allowed_mentions=NO_MENTIONS, mention_author=False)
+            for row in rows:
+                sent = await channel.send(view=ui.confirm_view(row, reply.language), allowed_mentions=NO_MENTIONS)
+                await staff_store.set_action_card(row["id"], channel.id, sent.id)
 
     # --- commands ---
 
@@ -192,6 +419,7 @@ class StaffAssistantCog(ReloadableCog):
 
         async def confirmed(click: discord.Interaction) -> None:
             await staff_store.forget(member.id)
+            self._onboarded.discard(member.id)
             await click.response.edit_message(view=card(t(ui.TEXT, "forgot", language), color=ui.GREY))
 
         await interaction.response.send_message(view=ui.ForgetView(language, confirmed), ephemeral=True)
@@ -286,6 +514,7 @@ class StaffAssistantCog(ReloadableCog):
         )
         language = staff_assistant.language_for(member, {"language": chosen}, self.settings)
         key = "done" if is_new else "saved"
+        self._onboarded.add(member.id)
         await interaction.response.send_message(
             t(ui.TEXT, key, language, nickname=form["nickname"]), ephemeral=True, allowed_mentions=NO_MENTIONS
         )

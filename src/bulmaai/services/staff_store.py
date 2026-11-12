@@ -68,6 +68,11 @@ async def list_profiles() -> list[dict]:
     return [dict(row) for row in rows]
 
 
+async def list_profile_ids() -> list[int]:
+    rows = await (await get_pool()).fetch("SELECT user_id FROM staff_profiles")
+    return [row["user_id"] for row in rows]
+
+
 async def mark_learned(user_id: int) -> None:
     await (await get_pool()).execute("UPDATE staff_profiles SET learned_at = now() WHERE user_id = $1", user_id)
 

@@ -1,16 +1,15 @@
-"""Staff copilot in tickets: what the welcome card's "📋 Summary" and "✍️ Draft reply" buttons (ticket_views.control_row)
-show, the staff-signed card a draft becomes when it is posted, and the card that translates a staff message.
+"""Staff copilot in tickets: what the welcome card's "📋 Summary" button (ticket_views.control_row) shows, the readback
+of staff-signed cards, and the card that translates a staff message.
 
-Summary and the draft are ephemeral cards for the staff member who clicked, labelled in their language (TEXT; the AI's
-summary itself is English). The draft's text lives on its
-own card (DRAFT_TEXT_ID), so Post and Edit & post read it back from there: no DB row. A posted draft is a public card
-of the text plus a "-# ✍️ <@staff>" line (SIGNED_TEXT_ID); history and transcripts read it as that staff member's turn.
+The summary is an ephemeral card for the staff member who clicked, labelled in their language (TEXT; the AI's summary
+itself is English). A reply posted through Staff Bulma's ticket_reply (or the removed Draft reply) is a public card of the text plus a
+"-# ✍️ <@staff>" line (SIGNED_TEXT_ID); history and transcripts still read it as that staff member's turn.
 A translation (TRANSLATION_TEXT_ID) is in the ticket's language, posted through the ticket's webhook as the person
 who wrote the message (or, failing that, as Bulma's reply to it); history and transcripts skip it, since it repeats
 that message. An owner's message is translated for the staff in the ticket instead: one language looks the same,
 several share one card (translations_card), each under its language's label, in the same TEXT_LIMIT.
 
-Pure helpers only (custom ids, cards, the modal, readback); the Discord wiring is in cogs/tickets.py (buttons, gates,
+Pure helpers only (cards, readback); the Discord wiring is in cogs/tickets.py (buttons, gates,
 posting) and cogs/ai_tickets.py (the AI work, history and transcripts)."""
 
 import re
@@ -23,13 +22,8 @@ from bulmaai.ui.v2 import TEXT_LIMIT, card, fit, trim
 from bulmaai.utils.i18n import t, table
 
 COLOR = discord.Color.from_rgb(88, 101, 242)
-DRAFT_PREFIX = "staff_draft:"  # staff_draft:{post|edit|discard}, the buttons on the ephemeral draft card
-DRAFT_POST, DRAFT_EDIT, DRAFT_DISCARD = "post", "edit", "discard"
-EDIT_MODAL_PREFIX = "staff_draft_edit:"  # staff_draft_edit:{ticket channel id}
-EDIT_FIELD_ID = "text"
 # Component ids of the texts that matter: the model can't set these, so a card's own text can't pose as one.
-DRAFT_TEXT_ID = 820  # the draft on its ephemeral card
-SIGNED_TEXT_ID = 821  # the signature line of a posted draft
+SIGNED_TEXT_ID = 821  # the signature line of a staff reply posted by Staff Bulma (and by the removed Draft reply)
 TRANSLATION_TEXT_ID = 822  # a translation card's text
 ORIGINAL_TEXT_ID = 823  # the quoted original on a translation card
 ORIGINAL_LIMIT = 1000  # the quoted original on a translation card
@@ -37,48 +31,28 @@ TRANSLATED_BY_RE = re.compile(r"^-# 🌐 .* · <@!?(\d+)>$")  # the footer of a 
 # A posted reply's text; the signature line fits in what's left of the message's 4000 characters.
 POST_LIMIT = TEXT_LIMIT
 SIGNATURE_RE = re.compile(r"^-# ✍️ <@!?(\d+)>$")
-POSTED = "posted"  # done_card keys
-DISCARDED = "discarded"
 SUMMARY_FIELDS = ("problem", "tried", "current_state", "next_step")
 TEXT = table({
     "en": {
-        "posted": "Posted.",
-        "discarded": "Discarded.",
         "problem": "Problem",
         "tried": "Tried",
         "current_state": "Current state",
         "next_step": "Next step",
         "so_far": "Ticket #{number} so far",
-        "post": "Post",
-        "edit": "Edit & post",
-        "discard": "Discard",
-        "reply": "Reply",
     },
     "es": {
-        "posted": "Publicado.",
-        "discarded": "Descartado.",
         "problem": "Problema",
         "tried": "Intentado",
         "current_state": "Estado actual",
         "next_step": "Siguiente paso",
         "so_far": "Ticket #{number} hasta ahora",
-        "post": "Publicar",
-        "edit": "Editar y publicar",
-        "discard": "Descartar",
-        "reply": "Respuesta",
     },
     "pt": {
-        "posted": "Publicado.",
-        "discarded": "Descartado.",
         "problem": "Problema",
         "tried": "Tentado",
         "current_state": "Estado atual",
         "next_step": "Próximo passo",
         "so_far": "Ticket #{number} até agora",
-        "post": "Publicar",
-        "edit": "Editar e publicar",
-        "discard": "Descartar",
-        "reply": "Resposta",
     },
 })
 # "-# Translated from {source}", in the ticket's language.
@@ -110,90 +84,12 @@ def summary_card(number: int, summary: Any, language: str = "en") -> discord.ui.
     return card("\n".join(fit([f"### 📋 {title}", *fields])), color=COLOR)
 
 
-def draft_card(text: str, language: str = "en") -> discord.ui.DesignerView:
-    """A draft of the next reply to the owner, with Post / Edit & post / Discard. Only its viewer sees it."""
-    buttons = [
-        discord.ui.Button(
-            label=t(TEXT, action, language),
-            style=discord.ButtonStyle.primary if action == DRAFT_POST else discord.ButtonStyle.secondary,
-            custom_id=f"{DRAFT_PREFIX}{action}",
-        )
-        for action in (DRAFT_POST, DRAFT_EDIT, DRAFT_DISCARD)
-    ]
-    return discord.ui.DesignerView(
-        discord.ui.Container(
-            discord.ui.TextDisplay(trim(text, POST_LIMIT), id=DRAFT_TEXT_ID), discord.ui.ActionRow(*buttons), color=COLOR
-        ),
-        timeout=None,
-    )
-
-
-def done_card(key: str, language: str = "en") -> discord.ui.DesignerView:
-    """What the draft card turns into: POSTED or DISCARDED."""
-    return card(t(TEXT, key, language), color=COLOR)
-
-
-def parse_draft_custom_id(value: str) -> str | None:
-    """post, edit or discard, for a draft card's button."""
-    action = value.removeprefix(DRAFT_PREFIX) if value.startswith(DRAFT_PREFIX) else None
-    return action if action in (DRAFT_POST, DRAFT_EDIT, DRAFT_DISCARD) else None
-
-
-def draft_text(message: Any) -> str:
-    """The draft on a draft card ("" when it has none)."""
-    return next((text for component_id, text in _texts(message) if component_id == DRAFT_TEXT_ID), "").strip()
-
-
-def edit_modal(text: str, channel_id: int, language: str = "en") -> discord.ui.DesignerModal:
-    """Edit & post: the draft in a long text field. Routed by custom id (store=False), so a restart loses nothing."""
-    field = discord.ui.InputText(
-        style=discord.InputTextStyle.long,
-        custom_id=EDIT_FIELD_ID,
-        value=trim(text, POST_LIMIT) or None,
-        max_length=POST_LIMIT,
-        required=True,
-    )
-    return discord.ui.DesignerModal(
-        discord.ui.Label(t(TEXT, "reply", language), field),
-        title=t(TEXT, "edit", language),
-        custom_id=f"{EDIT_MODAL_PREFIX}{channel_id}",
-        store=False,
-    )
-
-
-def parse_edit_modal_id(value: str) -> int | None:
-    """The ticket channel an Edit & post form was opened in."""
-    if not value.startswith(EDIT_MODAL_PREFIX):
-        return None
-    try:
-        return int(value.removeprefix(EDIT_MODAL_PREFIX))
-    except ValueError:
-        return None
-
-
-def edited_text(components: Any) -> str:
-    """The text submitted in the Edit & post form (Label components wrap their field in "component")."""
-
-    def find(items: Any) -> str | None:
-        for item in items if isinstance(items, list) else []:
-            if not isinstance(item, dict):
-                continue
-            if item.get("custom_id") == EDIT_FIELD_ID:
-                return str(item.get("value") or "")
-            nested = [item["component"]] if isinstance(item.get("component"), dict) else item.get("components")
-            if (found := find(nested)) is not None:
-                return found
-        return None
-
-    return (find(components) or "").strip()
-
-
 def signature_line(staff_id: int) -> str:
     return f"-# ✍️ <@{staff_id}>"
 
 
 def posted_card(text: str, staff_id: int) -> discord.ui.DesignerView:
-    """A staff reply posted from Draft reply: the text, then their signature (sent without pings)."""
+    """A staff reply posted by Staff Bulma's ticket_reply: the text, then their signature (sent without pings)."""
     return discord.ui.DesignerView(
         discord.ui.Container(
             discord.ui.TextDisplay(trim(text, POST_LIMIT)),

@@ -8,12 +8,13 @@ buttons and notices in the ticket are English. Buttons are stateless: TicketsCog
 custom id and looks the ticket up by channel, so they survive bot restarts.
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
 import discord
 
-from bulmaai.ui.v2 import already_working, busy, card, facts, trim
+from bulmaai.ui.v2 import already_working, busy, card, facts, fit, trim
 from bulmaai.utils import i18n
 
 PANEL_SELECT_ID = "ticket_panel_select"
@@ -22,10 +23,10 @@ TRANSCRIPT_BUTTON_ID = "ticket_btn_transcript"
 REOPEN_BUTTON_ID = "ticket_btn_reopen"
 DELETE_BUTTON_ID = "ticket_btn_delete"
 AI_BUTTON_ID = "ticket_btn_ai"
-SOLVED_BUTTON_ID = "ticket_btn_solved"
-# Staff copilot (ui/staff_copilot): the ticket so far, and a draft of the next reply to the owner; both ephemeral.
+# The closed card's staff toggle: on = the ticket is solved and gets deleted SOLVED_DELETE_AFTER later.
+AUTOCLOSE_BUTTON_ID = "ticket_btn_autoclose"
+# Staff copilot (ui/staff_copilot): the ticket so far, ephemeral.
 SUMMARY_BUTTON_ID = "ticket_btn_summary"
-DRAFT_BUTTON_ID = "ticket_btn_draft"
 # + ticket id; the Re-open button older "solved" DMs still carry. It now only answers that staff re-open tickets.
 SOLVED_REOPEN_PREFIX = "ticket_solved_reopen:"
 ACTIONS_ID = 800  # the button row on the welcome / closed cards
@@ -33,6 +34,9 @@ LANG_SELECT_ID = "ticket_lang_select"
 # + language code; the old in-ticket language picker (no longer posted; ones already in open tickets still work).
 LANG_BUTTON_PREFIX = "ticket_lang:"
 LANG_ROW_ID = 801  # the support-language select on the welcome card
+GREETING_ID = 802  # the welcome card's greeting text
+OPENED_ID = 803  # the welcome card's "Opened … · language" line
+REQUEST_BUDGET = 3400  # the request card's text (original plus English translation); the greeting takes the rest
 # + "{category key}:{language}"; the language buttons the panel answers with when a member has no or several
 # language roles. The click opens that category's form in that language.
 FORM_BUTTON_PREFIX = "ticket_form:"
@@ -58,7 +62,8 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "reopen_staff": "Only staff can re-open a ticket. If you still need help, please open a new ticket.",
         "deleting": "This ticket will be deleted {when}.",
         "reminder_title": "your ticket is waiting for your reply",
-        "reminder": "Your ticket got an answer and is waiting for yours. Reply there so we can keep helping you.",
+        "reminder": "Your ticket got an answer and is waiting for yours. Reply there so we can keep helping you. "
+        "If there is no reply within 24 hours, the ticket closes automatically.",
         "language_set": "Support language: {name}.",
         "language_changed": "Support language changed to {name} by {mention}.",
         "creating": "🎫 Creating your ticket…",
@@ -86,7 +91,6 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "protected_target": "You can't remove the ticket owner or staff.",
         "ai_paused": "AI is paused for today.",
         "copilot_failed": "I couldn't do that right now. Please try again.",
-        "post_failed": "I couldn't post that reply. Please try again.",
         "assign_bot": "You can't assign a ticket to a bot.",
         "assigned": "📌 {mention}, this ticket was assigned to you by {by}. Please take care of it.",
         "assigned_dm": "{by} assigned this ticket to you. Please take care of it.",
@@ -107,7 +111,8 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "reopen_staff": "Solo el staff puede reabrir un ticket. Si aún necesitas ayuda, abre un ticket nuevo.",
         "deleting": "Este ticket se eliminará {when}.",
         "reminder_title": "tu ticket espera tu respuesta",
-        "reminder": "Tu ticket recibió una respuesta y espera la tuya. Responde allí para que podamos seguir ayudándote.",
+        "reminder": "Tu ticket recibió una respuesta y espera la tuya. Responde allí para que podamos seguir ayudándote. "
+        "Si no respondes en 24 horas, el ticket se cerrará automáticamente.",
         "language_set": "Idioma de soporte: {name}.",
         "language_changed": "Idioma de soporte cambiado a {name} por {mention}.",
         "creating": "🎫 Creando tu ticket…",
@@ -135,7 +140,6 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "protected_target": "No puedes quitar al dueño del ticket ni al staff.",
         "ai_paused": "La IA está en pausa por hoy.",
         "copilot_failed": "No pude hacer eso ahora. Inténtalo de nuevo.",
-        "post_failed": "No pude publicar esa respuesta. Inténtalo de nuevo.",
         "assign_bot": "No puedes asignar un ticket a un bot.",
         "assigned": "📌 {mention}, {by} te asignó este ticket. Por favor, encárgate de él.",
         "assigned_dm": "{by} te asignó este ticket. Por favor, encárgate de él.",
@@ -156,7 +160,8 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "reopen_staff": "Só a staff pode reabrir um ticket. Se ainda precisar de ajuda, abra um novo ticket.",
         "deleting": "Este ticket será excluído {when}.",
         "reminder_title": "seu ticket está esperando sua resposta",
-        "reminder": "Seu ticket recebeu uma resposta e está esperando a sua. Responda lá para continuarmos te ajudando.",
+        "reminder": "Seu ticket recebeu uma resposta e está esperando a sua. Responda lá para continuarmos te ajudando. "
+        "Se não houver resposta em 24 horas, o ticket será fechado automaticamente.",
         "language_set": "Idioma do suporte: {name}.",
         "language_changed": "Idioma do suporte alterado para {name} por {mention}.",
         "creating": "🎫 Criando seu ticket…",
@@ -184,7 +189,6 @@ TEXT: dict[str, dict[str, str]] = i18n.table({
         "protected_target": "Você não pode remover o dono do ticket nem a staff.",
         "ai_paused": "A IA está pausada por hoje.",
         "copilot_failed": "Não consegui fazer isso agora. Tente novamente.",
-        "post_failed": "Não consegui publicar essa resposta. Tente novamente.",
         "assign_bot": "Você não pode atribuir um ticket a um bot.",
         "assigned": "📌 {mention}, {by} atribuiu este ticket a você. Por favor, cuide dele.",
         "assigned_dm": "{by} atribuiu este ticket a você. Por favor, cuide dele.",
@@ -233,6 +237,8 @@ class TicketCategory:
     mod_only: bool = False
     # The owner's messages are translated for the staff present; off where the team handling it shares their language.
     translate_owner: bool = True
+    # The welcome card's accent.
+    color: int = 0x95A5A6
 
     def text(self, language: str) -> CategoryText:
         """The category's words in language (English for an unknown one)."""
@@ -255,6 +261,7 @@ CATEGORIES: dict[str, TicketCategory] = {
     for category in (
         TicketCategory(
             key="bug",
+            color=0xE74C3C,
             emoji="⚙️",
             fallback_slug="bug",
             ai_reply=True,
@@ -268,6 +275,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="patreon",
+            color=0xF96854,
             emoji="💎",
             fallback_slug="patreon",
             ai_reply=True,
@@ -275,6 +283,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="install",
+            color=0x3498DB,
             emoji="📦",
             fallback_slug="install",
             ai_reply=True,
@@ -282,6 +291,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="server",
+            color=0x2ECC71,
             emoji="🖥️",
             fallback_slug="server",
             ai_reply=True,
@@ -289,6 +299,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="report",
+            color=0x992D22,
             emoji="🚨",
             fallback_slug="report",
             ai_reply=False,
@@ -301,6 +312,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="appeal",
+            color=0xF1C40F,
             emoji="⚖️",
             fallback_slug="appeal",
             ai_reply=False,
@@ -309,6 +321,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="partner",
+            color=0x9B59B6,
             emoji="🤝",
             fallback_slug="partner",
             ai_reply=False,
@@ -317,6 +330,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="contribute",
+            color=0x1ABC9C,
             emoji="🙌",
             fallback_slug="contribute",
             ai_reply=False,
@@ -329,6 +343,7 @@ CATEGORIES: dict[str, TicketCategory] = {
         ),
         TicketCategory(
             key="other",
+            color=0x95A5A6,
             emoji="💠",
             fallback_slug="help",
             ai_reply=True,
@@ -771,28 +786,26 @@ def language_changed(language: str, mention: str) -> discord.ui.DesignerView:
 
 
 def control_row(ai_enabled: bool = True, language: str = "en") -> discord.ui.ActionRow:
-    """Staff-only AI toggle (doubles as its status), Solved, Summary and Draft reply, plus Close (in the ticket's
-    language, the owner uses it too), while the ticket is open. Every state change swaps this whole row, so all five
-    buttons stay."""
+    """Close (in the ticket's language, the owner uses it too), the staff-only AI toggle (doubles as its status) and
+    Summary, while the ticket is open. Every state change swaps this whole row, so all three buttons stay."""
     return discord.ui.ActionRow(
+        discord.ui.Button(
+            label=t(language, "close"), emoji="🔒", style=discord.ButtonStyle.danger, custom_id=CLOSE_BUTTON_ID
+        ),
         discord.ui.Button(
             label="AI support: On" if ai_enabled else "AI support: Off",
             emoji="🤖",
             style=discord.ButtonStyle.success if ai_enabled else discord.ButtonStyle.secondary,
             custom_id=AI_BUTTON_ID,
         ),
-        discord.ui.Button(
-            label=t(language, "close"), emoji="🔒", style=discord.ButtonStyle.danger, custom_id=CLOSE_BUTTON_ID
-        ),
-        discord.ui.Button(label="Solved", emoji="✅", style=discord.ButtonStyle.primary, custom_id=SOLVED_BUTTON_ID),
         discord.ui.Button(label="Summary", emoji="📋", style=discord.ButtonStyle.secondary, custom_id=SUMMARY_BUTTON_ID),
-        discord.ui.Button(label="Draft reply", emoji="✍️", style=discord.ButtonStyle.secondary, custom_id=DRAFT_BUTTON_ID),
         id=ACTIONS_ID,
     )
 
 
-def closed_row(url: str | None = None, *, saving: bool = False) -> discord.ui.ActionRow:
-    """Transcript slot: "Saving…" while the close archives it, then a link to the page, or Retry if that failed."""
+def closed_row(url: str | None = None, *, saving: bool = False, auto_close: bool = False) -> discord.ui.ActionRow:
+    """Transcript slot ("Saving…" while the close archives it, then a link to the page, or Retry if that failed), the
+    staff Auto-close toggle (showing its state), Re-Open and Delete."""
     if saving:
         transcript = discord.ui.Button(label="Saving transcript…", custom_id=TRANSCRIPT_BUTTON_ID, disabled=True)
     elif url:
@@ -801,6 +814,12 @@ def closed_row(url: str | None = None, *, saving: bool = False) -> discord.ui.Ac
         transcript = discord.ui.Button(label="Retry transcript", emoji="📄", custom_id=TRANSCRIPT_BUTTON_ID)
     return discord.ui.ActionRow(
         transcript,
+        discord.ui.Button(
+            label="Auto-close: On" if auto_close else "Auto-close: Off",
+            emoji="⏱️",
+            style=discord.ButtonStyle.success if auto_close else discord.ButtonStyle.secondary,
+            custom_id=AUTOCLOSE_BUTTON_ID,
+        ),
         discord.ui.Button(label="Re-Open", emoji="🔓", style=discord.ButtonStyle.success, custom_id=REOPEN_BUTTON_ID),
         discord.ui.Button(label="Delete", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id=DELETE_BUTTON_ID),
         id=ACTIONS_ID,
@@ -817,11 +836,22 @@ def request_text(answers: list[tuple[str, str]]) -> str:
     return "\n".join(parts)
 
 
+TRANSLATION_HEAD = "-# 🇬🇧 English translation"
+
+
 def greeting_text(number: int, category: TicketCategory, mention: str, language: str) -> str:
     return (
         f"## 🎫 #{number:04d} · {category.emoji} {category.name}\n"
         f"{t(language, 'greeting', mention=mention)}\n{t(language, 'no_pings')}"
     )
+
+
+def opened_text(opened_at: datetime, language: str) -> str:
+    flag, name = LANGUAGES.get(language, LANGUAGES["en"])
+    return f"-# Opened <t:{int(opened_at.timestamp())}:R> · {flag} {name}"
+
+
+_OPENED_RE = re.compile(r"^(-# Opened <t:\d+:R>) · ")
 
 
 def welcome_view(
@@ -831,13 +861,31 @@ def welcome_view(
     answers: list[tuple[str, str]],
     mention: str,
     language: str,
+    opened_at: datetime | None = None,
+    avatar_url: str | None = None,
+    translation: str | None = None,
     ai_enabled: bool = True,
 ) -> discord.ui.DesignerView:
-    """Greeting card, then the request in its own card, then the language select and the button row."""
+    """Greeting card in the category's color (the owner's avatar beside it, when there is one, and when it was opened
+    in which language), then the request in its own card: the original answers first (its first TextDisplay, which
+    TicketsCog.on_language reads back), then the English translation when there is one. Then the language select and
+    the button row."""
+    greeting_display = discord.ui.TextDisplay(greeting_text(number, category, mention, language), id=GREETING_ID)
     greeting = discord.ui.Container(
-        discord.ui.TextDisplay(greeting_text(number, category, mention, language)), color=BLURPLE
+        discord.ui.Section(greeting_display, accessory=discord.ui.Thumbnail(avatar_url)) if avatar_url else greeting_display,
+        *([discord.ui.TextDisplay(opened_text(opened_at, language), id=OPENED_ID)] if opened_at else []),
+        color=category.color,
     )
-    request = discord.ui.Container(discord.ui.TextDisplay(request_text(answers)[:3000]), color=REQUEST_GREY)
+    if translation:
+        original, english = fit([request_text(answers), f"{TRANSLATION_HEAD}\n{translation}"], REQUEST_BUDGET)
+        request = discord.ui.Container(
+            discord.ui.TextDisplay(original),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(english),
+            color=REQUEST_GREY,
+        )
+    else:
+        request = discord.ui.Container(discord.ui.TextDisplay(trim(request_text(answers), REQUEST_BUDGET)), color=REQUEST_GREY)
     return discord.ui.DesignerView(
         greeting, request, language_row(language), control_row(ai_enabled, language), timeout=None
     )
@@ -846,9 +894,17 @@ def welcome_view(
 def relanguage_welcome(
     view: discord.ui.DesignerView, *, number: int, category: TicketCategory, mention: str, language: str
 ) -> discord.ui.DesignerView:
-    """The posted welcome card (read back with DesignerView.from_message) with its greeting, select and Close button
-    in language."""
-    view.children[0].items[0].content = greeting_text(number, category, mention, language)
+    """The posted welcome card (read back with DesignerView.from_message) with its greeting, opened line, select and
+    Close button in language."""
+    greeting = view.get_item(GREETING_ID)
+    if greeting is None:  # a card posted before the greeting had its id
+        first = view.children[0].items[0]
+        greeting = first if isinstance(first, discord.ui.TextDisplay) else None
+    if greeting is not None:
+        greeting.content = greeting_text(number, category, mention, language)
+    if (opened := view.get_item(OPENED_ID)) is not None and (match := _OPENED_RE.match(opened.content)):
+        flag, name = LANGUAGES.get(language, LANGUAGES["en"])
+        opened.content = f"{match.group(1)} · {flag} {name}"
     if (row := view.get_item(LANG_ROW_ID)) is not None:
         row.children[0].options = language_row(language).children[0].options
     if (actions := view.get_item(ACTIONS_ID)) is not None:
@@ -858,13 +914,26 @@ def relanguage_welcome(
     return view
 
 
-def closed_view(mention: str | None, reason: str | None) -> discord.ui.DesignerView:
-    """Only staff can still see the channel once it's closed, so this is English."""
+def closed_view(
+    mention: str | None,
+    reason: str | None,
+    *,
+    delete_at: datetime | None = None,
+    url: str | None = None,
+    saving: bool = True,
+) -> discord.ui.DesignerView:
+    """Only staff can still see the channel once it's closed, so this is English. delete_at: auto-close is on (the
+    sweep deletes it then unless it's re-opened), shown on the card and on its toggle. Rebuilt whole from the ticket
+    row whenever the toggle flips."""
     text = "### 🔒 Ticket closed\n" + (f"Closed by {mention}." if mention else "Closed.")
     if reason:
         text += f"\n**Reason** {reason[:1000]}"
+    if delete_at is not None:
+        text += f"\n-# 🗑️ Deletes <t:{int(delete_at.timestamp())}:R> unless re-opened."
     return discord.ui.DesignerView(
-        discord.ui.Container(discord.ui.TextDisplay(text), color=CLOSED_RED), closed_row(saving=True), timeout=None
+        discord.ui.Container(discord.ui.TextDisplay(text), color=CLOSED_RED),
+        closed_row(url, saving=saving, auto_close=delete_at is not None),
+        timeout=None,
     )
 
 

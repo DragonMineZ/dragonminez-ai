@@ -512,7 +512,7 @@ class Settings:
     # (services/mod_source: the list_mod_files / read_mod_file tools).
     mod_source_branch: str = "main"
     # Private notes on what each push to the mod repo changed (services/code_notes, model code_notes_model); staff
-    # read them through /devlog and the staff draft's search_code_notes tool.
+    # read them through /devlog and Staff Bulma's search_code_notes tool.
     code_notes_enabled: bool = True
     code_notes_model: str = "claude-haiku-5-5"
     # Staff Bulma (services/staff_store): the Helper+ assistant. Requests per staff member per day; a distill pass

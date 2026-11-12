@@ -698,7 +698,7 @@ async def _execute_ticket(action: str, args: dict, bot, guild: discord.Guild, me
             raise ValueError(f"{number} was already closed.")
         return f"Closed {number}."
     if action == "ticket_solve":
-        done = await cog.solve_ticket(channel, closer_id=member.id, staff_solved=True)
+        done = await cog.solve_ticket(channel, closer_id=member.id, staff=True)
         if done is None:
             raise ValueError(f"{number} was already closed.")
         return f"Closed {number} as solved."

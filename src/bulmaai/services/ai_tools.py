@@ -38,8 +38,6 @@ log = logging.getLogger(__name__)
 
 ASK_TOOL = "ask_requester"
 ACTION_TOOL = "offer_action"
-CODE_NOTES_TOOL = "search_code_notes"
-STAFF_TOOL_NAMES = (CODE_NOTES_TOOL,)  # only in the staff draft run (cogs/ai_tickets.draft_reply)
 CONTROL_TOOLS = (ASK_TOOL, ACTION_TOOL)  # local, no lookup: they only attach controls to the reply
 PATCH_NOTES_EXCERPT_CHARS = 1500
 IDENTITY_TOOLS = frozenset({"get_patreon_status", "get_user_bug_reports", "search_known_issues", "get_latest_releases"})
@@ -268,7 +266,8 @@ async def read_mod_file(
 
 
 async def search_code_notes(query: str = "", _bot_context: Any = None) -> dict[str, Any]:
-    """Staff-only: the private notes on what recent pushes to the mod repo changed (services/code_notes)."""
+    """Staff-only: the private notes on what recent pushes to the mod repo changed (services/code_notes). Not an AI
+    support tool: Staff Bulma (services/staff_tools) calls it."""
     try:
         notes = await code_notes.search(str(query or "")[:200], code_notes.SEARCH_LIMIT)
     except Exception:
@@ -392,16 +391,6 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Without query: the first line to read (1 = the top). Null: 1.",
             },
         },
-    ),
-    CODE_NOTES_TOOL: _function_schema(
-        CODE_NOTES_TOOL,
-        "Staff-only dev log: short internal notes on what recent commits to the DragonMineZ mod changed and why "
-        "(AI summaries of the diffs, so they can be wrong or incomplete). Use it to see whether a recent change "
-        "explains a bug or behavior the ticket describes, or when a config key, command or system changed. "
-        "Verify against read_mod_file when it matters. Your draft goes to the member: use the notes to inform it, "
-        "never quote them, and never mention commits, branches, authors or that a dev log exists. Empty query "
-        "lists the latest notes.",
-        {"query": {"type": "string", "description": "A system, feature, config key, command or file name to find."}},
     ),
     # Not strict: each kind fills only its own fields; ui/ai_asks validates every call (errors go back to the model).
     ASK_TOOL: {
@@ -561,15 +550,12 @@ TOOL_FUNCS = {
     "get_latest_releases": get_latest_releases,
     "list_mod_files": list_mod_files,
     "read_mod_file": read_mod_file,
-    CODE_NOTES_TOOL: search_code_notes,
     ASK_TOOL: ask_requester,
     ACTION_TOOL: offer_action,
 }
-SUPPORT_TOOL_NAMES = [name for name in TOOL_SCHEMAS if name not in STAFF_TOOL_NAMES]
+SUPPORT_TOOL_NAMES = list(TOOL_SCHEMAS)
 # Runs whose reply can't carry controls (/ask) get only the lookups.
 LOOKUP_TOOL_NAMES = [name for name in SUPPORT_TOOL_NAMES if name not in CONTROL_TOOLS]
-# The staff draft run: the lookups plus the staff-only dev log.
-STAFF_DRAFT_TOOL_NAMES = [*LOOKUP_TOOL_NAMES, *STAFF_TOOL_NAMES]
 
 
 async def _labeled(label: str, coro: Any) -> str | None:

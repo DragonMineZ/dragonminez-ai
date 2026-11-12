@@ -818,6 +818,53 @@ class AnswerControlsTests(unittest.IsolatedAsyncioTestCase):
         target.to_reference.assert_called_once_with(fail_if_not_exists=False)
         self.assertFalse(channel.send.await_args.kwargs["allowed_mentions"].replied_user)
 
+    def _ping_channel(self, sends):
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = 13
+        channel.category = types.SimpleNamespace(id=77)
+        channel.send = AsyncMock(side_effect=[types.SimpleNamespace(id=n) for n in sends])
+        return channel
+
+    async def test_in_a_ticket_the_first_card_pings_only_the_person_answered(self) -> None:
+        cog = self._cog()
+        channel = self._ping_channel([1, 2])
+
+        await cog._send_messages_with_typing(channel, ["word " * 1000], ai_answer=True, requester_id=42)
+        first, second = channel.send.await_args_list
+        self.assertEqual(texts(first.kwargs["view"])[0], "<@42>")
+        self.assertNotIn("<@42>", "".join(texts(second.kwargs["view"])))
+        allowed = first.kwargs["allowed_mentions"]
+        self.assertEqual([user.id for user in allowed.users], [42])
+        self.assertFalse(allowed.everyone)
+        self.assertFalse(allowed.roles)
+        self.assertEqual(second.kwargs["allowed_mentions"].users, False)
+
+    async def test_no_ping_without_a_requester_or_outside_tickets(self) -> None:
+        cog = self._cog()
+        channel = self._ping_channel([1])
+        await cog._send_messages_with_typing(channel, ["Hi."], ai_answer=True)
+        self.assertNotIn("<@", texts(channel.send.await_args.kwargs["view"])[0])
+        self.assertEqual(channel.send.await_args.kwargs["allowed_mentions"].users, False)
+
+        public = types.SimpleNamespace(id=13, send=AsyncMock(return_value=types.SimpleNamespace(id=1)))
+        await cog._send_messages_with_typing(public, ["Hi."], ai_answer=True, requester_id=42)
+        self.assertNotIn("<@", texts(public.send.await_args.kwargs["view"])[0])
+        self.assertEqual(public.send.await_args.kwargs["allowed_mentions"].users, False)
+
+    async def test_the_mention_line_stays_out_of_history_and_survives_edits(self) -> None:
+        cog = self._cog()
+        channel = self._ping_channel([1])
+        with patch.object(ai_tickets.ask_store, "save", AsyncMock()):
+            await cog._send_messages_with_typing(channel, ["Try this."], ai_answer=True, ask=CHOICES, requester_id=42)
+        view = channel.send.await_args.kwargs["view"]
+        self.assertEqual(texts(view)[0], "<@42>")
+        message = sent_message(view)
+        self.assertEqual(ai_tickets._card_text(message).replace(ai_tickets.AI_FOOTER, "").strip(), "Try this.")
+
+        answered = sent_message(ai_tickets._answered_card(message, [ai_asks.pick_line(42, "Stats")]))
+        self.assertEqual(texts(discord.ui.DesignerView.from_message(answered))[0], "<@42>")
+        self.assertNotIn("<@42>", ai_tickets._card_text(answered).replace(ai_asks.pick_line(42, "Stats"), ""))
+
     async def test_only_the_last_chunk_gets_the_controls_and_its_spec_is_saved(self) -> None:
         cog = self._cog()
         channel = types.SimpleNamespace(

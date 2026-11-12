@@ -2,7 +2,7 @@
 
 The mod repo's push webhook (cogs/build_gate) hands every verified push here. Each new commit's diff (source files
 only, capped) goes to one small Haiku call that writes a note, stored in `code_notes`. Staff read them through
-/devlog and the staff draft run's search_code_notes tool. Nothing here is posted to GitHub or put in knowledge_docs
+/devlog and Staff Bulma's search_code_notes tool. Nothing here is posted to GitHub or put in knowledge_docs
 (that table feeds public answers), and commit text and diffs are data to the model, never instructions.
 """
 

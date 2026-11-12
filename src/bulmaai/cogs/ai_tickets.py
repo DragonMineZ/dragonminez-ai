@@ -31,7 +31,7 @@ from bulmaai.services.ai_guard import (
     screen_reply,
     strip_links,
 )
-from bulmaai.services.ai_tools import STAFF_DRAFT_TOOL_NAMES, SUPPORT_TOOL_NAMES
+from bulmaai.services.ai_tools import SUPPORT_TOOL_NAMES
 from bulmaai.services.staff_copilot import (
     TicketSoFar,
     summarize_so_far,
@@ -80,6 +80,7 @@ from bulmaai.services.tickets import (
     get_ticket_by_channel,
     hide_closed_messages,
     note_ticket_message,
+    store_support_suggestion,
 )
 from bulmaai.ui import ai_asks, ai_feedback, staff_copilot
 from bulmaai.ui.ticket_views import CATEGORIES, LANGUAGES, TicketModal, msg_already_open, panel_view, ticket_log_card
@@ -110,6 +111,7 @@ BUG_POST_FALLBACK_NAME = "Bug report"
 DISCORD_MESSAGE_LIMIT = 1900
 # V2 cards allow 4000 characters of text per message; leave room for the footer.
 CARD_TEXT_LIMIT = 3500
+MENTION_TEXT_ID = 824  # the `<@owner>` line that starts a ticket answer's first card (the model can't set ids)
 AI_CARD_COLOR = discord.Color.from_rgb(88, 101, 242)
 # /aisupport's own replies to the staff member (its public result in the ticket stays English).
 TEXT = table({
@@ -506,7 +508,7 @@ def _card_text(message: discord.Message) -> str:
         for item in _component_dicts(message)
         if item.get("type") == 10
         and item.get("content")
-        and item.get("id") != staff_copilot.SIGNED_TEXT_ID
+        and item.get("id") not in (staff_copilot.SIGNED_TEXT_ID, MENTION_TEXT_ID)
         and not item["content"].startswith(ai_asks.ANSWER_LINE_PREFIX)
         and item["content"] not in ai_feedback.THANKS_LINES
     ]
@@ -535,12 +537,19 @@ def _is_answer_card(message: Any, bot_user: discord.ClientUser | None) -> bool:
 def _rebuilt(message: discord.Message, *items: discord.ui.Item) -> discord.ui.DesignerView:
     """The card's own text (not the text that belongs to its controls), then items."""
     own = [
-        item["content"]
+        (item["content"], item.get("id"))
         for item in _component_dicts(message)
         if item.get("type") == 10 and item.get("content") and item.get("id") != ai_asks.CONTROLS_TEXT_ID
     ]
     return discord.ui.DesignerView(
-        discord.ui.Container(*(discord.ui.TextDisplay(text) for text in own), *items, color=AI_CARD_COLOR),
+        discord.ui.Container(
+            *(
+                discord.ui.TextDisplay(text, id=MENTION_TEXT_ID) if component_id == MENTION_TEXT_ID else discord.ui.TextDisplay(text)
+                for text, component_id in own
+            ),
+            *items,
+            color=AI_CARD_COLOR,
+        ),
         timeout=None,
     )
 
@@ -639,8 +648,14 @@ def _resolve_prompt_probability(
     return min(1.0, confidence ** max(exponent, 0.0))
 
 
-def _card(text: str, color: discord.Color = AI_CARD_COLOR, *rows: discord.ui.ActionRow) -> discord.ui.DesignerView:
-    return discord.ui.DesignerView(discord.ui.Container(discord.ui.TextDisplay(text), *rows, color=color), timeout=None)
+def _card(
+    text: str, color: discord.Color = AI_CARD_COLOR, *rows: discord.ui.ActionRow, mention_id: int | None = None
+) -> discord.ui.DesignerView:
+    """mention_id puts a `<@id>` line of its own first (MENTION_TEXT_ID, so _card_text can drop it again)."""
+    lead = [discord.ui.TextDisplay(f"<@{mention_id}>", id=MENTION_TEXT_ID)] if mention_id is not None else []
+    return discord.ui.DesignerView(
+        discord.ui.Container(*lead, discord.ui.TextDisplay(text), *rows, color=color), timeout=None
+    )
 
 
 def _member_roles(member: discord.Member | None, settings: Any) -> str:
@@ -1006,25 +1021,37 @@ class AITicketsCog(ReloadableCog):
 
         if ai_answer:
             chunks[-1] = _with_footer(chunks[-1])
-        views = [_card(chunk) for chunk in chunks]
+        # In a ticket the first card starts with the person answered, and only that send pings (only them).
+        no_pings = discord.AllowedMentions.none()  # none(): a reply doesn't ping its author either
+        mentions = [no_pings] * len(chunks)
+        lead: list[int | None] = [None] * len(chunks)
+        if requester_id is not None and _channel_kind(channel, settings=self.bot.settings) == "ticket":
+            lead[0] = requester_id
+            mentions[0] = discord.AllowedMentions(
+                everyone=False, roles=False, users=[discord.Object(id=requester_id)], replied_user=False
+            )
+        views = [_card(chunk, mention_id=mention) for chunk, mention in zip(chunks, lead)]
         feedback = feedback and not ask and requester_id is not None
         if ask and requester_id is not None:
-            views[-1] = _card(chunks[-1], AI_CARD_COLOR, *ai_asks.ask_rows(ask, requester_id, language))
+            views[-1] = _card(
+                chunks[-1], AI_CARD_COLOR, *ai_asks.ask_rows(ask, requester_id, language), mention_id=lead[-1]
+            )
         elif feedback:
-            views[-1] = _card(chunks[-1], AI_CARD_COLOR, ai_feedback.feedback_row(requester_id))
+            views[-1] = _card(
+                chunks[-1], AI_CARD_COLOR, ai_feedback.feedback_row(requester_id), mention_id=lead[-1]
+            )
         typing_lead_seconds = max(self.bot.settings.ai_support_typing_lead_seconds, 0)
-        allowed_mentions = discord.AllowedMentions.none()  # none(): a reply doesn't ping its author either
         # Only the first card replies (reply_to); a deleted target just sends it unreplied.
         references = [reply_to.to_reference(fail_if_not_exists=False) if reply_to else None] + [None] * (len(views) - 1)
         try:
             if typing_lead_seconds <= 0:
-                for view, reference in zip(views, references):
-                    sent = await channel.send(view=view, allowed_mentions=allowed_mentions, reference=reference)
+                for view, reference, allowed in zip(views, references, mentions):
+                    sent = await channel.send(view=view, allowed_mentions=allowed, reference=reference)
             else:
                 async with channel.typing():
                     await asyncio.sleep(typing_lead_seconds)
-                    for view, reference in zip(views, references):
-                        sent = await channel.send(view=view, allowed_mentions=allowed_mentions, reference=reference)
+                    for view, reference, allowed in zip(views, references, mentions):
+                        sent = await channel.send(view=view, allowed_mentions=allowed, reference=reference)
         except discord.HTTPException:
             log.exception(
                 "Failed to send AI support response",
@@ -1134,7 +1161,7 @@ class AITicketsCog(ReloadableCog):
     def _signed_turn(
         self, entry: discord.Message, requester_id: int | None, analyses: dict[int, str] | None = None
     ) -> ConversationMessage | None:
-        """A reply staff wrote with Draft reply and posted (ui/staff_copilot.posted_card): their turn, not Bulma's,
+        """A reply staff wrote with the removed Draft reply and posted (a signed card, ui/staff_copilot.signed_by): their turn, not Bulma's,
         though the card is hers. Its signature line says whose it is."""
         if entry.author != self.bot.user or (staff_id := staff_copilot.signed_by(entry)) is None:
             return None
@@ -1907,7 +1934,7 @@ class AITicketsCog(ReloadableCog):
             channel, member, category_label=category_label, form_text=form_text, language=language
         )
 
-    # ---- staff copilot (the welcome card's Summary / Draft reply, translations of staff messages) -------------
+    # ---- staff copilot (the welcome card's Summary, translations of staff messages) -------------
 
     async def ticket_summary(self, channel: discord.TextChannel, ticket: Any) -> TicketSoFar | None:
         """📋 Summary: the open ticket so far for staff (problem, tried, current state, next step), from the same
@@ -1917,54 +1944,6 @@ class AITicketsCog(ReloadableCog):
         return await summarize_so_far(
             lines, model=settings.ai_ticket_summary_model, timeout_seconds=settings.ai_support_timeout_seconds
         )
-
-    async def draft_reply(self, channel: discord.TextChannel, ticket: Any, staff: discord.abc.User) -> str | None:
-        """✍️ Draft reply: the support agent writes staff's next reply to the owner, in the ticket's language, from the
-        ticket's history (lookup tools only, no controls; traces staff_draft*). The reply passed ai_guard in
-        ai_client. None when there is nothing to post; raises when the model call fails."""
-        settings = self.bot.settings
-        owner_id = ticket.owner_id
-        language = ticket.language or "en"
-        history = await self._ticket_history(channel, owner_id, {})
-        owner = channel.guild.get_member(owner_id)
-        name = safe_name(owner.display_name) if owner is not None else "unknown"
-        context_lines = [
-            "channel: support ticket",
-            f"requester: {name} (roles: {_member_roles(owner, settings)})",
-            *([f"ticket opened: {opened}"] if (opened := _relative_age(getattr(channel, "created_at", None))) else []),
-            _language_line(language),
-            f"a staff member ({safe_name(getattr(staff, 'display_name', staff.name))}) asked you to draft their next "
-            f"reply to the requester: write it as their reply, in {LANGUAGE_NAMES.get(language, 'English')}, ready to "
-            "post under their name (don't introduce yourself, don't say you are an AI, never hand off to staff: they "
-            "are staff); no buttons or controls",
-        ]
-        profiles = await self._staff_ticket_profiles(channel, extra_id=staff.id)
-        context_lines.extend(await self._staff_ticket_lines(channel, profiles))
-        clicker = next((p for p in profiles if p["user_id"] == staff.id), None)
-        if clicker is not None and (nickname := safe_name(clicker.get("nickname") or staff.display_name)):
-            context_lines.append(
-                f"the staff member's nickname is {nickname}: the draft may sign off naturally with it "
-                "(no signature line, their name is already on the card); use neutral wording for them, never guess "
-                "their gender"
-            )
-        result = await run_support_agent(
-            messages=history,
-            enabled_tools=STAFF_DRAFT_TOOL_NAMES,
-            language_hint=language,
-            user_id=owner_id,
-            channel_id=channel.id,
-            ticket_conversation=True,
-            bot=self.bot,
-            settings=settings,
-            context_lines=context_lines,
-            requester_is_staff=False,
-            channel_kind="ticket",
-            workflow_prefix="staff_draft",
-        )
-        reply = (result.get("reply") or "").strip()
-        if result.get("paused") or reply in ("", "(no reply)"):
-            return None
-        return trim(reply, staff_copilot.POST_LIMIT)
 
     def staff_replied(self, channel_id: int, staff_id: int | None = None) -> None:
         """A draft staff posted (TicketsCog) is them speaking: like a typed staff message, it drops the AI answer
@@ -2035,13 +2014,10 @@ class AITicketsCog(ReloadableCog):
             return
         await self._post_translation(message, text, screened, source)
 
-    async def _staff_ticket_profiles(self, channel: discord.TextChannel, extra_id: int | None = None) -> list[dict]:
-        """Opted-in (ticket_info) profiles of the staff who wrote in the ticket, plus extra_id: one query; failures
-        add nothing."""
+    async def _staff_ticket_profiles(self, channel: discord.TextChannel) -> list[dict]:
+        """Opted-in (ticket_info) profiles of the staff who wrote in the ticket: one query; failures add nothing."""
         try:
             ids = sorted(await self._ticket_participants(channel))
-            if extra_id is not None and extra_id not in ids:
-                ids.append(extra_id)
             return await staff_store.ticket_profiles(ids) if ids else []
         except Exception:
             log.info("Could not read staff ticket profiles for channel %s", channel.id, exc_info=True)
@@ -3023,18 +2999,6 @@ class AITicketsCog(ReloadableCog):
             log.exception("Failed to build hosted ticket transcript", extra={"channel_id": channel.id})
             return None
 
-    async def _suggest_support_info(
-        self, channel_id: int, summary: TicketSummary, *, ticket_id: int | None, page_link: str | None
-    ) -> None:
-        """Hands the summary's support info suggestion to SupportInfoCog for staff review; never breaks the close."""
-        support_cog = self.bot.get_cog("SupportInfoCog")
-        if support_cog is None:
-            return
-        try:
-            await support_cog.suggest_from_ticket(summary.support_info, ticket_id=ticket_id, page_link=page_link)
-        except Exception:
-            log.exception("Failed to suggest support info", extra={"channel_id": channel_id})
-
     async def _close_ticket(
         self,
         channel: discord.TextChannel,
@@ -3042,12 +3006,10 @@ class AITicketsCog(ReloadableCog):
         closed_by_id: int | None,
         requester_id: int | None,
         resolved: bool | None,
-        staff_solved: bool = False,
-        ticket_id: int | None = None,
     ) -> bool:
         """TicketsCog's archive step: transcript → hosted HTML page → summarize → learn (knowledge_docs) → record.
-        resolved=None lets the summary decide. staff_solved: closed with the staff Solved button; then a support info
-        suggestion from the summary goes to staff review.
+        resolved=None lets the summary decide. The summary's support info suggestion is kept on the transcript row;
+        it goes to staff review only when a staff member turns the closed card's auto-close on (TicketsCog).
         Returns whether the transcript was saved for the panel."""
         archived = False
         if channel.id in self._closing_channels or channel.id in self._archived_channels:
@@ -3100,12 +3062,6 @@ class AITicketsCog(ReloadableCog):
                     )
                 except Exception:
                     log.exception("Failed to save ticket knowledge", extra={"channel_id": channel.id})
-            # The Solved click is staff vouching for the ticket, and staff approve the suggestion before it is used.
-            if staff_solved and summary is not None and summary.support_info is not None:
-                await self._suggest_support_info(
-                    channel.id, summary, ticket_id=ticket_id, page_link=page_url(settings, page.token) if page else None
-                )
-
             confidence = self._last_confidence.pop(channel.id, None)
             try:
                 await record_ticket_transcript(
@@ -3127,6 +3083,12 @@ class AITicketsCog(ReloadableCog):
                 archived = True  # the panel's transcript row is the archive now
             except Exception:
                 log.exception("Failed to record ticket transcript", extra={"channel_id": channel.id})
+            if archived:
+                # Only a staff click may turn it into a suggestion (TicketsCog's auto-close toggle), so it waits here.
+                try:
+                    await store_support_suggestion(channel.id, summary.support_info if summary else None)
+                except Exception:
+                    log.exception("Failed to store support info suggestion", extra={"channel_id": channel.id})
             if archived:
                 await self._post_ticket_log(
                     channel.id,

@@ -119,60 +119,52 @@ class CloseSuggestionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.suggestion = SupportInfoSuggestion("temporary", "Iris crash", "Update to 2.2.2.")
 
-    async def close(self, lines, *, staff_solved: bool, suggestion="default") -> None:
+    async def close(self, lines, *, suggestion="default", recorded=True):
+        """A close's archive step; returns the store_support_suggestion mock."""
         suggestion = self.suggestion if suggestion == "default" else suggestion
         summary = TicketSummary("Crash", "Crash.", "Updated.", True, (), False, suggestion)
         channel = SimpleNamespace(
             id=10, name="ticket-10", guild=SimpleNamespace(id=1), created_at=NOW, send=AsyncMock(), delete=AsyncMock()
         )
         self.cog._archived_channels.clear()
+        record = AsyncMock() if recorded else AsyncMock(side_effect=RuntimeError("db down"))
         with (
             patch.object(self.cog, "_collect_transcript", AsyncMock(return_value=(lines, 42))),
             patch("bulmaai.cogs.ai_tickets.summarize_ticket", AsyncMock(return_value=summary)),
-            patch("bulmaai.cogs.ai_tickets.record_ticket_transcript", AsyncMock()),
+            patch("bulmaai.cogs.ai_tickets.record_ticket_transcript", record),
             patch("bulmaai.cogs.ai_tickets.delete_image_analyses", AsyncMock()),
+            patch("bulmaai.cogs.ai_tickets.store_support_suggestion", AsyncMock()) as store,
         ):
-            await self.cog._close_ticket(
-                channel,
-                closed_by_id=5,
-                requester_id=42,
-                resolved=True,
-                staff_solved=staff_solved,
-                ticket_id=42,
-            )
+            await self.cog._close_ticket(channel, closed_by_id=5, requester_id=42, resolved=True)
+        return store
 
     def lines(self, *kinds):
         return [TranscriptLine(NOW, kind, kind.title(), "text") for kind in kinds]
 
-    async def test_staff_solved_close_suggests_even_without_staff_lines(self) -> None:
-        await self.close(self.lines("requester", "assistant"), staff_solved=True)
-        self.support_cog.suggest_from_ticket.assert_awaited_once_with(
-            self.suggestion, ticket_id=42, page_link=f"https://tickets.example/t/{'p' * 32}"
-        )
-
-    async def test_no_suggestion_otherwise(self) -> None:
-        await self.close(self.lines("requester", "staff"), staff_solved=False)
-        await self.close(self.lines("requester", "staff"), staff_solved=True, suggestion=None)
+    async def test_every_close_keeps_the_suggestion_for_a_staff_click_and_suggests_nothing_itself(self) -> None:
+        store = await self.close(self.lines("requester", "assistant"))
+        store.assert_awaited_once_with(10, self.suggestion)
         self.support_cog.suggest_from_ticket.assert_not_awaited()
 
-    async def test_a_failing_suggestion_never_breaks_the_close(self) -> None:
-        self.support_cog.suggest_from_ticket.side_effect = RuntimeError("db down")
-        with patch("bulmaai.cogs.ai_tickets.record_ticket_transcript", AsyncMock()):
-            await self.close(self.lines("staff"), staff_solved=True)
+    async def test_a_close_without_a_suggestion_clears_the_stored_one(self) -> None:
+        store = await self.close(self.lines("requester", "staff"), suggestion=None)
+        store.assert_awaited_once_with(10, None)
+
+    async def test_nothing_is_stored_when_the_transcript_was_not_recorded(self) -> None:
+        with self.assertLogs("bulmaai.cogs.ai_tickets", "ERROR"):
+            store = await self.close(self.lines("staff"), recorded=False)
+        store.assert_not_awaited()
         self.assertIn(10, self.cog._archived_channels)
 
-    async def test_tickets_archive_flags_only_the_staff_solved_close(self) -> None:
+    async def test_tickets_archive_passes_no_suggestion_flag(self) -> None:
         tickets = make_tickets_cog()
         ai_cog = SimpleNamespace(forget_archived=MagicMock(), _close_ticket=AsyncMock(return_value=True))
         tickets.bot.get_cog = lambda name: ai_cog
-        await tickets._archive(make_channel(), make_ticket(), 5, True, True)
-        self.assertTrue(ai_cog._close_ticket.await_args.kwargs["staff_solved"])
-        self.assertEqual(ai_cog._close_ticket.await_args.kwargs["ticket_id"], 42)
-        # The owner confirming it solved is resolved too, but isn't staff vouching for a suggestion.
         for resolved in (True, None):
             await tickets._archive(make_channel(), make_ticket(), 5, resolved)
-            self.assertFalse(ai_cog._close_ticket.await_args.kwargs["staff_solved"])
-
+            self.assertEqual(
+                ai_cog._close_ticket.await_args.kwargs, {"closed_by_id": 5, "requester_id": 100, "resolved": resolved}
+            )
 
 class ReviewCardTests(unittest.IsolatedAsyncioTestCase):
     async def test_card_content_and_buttons(self) -> None:

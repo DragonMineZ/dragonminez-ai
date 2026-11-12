@@ -1,4 +1,4 @@
-"""Ticket info opt-in: staff who opted in and wrote in a ticket are described to the ticket AI and to drafts."""
+"""Ticket info opt-in: staff who opted in and wrote in a ticket are described to the ticket AI."""
 
 import os
 import types
@@ -109,31 +109,6 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
             profiles = await cog._staff_ticket_profiles(self.channel())
         self.assertEqual(profiles, [])
         self.assertEqual(await cog._staff_ticket_lines(self.channel(), profiles), [])
-
-    async def draft(self, clicker_profiles, staff_id=200):
-        cog = self.cog()
-        channel = self.channel()
-        ticket = types.SimpleNamespace(owner_id=100, language="es")
-        staff = member(staff_id, name="Vegeta")
-        agent = AsyncMock(return_value={"reply": "ok", "tool_results": []})
-        with (
-            patch.object(cog, "_ticket_history", AsyncMock(return_value=[])),
-            patch.object(ai_tickets, "run_support_agent", agent),
-            patch.object(ai_tickets, "tier_for", return_value=ai_tickets.Tier.HELPER),
-            patch.object(ai_tickets.staff_store, "ticket_profiles", AsyncMock(return_value=clicker_profiles)),
-        ):
-            await cog.draft_reply(channel, ticket, staff)
-        return "\n".join(agent.await_args.kwargs["context_lines"])
-
-    async def test_draft_gets_nickname_line_when_clicker_opted_in(self):
-        context = await self.draft([profile(200, nickname="Veggie")])
-        self.assertIn("staff in this ticket: Veggie", context)
-        self.assertIn("nickname is Veggie", context)
-
-    async def test_draft_without_opt_in_has_no_staff_lines(self):
-        context = await self.draft([])
-        self.assertNotIn("nickname", context)
-        self.assertNotIn("staff in this ticket", context)
 
 
 if __name__ == "__main__":

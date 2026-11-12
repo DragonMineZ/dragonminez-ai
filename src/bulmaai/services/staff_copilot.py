@@ -1,6 +1,7 @@
 """The staff copilot's single-shot model calls in tickets: the "ticket so far" summary behind 📋 Summary, and the
 support-tone translation of a staff message into the ticket's language, the translation of the owner's message
-into the staff's languages (one call for all of them), and the cheap checks for when one is wanted. Draft reply runs the support agent instead (cogs/ai_tickets.draft_reply). The Discord side is in
+into the staff's languages (one call for all of them), and the cheap checks for when one is wanted.
+The Discord side is in
 cogs/tickets.py, cogs/ai_tickets.py and ui/staff_copilot.py."""
 
 import asyncio

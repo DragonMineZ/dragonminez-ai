@@ -1,5 +1,5 @@
-"""Staff copilot in tickets: the welcome card's Summary and Draft reply buttons, the draft's Post / Edit & post /
-Discard, staff-signed posts read back as the staff member's turn, and Bulma's translations of staff messages."""
+"""Staff copilot in tickets: the welcome card's Summary button, staff-signed posts (Staff Bulma's ticket_reply) read
+back as the staff member's turn, and Bulma's translations of staff messages."""
 
 import asyncio
 import json
@@ -21,7 +21,6 @@ from bulmaai.cogs.ai_tickets import AITicketsCog
 from bulmaai.cogs.tickets import TicketsCog
 from bulmaai.services import staff_copilot as copilot
 from bulmaai.services import tickets as db
-from bulmaai.services.ai_tools import STAFF_DRAFT_TOOL_NAMES
 from bulmaai.services.ticket_transcripts import TranscriptLine
 from bulmaai.ui import staff_copilot, v2
 from bulmaai.ui import ticket_views as views
@@ -141,19 +140,16 @@ def fake_client(payload):
 
 
 class ControlRowTests(unittest.IsolatedAsyncioTestCase):
-    def test_the_row_ends_with_summary_and_draft_reply_for_staff(self):
+    def test_the_row_ends_with_summary_for_staff(self):
         row = views.control_row()
-        summary, draft = row.children[-2:]
+        summary = row.children[-1]
         self.assertEqual(
-            [(b.custom_id, b.label, str(b.emoji), b.style) for b in (summary, draft)],
-            [
-                (views.SUMMARY_BUTTON_ID, "Summary", "📋", discord.ButtonStyle.secondary),
-                (views.DRAFT_BUTTON_ID, "Draft reply", "✍️", discord.ButtonStyle.secondary),
-            ],
+            (summary.custom_id, summary.label, str(summary.emoji), summary.style),
+            (views.SUMMARY_BUTTON_ID, "Summary", "📋", discord.ButtonStyle.secondary),
         )
-        self.assertEqual(len(row.children), 5)  # a row holds five buttons: it is full now
+        self.assertNotIn("ticket_btn_draft", [item.custom_id for item in row.children])
 
-    async def test_ai_toggle_refresh_keeps_both_buttons(self):
+    async def test_ai_toggle_refresh_keeps_the_summary_button(self):
         cog = tickets_cog()
         cog.bot.get_channel = lambda _id: ticket_channel()
         with (
@@ -162,27 +158,17 @@ class ControlRowTests(unittest.IsolatedAsyncioTestCase):
         ):
             await cog.refresh_ai_button(900, False)
         row = set_buttons.await_args.args[2]
-        self.assertEqual(
-            [item.custom_id for item in row.children][-2:], [views.SUMMARY_BUTTON_ID, views.DRAFT_BUTTON_ID]
-        )
+        self.assertEqual(row.children[-1].custom_id, views.SUMMARY_BUTTON_ID)
 
-    async def test_on_interaction_routes_the_copilot_controls(self):
+    async def test_on_interaction_routes_the_summary_and_ignores_old_draft_controls(self):
         cog = tickets_cog()
-        routes = {
-            views.SUMMARY_BUTTON_ID: "on_summary",
-            views.DRAFT_BUTTON_ID: "on_draft",
-            "staff_draft:post": "on_draft_button",
-            "staff_draft:discard": "on_draft_button",
-        }
-        for custom_id, name in routes.items():
-            with patch.object(cog, name, AsyncMock()) as handler:
-                await cog.on_interaction(click(STAFF, custom_id))
-            handler.assert_awaited_once()
-        submit = click(STAFF, "staff_draft_edit:900")
-        submit.type = discord.InteractionType.modal_submit
-        with patch.object(cog, "on_draft_edited", AsyncMock()) as handler:
-            await cog.on_interaction(submit)
-        handler.assert_awaited_once_with(submit)
+        with patch.object(cog, "on_summary", AsyncMock()) as handler:
+            await cog.on_interaction(click(STAFF, views.SUMMARY_BUTTON_ID))
+        handler.assert_awaited_once()
+        for custom_id in ("ticket_btn_draft", "staff_draft:post"):
+            interaction = click(STAFF, custom_id)
+            await cog.on_interaction(interaction)
+            interaction.response.send_message.assert_not_called()
 
 
 class CopilotGateTests(unittest.IsolatedAsyncioTestCase):
@@ -193,29 +179,26 @@ class CopilotGateTests(unittest.IsolatedAsyncioTestCase):
         ):
             await getattr(cog, handler_name)(interaction)
 
-    async def test_only_staff_get_a_summary_or_a_draft(self):
-        ai = fake_ai(ticket_summary=AsyncMock(), draft_reply=AsyncMock())
+    async def test_only_staff_get_a_summary(self):
+        ai = fake_ai(ticket_summary=AsyncMock())
         cog = tickets_cog(ai)
-        for handler in ("on_summary", "on_draft"):
-            interaction = click(OWNER, views.SUMMARY_BUTTON_ID)
-            await self.run_click(cog, interaction, handler)
-            interaction.response.send_message.assert_awaited_once_with("Only staff can do this.", ephemeral=True)
-            interaction.response.edit_message.assert_not_called()
+        interaction = click(OWNER, views.SUMMARY_BUTTON_ID)
+        await self.run_click(cog, interaction, "on_summary")
+        interaction.response.send_message.assert_awaited_once_with("Only staff can do this.", ephemeral=True)
+        interaction.response.edit_message.assert_not_called()
         ai.ticket_summary.assert_not_called()
-        ai.draft_reply.assert_not_called()
 
     async def test_closed_tickets_and_a_paused_budget_are_refused_at_once(self):
-        ai = fake_ai(ticket_summary=AsyncMock(), draft_reply=AsyncMock())
+        ai = fake_ai(ticket_summary=AsyncMock())
         cog = tickets_cog(ai)
         interaction = click(STAFF, views.SUMMARY_BUTTON_ID)
         await self.run_click(cog, interaction, "on_summary", ticket=make_ticket(status="closed"))
         interaction.response.send_message.assert_awaited_once_with(views.t("en", "already_closed"), ephemeral=True)
-        interaction = click(STAFF, views.DRAFT_BUTTON_ID)
-        await self.run_click(cog, interaction, "on_draft", paused=True)
+        interaction = click(STAFF, views.SUMMARY_BUTTON_ID)
+        await self.run_click(cog, interaction, "on_summary", paused=True)
         interaction.response.send_message.assert_awaited_once_with("AI is paused for today.", ephemeral=True)
         interaction.response.edit_message.assert_not_called()
         ai.ticket_summary.assert_not_called()
-        ai.draft_reply.assert_not_called()
 
     async def test_without_the_ai_cog_it_fails_quietly(self):
         interaction = click(STAFF, views.SUMMARY_BUTTON_ID)
@@ -326,185 +309,40 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         summarize.assert_awaited_once_with(lines, model="claude-haiku-5-5", timeout_seconds=5)
 
 
-class DraftTests(unittest.IsolatedAsyncioTestCase):
-    def ai_cog(self):
-        return AITicketsCog(types.SimpleNamespace(settings=SETTINGS, user=BOT))
+class StaffReplyTests(unittest.IsolatedAsyncioTestCase):
+    """TicketsCog._post_staff_reply, what Staff Bulma's ticket_reply calls."""
 
-    async def draft(self, result):
-        cog = self.ai_cog()
-        channel = ticket_channel()
-        channel.created_at = NOW
-        channel.guild = types.SimpleNamespace(get_member=lambda _id: OWNER if _id == OWNER_ID else None)
-        history = [{"role": "user", "content": "it crashes", "speaker_kind": "requester"}]
-        with (
-            patch.object(cog, "_ticket_history", AsyncMock(return_value=history)) as read,
-            patch.object(ai_tickets, "run_support_agent", AsyncMock(return_value=result)) as agent,
-        ):
-            text = await cog.draft_reply(channel, make_ticket(), STAFF)
-        read.assert_awaited_once_with(channel, OWNER_ID, {})
-        return text, agent.await_args.kwargs, history
-
-    async def test_the_agent_drafts_the_staff_reply_in_the_ticket_language(self):
-        text, kwargs, history = await self.draft({"reply": "Prueba a borrar la carpeta config.", "tool_results": []})
-        self.assertEqual(text, "Prueba a borrar la carpeta config.")
-        self.assertIs(kwargs["messages"], history)
-        self.assertEqual(kwargs["enabled_tools"], STAFF_DRAFT_TOOL_NAMES)  # lookups and the dev log, no controls
-        self.assertEqual(kwargs["workflow_prefix"], "staff_draft")
-        self.assertEqual(kwargs["language_hint"], "es")
-        self.assertEqual(kwargs["user_id"], OWNER_ID)  # lookups are the owner's, as in their own ticket
-        self.assertEqual(kwargs["channel_id"], 900)
-        self.assertEqual(kwargs["channel_kind"], "ticket")
-        self.assertIs(kwargs["ticket_conversation"], True)
-        self.assertIs(kwargs["requester_is_staff"], False)
-        context = "\n".join(kwargs["context_lines"])
-        self.assertIn("requester: Goku", context)
-        self.assertIn("support language: Latin American Spanish", context)
-        self.assertIn("a staff member (Vegeta) asked you to draft their next reply to the requester", context)
-        self.assertIn("in Latin American Spanish", context)
-        self.assertIn("no buttons or controls", context)
-
-    async def test_nothing_to_post_is_none_and_long_drafts_are_trimmed(self):
-        for result in ({"reply": "(no reply)", "tool_results": []}, {"reply": "x", "paused": True, "tool_results": []}):
-            self.assertIsNone((await self.draft(result))[0])
-        text, _, _ = await self.draft({"reply": "y" * 5000, "tool_results": []})
-        self.assertEqual(len(text), staff_copilot.POST_LIMIT)
-
-    async def test_the_draft_is_an_ephemeral_card_with_its_buttons(self):
-        ai = fake_ai(draft_reply=AsyncMock(return_value="Prueba esto."))
-        cog = tickets_cog(ai)
-        interaction = click(STAFF, views.DRAFT_BUTTON_ID)
-        with (
-            patch.object(tickets_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
-            patch.object(tickets_module.ai_budget, "is_paused", return_value=False),
-        ):
-            await cog.on_draft(interaction)
-        channel, ticket, staff = ai.draft_reply.await_args.args
-        self.assertEqual((channel, ticket.ticket_id, staff), (interaction.channel, 42, STAFF))
-        interaction.response.defer.assert_awaited_once_with(ephemeral=True, invisible=False)
-        sent = interaction.followup.send.await_args.kwargs
-        self.assertTrue(sent["ephemeral"])
-        self.assertEqual(texts(sent["view"]), ["Prueba esto."])
-        self.assertEqual(
-            [(b.custom_id, b.label) for b in buttons(sent["view"])],
-            [("staff_draft:post", "Post"), ("staff_draft:edit", "Edit & post"), ("staff_draft:discard", "Discard")],
-        )
-        self.assertEqual(staff_copilot.draft_text(sent_message(sent["view"])), "Prueba esto.")
-        interaction.edit_original_response.assert_not_called()  # the welcome card was never locked
-
-
-class PostTests(unittest.IsolatedAsyncioTestCase):
-    DRAFT = "Prueba a borrar la carpeta config."
-
-    async def press(self, user, action, *, ticket=None, ai=None):
+    async def post(self, text, *, ai=None, send_error=None):
         ai = ai or fake_ai()
         cog = tickets_cog(ai)
-        interaction = click(user, f"staff_draft:{action}", card=staff_copilot.draft_card(self.DRAFT), message_id=5)
-        with (
-            patch.object(tickets_module, "get_ticket_by_channel", AsyncMock(return_value=ticket or make_ticket())),
-            patch.object(tickets_module, "note_ticket_message", AsyncMock()) as self.noted,
-        ):
-            await cog.on_interaction(interaction)
-        return interaction, ai
+        channel = ticket_channel()
+        if send_error:
+            channel.send = AsyncMock(side_effect=send_error)
+        with patch.object(tickets_module, "note_ticket_message", AsyncMock()) as noted:
+            ok = await cog._post_staff_reply(channel, STAFF, text)
+        return ok, channel, ai, noted
 
-    def posted(self, interaction):
-        kwargs = interaction.channel.send.await_args.kwargs
-        none = kwargs["allowed_mentions"]
-        self.assertEqual((none.everyone, none.users, none.roles, none.replied_user), (False, False, False, False))
-        return texts(kwargs["view"])
-
-    async def test_post_sends_a_signed_card_that_counts_as_the_staff_member_speaking(self):
-        interaction, ai = await self.press(STAFF, "post")
-        self.assertEqual(self.posted(interaction), [self.DRAFT, f"-# ✍️ <@{STAFF_ID}>"])
-        ai.staff_replied.assert_called_once_with(900, STAFF_ID)  # the AI's pending answer goes, as for a typed staff message
-        self.noted.assert_awaited_once_with(900, STAFF_ID)  # the owner's reply countdown starts
-        busy = button_states(interaction.response.edit_message.await_args.kwargs["view"])
-        self.assertEqual(busy["staff_draft:post"], (v2.WORKING, True))
-        self.assertEqual(texts(interaction.edit_original_response.await_args.kwargs["view"]), ["Posted."])
-
-    async def test_post_checks_the_gate_again(self):
-        for user, ticket, refusal in (
-            (OWNER, make_ticket(), "Only staff can do this."),
-            (STAFF, make_ticket(status="closed"), views.t("en", "already_closed")),
-        ):
-            interaction, _ = await self.press(user, "post", ticket=ticket)
-            interaction.channel.send.assert_not_called()
-            interaction.response.send_message.assert_awaited_once_with(refusal, ephemeral=True)
-
-    async def test_a_refused_post_brings_the_draft_back(self):
-        ai = fake_ai()
-        cog = tickets_cog(ai)
-        interaction = click(STAFF, "staff_draft:post", card=staff_copilot.draft_card(self.DRAFT), message_id=5)
-        interaction.channel.send = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=403), "no"))
-        with (
-            patch.object(tickets_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
-            patch.object(tickets_module, "note_ticket_message", AsyncMock()) as noted,
-            self.assertLogs(tickets_module.log, "ERROR"),
-        ):
-            await cog.on_draft_button(interaction)
-        ai.staff_replied.assert_not_called()
-        noted.assert_not_called()
-        restored = button_states(interaction.edit_original_response.await_args.kwargs["view"])
-        self.assertEqual(restored["staff_draft:post"], ("Post", False))
-        interaction.followup.send.assert_awaited_once_with(views.t("en", "post_failed"), ephemeral=True)
-
-    async def test_edit_opens_the_form_filled_with_the_draft(self):
-        interaction, _ = await self.press(STAFF, "edit")
-        modal = interaction.response.send_modal.await_args.args[0]
-        self.assertEqual(modal.custom_id, "staff_draft_edit:900")
-        field = modal.children[0].item
-        self.assertEqual((field.value, field.max_length, field.style), (self.DRAFT, 3900, discord.InputTextStyle.long))
-        interaction.channel.send.assert_not_called()
-
-    async def test_discard_only_closes_the_card(self):
-        interaction, ai = await self.press(STAFF, "discard")
-        self.assertEqual(texts(interaction.response.edit_message.await_args.kwargs["view"]), ["Discarded."])
-        interaction.channel.send.assert_not_called()
-        ai.staff_replied.assert_not_called()
-
-    def submit(self, text, *, channel_id=900, with_card=True):
-        interaction = click(STAFF, f"staff_draft_edit:{channel_id}", card=staff_copilot.draft_card(self.DRAFT), message_id=5)
-        interaction.type = discord.InteractionType.modal_submit
-        interaction.data["components"] = [
-            {"type": 18, "id": 1, "component": {"type": 4, "id": 2, "custom_id": "text", "value": text}}
-        ]
-        if not with_card:
-            interaction.message = None
-        return interaction
-
-    async def run_submit(self, interaction, ai):
-        cog = tickets_cog(ai)
-        with (
-            patch.object(tickets_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
-            patch.object(tickets_module, "note_ticket_message", AsyncMock()) as self.noted,
-        ):
-            await cog.on_interaction(interaction)
-
-    async def test_the_edited_text_is_posted_without_pings(self):
-        ai = fake_ai()
-        interaction = self.submit("  Edited for <@123> and @everyone  ")
-        await self.run_submit(interaction, ai)
-        interaction.response.defer.assert_awaited_once_with(ephemeral=False, invisible=True)
-        body, signature = self.posted(interaction)
-        self.assertNotIn("<@123>", body)
-        self.assertNotIn("@everyone", body)
-        self.assertTrue(body.startswith("Edited for"))
-        self.assertEqual(signature, f"-# ✍️ <@{STAFF_ID}>")
+    async def test_it_posts_a_signed_card_that_counts_as_the_staff_member_speaking(self):
+        ok, channel, ai, noted = await self.post("Prueba a borrar la carpeta config.")
+        self.assertTrue(ok)
+        kwargs = channel.send.await_args.kwargs
+        allowed = kwargs["allowed_mentions"]
+        self.assertEqual((allowed.everyone, allowed.users, allowed.roles, allowed.replied_user), (False, False, False, False))
+        self.assertEqual(texts(kwargs["view"]), ["Prueba a borrar la carpeta config.", f"-# ✍️ <@{STAFF_ID}>"])
+        self.assertEqual(staff_copilot.signed_by(sent_message(kwargs["view"])), STAFF_ID)
         ai.staff_replied.assert_called_once_with(900, STAFF_ID)
-        self.noted.assert_awaited_once_with(900, STAFF_ID)
-        self.assertEqual(texts(interaction.edit_original_response.await_args.kwargs["view"]), ["Posted."])
+        noted.assert_awaited_once_with(900, STAFF_ID)
 
-    async def test_a_submit_without_its_card_still_posts_and_confirms(self):
-        interaction = self.submit("Edited", with_card=False)
-        await self.run_submit(interaction, fake_ai())
-        interaction.response.defer.assert_awaited_once_with(ephemeral=True, invisible=False)
-        interaction.followup.send.assert_awaited_once_with("Posted.", ephemeral=True)
+    async def test_mentions_in_the_text_are_defused(self):
+        _, channel, _, _ = await self.post("hi @everyone")
+        self.assertNotIn("@everyone", texts(channel.send.await_args.kwargs["view"])[0].replace("`@everyone`", ""))
 
-    async def test_a_form_from_another_channel_or_an_empty_one_posts_nothing(self):
-        for interaction in (self.submit("Edited", channel_id=901), self.submit("   ")):
-            await self.run_submit(interaction, fake_ai())
-            interaction.channel.send.assert_not_called()
-            interaction.response.send_message.assert_awaited_once()
-            self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+    async def test_a_refused_post_counts_nothing(self):
+        response = types.SimpleNamespace(status=403, reason="Forbidden")
+        ok, _, ai, noted = await self.post("Hi", send_error=discord.HTTPException(response, "no"))
+        self.assertFalse(ok)
+        ai.staff_replied.assert_not_called()
+        noted.assert_not_awaited()
 
 
 def card_message(view, message_id, *, author=BOT, guild=None):
@@ -591,7 +429,6 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(staff_copilot.is_translation(posted))
         self.assertEqual(ai_tickets._card_text(posted), "Hi")  # the signature isn't part of the text
         self.assertTrue(staff_copilot.is_translation(sent_message(staff_copilot.translation_card("Hola", "en", "es"))))
-        self.assertEqual(staff_copilot.draft_text(posted), "")
 
     async def test_a_webhook_translation_is_recognised_and_other_webhooks_are_not(self):
         cog = AITicketsCog(types.SimpleNamespace(settings=SETTINGS, user=BOT, get_cog=lambda name: None))

@@ -19,9 +19,11 @@ from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
 from bulmaai.services import ai_budget
-from bulmaai.services.ai_guard import defuse_mentions
+from bulmaai.services.ai_guard import BLOCKING_FLAGS, defuse_mentions, link_targets, screen_reply
+from bulmaai.services.staff_copilot import LANGUAGE_NAMES, translate_owner_text
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
 from bulmaai.services.ticket_pages import StoredPage, get_page_for_channel, page_url, purge, save_page
+from bulmaai.services.ticket_transcripts import SupportInfoSuggestion
 from bulmaai.services.tickets import (
     STATUS_CLOSED,
     STATUS_OPEN,
@@ -30,6 +32,7 @@ from bulmaai.services.tickets import (
     Ticket,
     abandon_ticket,
     attach_channel,
+    cancel_delete,
     claim_owner_reminders,
     closed_channel_name,
     closed_span_index,
@@ -40,6 +43,7 @@ from bulmaai.services.tickets import (
     hide_closed_messages,
     list_active_tickets,
     list_due_solved,
+    list_inactive_tickets,
     mark_closed,
     mark_deleted,
     mark_reopened,
@@ -48,23 +52,24 @@ from bulmaai.services.tickets import (
     reserve_ticket,
     schedule_delete,
     set_language,
+    set_transcript_resolved,
+    take_support_suggestion,
 )
 from bulmaai.services.patron_page import PATREON_URL
 from bulmaai.ui import staff_copilot
 from bulmaai.ui.ticket_views import (
     ACTIONS_ID,
     AI_BUTTON_ID,
+    AUTOCLOSE_BUTTON_ID,
     CATEGORIES,
     CLOSE_BUTTON_ID,
     DELETE_BUTTON_ID,
-    DRAFT_BUTTON_ID,
     FORM_BUTTON_PREFIX,
     LANG_BUTTON_PREFIX,
     LANG_SELECT_ID,
     LANGUAGES,
     PANEL_SELECT_ID,
     REOPEN_BUTTON_ID,
-    SOLVED_BUTTON_ID,
     SOLVED_REOPEN_PREFIX,
     SUMMARY_BUTTON_ID,
     TRANSCRIPT_BUTTON_ID,
@@ -91,13 +96,13 @@ from bulmaai.ui.ticket_views import (
     parse_form_custom_id,
     relanguage_welcome,
     reopened_view,
+    request_text,
     t,
     transcript_link_view,
     welcome_view,
 )
 from bulmaai.ui.v2 import already_working, unbusy, while_busy
 from bulmaai.utils.forwards import inline_forwards
-from bulmaai.utils import i18n
 from bulmaai.utils.i18n import described, reader_language, table, user_language
 from bulmaai.utils.language import detect_language_from_text, role_languages
 from bulmaai.utils.lifecycle import ReloadableCog
@@ -121,6 +126,10 @@ SOLVED_DELETE_AFTER = timedelta(hours=1)
 DELETE_NOTICE_SECONDS = 10
 # The owner gets one DM after this long without replying to someone else's answer in their ticket.
 OWNER_REMINDER_HOURS = 12
+# Still no reply this long after that DM: the bot closes the ticket (auto-close on).
+INACTIVE_CLOSE_HOURS = 24
+REASON_INACTIVE = "💤 Closed for inactivity: no reply within 24h of the reminder."
+REASON_SOLVED = "✅ Solved."
 # chat_exporter's <head> puts raw HTML (emoji <img>) into the link-preview meta tags; ours replaces it.
 _HEAD_META = re.compile(r"<title>.*?(?=<style>)", re.S)
 _DONATE = re.compile(r'<a href="https://ko-fi\.com/mahtoid">DONATE</a>')
@@ -378,13 +387,31 @@ class TicketsCog(ReloadableCog):
                 await owner.send(view=dm_reminder(ticket.ticket_id, channel, ticket.language))
             except discord.HTTPException:
                 log.info("Could not DM ticket reminder", extra={"user_id": ticket.owner_id})
+        await self._close_inactive()
+
+    async def _close_inactive(self) -> None:
+        """Open tickets whose owner still hasn't replied INACTIVE_CLOSE_HOURS after the reminder: closed by the bot with
+        auto-close on (deleted SOLVED_DELETE_AFTER later unless staff re-open it); the summary decides whether it was
+        solved, and the owner gets the usual transcript DM. The state is all in the DB (mark_closed closes once)."""
+        try:
+            due = await list_inactive_tickets(INACTIVE_CLOSE_HOURS)
+        except Exception:
+            return log.exception("Could not list inactive tickets")
+        for ticket in due:
+            channel = self.bot.get_channel(ticket.channel_id)
+            try:
+                if not isinstance(channel, discord.TextChannel):
+                    await mark_deleted(ticket.channel_id)
+                    continue
+                delete_at = datetime.now(timezone.utc) + SOLVED_DELETE_AFTER
+                await self.close_ticket(channel, closer_id=None, reason=REASON_INACTIVE, delete_at=delete_at)
+            except Exception:
+                log.exception("Failed to close inactive ticket", extra={"ticket_id": ticket.ticket_id})
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         custom_id = (interaction.data or {}).get("custom_id") or ""
-        if interaction.type == discord.InteractionType.modal_submit:
-            handler = self.on_draft_edited if custom_id.startswith(staff_copilot.EDIT_MODAL_PREFIX) else None
-        elif interaction.type != discord.InteractionType.component:
+        if interaction.type != discord.InteractionType.component:
             return
         elif custom_id.startswith(SOLVED_REOPEN_PREFIX):
             handler = self.on_solved_reopen
@@ -392,8 +419,6 @@ class TicketsCog(ReloadableCog):
             handler = self.on_language
         elif custom_id.startswith(FORM_BUTTON_PREFIX):
             handler = self.on_form_language
-        elif custom_id.startswith(staff_copilot.DRAFT_PREFIX):
-            handler = self.on_draft_button
         else:
             handler = {
                 PANEL_SELECT_ID: self.on_panel_select,
@@ -403,9 +428,8 @@ class TicketsCog(ReloadableCog):
                 TRANSCRIPT_BUTTON_ID: self.on_transcript,
                 REOPEN_BUTTON_ID: self.on_reopen,
                 DELETE_BUTTON_ID: self.on_delete,
-                SOLVED_BUTTON_ID: self.on_solved,
+                AUTOCLOSE_BUTTON_ID: self.on_autoclose,
                 SUMMARY_BUTTON_ID: self.on_summary,
-                DRAFT_BUTTON_ID: self.on_draft,
             }.get(custom_id)
         if handler is None:
             return
@@ -500,7 +524,9 @@ class TicketsCog(ReloadableCog):
 
         channel: discord.TextChannel | None = None
         try:
-            intake = await self._triage(category, answers, ticket)
+            intake, translation = await asyncio.gather(
+                self._triage(category, answers, ticket), self._translate_request(answers, ticket)
+            )
             language = language or intake.language
             parent = guild.get_channel(settings.ai_ticket_category_id) if settings.ai_ticket_category_id else None
             if not isinstance(parent, discord.CategoryChannel):
@@ -515,7 +541,14 @@ class TicketsCog(ReloadableCog):
             )
             welcome = await channel.send(
                 view=welcome_view(
-                    number=ticket.ticket_id, category=category, answers=answers, mention=member.mention, language=language
+                    number=ticket.ticket_id,
+                    category=category,
+                    answers=answers,
+                    mention=member.mention,
+                    language=language,
+                    opened_at=ticket.created_at or datetime.now(timezone.utc),
+                    avatar_url=member.display_avatar.url,
+                    translation=translation,
                 ),
                 allowed_mentions=discord.AllowedMentions(users=[member]),
             )
@@ -537,6 +570,7 @@ class TicketsCog(ReloadableCog):
             await interaction.edit_original_response(content=t(reply_language, "failed"))
             return None
 
+        await self._pin_welcome(channel, welcome)
         if files:
             try:
                 await channel.send(files=files)
@@ -556,6 +590,49 @@ class TicketsCog(ReloadableCog):
                 channel, member, category_label=category.name, form_text=form_text, language=language
             )
         return channel
+
+    async def _pin_welcome(self, channel: discord.TextChannel, welcome: discord.Message) -> None:
+        """Pins the welcome card, then removes the "pinned a message" line Discord posts for it. Best effort."""
+        try:
+            await welcome.pin(reason="Ticket welcome card")
+        except Exception:  # never breaks the ticket that is already open
+            return log.warning("Could not pin the ticket welcome card", extra={"channel_id": channel.id})
+        bot_id = getattr(self.bot.user, "id", None)
+        try:
+            async for message in channel.history(limit=5):
+                if message.type == discord.MessageType.pins_add and message.author.id == bot_id:
+                    await message.delete()
+                    break
+        except Exception:
+            log.info("Could not remove the pin notice", extra={"channel_id": channel.id})
+
+    async def _translate_request(self, answers: list[tuple[str, str]], ticket: Ticket) -> str | None:
+        """The request card's answers in English for staff (one Haiku call), when the ticket's language at reservation
+        isn't English and the AI isn't paused. Screened like a staff translation; any failure means no translation."""
+        settings = self.settings
+        source = ticket.language
+        if not answers or source == "en" or source not in LANGUAGE_NAMES or ai_budget.is_paused(settings):
+            return None
+        text = request_text(answers)
+        try:
+            translations = await translate_owner_text(
+                text,
+                source,
+                ["en"],
+                model=settings.ai_translation_model,
+                timeout_seconds=settings.ai_support_timeout_seconds,
+            )
+        except Exception:
+            log.exception("Ticket request translation failed", extra={"ticket_id": ticket.ticket_id})
+            return None
+        translation = (translations.get("en") or "").strip()
+        if not translation:
+            return None
+        # The member's own links are theirs to keep, so they count as ours (as for in-ticket translations).
+        screened, flags = screen_reply(translation, settings, link_targets(text))
+        if flags & BLOCKING_FLAGS or not screened.strip():
+            return None
+        return defuse_mentions(screened.strip())
 
     async def _triage(self, category: TicketCategory, answers: list[tuple[str, str]], ticket: Ticket) -> TicketIntake:
         """AI picks the channel name and language; any failure just falls back to the category defaults."""
@@ -585,10 +662,10 @@ class TicketsCog(ReloadableCog):
         resolved: bool | None = None,
         delete_at: datetime | None = None,
         dm: bool = True,
-        staff_solved: bool = False,
     ) -> Ticket | None:
         """Staff-only overwrites, move to the closed category, rename, post the closed card, then archive the
-        transcript (see archive). None if it wasn't open. delete_at: closed as solved (see solve_ticket)."""
+        transcript (see archive). None if it wasn't open. delete_at: closed with auto-close on (solved by the owner,
+        or for inactivity); the closed card shows it and its toggle starts On."""
         ticket = await mark_closed(channel.id, closed_by=closer_id, reason=reason, delete_at=delete_at)
         if ticket is None:
             return None
@@ -607,23 +684,29 @@ class TicketsCog(ReloadableCog):
         await self._rename(channel, closed_channel_name(ticket.ticket_id))
         await self._set_buttons(channel, ticket, None)
         card = await self._safely(
-            channel.send(
-                view=closed_view(f"<@{closer_id}>" if closer_id else None, reason and defuse_mentions(reason)),
-                allowed_mentions=discord.AllowedMentions.none(),
-            ),
+            channel.send(view=self._closed_card(ticket), allowed_mentions=discord.AllowedMentions.none()),
             channel,
         )
         # Re-Open/Delete on the card answer "Already working on it." until the transcript is saved.
         if card is not None:
             self._working.add(card.id)
         try:
-            await self.archive(
-                channel, ticket, closed_by_id=closer_id, card=card, resolved=resolved, dm=dm, staff_solved=staff_solved
-            )
+            await self.archive(channel, ticket, closed_by_id=closer_id, card=card, resolved=resolved, dm=dm)
         finally:
             if card is not None:
                 self._working.discard(card.id)
         return ticket
+
+    @staticmethod
+    def _closed_card(ticket: Ticket, url: str | None = None, *, saving: bool = True) -> discord.ui.DesignerView:
+        """The closed card, built from the ticket row (closer, reason, auto-close deadline)."""
+        return closed_view(
+            f"<@{ticket.closed_by}>" if ticket.closed_by else None,
+            ticket.close_reason and defuse_mentions(ticket.close_reason),
+            delete_at=ticket.delete_at,
+            url=url,
+            saving=saving,
+        )
 
     async def reopen_ticket(self, channel: discord.TextChannel, *, opener_id: int) -> Ticket | None:
         ticket = await mark_reopened(channel.id)
@@ -886,7 +969,7 @@ class TicketsCog(ReloadableCog):
         await while_busy(interaction, self._working, reopen, failed=t(self._lang(interaction), "failed"))
 
     async def on_delete(self, interaction: discord.Interaction) -> None:
-        """Mods delete any closed ticket; helpers only ones closed as Solved (skips the re-open wait)."""
+        """Mods delete any closed ticket; helpers only ones with auto-close on (skips the re-open wait)."""
         ticket = await self._gate(interaction, Rank.HELPER, denied="mod_only", want_open=False)
         if ticket is None:
             return
@@ -903,35 +986,83 @@ class TicketsCog(ReloadableCog):
 
         await while_busy(interaction, self._working, delete, failed=t(self._lang(interaction), "delete_failed"))
 
-    async def on_solved(self, interaction: discord.Interaction) -> None:
-        """Staff close as solved (see solve_ticket)."""
-        if await self._gate(interaction, Rank.HELPER, denied="staff_only") is None:
+    async def on_autoclose(self, interaction: discord.Interaction) -> None:
+        """The closed card's Auto-close toggle (staff). On: the ticket is solved; it is deleted SOLVED_DELETE_AFTER
+        later unless re-opened, its transcript is marked solved, and the close's support info suggestion goes to staff
+        review (once). Off: no deadline, transcript not solved. The card is rebuilt from the ticket row and a short
+        public notice says who flipped it."""
+        ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only", want_open=False)
+        if ticket is None:
             return
+        channel = interaction.channel
+        if channel.id in self._deleting:  # a deletion notice is running; Re-Open is what stops it
+            return await interaction.response.send_message(already_working(self._lang(interaction)), ephemeral=True)
 
-        async def solve() -> bool:
-            ticket = await self.solve_ticket(interaction.channel, closer_id=interaction.user.id, staff_solved=True)
-            return ticket is not None
+        async def toggle() -> bool:
+            current = await get_ticket_by_channel(channel.id)
+            if current is None or current.status != STATUS_CLOSED:
+                return False
+            if current.delete_at is None:
+                updated = await schedule_delete(channel.id, datetime.now(timezone.utc) + SOLVED_DELETE_AFTER)
+            else:
+                updated = await cancel_delete(channel.id)
+            if updated is None:
+                return False
+            on = updated.delete_at is not None
+            try:
+                await set_transcript_resolved(channel.id, on)
+            except Exception:
+                log.exception("Could not mark the ticket transcript", extra={"channel_id": channel.id})
+            if on:
+                await self._suggest_support_info(channel, updated)
+            page = await get_page_for_channel(channel.id)
+            url = page_url(self.settings, page.token) if page else None
+            await interaction.edit_original_response(view=self._closed_card(updated, url, saving=False))
+            state = (
+                f"on by <@{interaction.user.id}>: deletes <t:{int(updated.delete_at.timestamp())}:R>."
+                if on
+                else f"off by <@{interaction.user.id}>."
+            )
+            await self._safely(
+                channel.send(view=notice(f"⏱️ Auto-close {state}"), allowed_mentions=discord.AllowedMentions.none()),
+                channel,
+            )
+            return True
 
-        await while_busy(interaction, self._working, solve, failed=t(self._lang(interaction), "failed"))
+        await while_busy(interaction, self._working, toggle, failed=t(self._lang(interaction), "failed"))
 
-    async def solve_ticket(
-        self, channel: discord.TextChannel, *, closer_id: int, staff_solved: bool = False
-    ) -> Ticket | None:
-        """Every close as solved: the staff Solved button (staff_solved) and the owner confirming it to the AI
-        (AITicketsCog). Archived as resolved, the owner gets the solved DM, and the sweep (_delete_solved) deletes it
+    async def _suggest_support_info(self, channel: discord.TextChannel, ticket: Ticket) -> None:
+        """A staff member vouched for the ticket as solved: the close summary's stored suggestion (if any) goes to
+        SupportInfoCog's review, and is cleared so it goes only once. Never breaks the caller."""
+        support_cog = self.bot.get_cog("SupportInfoCog")
+        if support_cog is None:
+            return
+        try:
+            stored = await take_support_suggestion(channel.id)
+            if stored is None:
+                return
+            suggestion = SupportInfoSuggestion(str(stored["kind"]), str(stored["title"]), str(stored["body"]))
+            page = await get_page_for_channel(channel.id)
+            await support_cog.suggest_from_ticket(
+                suggestion,
+                ticket_id=ticket.ticket_id,
+                page_link=page_url(self.settings, page.token) if page else None,
+            )
+        except Exception:
+            log.exception("Failed to suggest support info", extra={"channel_id": channel.id})
+
+    async def solve_ticket(self, channel: discord.TextChannel, *, closer_id: int, staff: bool = False) -> Ticket | None:
+        """Closes as solved: the owner confirming it to the AI (AITicketsCog), or a staff member through Staff Bulma
+        (staff, which also sends the support info suggestion to review, as the Auto-close toggle does). Archived as
+        resolved with auto-close on, the owner gets the solved DM, and the sweep (_delete_solved) deletes it
         SOLVED_DELETE_AFTER later unless staff re-open it. None if it wasn't open."""
         delete_at = datetime.now(timezone.utc) + SOLVED_DELETE_AFTER
-        reason = f"✅ Solved. Deletes <t:{int(delete_at.timestamp())}:R> unless staff re-open it."
         ticket = await self.close_ticket(
-            channel,
-            closer_id=closer_id,
-            reason=reason,
-            resolved=True,
-            delete_at=delete_at,
-            dm=False,
-            staff_solved=staff_solved,
+            channel, closer_id=closer_id, reason=REASON_SOLVED, resolved=True, delete_at=delete_at, dm=False
         )
         if ticket is not None:
+            if staff:
+                await self._suggest_support_info(channel, ticket)
             await self._dm_solved(channel, ticket, delete_at)
         return ticket
 
@@ -979,20 +1110,11 @@ class TicketsCog(ReloadableCog):
 
         await self._copilot(interaction, summary)
 
-    async def on_draft(self, interaction: discord.Interaction) -> None:
-        """✍️ Draft reply: a draft of the next reply to the owner, with Post / Edit & post / Discard."""
-
-        async def draft(ai, ticket: Ticket) -> discord.ui.DesignerView | None:
-            text = await ai.draft_reply(interaction.channel, ticket, interaction.user)
-            return staff_copilot.draft_card(text, self._lang(interaction)) if text else None
-
-        await self._copilot(interaction, draft)
-
     async def _copilot(self, interaction: discord.Interaction, build) -> None:
-        """Summary and Draft reply: staff only, while the ticket is open and the AI budget isn't paused. The answer is an
-        ephemeral card for the clicker (build(ai cog, ticket), None when there is nothing to show). The click gets an
-        ephemeral "thinking" at once instead of while_busy, which would lock the whole welcome card (the owner's Close,
-        Solved) while the AI works; a second click by the same staff member on this ticket meanwhile is refused."""
+        """Summary: staff only, while the ticket is open and the AI budget isn't paused. The answer is an ephemeral card
+        for the clicker (build(ai cog, ticket), None when there is nothing to show). The click gets an ephemeral
+        "thinking" at once instead of while_busy, which would lock the whole welcome card (the owner's Close) while the
+        AI works; a second click by the same staff member on this ticket meanwhile is refused."""
         ticket = await self._gate(interaction, Rank.HELPER, denied="staff_only")
         if ticket is None:
             return
@@ -1019,60 +1141,10 @@ class TicketsCog(ReloadableCog):
         finally:
             self._copilot_working.discard(key)
 
-    async def on_draft_button(self, interaction: discord.Interaction) -> None:
-        """Post / Edit & post / Discard on an ephemeral draft card; the draft is read back from the card itself. Post
-        and Edit check the staff gate and the open ticket again."""
-        action = staff_copilot.parse_draft_custom_id((interaction.data or {}).get("custom_id") or "")
-        if action is None:
-            return await interaction.response.send_message(t(self._lang(interaction), "failed"), ephemeral=True)
-        if action == staff_copilot.DRAFT_DISCARD:
-            language = self._lang(interaction)
-            return await interaction.response.edit_message(view=staff_copilot.done_card(staff_copilot.DISCARDED, language))
-        if await self._gate(interaction, Rank.HELPER, denied="staff_only") is None:
-            return
-        text = staff_copilot.draft_text(interaction.message)
-        if not text:
-            return await interaction.response.send_message(t(self._lang(interaction), "post_failed"), ephemeral=True)
-        if action == staff_copilot.DRAFT_EDIT:
-            # A modal must be the first response, so no while_busy here; its submit is on_draft_edited.
-            modal = staff_copilot.edit_modal(text, interaction.channel_id, self._lang(interaction))
-            return await interaction.response.send_modal(modal)
-
-        async def post() -> bool:
-            if not await self._post_staff_reply(interaction.channel, interaction.user, text):
-                return False
-            posted = staff_copilot.done_card(staff_copilot.POSTED, self._lang(interaction))
-            await interaction.edit_original_response(view=posted)
-            return True
-
-        await while_busy(interaction, self._working, post, failed=t(self._lang(interaction), "post_failed"))
-
-    async def on_draft_edited(self, interaction: discord.Interaction) -> None:
-        """The Edit & post form: the edited text is posted like Post does, and the draft card (when the submit comes
-        with it) turns into "Posted."."""
-        data = interaction.data or {}
-        if staff_copilot.parse_edit_modal_id(data.get("custom_id") or "") != interaction.channel_id:
-            return await interaction.response.send_message(t(self._lang(interaction), "failed"), ephemeral=True)
-        if await self._gate(interaction, Rank.HELPER, denied="staff_only") is None:
-            return
-        text = staff_copilot.edited_text(data.get("components"))
-        if not text:
-            return await interaction.response.send_message(t(self._lang(interaction), "post_failed"), ephemeral=True)
-        card = getattr(interaction, "message", None)
-        # Posting can outlast the 3-second window. With the draft card: a silent defer, then that card is edited.
-        await interaction.response.defer(ephemeral=card is None, invisible=card is not None)
-        if not await self._post_staff_reply(interaction.channel, interaction.user, text):
-            return await interaction.followup.send(t(self._lang(interaction), "post_failed"), ephemeral=True)
-        if card is not None:
-            posted = staff_copilot.done_card(staff_copilot.POSTED, self._lang(interaction))
-            await interaction.edit_original_response(view=posted)
-        else:
-            await interaction.followup.send(i18n.t(staff_copilot.TEXT, "posted", self._lang(interaction)), ephemeral=True)
-
     async def _post_staff_reply(self, channel: discord.TextChannel, staff: discord.abc.User, text: str) -> bool:
-        """A staff reply from Draft reply, posted as a public card signed "-# ✍️ <@staff>" (no pings; the text's
-        mentions are defused). It counts as them speaking: the AI's pending answer is dropped and the owner's reply
-        countdown starts, as for a typed staff message. History and transcripts read the card as theirs
+        """Staff Bulma's ticket_reply (services/staff_tools), posted as a public card signed "-# ✍️ <@staff>" (no
+        pings; the text's mentions are defused). It counts as them speaking: the AI's pending answer is dropped and the
+        owner's reply countdown starts, as for a typed staff message. History and transcripts read the card as theirs
         (AITicketsCog._signed_turn). False when Discord refused it."""
         try:
             await channel.send(
@@ -1160,19 +1232,19 @@ class TicketsCog(ReloadableCog):
         card: discord.Message | None = None,
         resolved: bool | None = None,
         dm: bool = True,
-        staff_solved: bool = False,
     ) -> StoredPage | None:
         """The one archive entry point (every close, and the closed card's Retry/Transcript button): transcript +
         summary into the DB and the hosted page, the closed card's transcript button becomes the link (or Retry),
         and the owner gets the link by DM (unless dm=False). Returns the page, None if archiving failed."""
         page = None
-        if await self._archive(channel, ticket, closed_by_id, resolved, staff_solved):
+        if await self._archive(channel, ticket, closed_by_id, resolved):
             try:
                 page = await get_page_for_channel(channel.id)
             except Exception:
                 log.exception("Could not look up hosted transcript", extra={"channel_id": channel.id})
         if card is not None:
-            await self._set_row(card, closed_row(page_url(self.settings, page.token) if page else None))
+            url = page_url(self.settings, page.token) if page else None
+            await self._set_row(card, closed_row(url, auto_close=ticket.delete_at is not None))
         if dm and page is not None and self.settings.ticket_dm_transcript:
             await self._dm_transcript_link(channel, ticket, page)
         return page
@@ -1229,7 +1301,6 @@ class TicketsCog(ReloadableCog):
         ticket: Ticket,
         closed_by_id: int | None,
         resolved: bool | None = None,
-        staff_solved: bool = False,
     ) -> bool:
         ai_cog = self.bot.get_cog(AI_COG)
         if ai_cog is not None:
@@ -1242,9 +1313,6 @@ class TicketsCog(ReloadableCog):
                     closed_by_id=closed_by_id,
                     requester_id=ticket.owner_id,
                     resolved=resolved,
-                    # Only the staff Solved button (on_solved) vouches for a support info suggestion, not the owner.
-                    staff_solved=staff_solved,
-                    ticket_id=ticket.ticket_id,
                 )
             except Exception:
                 # e.g. the closed-stretch lookup failed; no transcript beats one that shows hidden messages.

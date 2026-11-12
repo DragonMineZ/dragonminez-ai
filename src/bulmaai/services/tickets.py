@@ -1,5 +1,6 @@
 """Ticket records for the in-house ticket system (cogs/tickets.py), kept in PostgreSQL via the shared asyncpg pool."""
 
+import json
 import re
 import unicodedata
 from collections.abc import Iterable, Sequence
@@ -279,6 +280,65 @@ async def schedule_delete(channel_id: int, delete_at: datetime, *, pool: Any | N
     return _ticket(row)
 
 
+async def cancel_delete(channel_id: int, *, pool: Any | None = None) -> Ticket | None:
+    """Auto-close turned off on a closed ticket: no deletion deadline any more. None when it isn't closed."""
+    resolved_pool = pool or await get_pool()
+    row = await resolved_pool.fetchrow(
+        f"UPDATE tickets SET delete_at = NULL WHERE channel_id = $1 AND status = 'closed' RETURNING {_COLUMNS}",
+        channel_id,
+    )
+    return _ticket(row)
+
+
+async def set_transcript_resolved(channel_id: int, resolved: bool, *, pool: Any | None = None) -> None:
+    """The channel's latest ticket_transcripts row marked solved (or not), as staff flip auto-close."""
+    resolved_pool = pool or await get_pool()
+    await resolved_pool.execute(
+        "UPDATE ticket_transcripts SET resolved = $2 "
+        "WHERE id = (SELECT max(id) FROM ticket_transcripts WHERE channel_id = $1)",
+        channel_id,
+        resolved,
+    )
+
+
+async def store_support_suggestion(channel_id: int, suggestion: Any | None, *, pool: Any | None = None) -> None:
+    """The close's summary suggestion (a SupportInfoSuggestion, or None to clear it) on the channel's latest
+    transcript row, until a staff member turns auto-close on (take_support_suggestion)."""
+    payload = None
+    if suggestion is not None:
+        payload = json.dumps({"kind": suggestion.kind, "title": suggestion.title, "body": suggestion.body})
+    resolved_pool = pool or await get_pool()
+    await resolved_pool.execute(
+        "UPDATE ticket_transcripts SET support_info = $2::jsonb "
+        "WHERE id = (SELECT max(id) FROM ticket_transcripts WHERE channel_id = $1)",
+        channel_id,
+        payload,
+    )
+
+
+async def take_support_suggestion(channel_id: int, *, pool: Any | None = None) -> dict[str, str] | None:
+    """The stored suggestion of the channel's latest transcript row, cleared in the same statement so it is handed out
+    once (two racing clicks: only one gets it). None when there is none."""
+    resolved_pool = pool or await get_pool()
+    raw = await resolved_pool.fetchval(
+        """
+        WITH old AS (
+            SELECT id, support_info FROM ticket_transcripts
+            WHERE id = (SELECT max(id) FROM ticket_transcripts WHERE channel_id = $1) AND support_info IS NOT NULL
+            FOR UPDATE
+        )
+        UPDATE ticket_transcripts SET support_info = NULL FROM old
+        WHERE ticket_transcripts.id = old.id
+        RETURNING old.support_info
+        """,
+        channel_id,
+    )
+    if raw is None:
+        return None
+    value = json.loads(raw) if isinstance(raw, str) else raw
+    return value if isinstance(value, dict) else None
+
+
 async def mark_reopened(channel_id: int, *, pool: Any | None = None) -> Ticket | None:
     """closed → open; the finished closed stretch goes into closed_periods (SET reads the old closed_at). A solved
     ticket past its delete_at stays closed for the sweep."""
@@ -332,6 +392,21 @@ async def claim_owner_reminders(hours: int, *, pool: Any | None = None) -> list[
         WHERE status = 'open' AND channel_id IS NOT NULL AND owner_reminded_at IS NULL
           AND awaiting_owner_since <= now() - make_interval(hours => $1)
         RETURNING {_COLUMNS}
+        """,
+        hours,
+    )
+    return [_ticket(row) for row in rows]
+
+
+async def list_inactive_tickets(hours: int, *, pool: Any | None = None) -> list[Ticket]:
+    """Open tickets whose owner still hasn't replied `hours` after their reminder (the silence it was sent for is still
+    running). Read only: closing them goes through mark_closed, which lets a ticket close once."""
+    resolved_pool = pool or await get_pool()
+    rows = await resolved_pool.fetch(
+        f"""
+        SELECT {_COLUMNS} FROM tickets
+        WHERE status = 'open' AND channel_id IS NOT NULL AND awaiting_owner_since IS NOT NULL
+          AND owner_reminded_at <= now() - make_interval(hours => $1)
         """,
         hours,
     )

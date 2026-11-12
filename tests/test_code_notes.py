@@ -248,24 +248,12 @@ class ProcessCommitsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StaffToolTests(unittest.TestCase):
-    def test_the_tool_is_only_in_the_staff_draft_set(self):
-        name = ai_tools.CODE_NOTES_TOOL
-        self.assertIn(name, ai_tools.TOOL_SCHEMAS)
-        self.assertIn(name, ai_tools.STAFF_DRAFT_TOOL_NAMES)
+    def test_the_support_ai_has_no_code_notes_tool(self):
+        name = "search_code_notes"
+        self.assertNotIn(name, ai_tools.TOOL_SCHEMAS)
         for names in (ai_tools.SUPPORT_TOOL_NAMES, ai_tools.LOOKUP_TOOL_NAMES):
             self.assertNotIn(name, names)
             self.assertNotIn(name, [schema["name"] for schema in get_schemas(names)])
-        self.assertIn(name, [schema["name"] for schema in get_schemas(ai_tools.STAFF_DRAFT_TOOL_NAMES)])
-
-    def test_only_the_staff_draft_call_site_asks_for_it(self):
-        from pathlib import Path
-
-        hits = [
-            path.name
-            for path in Path(__file__).resolve().parent.parent.joinpath("src", "bulmaai").rglob("*.py")
-            if "STAFF_DRAFT_TOOL_NAMES" in path.read_text(encoding="utf-8")
-        ]
-        self.assertEqual(sorted(hits), ["ai_tickets.py", "ai_tools.py"])
 
 
 class StaffToolRunTests(unittest.IsolatedAsyncioTestCase):
@@ -276,10 +264,10 @@ class StaffToolRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["notes"][0]["files"], ["A.java"])
         self.assertNotIn("goku", str(out))
 
-    async def test_a_staff_tool_is_refused_when_not_enabled(self):
+    async def test_the_support_run_cannot_call_the_code_notes_tool(self):
         from bulmaai.services import ai_client
 
-        tool_use = SimpleNamespace(type="tool_use", id="t1", name=ai_tools.CODE_NOTES_TOOL, input={"query": "ki"})
+        tool_use = SimpleNamespace(type="tool_use", id="t1", name="search_code_notes", input={"query": "ki"})
         first = SimpleNamespace(stop_reason="tool_use", content=[tool_use], usage=None, id="r1")
         second = SimpleNamespace(
             stop_reason="end_turn", content=[SimpleNamespace(type="text", text="ok")], usage=None, id="r2"

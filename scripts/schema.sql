@@ -311,6 +311,10 @@ CREATE INDEX IF NOT EXISTS idx_ticket_transcripts_channel_id
 -- knowledge_docs filename of the closed ticket's knowledge doc (openai_file_id is history only).
 ALTER TABLE ticket_transcripts ADD COLUMN IF NOT EXISTS knowledge_filename TEXT;
 
+-- The close summary's support info suggestion ({kind, title, body}); handed to staff review (and cleared) once a
+-- staff member turns the closed card's auto-close on.
+ALTER TABLE ticket_transcripts ADD COLUMN IF NOT EXISTS support_info JSONB;
+
 -- Support AI knowledge (services/knowledge.py), searched with Postgres full-text search.
 -- source: mediawiki (wiki pages), ticket (closed tickets), faq (generated FAQ), local (data/knowledge/*.md).
 -- The 'simple' config lets Spanish/Portuguese questions still hit English pages on shared terms.

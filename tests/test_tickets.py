@@ -25,9 +25,8 @@ OWNER_ROLE, ADMIN_ROLE, MOD_ROLE, HELPER_ROLE, TESTER_ROLE = 11, 12, 13, 14, 15
 EN_ROLE, ES_ROLE, PT_ROLE = 21, 22, 23
 OWNER_ID, STAFF_ID = 100, 200
 # The open ticket's button row, in order; every swap of the row (AI toggle, re-open, language) keeps all of it.
-CONTROL_IDS = [
-    views.AI_BUTTON_ID, "ticket_btn_close", views.SOLVED_BUTTON_ID, views.SUMMARY_BUTTON_ID, views.DRAFT_BUTTON_ID
-]
+CONTROL_IDS = ["ticket_btn_close", views.AI_BUTTON_ID, views.SUMMARY_BUTTON_ID]
+CLOSED_IDS = ["ticket_btn_transcript", views.AUTOCLOSE_BUTTON_ID, "ticket_btn_reopen", "ticket_btn_delete"]
 
 SETTINGS = SimpleNamespace(
     panel_owner_role_ids=(OWNER_ROLE,),
@@ -57,6 +56,19 @@ def texts(view):
 
 def custom_ids(view):
     return [item.custom_id for item in walk(view) if getattr(item, "custom_id", None)]
+
+
+class AsyncIter:
+    def __init__(self, items):
+        self.items = list(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.items:
+            raise StopAsyncIteration
+        return self.items.pop(0)
 
 
 class Snow:
@@ -291,27 +303,105 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cards_have_fixed_custom_ids(self):
         self.assertEqual(custom_ids(views.panel_view()), [views.PANEL_SELECT_ID])
-        self.assertEqual(custom_ids(views.closed_view(None, None)), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"])
+        self.assertEqual(custom_ids(views.closed_view(None, None)), CLOSED_IDS)
         for row in (views.control_row(), views.closed_row()):
             self.assertEqual(row.id, views.ACTIONS_ID)
 
+    def test_control_row_is_close_ai_and_summary_without_solved_or_draft(self):
+        row = views.control_row(True, "es")
+        self.assertEqual(custom_ids(row), CONTROL_IDS)
+        close, ai, summary = row.children
+        self.assertEqual((close.label, str(close.emoji), close.style), ("Cerrar", "🔒", discord.ButtonStyle.danger))
+        self.assertEqual((ai.label, ai.style), ("AI support: On", discord.ButtonStyle.success))
+        self.assertEqual((summary.label, str(summary.emoji)), ("Summary", "📋"))
+        self.assertFalse({"ticket_btn_solved", "ticket_btn_draft"} & set(custom_ids(row)))
+
+    def test_closed_row_toggle_shows_the_auto_close_state(self):
+        off = views.closed_row("https://t/x").get_item(views.AUTOCLOSE_BUTTON_ID)
+        on = views.closed_row("https://t/x", auto_close=True).get_item(views.AUTOCLOSE_BUTTON_ID)
+        self.assertEqual((off.label, str(off.emoji), off.style), ("Auto-close: Off", "⏱️", discord.ButtonStyle.secondary))
+        self.assertEqual((on.label, str(on.emoji), on.style), ("Auto-close: On", "⏱️", discord.ButtonStyle.success))
+        row = views.closed_row("https://t/x")
+        self.assertEqual([b.label for b in row.children], ["Transcript", "Auto-close: Off", "Re-Open", "Delete"])
+
+    async def test_closed_card_shows_the_deadline_only_when_auto_close_is_on(self):
+        when = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        on = views.closed_view("<@5>", "✅ Solved.", delete_at=when, url="https://t/x", saving=False)
+        self.assertIn("### 🔒 Ticket closed", texts(on))
+        self.assertIn("Closed by <@5>.", texts(on))
+        self.assertIn("**Reason** ✅ Solved.", texts(on))
+        self.assertIn(f"-# 🗑️ Deletes <t:{int(when.timestamp())}:R> unless re-opened.", texts(on))
+        self.assertEqual(on.get_item(views.AUTOCLOSE_BUTTON_ID).label, "Auto-close: On")
+        off = views.closed_view(None, None)
+        self.assertNotIn("Deletes", texts(off))
+        self.assertEqual(off.get_item(views.AUTOCLOSE_BUTTON_ID).label, "Auto-close: Off")
+
     async def test_welcome_card_shows_the_request_apart_and_warns_about_pings(self):
+        opened = datetime(2026, 1, 1, tzinfo=timezone.utc)
         view = views.welcome_view(
             number=7,
             category=views.CATEGORIES["bug"],
             answers=[("Summary", "boom"), ("Version", "2.2")],
             mention="<@1>",
             language="en",
+            opened_at=opened,
+            avatar_url="https://cdn.example/a.png",
         )
         greeting, request, lang_row, row = view.children
+        self.assertEqual(greeting.colour.value, views.CATEGORIES["bug"].color)
+        section = greeting.items[0]
+        self.assertIsInstance(section, discord.ui.Section)
+        self.assertEqual(section.accessory.url, "https://cdn.example/a.png")
         self.assertIn("## 🎫 #0007 · ⚙️ Game-Breaking Bug", texts(greeting))
         self.assertIn("ping staff", texts(greeting))
         self.assertNotIn("¡Hola", texts(greeting))  # one language only
         self.assertIn("<@1>", texts(greeting))
+        self.assertEqual(view.get_item(views.OPENED_ID).content, f"-# Opened <t:{int(opened.timestamp())}:R> · 🇬🇧 English")
         self.assertEqual(texts(request), "-# Summary\n### boom\n**Version**\n2.2")
         self.assertEqual((lang_row.id, custom_ids(lang_row)), (views.LANG_ROW_ID, [views.LANG_SELECT_ID]))
         self.assertEqual(custom_ids(row), CONTROL_IDS)
         self.assertIsNone(view.timeout)
+
+    def test_every_category_has_its_own_color(self):
+        colors = {key: category.color for key, category in views.CATEGORIES.items()}
+        self.assertEqual(colors["bug"], 0xE74C3C)
+        self.assertEqual(colors["other"], 0x95A5A6)
+        self.assertEqual(len(set(colors.values())), len(colors))
+
+    async def test_welcome_card_without_an_avatar_has_a_plain_greeting(self):
+        view = views.welcome_view(number=7, category=views.CATEGORIES["bug"], answers=[], mention="<@1>", language="en")
+        self.assertIsInstance(view.children[0].items[0], discord.ui.TextDisplay)
+        self.assertEqual(view.children[0].items[0].id, views.GREETING_ID)
+
+    async def test_translation_goes_below_the_original_which_stays_first(self):
+        view = views.welcome_view(
+            number=7,
+            category=views.CATEGORIES["bug"],
+            answers=[("Summary", "se cierra")],
+            mention="<@1>",
+            language="es",
+            translation="-# Summary\n### it crashes",
+        )
+        original, separator, english = view.children[1].items
+        self.assertEqual(original.content, "-# Summary\n### se cierra")
+        self.assertIsInstance(separator, discord.ui.Separator)
+        self.assertEqual(english.content, "-# 🇬🇧 English translation\n-# Summary\n### it crashes")
+        # TicketsCog.on_language reads the request back off the posted card.
+        posted = discord.ui.DesignerView.from_message(sent_message(view), timeout=None)
+        self.assertEqual(posted.children[1].items[0].content, "-# Summary\n### se cierra")
+
+    async def test_a_long_request_and_its_translation_fit_the_card(self):
+        long = "x" * 3000
+        view = views.welcome_view(
+            number=7,
+            category=views.CATEGORIES["bug"],
+            answers=[("Summary", long)],
+            mention="<@1>",
+            language="es",
+            translation=long,
+        )
+        self.assertLessEqual(len(texts(view)), 4000)
+        self.assertTrue(view.children[1].items[0].content.startswith("-# Summary"))
 
     async def test_welcome_card_greets_in_the_ticket_language_and_selects_it(self):
         view = views.welcome_view(number=7, category=views.CATEGORIES["bug"], answers=[], mention="<@1>", language="pt")
@@ -321,8 +411,16 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(o.value, o.default) for o in select.options], [("en", False), ("es", False), ("pt", True)])
 
     async def test_relanguage_welcome_rewrites_the_greeting_and_select_default(self):
+        opened = datetime(2026, 1, 1, tzinfo=timezone.utc)
         posted = views.welcome_view(
-            number=7, category=views.CATEGORIES["bug"], answers=[("Summary", "boom")], mention="<@1>", language="en"
+            number=7,
+            category=views.CATEGORIES["bug"],
+            answers=[("Summary", "boom")],
+            mention="<@1>",
+            language="en",
+            opened_at=opened,
+            avatar_url="https://cdn.example/a.png",
+            translation="-# Summary\n### boom",
         )
         view = views.relanguage_welcome(
             discord.ui.DesignerView.from_message(sent_message(posted), timeout=None),
@@ -331,11 +429,14 @@ class FormTests(unittest.IsolatedAsyncioTestCase):
             mention="<@1>",
             language="es",
         )
-        self.assertIn("¡Hola <@1>!", texts(view.children[0]))
-        self.assertEqual(texts(view.children[1]), "-# Summary\n### boom")
+        self.assertIn("¡Hola <@1>!", view.get_item(views.GREETING_ID).content)
+        self.assertNotIn("Hey <@1>", texts(view.children[0]))
+        self.assertEqual(view.get_item(views.OPENED_ID).content, f"-# Opened <t:{int(opened.timestamp())}:R> · 🇪🇸 Español")
+        self.assertEqual(view.children[1].items[0].content, "-# Summary\n### boom")
         select = view.get_item(views.LANG_ROW_ID).children[0]
         self.assertEqual([o.value for o in select.options if o.default], ["es"])
         self.assertEqual(custom_ids(view.get_item(views.ACTIONS_ID)), CONTROL_IDS)
+        self.assertEqual(view.get_item(views.ACTIONS_ID).children[0].label, "Cerrar")
 
     async def test_member_dms_are_in_the_ticket_language(self):
         channel = SimpleNamespace(guild=SimpleNamespace(icon=None), jump_url="https://discord.com/channels/1/900")
@@ -491,7 +592,11 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         ai_cog = SimpleNamespace(ticket_closed=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
         with (
-            patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed,
+            patch.object(
+                cog_module,
+                "mark_closed",
+                AsyncMock(return_value=make_ticket(status="closed", closed_by=STAFF_ID, close_reason="done")),
+            ) as closed,
             patch.object(cog, "archive", AsyncMock()) as archive,
             patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
@@ -505,12 +610,14 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         set_row.assert_awaited_once_with("welcome", None)
         sent = channel.send.await_args.kwargs["view"]
         self.assertIn("<@200>", texts(sent))
-        self.assertEqual(custom_ids(sent), ["ticket_btn_transcript", "ticket_btn_reopen", "ticket_btn_delete"])
+        self.assertEqual(custom_ids(sent), CLOSED_IDS)
+        self.assertIn("**Reason** done", texts(sent))
+        self.assertEqual(sent.get_item(views.AUTOCLOSE_BUTTON_ID).label, "Auto-close: Off")
         saving = next(item for item in walk(sent) if getattr(item, "custom_id", None) == "ticket_btn_transcript")
         self.assertEqual((saving.label, saving.disabled), ("Saving transcript…", True))
         # every close archives, and the archive updates the card it just posted
         archive.assert_awaited_once_with(
-            channel, ticket, closed_by_id=STAFF_ID, card=channel.send.return_value, resolved=None, dm=True, staff_solved=False
+            channel, ticket, closed_by_id=STAFF_ID, card=channel.send.return_value, resolved=None, dm=True
         )
 
     async def test_close_always_archives_swaps_in_the_link_and_dms_the_owner(self):
@@ -968,12 +1075,13 @@ class InteractionGateTests(unittest.IsolatedAsyncioTestCase):
             await cog.on_transcript(interaction)
         ai_cog.forget_archived.assert_called_once_with(900)  # the close already archived it once
         self.assertEqual(ai_cog._close_ticket.await_args.kwargs["closed_by_id"], OWNER_ID)
-        self.assertFalse(ai_cog._close_ticket.await_args.kwargs["staff_solved"])
+        self.assertNotIn("staff_solved", ai_cog._close_ticket.await_args.kwargs)
         # first the card shows the click is being handled, with its row disabled
         self.assertEqual(
             self.busy_row(interaction),
             {
                 views.TRANSCRIPT_BUTTON_ID: (v2.WORKING, True),
+                views.AUTOCLOSE_BUTTON_ID: ("Auto-close: Off", True),
                 views.REOPEN_BUTTON_ID: ("Re-Open", True),
                 views.DELETE_BUTTON_ID: ("Delete", True),
             },
@@ -1213,7 +1321,7 @@ if __name__ == "__main__":
 class AiToggleTests(unittest.IsolatedAsyncioTestCase):
     async def test_button_shows_state_and_toggle_flips_it_publicly(self):
         on, off = views.control_row(True), views.control_row(False)
-        self.assertEqual((on.children[0].label, off.children[0].label), ("AI support: On", "AI support: Off"))
+        self.assertEqual((on.children[1].label, off.children[1].label), ("AI support: On", "AI support: Off"))
         cog = make_cog()
         ai_cog = SimpleNamespace(is_ticket_ai_enabled=lambda _id: True, set_ticket_ai_enabled=AsyncMock())
         cog.bot.get_cog = lambda name: ai_cog if name == "AITicketsCog" else None
@@ -1235,7 +1343,7 @@ class AiToggleTests(unittest.IsolatedAsyncioTestCase):
         labels = [(item.label, item.disabled) for item in walk(busy) if isinstance(item, discord.ui.Button)]
         self.assertEqual(
             labels,
-            [(v2.WORKING, True), ("Close", True), ("Solved", True), ("Summary", True), ("Draft reply", True)],
+            [("Close", True), (v2.WORKING, True), ("Summary", True)],
         )
 
 
@@ -1245,7 +1353,8 @@ class BusyCardTests(unittest.IsolatedAsyncioTestCase):
         card.remove_item(views.ACTIONS_ID)
         card.add_item(views.closed_row("https://tickets.example/t/x"))
         view = v2.busy(discord.ui.DesignerView.from_message(sent_message(card), timeout=None), views.DELETE_BUTTON_ID)
-        link, reopen, delete = [item for item in walk(view) if isinstance(item, discord.ui.Button)]
+        link, auto_close, reopen, delete = [item for item in walk(view) if isinstance(item, discord.ui.Button)]
+        self.assertEqual((auto_close.label, auto_close.disabled), ("Auto-close: Off", True))
         self.assertEqual((link.url, link.label, link.disabled), ("https://tickets.example/t/x", "Transcript", False))
         self.assertEqual((reopen.label, reopen.disabled, str(reopen.emoji)), ("Re-Open", True, "🔓"))
         self.assertEqual((delete.label, delete.disabled, delete.emoji), (v2.WORKING, True, None))
@@ -1289,22 +1398,16 @@ def click(user, custom_id, card, channel_id=900):
 
 
 class SolvedTests(unittest.IsolatedAsyncioTestCase):
-    """Every solved close (staff Solved, or the owner confirming it to the AI): closed, the owner gets the solved DM,
-    and the sweep deletes it SOLVED_DELETE_AFTER later unless staff re-open it."""
+    """Solved: the owner confirming it to the AI closes with auto-close on and the solved DM; staff turn the closed
+    card's Auto-close toggle on (solved, suggestion to review) or off. The sweep deletes it SOLVED_DELETE_AFTER later
+    unless staff re-open it."""
 
     URL = "https://tickets.example/t/x"
     LATER = datetime(2099, 1, 1, tzinfo=timezone.utc)
     REOPEN_ID = f"{views.SOLVED_REOPEN_PREFIX}42"
 
-    def welcome(self):
-        return views.welcome_view(number=42, category=views.CATEGORIES["bug"], answers=[], mention="<@1>", language="en")
-
     def solved_dm(self):
         return views.dm_solved(42, SimpleNamespace(icon=None), self.URL, None, self.LATER, "en")
-
-    def test_control_row_has_the_solved_button(self):
-        solved = views.control_row().get_item(views.SOLVED_BUTTON_ID)
-        self.assertEqual((solved.custom_id, solved.label, solved.style), (views.SOLVED_BUTTON_ID, "Solved", discord.ButtonStyle.primary))
 
     def test_solved_window_is_one_hour_and_the_sweep_runs_every_minute(self):
         self.assertEqual(cog_module.SOLVED_DELETE_AFTER, timedelta(hours=1))
@@ -1327,65 +1430,145 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("will be deleted", texts(no_page))
         self.assertEqual([item for item in walk(no_page) if isinstance(item, discord.ui.Button)], [])
 
-    async def test_owner_cannot_mark_solved(self):
-        cog = make_cog()
-        interaction = click(member(OWNER_ID), views.SOLVED_BUTTON_ID, self.welcome())
-        with (
-            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
-            patch.object(cog, "close_ticket", AsyncMock()) as close,
-        ):
-            await cog.on_solved(interaction)
-        interaction.response.send_message.assert_awaited_once_with(views.t("en", "staff_only"), ephemeral=True)
-        close.assert_not_called()
+    def closed_card(self, delete_at=None):
+        return views.closed_view(None, None, delete_at=delete_at, url=self.URL, saving=False)
 
-    async def test_solved_closes_resolved_with_a_deadline_and_sends_only_the_solved_dm(self):
-        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
-        cog, channel = make_cog(), make_channel(owner)
-        interaction = click(member(STAFF_ID, HELPER_ROLE), views.SOLVED_BUTTON_ID, self.welcome())
+    async def toggle(self, clicker, current, updated, *, suggestion=None):
+        """A click on the closed card's Auto-close toggle; current is the ticket when clicked, updated after the
+        flip. Returns (interaction, mocks)."""
+        cog, channel = make_cog(), make_channel()
+        support = SimpleNamespace(suggest_from_ticket=AsyncMock())
+        cog.bot.get_cog = lambda name: support if name == "SupportInfoCog" else None
+        interaction = click(clicker, views.AUTOCLOSE_BUTTON_ID, self.closed_card(current.delete_at))
         interaction.channel = channel
-        page = StoredPage(token="f" * 32, expires_at=None)
-        before = datetime.now(timezone.utc)
+        mocks = SimpleNamespace(support=support, channel=channel)
         with (
-            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket())),
-            patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed,
-            patch.object(cog, "_archive", AsyncMock(return_value=True)) as archive,
-            patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=page)),
-            patch.object(cog, "_set_row", AsyncMock()),
+            patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=current)),
+            patch.object(cog_module, "schedule_delete", AsyncMock(return_value=updated)) as mocks.schedule,
+            patch.object(cog_module, "cancel_delete", AsyncMock(return_value=updated)) as mocks.cancel,
+            patch.object(cog_module, "set_transcript_resolved", AsyncMock()) as mocks.resolved,
+            patch.object(cog_module, "take_support_suggestion", AsyncMock(return_value=suggestion)) as mocks.take,
+            patch.object(
+                cog_module, "get_page_for_channel", AsyncMock(return_value=StoredPage(token="f" * 32, expires_at=None))
+            ),
         ):
-            await cog.on_solved(interaction)
-        delete_at = closed.await_args.kwargs["delete_at"]
+            await cog.on_interaction(interaction)
+        return interaction, mocks
+
+    async def test_staff_turning_auto_close_on_marks_it_solved_and_sends_the_suggestion_once(self):
+        current = make_ticket(status="closed", closed_by=STAFF_ID, close_reason="done")
+        updated = make_ticket(status="closed", closed_by=STAFF_ID, close_reason="done", delete_at=self.LATER)
+        stored = {"kind": "permanent", "title": "Q", "body": "A"}
+        before = datetime.now(timezone.utc)
+        interaction, m = await self.toggle(member(STAFF_ID, HELPER_ROLE), current, updated, suggestion=stored)
+        channel_id, delete_at = m.schedule.await_args.args
+        self.assertEqual(channel_id, 900)
         self.assertAlmostEqual((delete_at - before).total_seconds(), 3600, delta=60)
-        reason = closed.await_args.kwargs["reason"]
-        self.assertEqual(reason, f"✅ Solved. Deletes <t:{int(delete_at.timestamp())}:R> unless staff re-open it.")
-        self.assertIs(archive.await_args.args[3], True)  # resolved
-        self.assertIs(archive.await_args.args[4], True)  # staff_solved: may suggest support info
-        self.assertIn("Solved. Deletes", texts(channel.send.await_args_list[0].kwargs["view"]))
-        owner.send.assert_awaited_once()  # the solved DM only, no generic transcript DM
-        dm = owner.send.await_args.kwargs["view"]
-        self.assertIn("marked as solved", texts(dm))
-        self.assertEqual(custom_ids(dm), [])
+        m.cancel.assert_not_called()
+        m.resolved.assert_awaited_once_with(900, True)
+        m.take.assert_awaited_once_with(900)  # takes and clears it, so a second On has nothing left to send
+        suggestion = m.support.suggest_from_ticket.await_args.args[0]
+        self.assertEqual((suggestion.kind, suggestion.title, suggestion.body), ("permanent", "Q", "A"))
+        self.assertEqual(
+            m.support.suggest_from_ticket.await_args.kwargs,
+            {"ticket_id": 42, "page_link": f"{SETTINGS.ticket_transcript_public_url}/t/{'f' * 32}"},
+        )
+        self.assertEqual(self.busy(interaction), (v2.WORKING, True))
+        card = interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertIn(f"-# 🗑️ Deletes <t:{int(self.LATER.timestamp())}:R> unless re-opened.", texts(card))
+        self.assertIn("Closed by <@200>.", texts(card))
+        self.assertEqual(card.get_item(views.AUTOCLOSE_BUTTON_ID).label, "Auto-close: On")
+        self.assertEqual([item for item in walk(card) if isinstance(item, discord.ui.Button)][0].url, f"{SETTINGS.ticket_transcript_public_url}/t/{'f' * 32}")
+        sent = m.channel.send.await_args.kwargs
+        self.assertEqual(
+            texts(sent["view"]), f"⏱️ Auto-close on by <@200>: deletes <t:{int(self.LATER.timestamp())}:R>."
+        )
+        self.assertEqual(sent["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
         interaction.followup.send.assert_not_called()
 
-    async def test_owner_solved_closes_the_same_way_but_suggests_nothing(self):
-        """AITicketsCog's owner paths (Yes on the prompt, or saying so) call solve_ticket without staff_solved."""
+    async def test_turning_auto_close_on_without_a_stored_suggestion_suggests_nothing(self):
+        current = make_ticket(status="closed")
+        updated = make_ticket(status="closed", delete_at=self.LATER)
+        _, m = await self.toggle(member(STAFF_ID, HELPER_ROLE), current, updated, suggestion=None)
+        m.take.assert_awaited_once_with(900)
+        m.support.suggest_from_ticket.assert_not_called()
+
+    async def test_staff_turning_auto_close_off_clears_the_deadline_and_the_solved_mark(self):
+        current = make_ticket(status="closed", delete_at=self.LATER)
+        updated = make_ticket(status="closed")
+        interaction, m = await self.toggle(member(STAFF_ID, MOD_ROLE), current, updated)
+        m.cancel.assert_awaited_once_with(900)
+        m.schedule.assert_not_called()
+        m.resolved.assert_awaited_once_with(900, False)
+        m.take.assert_not_called()
+        card = interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertNotIn("Deletes", texts(card))
+        self.assertEqual(card.get_item(views.AUTOCLOSE_BUTTON_ID).label, "Auto-close: Off")
+        self.assertEqual(texts(m.channel.send.await_args.kwargs["view"]), "⏱️ Auto-close off by <@200>.")
+
+    async def test_only_staff_toggle_auto_close_and_only_on_a_closed_ticket(self):
+        for clicker, ticket, key in (
+            (member(OWNER_ID), make_ticket(status="closed"), "staff_only"),
+            (member(STAFF_ID, HELPER_ROLE), make_ticket(), "not_closed"),
+        ):
+            interaction, m = await self.toggle(clicker, ticket, ticket)
+            interaction.response.send_message.assert_awaited_once_with(views.t("en", key), ephemeral=True)
+            m.schedule.assert_not_called()
+            m.cancel.assert_not_called()
+
+    def busy(self, interaction):
+        view = interaction.response.edit_message.await_args.kwargs["view"]
+        button = view.get_item(views.AUTOCLOSE_BUTTON_ID)
+        return button.label, button.disabled
+
+    async def test_owner_solved_closes_with_auto_close_on_but_suggests_nothing(self):
+        """AITicketsCog's owner paths (Yes on the prompt, or saying so) call solve_ticket."""
         owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
         cog, channel = make_cog(), make_channel(owner)
+        support = SimpleNamespace(suggest_from_ticket=AsyncMock())
+        cog.bot.get_cog = lambda name: support if name == "SupportInfoCog" else None
         before = datetime.now(timezone.utc)
         with (
-            patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed"))) as closed,
+            patch.object(
+                cog_module,
+                "mark_closed",
+                AsyncMock(return_value=make_ticket(status="closed", closed_by=OWNER_ID, close_reason="✅ Solved.", delete_at=self.LATER)),
+            ) as closed,
             patch.object(cog, "_archive", AsyncMock(return_value=True)) as archive,
             patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=None)),
-            patch.object(cog, "_set_row", AsyncMock()),
+            patch.object(cog_module, "take_support_suggestion", AsyncMock()) as take,
+            patch.object(cog, "_set_row", AsyncMock()) as set_row,
         ):
             ticket = await cog.solve_ticket(channel, closer_id=OWNER_ID)
         self.assertEqual(ticket.status, "closed")
         kwargs = closed.await_args.kwargs
-        self.assertEqual(kwargs["closed_by"], OWNER_ID)
+        self.assertEqual((kwargs["closed_by"], kwargs["reason"]), (OWNER_ID, "✅ Solved."))
         self.assertAlmostEqual((kwargs["delete_at"] - before).total_seconds(), 3600, delta=60)
-        self.assertEqual(archive.await_args.args[2:], (OWNER_ID, True, False))  # closer, resolved, not staff_solved
+        self.assertEqual(archive.await_args.args[2:], (OWNER_ID, True))  # closer, resolved
+        card = channel.send.await_args_list[0].kwargs["view"]
+        self.assertIn("unless re-opened", texts(card))
+        self.assertEqual(card.get_item(views.AUTOCLOSE_BUTTON_ID).label, "Auto-close: On")
+        self.assertEqual(set_row.await_args.args[1].get_item(views.AUTOCLOSE_BUTTON_ID).label, "Auto-close: On")
+        take.assert_not_called()
+        support.suggest_from_ticket.assert_not_called()
         owner.send.assert_awaited_once()  # the solved DM, not the transcript one
         self.assertIn("marked as solved", texts(owner.send.await_args.kwargs["view"]))
         channel.delete.assert_not_called()
+
+    async def test_staff_bulma_solve_also_sends_the_suggestion(self):
+        owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
+        cog, channel = make_cog(), make_channel(owner)
+        support = SimpleNamespace(suggest_from_ticket=AsyncMock())
+        cog.bot.get_cog = lambda name: support if name == "SupportInfoCog" else None
+        with (
+            patch.object(cog_module, "mark_closed", AsyncMock(return_value=make_ticket(status="closed", delete_at=self.LATER))),
+            patch.object(cog, "_archive", AsyncMock(return_value=True)),
+            patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=None)),
+            patch.object(cog_module, "take_support_suggestion", AsyncMock(return_value={"kind": "permanent", "title": "Q", "body": "A"})),
+            patch.object(cog, "_set_row", AsyncMock()),
+        ):
+            await cog.solve_ticket(channel, closer_id=STAFF_ID, staff=True)
+        support.suggest_from_ticket.assert_awaited_once()
 
     async def test_solving_a_ticket_that_is_not_open_does_nothing_else(self):
         owner = SimpleNamespace(id=OWNER_ID, roles=[], send=AsyncMock())
@@ -1441,7 +1624,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_on_interaction_routes_the_solved_buttons(self):
         cog = make_cog()
-        for custom_id, name in ((self.REOPEN_ID, "on_solved_reopen"), (views.SOLVED_BUTTON_ID, "on_solved")):
+        for custom_id, name in ((self.REOPEN_ID, "on_solved_reopen"), (views.AUTOCLOSE_BUTTON_ID, "on_autoclose")):
             interaction = click(member(OWNER_ID), custom_id, self.solved_dm())
             with patch.object(cog, name, AsyncMock()) as handler:
                 await cog.on_interaction(interaction)
@@ -1466,15 +1649,19 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         unset = SimpleNamespace(announcement_role_en_id=None, announcement_role_es_id=ES_ROLE, announcement_role_pt_id=None)
         self.assertEqual(role_languages(member(1, EN_ROLE, ES_ROLE), unset), ["es"])
 
-    async def create(self, *role_ids, language=None, category="bug"):
+    async def create(self, *role_ids, language=None, category="bug", translation=None):
         cog = make_cog()
         owner = MagicMock(spec=discord.Member)
         owner.id, owner.mention = OWNER_ID, f"<@{OWNER_ID}>"
         owner.roles = [SimpleNamespace(id=role_id) for role_id in role_ids]
         owner.send = AsyncMock()
+        owner.display_avatar = SimpleNamespace(url="https://cdn.example/a.png")
         channel = make_channel()
         channel.mention, channel.jump_url = "<#900>", "https://discord.com/channels/1/900"
-        channel.send = AsyncMock(return_value=SimpleNamespace(id=77))
+        welcome = SimpleNamespace(id=77, pin=AsyncMock())
+        channel.send = AsyncMock(return_value=welcome)
+        pin_notice = SimpleNamespace(type=discord.MessageType.pins_add, author=SimpleNamespace(id=9), delete=AsyncMock())
+        channel.history = lambda limit: AsyncIter([pin_notice])
         guild = MagicMock()
         guild.get_channel.return_value = MagicMock(spec=discord.CategoryChannel)
         guild.create_text_channel = AsyncMock(return_value=channel)
@@ -1492,6 +1679,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cog_module, "attach_channel", AsyncMock()) as attach,
             patch.object(cog_module, "build_overwrites", return_value={}) as overwrites,
             patch.object(cog, "_triage", AsyncMock(return_value=intake)),
+            patch.object(cog, "_translate_request", AsyncMock(return_value=translation)) as translate,
         ):
             await cog.create_ticket(interaction, views.CATEGORIES[category], [("Summary", "boom")], language=language)
         return SimpleNamespace(
@@ -1504,7 +1692,26 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
             sends=channel.send.await_args_list,
             dm=texts(owner.send.await_args.kwargs["view"]),
             owner=owner,
+            welcome=welcome,
+            pin_notice=pin_notice,
+            translate=translate,
         )
+
+    async def test_the_welcome_card_is_pinned_and_the_pin_notice_removed(self):
+        made = await self.create(EN_ROLE)
+        made.welcome.pin.assert_awaited_once()
+        made.pin_notice.delete.assert_awaited_once()
+        view = made.sends[0].kwargs["view"]
+        self.assertEqual(view.children[0].colour.value, views.CATEGORIES["bug"].color)
+        self.assertEqual(view.children[0].items[0].accessory.url, "https://cdn.example/a.png")
+        self.assertIn("-# Opened <t:", texts(view))
+
+    async def test_the_request_is_translated_alongside_the_triage(self):
+        made = await self.create(ES_ROLE, translation="-# Summary\n### it crashes")
+        made.translate.assert_awaited_once()
+        request = made.sends[0].kwargs["view"].children[1]
+        self.assertEqual(request.items[0].content, "-# Summary\n### boom")
+        self.assertEqual(request.items[2].content, "-# 🇬🇧 English translation\n-# Summary\n### it crashes")
 
     async def test_one_language_role_sets_the_ticket_language(self):
         made = await self.create(ES_ROLE)
@@ -1653,9 +1860,13 @@ class OwnerReminderTests(unittest.IsolatedAsyncioTestCase):
         cog, channel = make_cog(), make_channel(owner)
         channel.jump_url = "https://discord.com/channels/1/900"
         cog.bot.get_channel = lambda _id: channel if _id == 900 else None
-        with patch.object(cog_module, "claim_owner_reminders", AsyncMock(return_value=tickets)) as claim:
+        with (
+            patch.object(cog_module, "claim_owner_reminders", AsyncMock(return_value=tickets)) as claim,
+            patch.object(cog_module, "list_inactive_tickets", AsyncMock(return_value=[])) as inactive,
+        ):
             await cog._remind_owners()
         claim.assert_awaited_once_with(cog_module.OWNER_REMINDER_HOURS)
+        inactive.assert_awaited_once_with(cog_module.INACTIVE_CLOSE_HOURS)  # same loop
 
     async def test_sweep_dms_the_owner_in_the_ticket_language(self):
         owner = SimpleNamespace(id=OWNER_ID, send=AsyncMock())
@@ -1671,3 +1882,121 @@ class OwnerReminderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs(cog_module.log, "INFO") as logs:
             await self.sweep(owner, [make_ticket()])
         self.assertEqual([record.levelname for record in logs.records], ["INFO"])
+
+    def test_reminder_dm_says_the_ticket_closes_after_24h_in_every_language(self):
+        for language, words in (("en", "24 hours"), ("es", "24 horas"), ("pt", "24 horas")):
+            self.assertIn(words, views.t(language, "reminder"))
+        self.assertIn("se cerrará automáticamente", views.t("es", "reminder"))
+        self.assertIn("será fechado automaticamente", views.t("pt", "reminder"))
+
+    async def test_inactive_sql_waits_24h_after_the_reminder_of_a_running_silence(self):
+        pool = SimpleNamespace(fetch=AsyncMock(return_value=[]))
+        self.assertEqual(await db.list_inactive_tickets(24, pool=pool), [])
+        query, hours = pool.fetch.await_args.args
+        self.assertEqual(hours, 24)
+        self.assertEqual(cog_module.INACTIVE_CLOSE_HOURS, 24)
+        self.assertIn("status = 'open'", query)
+        self.assertIn("awaiting_owner_since IS NOT NULL", query)
+        self.assertIn("owner_reminded_at <= now() - make_interval(hours => $1)", query)
+        self.assertNotIn("UPDATE", query)  # read only; mark_closed is the claim
+
+    async def test_inactive_tickets_close_by_the_bot_with_auto_close_on(self):
+        cog, channel = make_cog(), make_channel()
+        cog.bot.get_channel = lambda _id: channel if _id == 900 else None
+        here, gone = make_ticket(), make_ticket(channel_id=901)
+        before = datetime.now(timezone.utc)
+        with (
+            patch.object(cog_module, "list_inactive_tickets", AsyncMock(return_value=[here, gone])),
+            patch.object(cog, "close_ticket", AsyncMock(return_value=make_ticket(status="closed"))) as close,
+            patch.object(cog_module, "mark_deleted", AsyncMock()) as deleted,
+        ):
+            await cog._close_inactive()
+        close.assert_awaited_once()
+        self.assertIs(close.await_args.args[0], channel)
+        kwargs = close.await_args.kwargs
+        self.assertIsNone(kwargs["closer_id"])
+        self.assertEqual(kwargs["reason"], "💤 Closed for inactivity: no reply within 24h of the reminder.")
+        self.assertAlmostEqual((kwargs["delete_at"] - before).total_seconds(), 3600, delta=60)
+        self.assertNotIn("resolved", kwargs)  # the summary decides
+        self.assertNotIn("dm", kwargs)  # the owner gets the usual transcript DM
+        deleted.assert_awaited_once_with(901)
+
+    async def test_an_inactive_close_that_fails_does_not_stop_the_others(self):
+        cog, channel = make_cog(), make_channel()
+        cog.bot.get_channel = lambda _id: channel
+        with (
+            patch.object(cog_module, "list_inactive_tickets", AsyncMock(return_value=[make_ticket(), make_ticket()])),
+            patch.object(cog, "close_ticket", AsyncMock(side_effect=[RuntimeError("boom"), None])) as close,
+            self.assertLogs(cog_module.log, "ERROR"),
+        ):
+            await cog._close_inactive()
+        self.assertEqual(close.await_count, 2)
+
+    async def test_auto_close_service_sql(self):
+        pool = SimpleNamespace(fetchrow=AsyncMock(return_value=None), execute=AsyncMock(), fetchval=AsyncMock(return_value=None))
+        self.assertIsNone(await db.cancel_delete(900, pool=pool))
+        query = pool.fetchrow.await_args.args[0]
+        self.assertIn("SET delete_at = NULL", query)
+        self.assertIn("status = 'closed'", query)
+
+        await db.set_transcript_resolved(900, True, pool=pool)
+        query, *args = pool.execute.await_args.args
+        self.assertEqual(args, [900, True])
+        self.assertIn("SELECT max(id) FROM ticket_transcripts WHERE channel_id = $1", query)
+
+        suggestion = SimpleNamespace(kind="permanent", title="Q", body="A")
+        await db.store_support_suggestion(900, suggestion, pool=pool)
+        query, *args = pool.execute.await_args.args
+        self.assertIn("support_info = $2::jsonb", query)
+        self.assertEqual(args, [900, json.dumps({"kind": "permanent", "title": "Q", "body": "A"})])
+        await db.store_support_suggestion(900, None, pool=pool)
+        self.assertEqual(pool.execute.await_args.args[1:], (900, None))
+
+        self.assertIsNone(await db.take_support_suggestion(900, pool=pool))
+        query = pool.fetchval.await_args.args[0]
+        self.assertIn("SET support_info = NULL", query)
+        self.assertIn("RETURNING old.support_info", query)
+        pool.fetchval.return_value = json.dumps({"kind": "temporary", "title": "T", "body": "B"})
+        self.assertEqual(await db.take_support_suggestion(900, pool=pool), {"kind": "temporary", "title": "T", "body": "B"})
+
+
+class RequestTranslationTests(unittest.IsolatedAsyncioTestCase):
+    """The request card's English translation for staff (TicketsCog._translate_request)."""
+
+    ANSWERS = [("Summary", "se cierra al abrir el mundo")]
+
+    async def run_translate(self, language="es", result=None, error=None, paused=False):
+        cog = make_cog()
+        cog.bot.settings = SimpleNamespace(
+            **vars(SETTINGS), ai_translation_model="claude-haiku-5-5", ai_support_timeout_seconds=30,
+            moderation_banned_words=(), moderation_blocked_domains=(), wiki_base_url="https://wiki.example",
+        )
+        translate = AsyncMock(return_value=result if result is not None else {}, side_effect=error)
+        with (
+            patch.object(cog_module, "translate_owner_text", translate),
+            patch.object(cog_module.ai_budget, "is_paused", return_value=paused),
+        ):
+            out = await cog._translate_request(self.ANSWERS, make_ticket(language=language))
+        return out, translate
+
+    async def test_a_non_english_request_is_translated_into_english_in_one_call(self):
+        out, translate = await self.run_translate(result={"en": "-# Summary\n### it crashes when opening the world"})
+        self.assertEqual(out, "-# Summary\n### it crashes when opening the world")
+        translate.assert_awaited_once()
+        self.assertEqual(translate.await_args.args, (views.request_text(self.ANSWERS), "es", ["en"]))
+        self.assertEqual(translate.await_args.kwargs["model"], "claude-haiku-5-5")
+
+    async def test_english_paused_or_failed_means_no_translation(self):
+        for kwargs in ({"language": "en"}, {"paused": True}):
+            out, translate = await self.run_translate(**kwargs)
+            self.assertIsNone(out)
+            translate.assert_not_called()
+        with self.assertLogs(cog_module.log, "ERROR"):
+            out, _ = await self.run_translate(error=RuntimeError("api down"))
+        self.assertIsNone(out)
+        self.assertIsNone((await self.run_translate(result={}))[0])
+
+    async def test_the_translation_is_screened_and_its_mentions_defused(self):
+        out, _ = await self.run_translate(result={"en": "ping @everyone now"})
+        self.assertNotIn("@everyone", out)
+        self.assertIn("everyone", out)

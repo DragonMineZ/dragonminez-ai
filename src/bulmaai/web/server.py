@@ -17,6 +17,7 @@ from bulmaai.web import (
     routes_appeals,
     routes_log_pages,
     routes_logs,
+    routes_mcp,
     routes_moderation,
     routes_patreon,
     routes_settings,
@@ -64,6 +65,7 @@ MODULES = (
     routes_support_info,
     routes_appeals,
     routes_usage,
+    routes_mcp,
 )
 
 CSP = (
@@ -94,7 +96,15 @@ async def security_middleware(request: web.Request, handler) -> web.StreamRespon
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         origin = request.headers.get("Origin")
         allowed = {request.host, urlparse(request.app[BOT].settings.panel_public_url).netloc}
-        if not origin or urlparse(origin).netloc not in allowed:
+        # MCP clients send no Origin and authenticate with a bearer token (no cookies, so no CSRF). An Origin that is
+        # present must still be ours (DNS rebinding).
+        mcp_client = (
+            request.method == "POST"
+            and request.path == routes_mcp.PATH
+            and not origin
+            and request.headers.get("Authorization", "").lower().startswith("bearer ")
+        )
+        if not mcp_client and (not origin or urlparse(origin).netloc not in allowed):
             return web.json_response({"error": "Cross-origin request rejected."}, status=403)
     try:
         response = await handler(request)

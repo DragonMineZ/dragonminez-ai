@@ -879,3 +879,11 @@ CREATE TABLE IF NOT EXISTS staff_mcp_tokens (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_used_at TIMESTAMPTZ
 );
+
+-- One row per Staff Bulma request, for the per-user daily cap (staff_ai_daily_requests); old rows are purged on insert.
+CREATE TABLE IF NOT EXISTS staff_requests (
+    user_id    BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_requests_user ON staff_requests (user_id, created_at DESC);

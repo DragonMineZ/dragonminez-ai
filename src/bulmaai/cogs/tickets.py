@@ -1280,14 +1280,17 @@ class TicketsCog(ReloadableCog):
         await target.send(view=panel_view())
         await ctx.interaction.delete_original_response()  # the panel appearing is the confirmation
 
+    async def add_to_ticket(self, channel: discord.TextChannel, target: discord.Member | discord.Role, reason: str) -> None:
+        overwrite = channel.overwrites_for(target)
+        overwrite.view_channel = True
+        await channel.set_permissions(target, overwrite=overwrite, reason=reason)
+
     @ticket.command(name="add", **described(DESC, "add"))
     @discord.option("target", discord.abc.Mentionable, **described(DESC, "add.target"))
     async def add(self, ctx: discord.ApplicationContext, target: discord.Member | discord.Role):
         if await self._command_gate(ctx, Rank.HELPER) is None:
             return
-        overwrite = ctx.channel.overwrites_for(target)
-        overwrite.view_channel = True
-        await ctx.channel.set_permissions(target, overwrite=overwrite, reason=f"/ticket add by {ctx.author}")
+        await self.add_to_ticket(ctx.channel, target, f"/ticket add by {ctx.author}")
         await ctx.respond(f"➕ {target.mention} was added to this ticket.", allowed_mentions=discord.AllowedMentions.none())
 
     @ticket.command(name="assign", **described(DESC, "assign"))

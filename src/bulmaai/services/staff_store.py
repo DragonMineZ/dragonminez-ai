@@ -370,3 +370,19 @@ async def user_for_token(token: str) -> int | None:
 
 async def revoke_token(user_id: int) -> None:
     await (await get_pool()).execute("DELETE FROM staff_mcp_tokens WHERE user_id = $1", user_id)
+
+
+# Request log (daily cap)
+
+
+async def count_requests_since(user_id: int, since: datetime) -> int:
+    count = await (await get_pool()).fetchval(
+        "SELECT count(*) FROM staff_requests WHERE user_id = $1 AND created_at > $2", user_id, since
+    )
+    return int(count or 0)
+
+
+async def log_request(user_id: int) -> None:
+    pool = await get_pool()
+    await pool.execute("DELETE FROM staff_requests WHERE created_at < now() - interval '2 days'")
+    await pool.execute("INSERT INTO staff_requests (user_id) VALUES ($1)", user_id)

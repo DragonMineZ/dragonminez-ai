@@ -45,6 +45,8 @@ FEATURE_LABELS: dict[str, str] = {
     "bug_report_triage": "Bug report triage",
     "bug_report_duplicates": "Bug report duplicate check",
     "code_notes": "Code notes",
+    "staff_assistant": "Staff Bulma",
+    "staff_distill": "Staff Bulma memory notes",
     "weekly_report": "Weekly support report",
     "other": "Other",
 }

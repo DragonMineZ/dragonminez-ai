@@ -380,7 +380,9 @@ class TicketsCog(ReloadableCog):
             return log.exception("Could not claim ticket owner reminders")
         for ticket in due:
             channel = self.bot.get_channel(ticket.channel_id)
-            owner = channel.guild.get_member(ticket.owner_id) if isinstance(channel, discord.TextChannel) else None
+            if not self._automated(ticket, channel):
+                continue
+            owner = channel.guild.get_member(ticket.owner_id)
             if owner is None:
                 continue
             try:
@@ -403,10 +405,22 @@ class TicketsCog(ReloadableCog):
                 if not isinstance(channel, discord.TextChannel):
                     await mark_deleted(ticket.channel_id)
                     continue
+                if not self._automated(ticket, channel):
+                    continue
                 delete_at = datetime.now(timezone.utc) + SOLVED_DELETE_AFTER
                 await self.close_ticket(channel, closer_id=None, reason=REASON_INACTIVE, delete_at=delete_at)
             except Exception:
                 log.exception("Failed to close inactive ticket", extra={"ticket_id": ticket.ticket_id})
+
+    def _automated(self, ticket: Ticket, channel) -> bool:
+        """Reminders and inactivity closes only touch ticket channels still in the open-tickets category (staff may
+        have moved one out to keep it) and never hands-off categories (Contributing)."""
+        category = CATEGORIES.get(ticket.category)
+        return (
+            isinstance(channel, discord.TextChannel)
+            and channel.category_id == self.settings.ai_ticket_category_id
+            and not (category is not None and category.hands_off)
+        )
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction) -> None:
@@ -583,8 +597,9 @@ class TicketsCog(ReloadableCog):
             pass  # DMs closed; the ephemeral message above already has the link
 
         ai_cog = self.bot.get_cog(AI_COG)
-        if ai_cog is not None and category.mod_only:
-            await ai_cog.set_ticket_ai_enabled(channel.id, False)  # moderators handle these; staff may turn it back on
+        if ai_cog is not None and (category.mod_only or category.hands_off):
+            # moderators or the team handle these; staff may turn it back on
+            await ai_cog.set_ticket_ai_enabled(channel.id, False)
         if ai_cog is not None and category.ai_reply:
             await ai_cog.answer_new_ticket(
                 channel, member, category_label=category.name, form_text=form_text, language=language

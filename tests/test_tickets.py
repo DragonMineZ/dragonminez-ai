@@ -1859,6 +1859,7 @@ class OwnerReminderTests(unittest.IsolatedAsyncioTestCase):
     async def sweep(self, owner, tickets):
         cog, channel = make_cog(), make_channel(owner)
         channel.jump_url = "https://discord.com/channels/1/900"
+        channel.category_id = SETTINGS.ai_ticket_category_id
         cog.bot.get_channel = lambda _id: channel if _id == 900 else None
         with (
             patch.object(cog_module, "claim_owner_reminders", AsyncMock(return_value=tickets)) as claim,
@@ -1900,8 +1901,41 @@ class OwnerReminderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("owner_reminded_at <= now() - make_interval(hours => $1)", query)
         self.assertNotIn("UPDATE", query)  # read only; mark_closed is the claim
 
+    async def test_inactive_close_skips_moved_channels_and_hands_off_categories(self):
+        cog = make_cog()
+        moved, kept = make_channel(), make_channel()
+        moved.category_id = 777  # staff moved it out of the tickets category
+        kept.category_id = SETTINGS.ai_ticket_category_id
+        channels = {900: moved, 901: kept}
+        cog.bot.get_channel = channels.get
+        tickets = [make_ticket(), make_ticket(channel_id=901, category="contribute")]
+        with (
+            patch.object(cog_module, "list_inactive_tickets", AsyncMock(return_value=tickets)),
+            patch.object(cog, "close_ticket", AsyncMock()) as close,
+            patch.object(cog_module, "mark_deleted", AsyncMock()) as deleted,
+        ):
+            await cog._close_inactive()
+        close.assert_not_awaited()
+        deleted.assert_not_awaited()
+
+    async def test_reminders_skip_moved_channels_and_hands_off_categories(self):
+        cog, owner = make_cog(), Snow(OWNER_ID)
+        owner.send = AsyncMock()
+        moved, kept = make_channel(owner), make_channel(owner)
+        moved.category_id = 777
+        kept.category_id = SETTINGS.ai_ticket_category_id
+        cog.bot.get_channel = {900: moved, 901: kept}.get
+        tickets = [make_ticket(), make_ticket(channel_id=901, category="contribute")]
+        with (
+            patch.object(cog_module, "claim_owner_reminders", AsyncMock(return_value=tickets)),
+            patch.object(cog, "_close_inactive", AsyncMock()),
+        ):
+            await cog._remind_owners()
+        owner.send.assert_not_awaited()
+
     async def test_inactive_tickets_close_by_the_bot_with_auto_close_on(self):
         cog, channel = make_cog(), make_channel()
+        channel.category_id = SETTINGS.ai_ticket_category_id
         cog.bot.get_channel = lambda _id: channel if _id == 900 else None
         here, gone = make_ticket(), make_ticket(channel_id=901)
         before = datetime.now(timezone.utc)
@@ -1923,6 +1957,7 @@ class OwnerReminderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_inactive_close_that_fails_does_not_stop_the_others(self):
         cog, channel = make_cog(), make_channel()
+        channel.category_id = SETTINGS.ai_ticket_category_id
         cog.bot.get_channel = lambda _id: channel
         with (
             patch.object(cog_module, "list_inactive_tickets", AsyncMock(return_value=[make_ticket(), make_ticket()])),

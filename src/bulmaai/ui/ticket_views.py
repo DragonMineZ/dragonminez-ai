@@ -237,6 +237,8 @@ class TicketCategory:
     mod_only: bool = False
     # The owner's messages are translated for the staff present; off where the team handling it shares their language.
     translate_owner: bool = True
+    # Long-running discussions: the AI starts off and the bot never reminds the owner or closes it for inactivity.
+    hands_off: bool = False
     # The welcome card's accent.
     color: int = 0x95A5A6
 
@@ -335,6 +337,7 @@ CATEGORIES: dict[str, TicketCategory] = {
             fallback_slug="contribute",
             ai_reply=False,
             translate_owner=False,
+            hands_off=True,
             fields=(
                 FormField(),
                 FormField(paragraph=True, max_length=800),

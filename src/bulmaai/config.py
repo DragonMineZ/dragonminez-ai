@@ -514,6 +514,13 @@ class Settings:
     # read them through /devlog and the staff draft's search_code_notes tool.
     code_notes_enabled: bool = True
     code_notes_model: str = "claude-haiku-5-5"
+    # Staff Bulma (services/staff_store): the Helper+ assistant. Requests per staff member per day; a distill pass
+    # rewrites their memory notes after staff_ai_distill_every new vault messages.
+    staff_ai_enabled: bool = True
+    staff_ai_model: str = "claude-haiku-5-5"
+    staff_ai_escalation_model: str = "claude-sonnet-5-5"
+    staff_ai_daily_requests: int = 60
+    staff_ai_distill_every: int = 50
     welcome_channel_id: int | None = DEFAULT_WELCOME_CHANNEL_ID
     member_role_id: int | None = DEFAULT_MEMBER_ROLE_ID
     member_role_name: str = "Member"

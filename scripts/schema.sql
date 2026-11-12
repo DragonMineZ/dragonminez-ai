@@ -798,3 +798,84 @@ CREATE TABLE IF NOT EXISTS tags (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (category, name)
 );
+
+-- Staff Bulma (services/staff_store.py): Helper+ staff onboard once (profile + consent); /bulma forget deletes every
+-- staff_* row of theirs. The vault keeps their messages in Member-visible channels; memory notes are distilled from it.
+CREATE TABLE IF NOT EXISTS staff_profiles (
+    user_id      BIGINT PRIMARY KEY,
+    nickname     TEXT NOT NULL,
+    language     TEXT,
+    timezone     TEXT NOT NULL DEFAULT 'UTC',
+    ticket_info  BOOLEAN NOT NULL DEFAULT FALSE,
+    consent_at   TIMESTAMPTZ NOT NULL,
+    learned_at   TIMESTAMPTZ,
+    distilled_at TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS staff_vault (
+    message_id BIGINT PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    guild_id   BIGINT NOT NULL,
+    channel_id BIGINT NOT NULL,
+    content    TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    edited_at  TIMESTAMPTZ,
+    tsv        tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_vault_tsv ON staff_vault USING GIN (tsv);
+CREATE INDEX IF NOT EXISTS idx_staff_vault_user_created ON staff_vault (user_id, created_at DESC);
+
+-- source: 'distill' (rewritten by each distill pass) or 'user' (kept until deleted).
+CREATE TABLE IF NOT EXISTS staff_memory (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    note       TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_memory_user ON staff_memory (user_id);
+
+CREATE TABLE IF NOT EXISTS staff_reminders (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    text       TEXT NOT NULL,
+    due_at     TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_reminders_due ON staff_reminders (due_at) WHERE sent_at IS NULL;
+
+-- Actions Bulma proposed, waiting for the staff member's confirm click. The click claims the row
+-- (outcome NULL -> 'running', WHERE outcome IS NULL AND expires_at > now()); a sweep marks the rest 'expired'.
+-- outcome: running | done | failed | cancelled | expired. origin: discord | mcp.
+CREATE TABLE IF NOT EXISTS staff_actions (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL,
+    guild_id   BIGINT NOT NULL,
+    action     TEXT NOT NULL,
+    args       JSONB NOT NULL,
+    summary    TEXT NOT NULL,
+    origin     TEXT NOT NULL,
+    channel_id BIGINT,
+    message_id BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    outcome    TEXT,
+    outcome_at TIMESTAMPTZ,
+    result     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_actions_pending ON staff_actions (expires_at) WHERE outcome IS NULL;
+
+-- One MCP token per staff member; only its sha256 is stored.
+CREATE TABLE IF NOT EXISTS staff_mcp_tokens (
+    user_id      BIGINT PRIMARY KEY,
+    token_hash   TEXT NOT NULL UNIQUE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ
+);

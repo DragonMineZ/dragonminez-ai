@@ -63,6 +63,11 @@ async def save_profile(user_id: int, *, nickname: str, language: str | None, tim
     )
 
 
+async def list_profiles() -> list[dict]:
+    rows = await (await get_pool()).fetch("SELECT * FROM staff_profiles ORDER BY user_id")
+    return [dict(row) for row in rows]
+
+
 async def mark_learned(user_id: int) -> None:
     await (await get_pool()).execute("UPDATE staff_profiles SET learned_at = now() WHERE user_id = $1", user_id)
 

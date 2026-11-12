@@ -100,6 +100,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.devlog",
     "bulmaai.cogs.tags",
     "bulmaai.cogs.mail_inbox",
+    "bulmaai.cogs.staff_assistant",
 )
 
 DEFAULT_AI_MODEL = "claude-haiku-5-5"

@@ -18,7 +18,7 @@ import discord
 from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget
+from bulmaai.services import ai_budget, eval_cases
 from bulmaai.services.ai_guard import BLOCKING_FLAGS, defuse_mentions, link_targets, screen_reply
 from bulmaai.services.staff_copilot import LANGUAGE_NAMES, translate_owner_text
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
@@ -1030,6 +1030,9 @@ class TicketsCog(ReloadableCog):
                 log.exception("Could not mark the ticket transcript", extra={"channel_id": channel.id})
             if on:
                 await self._suggest_support_info(channel, updated)
+                eval_cases.spawn(eval_cases.track_ticket(channel.id))
+            else:
+                eval_cases.spawn(eval_cases.untrack_ticket(channel.id))
             page = await get_page_for_channel(channel.id)
             url = page_url(self.settings, page.token) if page else None
             await interaction.edit_original_response(view=self._closed_card(updated, url, saving=False))
@@ -1078,6 +1081,7 @@ class TicketsCog(ReloadableCog):
         if ticket is not None:
             if staff:
                 await self._suggest_support_info(channel, ticket)
+                eval_cases.spawn(eval_cases.track_ticket(channel.id))
             await self._dm_solved(channel, ticket, delete_at)
         return ticket
 

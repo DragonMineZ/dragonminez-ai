@@ -150,6 +150,11 @@ Console actions are private to Bruno:
 - Excluded from Staff Bulma tools: `/database`, the VPS console, the mail inbox, the log corpus.
 - Replies are short but not too short; no answer-style setting.
 
+## Evals (Bruno, 2026-11-12)
+
+- The support AI eval set (`eval_cases`) only grows from staff-vouched sources: Auto-close turned On by staff, Staff Bulma's solve, "Answers to fix" answers, approved support info. Never from owner-solved tickets, inactivity closes or AI output.
+- Runs happen on the VPS through `scripts/support_eval.py`; the grader and the labeller are Haiku. Eval traces use workflow prefix `eval` and stay out of the support exports. Run files (`data/evals/runs/`) are gitignored.
+
 ## Kept on purpose
 
 - The Dyno bot is gone, but `cogs/mod_log_sync.py` and the `dyno_*` settings stay until Bruno says to remove them. `mod_cases` rows with `source="dyno"` are history.

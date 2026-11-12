@@ -48,6 +48,10 @@ FEATURE_LABELS: dict[str, str] = {
     "staff_assistant": "Staff Bulma",
     "staff_distill": "Staff Bulma memory notes",
     "weekly_report": "Weekly support report",
+    "eval": "Evals: replayed answers",
+    "eval_escalation": "Evals: replayed escalations",
+    "eval_draft": "Evals: replayed drafts (replaced)",
+    "eval_judge": "Evals: grading and labelling",
     "other": "Other",
 }
 

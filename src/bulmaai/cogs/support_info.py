@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands, tasks
 
 from bulmaai.services import ai_feedback as feedback_store
+from bulmaai.services import eval_cases
 from bulmaai.services import support_info as db
 from bulmaai.ui import feedback_fix
 from bulmaai.ui.support_info_views import (
@@ -473,6 +474,7 @@ class SupportInfoCog(ReloadableCog):
         except Exception:
             # The support info is live already; only the link back from the answer is missing.
             log.exception("Could not link the right answer to its feedback row", extra={"message_id": message_id})
+        eval_cases.spawn(eval_cases.track_feedback(message_id, form.answer))
         view = feedback_fix.fixed_card(staff_id, entry.id, entry.title)
         if getattr(interaction, "message", None) is not None:
             await interaction.response.edit_message(view=view)

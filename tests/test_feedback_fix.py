@@ -397,6 +397,7 @@ class SubmitTests(unittest.IsolatedAsyncioTestCase):
             patch.object(feedback_store, "release_review", AsyncMock()) as release,
             patch.object(feedback_store, "set_info", AsyncMock()) as set_info,
             patch.object(db, "add_info", add),
+            patch.object(cog_module.eval_cases, "spawn", lambda coro: coro.close()),
         ):
             await cog.on_interaction(interaction)
         return interaction, claim, release, set_info, add

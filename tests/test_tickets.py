@@ -1448,6 +1448,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cog_module, "cancel_delete", AsyncMock(return_value=updated)) as mocks.cancel,
             patch.object(cog_module, "set_transcript_resolved", AsyncMock()) as mocks.resolved,
             patch.object(cog_module, "take_support_suggestion", AsyncMock(return_value=suggestion)) as mocks.take,
+            patch.object(cog_module.eval_cases, "spawn", lambda coro: coro.close()),
             patch.object(
                 cog_module, "get_page_for_channel", AsyncMock(return_value=StoredPage(token="f" * 32, expires_at=None))
             ),
@@ -1565,6 +1566,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cog, "_archive", AsyncMock(return_value=True)),
             patch.object(cog_module, "get_page_for_channel", AsyncMock(return_value=None)),
             patch.object(cog_module, "take_support_suggestion", AsyncMock(return_value={"kind": "permanent", "title": "Q", "body": "A"})),
+            patch.object(cog_module.eval_cases, "spawn", lambda coro: coro.close()),
             patch.object(cog, "_set_row", AsyncMock()),
         ):
             await cog.solve_ticket(channel, closer_id=STAFF_ID, staff=True)

@@ -6,6 +6,7 @@ ponytail: FTS, not embeddings; add pgvector only if answers measurably miss."""
 
 import hashlib
 import re
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,9 @@ from bulmaai.database.db import get_pool
 
 SOURCES = ("mediawiki", "ticket", "faq", "local")
 SEARCH_TEXT_CHARS = 1500
+# Docs search() leaves out in the current context: the offline evals (scripts/support_eval.py) hide the doc a case was
+# made from, so it can't leak the answer. Empty in the bot.
+EXCLUDED_DOCS: ContextVar[frozenset[str]] = ContextVar("knowledge_excluded_docs", default=frozenset())
 
 
 def content_sha256(content: str) -> str:
@@ -76,6 +80,7 @@ async def search(query: str, limit: int, *, pool: Any | None = None) -> list[dic
     query = " or ".join(word for word in re.findall(r"\w+", query or "") if len(word) > 1)
     if not query or limit <= 0:
         return []
+    excluded = EXCLUDED_DOCS.get()
     resolved_pool = pool or await get_pool()
     rows = await resolved_pool.fetch(
         """
@@ -86,9 +91,11 @@ async def search(query: str, limit: int, *, pool: Any | None = None) -> list[dic
         LIMIT $2
         """,
         query,
-        limit,
+        limit + len(excluded),
         SEARCH_TEXT_CHARS,
     )
+    if excluded:
+        rows = [row for row in rows if str(row["filename"]) not in excluded][:limit]
     return [
         {
             "filename": str(row["filename"]),

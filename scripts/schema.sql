@@ -891,3 +891,22 @@ CREATE TABLE IF NOT EXISTS staff_requests (
 );
 
 CREATE INDEX IF NOT EXISTS idx_staff_requests_user ON staff_requests (user_id, created_at DESC);
+
+-- Offline eval set for the support AI (services/eval_cases, scripts/support_eval.py). Grows only from staff-vouched
+-- sources: tickets staff marked solved, "Answers to fix" answers, approved support info. expected_docs: NULL = not
+-- labelled yet, '{}' = labelled and no knowledge doc covers it (a gap). exclude_docs: docs that would leak the answer
+-- (the ticket's own knowledge doc), hidden from search while the case runs.
+CREATE TABLE IF NOT EXISTS eval_cases (
+    id            SERIAL PRIMARY KEY,
+    source        TEXT NOT NULL,
+    source_ref    TEXT NOT NULL UNIQUE,
+    question      TEXT NOT NULL,
+    reference     TEXT NOT NULL,
+    language      VARCHAR(5) NOT NULL DEFAULT 'en',
+    category      TEXT,
+    expected_docs TEXT[],
+    exclude_docs  TEXT[] NOT NULL DEFAULT '{}',
+    labelled_at   TIMESTAMPTZ,
+    active        BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -63,6 +63,16 @@ async def save_profile(user_id: int, *, nickname: str, language: str | None, tim
     )
 
 
+async def ticket_profiles(user_ids: list[int]) -> list[dict]:
+    """The profiles among user_ids that opted in to having their info in ticket answers (one query)."""
+    if not user_ids:
+        return []
+    rows = await (await get_pool()).fetch(
+        "SELECT * FROM staff_profiles WHERE user_id = ANY($1) AND ticket_info ORDER BY user_id", list(user_ids)
+    )
+    return [dict(row) for row in rows]
+
+
 async def list_profiles() -> list[dict]:
     rows = await (await get_pool()).fetch("SELECT * FROM staff_profiles ORDER BY user_id")
     return [dict(row) for row in rows]

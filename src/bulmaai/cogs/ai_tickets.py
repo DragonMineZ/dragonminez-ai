@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
@@ -19,6 +20,7 @@ from bulmaai.cogs import log_parser as log_parser_cog
 from bulmaai.services import ai_asks as ask_store
 from bulmaai.services import ai_budget
 from bulmaai.services import ai_feedback as feedback_store
+from bulmaai.services import staff_store
 from bulmaai.services.ai_oneshot import response_text
 from bulmaai.services.ai_guard import (
     BLOCKING_FLAGS,
@@ -88,6 +90,7 @@ from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.language import role_languages
 from bulmaai.utils.forwards import forwarded_content, full_attachments, full_content
 from bulmaai.utils.log_parser import parse_log
+from bulmaai.web.core import Tier, tier_for
 from bulmaai.utils.permissions import (
     can_use_ai_support,
     has_any_allowed_role,
@@ -653,6 +656,37 @@ def _member_roles(member: discord.Member | None, settings: Any) -> str:
         flags.append("tester")
     names = [safe_name(role.name) for role in reversed(getattr(member, "roles", [])[1:])][:15]
     return f"{', '.join(flags) or 'member'}; Discord roles: {', '.join(names) or 'none'}"
+
+
+STAFF_CONTEXT_CAP = 5
+_RANK_NAMES = {Tier.HELPER: "Helper", Tier.MODERATOR: "Moderator", Tier.ADMIN: "Admin", Tier.OWNER: "Owner"}
+
+
+def staff_context_lines(profiles: Sequence[dict], members: dict[int, Any], now: datetime, settings: Any = None) -> list[str]:
+    """One context line per opted-in staff profile whose member is in the ticket's server (at most
+    STAFF_CONTEXT_CAP): nickname, rank, spoken languages and their local time now."""
+    lines: list[str] = []
+    for profile in profiles:
+        member = members.get(profile.get("user_id"))
+        if member is None or not profile.get("ticket_info"):
+            continue
+        nickname = safe_name(profile.get("nickname") or getattr(member, "display_name", None))
+        details = []
+        if settings is not None and (rank := _RANK_NAMES.get(tier_for(member, settings))):
+            details.append(rank)
+        codes = [profile["language"]] if profile.get("language") in LANGUAGE_NAMES else role_languages(member, settings)
+        if codes:
+            details.append("speaks " + " and ".join(LANGUAGE_NAMES[code] for code in codes))
+        zone_name = profile.get("timezone") or "UTC"
+        try:
+            zone = ZoneInfo(zone_name)
+        except Exception:
+            zone, zone_name = timezone.utc, "UTC"
+        details.append(f"local time now {now.astimezone(zone):%H:%M} ({zone_name})")
+        lines.append(f"staff in this ticket: {nickname} ({'; '.join(details)})")
+        if len(lines) >= STAFF_CONTEXT_CAP:
+            break
+    return lines
 
 
 def _language_line(language: str) -> str:
@@ -1641,6 +1675,10 @@ class AITicketsCog(ReloadableCog):
                 language = await self._ticket_language(channel.id) if in_ticket else None
                 if language:
                     context_lines.append(_language_line(language))
+                if in_ticket:
+                    context_lines.extend(
+                        await self._staff_ticket_lines(channel, await self._staff_ticket_profiles(channel))
+                    )
                 async with channel.typing():
                     result = await asyncio.shield(run_support_agent(
                         messages=history,
@@ -1900,6 +1938,15 @@ class AITicketsCog(ReloadableCog):
             "post under their name (don't introduce yourself, don't say you are an AI, never hand off to staff: they "
             "are staff); no buttons or controls",
         ]
+        profiles = await self._staff_ticket_profiles(channel, extra_id=staff.id)
+        context_lines.extend(await self._staff_ticket_lines(channel, profiles))
+        clicker = next((p for p in profiles if p["user_id"] == staff.id), None)
+        if clicker is not None and (nickname := safe_name(clicker.get("nickname") or staff.display_name)):
+            context_lines.append(
+                f"the staff member's nickname is {nickname}: the draft may sign off naturally with it "
+                "(no signature line, their name is already on the card); use neutral wording for them, never guess "
+                "their gender"
+            )
         result = await run_support_agent(
             messages=history,
             enabled_tools=STAFF_DRAFT_TOOL_NAMES,
@@ -1987,6 +2034,29 @@ class AITicketsCog(ReloadableCog):
         if not screened or not _is_ticket_channel(channel, settings=settings):
             return
         await self._post_translation(message, text, screened, source)
+
+    async def _staff_ticket_profiles(self, channel: discord.TextChannel, extra_id: int | None = None) -> list[dict]:
+        """Opted-in (ticket_info) profiles of the staff who wrote in the ticket, plus extra_id: one query; failures
+        add nothing."""
+        try:
+            ids = sorted(await self._ticket_participants(channel))
+            if extra_id is not None and extra_id not in ids:
+                ids.append(extra_id)
+            return await staff_store.ticket_profiles(ids) if ids else []
+        except Exception:
+            log.info("Could not read staff ticket profiles for channel %s", channel.id, exc_info=True)
+            return []
+
+    async def _staff_ticket_lines(self, channel: discord.TextChannel, profiles: Sequence[dict]) -> list[str]:
+        try:
+            participants = await self._ticket_participants(channel)
+            members = {pid: channel.guild.get_member(pid) for pid in participants}
+            members = {pid: member for pid, member in members.items() if member is not None}
+            chosen = [p for p in profiles if p["user_id"] in participants]
+            return staff_context_lines(chosen, members, datetime.now(timezone.utc), self.bot.settings)
+        except Exception:
+            log.info("Could not build staff ticket lines for channel %s", channel.id, exc_info=True)
+            return []
 
     async def _ticket_participants(self, channel: discord.TextChannel) -> set[int]:
         """Who besides the owner has written in the ticket (people, not bots or webhooks; a draft staff posted counts

@@ -140,6 +140,14 @@ Console actions are private to Bruno:
 - The Hostinger mailbox (`MAIL_USER`) is admins-only: only main-guild admins reply from Discord, and `mail_channel_id` must be an admin-only channel (Bruno, 2026-11-05).
 - The bot never changes the mailbox (no mark-read, move or delete); webmail stays the source of truth.
 
+## Staff Bulma (Bruno, 2026-11-12)
+
+- Staff (Helper+) only. Actions are only proposed; the staff member's click runs them through `perform()` with the caller's own caps, and the mod-log and audit read "via Bulma_AI". Never let the AI run an action directly.
+- The vault needs consent, and onboarding is required to use it. It stores every message the person sends in channels the Member role can see, until `/bulma forget` (which deletes everything). Only the person's own vault is ever searched.
+- Own Claude: staff connect their own Claude through the MCP endpoint (their client does the thinking). Never use a staff member's consumer subscription token in the bot.
+- Excluded from Staff Bulma tools: `/database`, the VPS console, the mail inbox, the log corpus.
+- Replies are short but not too short; no answer-style setting.
+
 ## Kept on purpose
 
 - The Dyno bot is gone, but `cogs/mod_log_sync.py` and the `dyno_*` settings stay until Bruno says to remove them. `mod_cases` rows with `source="dyno"` are history.

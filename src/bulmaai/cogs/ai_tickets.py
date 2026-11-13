@@ -169,7 +169,7 @@ SOLVED_CLOSE_TEXT = {
     "pt": "Que bom que foi resolvido! 🎉 Obrigado pelo contato, este ticket será fechado agora.",
 }
 # A ticket's support language, as the model is told to answer in it.
-LANGUAGE_NAMES = {"en": "English", "es": "Latin American Spanish", "pt": "Portuguese"}
+LANGUAGE_NAMES = {"en": "English", "es": "Latin American Spanish", "pt": "Brazilian Portuguese"}
 # The webhook translations go through (_translation_webhook); a webhook message's name holds at most 80 characters.
 TRANSLATE_WEBHOOK_NAME = "Bulma Translate"
 WEBHOOK_NAME_LIMIT = 80

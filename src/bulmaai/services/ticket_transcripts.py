@@ -30,7 +30,8 @@ _TRANSCRIPT_TAIL_CHARS = 30000
 
 TICKET_SUMMARY_INSTRUCTIONS = """You summarize closed DragonMineZ (Minecraft mod) Discord support tickets.
 
-Use only the provided transcript; never invent details not present in it. Produce a JSON summary with:
+Use only the provided transcript; never invent details not present in it. Write in English, whatever language the
+ticket is in. Produce a JSON summary with:
 - title: a short descriptive title, at most 80 characters.
 - problem: 1-3 sentences describing the requester's problem.
 - resolution: 1-3 sentences describing how it was resolved, or "No resolution reached." if none.

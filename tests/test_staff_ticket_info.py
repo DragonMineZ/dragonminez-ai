@@ -62,7 +62,7 @@ class LinesTests(unittest.TestCase):
 
     def test_profile_language_wins_over_roles(self):
         (line,) = self.lines([profile(1, language="pt")], {1: member(1, 21)})
-        self.assertIn("speaks Portuguese;", line)
+        self.assertIn("speaks Brazilian Portuguese;", line)
         self.assertNotIn("English", line)
 
     def test_no_language_known_omits_speaks(self):

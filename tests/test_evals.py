@@ -178,6 +178,15 @@ class JudgeCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["messages"][0]["speaker_id"], "0")
         self.assertEqual((row["correct"], row["pass"], row["reply"]), (2, True, "Set kiGriefing to false."))
 
+    async def test_a_right_handoff_passes_and_a_wrong_one_does_not(self):
+        async def agent(**kwargs):
+            return {"reply": "Staff will take a look.", "kind": "handoff"}
+
+        for verdict, expected in (("ok", True), ("unneeded", False)):
+            client = self.client({"correct": 0, "grounded": True, "handoff": verdict, "language_ok": True, "reason": ""})
+            row = await evals.answer_case(case(), agent=agent, client=client, tools=[], settings=object())
+            self.assertEqual(row["pass"], expected, verdict)
+
     async def test_a_failing_case_becomes_an_error_row(self):
         async def worker(item):
             if item.id == 2:

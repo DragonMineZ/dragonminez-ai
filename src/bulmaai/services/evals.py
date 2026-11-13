@@ -479,6 +479,10 @@ async def answer_case(
         label="eval_grade",
     )
     row.update(parse_grade(payload))
+    # A staff-only matter (a report, a partnership, a team decision) has no answer to get right: handing it off
+    # is the pass.
+    if row["kind"] == "handoff" and row["handoff"] == "ok" and row["grounded"]:
+        row["pass"] = True
     return row
 
 

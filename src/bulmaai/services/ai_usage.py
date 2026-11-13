@@ -268,14 +268,15 @@ async def prepare(pool: Any) -> None:
 
 
 async def tokens_by_model_since(pool: Any, since: datetime) -> list[tuple[str, int]] | None:
-    """(model, tokens) spent since `since`, or None while the ledger has no row at all."""
+    """(model, tokens) the bot spent since `since`, or None while the ledger has no row at all. Offline eval runs
+    (scripts/support_eval.py, features eval*) are left out: they must not eat the bot's daily token caps."""
     if not await pool.fetchval("SELECT EXISTS (SELECT 1 FROM ai_usage)"):
         return None
     rows = await pool.fetch(
         """
         SELECT model, SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)::BIGINT AS tokens
         FROM ai_usage
-        WHERE created_at >= $1
+        WHERE created_at >= $1 AND feature NOT LIKE 'eval%'
         GROUP BY model
         """,
         since,

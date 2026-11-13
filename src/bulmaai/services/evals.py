@@ -436,6 +436,8 @@ async def answer_case(
             bot=None,
             settings=settings,
             channel_kind="ticket",
+            # As the cog does in a ticket: without it the model can't tell a handoff reaches staff.
+            context_lines=["channel: support ticket"],
             workflow_prefix=ANSWER_WORKFLOW,
         )
     finally:

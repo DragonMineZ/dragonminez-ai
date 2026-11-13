@@ -10,6 +10,7 @@ import json
 import logging
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from importlib import resources as pkg_resources
 from pathlib import Path
 from statistics import mean
 from typing import Any, Awaitable, Callable, Iterable, Sequence
@@ -29,6 +30,7 @@ CONCURRENCY = 4
 DOC_CHARS = 1500
 CONTEXT_CHARS = 9000
 SUPPORT_INFO_CHARS = 4000
+TOOL_RESULT_CHARS = 6000
 HANDOFF_VALUES = ("ok", "unneeded", "missing")
 
 Search = Callable[[str, int], Awaitable[list[dict[str, Any]]]]
@@ -402,6 +404,17 @@ def record_retrieval() -> None:
     knowledge.search = _recording_search
 
 
+def _other_grounds(result: dict[str, Any]) -> str:
+    """What else the reply may ground on besides knowledge and support info: the prompt's Facts section and what
+    its lookup tools returned. Without them the grader calls Facts versions and mod-file values invented."""
+    facts = pkg_resources.files("bulmaai.configs.prompts").joinpath("support_facts_en.txt").read_text(encoding="utf-8")
+    tools = "\n".join(
+        f"{call['name']}: {json.dumps(call['output'], ensure_ascii=False, default=str)}"
+        for call in result.get("tool_results") or []
+    )
+    return f"\n\n[facts]\n{facts.strip()}" + (f"\n\n[tool results]\n{tools[:TOOL_RESULT_CHARS]}" if tools else "")
+
+
 def case_messages(case: Any) -> list[dict[str, Any]]:
     """The case as a single requester turn, shaped like the cog's ConversationMessage."""
     return [
@@ -443,6 +456,8 @@ async def answer_case(
     finally:
         knowledge.EXCLUDED_DOCS.reset(excluded_token)
         _RETRIEVED.reset(retrieved_token)
+    if result.get("paused"):
+        raise RuntimeError("AI budget paused: the case was not answered")
     reply = str(result.get("reply") or "")
     row.update(
         {
@@ -457,7 +472,9 @@ async def answer_case(
     payload = await judge(
         client,
         system=GRADE_INSTRUCTIONS,
-        prompt=grade_prompt(case, reply, result.get("kind"), context_text(retrieved, support_info_text)),
+        prompt=grade_prompt(
+            case, reply, result.get("kind"), context_text(retrieved, support_info_text) + _other_grounds(result)
+        ),
         schema=GRADE_SCHEMA,
         label="eval_grade",
     )

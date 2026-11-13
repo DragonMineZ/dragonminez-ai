@@ -10,6 +10,7 @@ Runs are written to data/evals/runs/<UTC stamp>-<kind>.json (gitignored) and dif
 
 import argparse
 import asyncio
+import dataclasses
 import logging
 import sys
 from collections import Counter
@@ -121,7 +122,8 @@ async def retrieval(*, k: int) -> None:
 async def answers(*, limit: int | None, source: str | None, model: str | None) -> None:
     from bulmaai.services import ai_client, ai_tools
 
-    settings = load_settings()
+    # No daily token caps here: a full run outgrows them and the last cases came back paused ("(no reply)").
+    settings = dataclasses.replace(load_settings(), ai_daily_small_token_limit=None, ai_daily_big_token_limit=None)
     cases = await eval_cases.list_cases(source=source, limit=limit)
     info_text = support_info.render_for_ai(await support_info.list_active())
     evals.record_retrieval()

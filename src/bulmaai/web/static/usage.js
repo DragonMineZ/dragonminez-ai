@@ -3,7 +3,7 @@
 // Charts are hand-built SVG (the CSP allows no chart library); colors come from panel.css tokens.
 
 (() => {
-  const { h, api, run, time, badge, table, t, locale } = Panel;
+  const { h, api, run, time, badge, table, t, locale, can, dialog } = Panel;
 
   Panel.i18n({
     "AI usage": "Uso de IA",
@@ -33,6 +33,11 @@
     "Over budget by {amount}": "Se pasa del presupuesto por {amount}",
     "Would reach {budget} on {date}": "Llegaría a {budget} el {date}",
     "Today": "Hoy",
+    "Reset today's limits": "Reiniciar los límites de hoy",
+    "Reset today's AI token count? The bot starts counting from zero again until 00:00 UTC.": "¿Reiniciar el conteo de tokens de IA de hoy? El bot vuelve a contar desde cero hasta las 00:00 UTC.",
+    "Reset": "Reiniciar",
+    "Today's limits were reset.": "Se reiniciaron los límites de hoy.",
+    "Reset today at {time} UTC": "Reiniciado hoy a las {time} UTC",
     "{tokens} tokens": "{tokens} tokens",
     "vs 7-day avg {amount}": "vs. promedio de 7 días {amount}",
     "Left per day": "Disponible por día",
@@ -545,7 +550,7 @@
     return h("div", { class: "card stat" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), extra);
   }
 
-  function kpiCards(data, proj) {
+  function kpiCards(data, proj, onReset) {
     const b = data.budget;
     const lastDay = shortDay(addDays(b.cycle_end, -1));
     const [tone, verdict] = proj.total > b.monthly_usd ? ["danger", t("Over budget by {amount}", { amount: money(proj.total - b.monthly_usd) })]
@@ -566,6 +571,8 @@
         proj.crossDay ? small(t("Would reach {budget} on {date}", { budget: roundMoney(b.monthly_usd), date: shortDay(proj.crossDay) })) : null),
       stat(t("Today"), money(todayCost),
         small(t("{tokens} tokens", { tokens: compact(todayTokens) })),
+        data.limits_reset_at ? small(t("Reset today at {time} UTC", { time: new Date(data.limits_reset_at).toISOString().slice(11, 16) })) : null,
+        can("settings.edit") ? h("button", { class: "btn small ghost", type: "button", onclick: (e) => onReset(e.currentTarget) }, t("Reset today's limits")) : null,
         small(h("span", { class: `trend ${trend}`, "aria-hidden": "true" }, arrow), " ", t("vs 7-day avg {amount}", { amount: money(proj.avg) }))),
       stat(t("Left per day"), daysLeft > 0 ? money(Math.max(0, b.monthly_usd - b.spent_usd) / proj.remaining) : "—",
         small(daysLeft > 1 ? t("for {count} more days", { count: daysLeft }) : daysLeft === 1 ? t("for 1 more day") : t("Cycle ends today"))),
@@ -794,7 +801,7 @@
 
       const paint = () => keepFocus(() => {
         const proj = projection(data);
-        cards.replaceChildren(...kpiCards(data, proj));
+        cards.replaceChildren(...kpiCards(data, proj, resetLimits));
         cycle.replaceChildren(h("h2", {}, t("This cycle")), ...[cycleSection(data, proj)].flat());
         paintDaily();
         paintTable();
@@ -809,6 +816,16 @@
         data = next;
         drillRows = null;
         paint();
+      };
+
+      const resetLimits = async (button) => {
+        const ok = await dialog(t("Reset today's limits"),
+          h("p", {}, t("Reset today's AI token count? The bot starts counting from zero again until 00:00 UTC.")), { confirmLabel: t("Reset") });
+        if (!ok) return;
+        await run(button, async () => {
+          await api("/api/usage/reset-limits", { method: "POST", body: {} });
+          await load();
+        }, t("Today's limits were reset."));
       };
 
       const refresh = h("button", { class: "btn small ghost", type: "button" }, t("Refresh"));

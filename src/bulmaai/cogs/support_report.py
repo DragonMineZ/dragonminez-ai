@@ -1,4 +1,4 @@
-"""Weekly staff support report: posted on Mondays from 09:00 UTC to support_report_channel_id, and on demand with
+"""Weekly staff support report: posted on Mondays from 09:00 UTC to ai_reports_channel_id, and on demand with
 /support-report. The schedule lives in the DB (support_report_posts.posted_at), so restarts neither skip nor repeat
 a week; claim_post makes sure only one loop posts. Right after the weekly post (same claim, never on demand) come the
 "Answers to fix" cards: the week's 👎 answers, handled in cogs/support_info.py."""
@@ -71,7 +71,7 @@ class SupportReportCog(ReloadableCog):
             log.info(text)
 
     async def _post_tick(self, now: datetime) -> None:
-        channel_id = self.bot.settings.support_report_channel_id
+        channel_id = self.bot.settings.ai_reports_channel_id
         if not channel_id or not report.report_due(now, await report.last_posted()):
             return
         channel = self.bot.get_channel(channel_id)

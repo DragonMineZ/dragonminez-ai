@@ -910,3 +910,16 @@ CREATE TABLE IF NOT EXISTS eval_cases (
     active        BOOLEAN NOT NULL DEFAULT TRUE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- One row per UTC day whose daily AI metrics post went out (services/ai_daily.py); the INSERT is the claim.
+CREATE TABLE IF NOT EXISTS ai_daily_posts (
+    day        DATE PRIMARY KEY,
+    posted_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Single row (id = 1): when staff last reset the daily AI token pools from the panel (services/ai_budget.py).
+-- Startup seeding counts ai_usage only from max(00:00 UTC, reset_at), so a restart doesn't undo the reset.
+CREATE TABLE IF NOT EXISTS ai_budget_reset (
+    id        INT PRIMARY KEY CHECK (id = 1),
+    reset_at  TIMESTAMPTZ NOT NULL
+);

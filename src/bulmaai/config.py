@@ -96,6 +96,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.presence",
     "bulmaai.cogs.support_info",
     "bulmaai.cogs.support_report",
+    "bulmaai.cogs.ai_daily",
     "bulmaai.cogs.knowledge_sync",
     "bulmaai.cogs.devlog",
     "bulmaai.cogs.tags",
@@ -476,10 +477,10 @@ class Settings:
     ticket_closed_category_id: int | None = 1303543643377893466
     # Public channel where the active temporary support info is posted every 24h (cogs/support_info.py).
     support_info_channel_id: int | None = 1567803358432067735
-    # Staff channel for AI-suggested support info review cards; None falls back to moderation_log_channel_id.
-    support_info_review_channel_id: int | None = 1567803358432067735
-    # Staff channel for the weekly support report (Mondays 09:00 UTC, cogs/support_report.py); None disables it.
-    support_report_channel_id: int | None = None
+    # Staff channel for everything the AI reports: support info suggestions to approve, the weekly support report
+    # (Mondays 09:00 UTC) with its Answers to fix cards, and the daily AI metrics post; None turns those posts off
+    # (suggestions then fall back to moderation_log_channel_id).
+    ai_reports_channel_id: int | None = 1570682719917178920
     # Staff channel for a record of every ticket close (owner, summary, transcript link); None turns it off.
     ticket_log_channel_id: int | None = 1567803358432067735
     ticket_dm_transcript: bool = True
@@ -869,8 +870,7 @@ def _build_settings_from_env() -> Settings:
         ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
         ticket_closed_category_id=_get_env_int("TICKET_CLOSED_CATEGORY_ID", 1303543643377893466),
         support_info_channel_id=_get_env_int("SUPPORT_INFO_CHANNEL_ID", 1567803358432067735),
-        support_info_review_channel_id=_get_env_int("SUPPORT_INFO_REVIEW_CHANNEL_ID", 1567803358432067735),
-        support_report_channel_id=_get_env_int("SUPPORT_REPORT_CHANNEL_ID"),
+        ai_reports_channel_id=_get_env_int("AI_REPORTS_CHANNEL_ID", 1570682719917178920),
         ticket_log_channel_id=_get_env_int("TICKET_LOG_CHANNEL_ID", 1567803358432067735),
         welcome_channel_id=_get_env_int("WELCOME_CHANNEL_ID", DEFAULT_WELCOME_CHANNEL_ID),
         member_role_id=_get_env_int("MEMBER_ROLE_ID", DEFAULT_MEMBER_ROLE_ID),

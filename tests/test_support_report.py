@@ -194,7 +194,7 @@ def settings(**overrides):
     values = dict(
         ai_support_escalation_model="claude-sonnet-5-5",
         ai_daily_small_token_limit=None,
-        support_report_channel_id=900,
+        ai_reports_channel_id=900,
         discord_staff_role_ids=(STAFF_ROLE,),
         panel_guild_id=1,
         dev_guild_id=None,
@@ -301,7 +301,7 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
         await self.tick(cog, now=MONDAY.replace(hour=8))
         await self.tick(cog, last=MONDAY - timedelta(hours=1))
         await self.tick(cog, claim=(False, None))
-        cog.bot.settings = settings(support_report_channel_id=None)
+        cog.bot.settings = settings(ai_reports_channel_id=None)
         await self.tick(cog)
         channel.send.assert_not_called()
 

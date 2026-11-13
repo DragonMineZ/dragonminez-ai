@@ -183,9 +183,14 @@ class BulmaAI(discord.Bot):
             ai_usage.start_flusher()
         try:
             midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            spent = await ai_usage.tokens_by_model_since(await get_pool(), midnight)
+            pool = await get_pool()
+            since = midnight
+            reset_at = await ai_usage.last_budget_reset(pool)
+            if reset_at is not None and reset_at > midnight:
+                since = reset_at
+            spent = await ai_usage.tokens_by_model_since(pool, since)
             if spent is None:
-                spent = await support_traces.sum_tokens_by_model_since(midnight)
+                spent = await support_traces.sum_tokens_by_model_since(since)
             ai_budget.seed(spent)
         except Exception:
             log.exception("Failed to seed today's AI token budget")

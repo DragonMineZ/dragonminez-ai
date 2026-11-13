@@ -10,7 +10,7 @@ const Panel = (() => {
     [null, ["dashboard"]],
     ["Moderation", ["users", "audit", "joiner-alerts", "automod"]],
     ["Support & Community", ["tickets", "announce", "templates", "support-info", "patreon"]],
-    ["System", ["settings", "overview", "usage", "staff", "logs"]],
+    ["System", ["settings", "overview", "usage", "ai", "staff", "logs"]],
   ];
   const collapsed = new Set();  // nav groups the user closed this session
   let me = null;

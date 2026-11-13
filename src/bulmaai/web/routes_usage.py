@@ -7,7 +7,7 @@ from aiohttp import web
 
 from bulmaai.database.db import get_pool
 from bulmaai.services import ai_budget, ai_usage
-from bulmaai.web.core import BOT, Actor, api_error, requires
+from bulmaai.web.core import BOT, Actor, api_error, audit, requires
 
 routes = web.RouteTableDef()
 
@@ -111,6 +111,7 @@ async def usage(request: web.Request, actor: Actor) -> web.Response:
             TOP_CALLS,
         )
         tracking_since = await conn.fetchval("SELECT MIN(created_at) FROM ai_usage WHERE NOT backfilled")
+        reset_at = await ai_usage.last_budget_reset(conn)
         backfilled_until = await conn.fetchval("SELECT MAX(created_at) FROM ai_usage WHERE backfilled")
 
     daily_cost = {row["day"]: _usd(row["cost"]) for row in daily}
@@ -130,6 +131,7 @@ async def usage(request: web.Request, actor: Actor) -> web.Response:
                 for pool_name in (ai_budget.SMALL, ai_budget.BIG)
             },
             "today_tokens": {pool_name: ai_budget.used(pool_name) for pool_name in (ai_budget.SMALL, ai_budget.BIG)},
+            "limits_reset_at": _iso(reset_at) if reset_at and reset_at.astimezone(timezone.utc).date() == today else None,
             "from": start.isoformat(),
             "to": today.isoformat(),
             "rows": [_group_row(row, day=row["day"].isoformat()) for row in grouped],
@@ -157,6 +159,18 @@ async def usage(request: web.Request, actor: Actor) -> web.Response:
             "backfilled_until": _iso(backfilled_until),
         }
     )
+
+
+@routes.post("/api/usage/reset-limits")
+@requires("settings.edit")
+async def reset_limits(request: web.Request, actor: Actor) -> web.Response:
+    """Zero today's token pools. The time is stored so the next startup seeds from it, not from midnight."""
+    now = datetime.now(timezone.utc)
+    await ai_usage.flush()
+    await ai_usage.mark_budget_reset(await get_pool(), now)
+    ai_budget.reset()
+    await audit(actor, "ai.limits_reset")
+    return web.json_response({"ok": True, "today_tokens": {ai_budget.SMALL: 0, ai_budget.BIG: 0}, "reset_at": now.isoformat()})
 
 
 def parse_day(raw: str, today: date) -> date:

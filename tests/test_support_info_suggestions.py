@@ -212,7 +212,7 @@ def make_cog(review_channel_id=None, mod_log=700):
     bot = MagicMock()
     bot.settings = SimpleNamespace(
         support_info_channel_id=555,
-        support_info_review_channel_id=review_channel_id,
+        ai_reports_channel_id=review_channel_id,
         moderation_log_channel_id=mod_log,
         discord_staff_role_ids=(STAFF_ROLE,),
         panel_guild_id=1,

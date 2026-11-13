@@ -315,7 +315,7 @@ class SupportInfoCog(ReloadableCog):
         self, suggestion, *, ticket_id: int | None, page_link: str | None = None
     ) -> db.SupportInfo:
         """Stores a ticket summary's SupportInfoSuggestion as 'suggested' and posts its review card to the review
-        channel (support_info_review_channel_id, else moderation_log_channel_id)."""
+        channel (ai_reports_channel_id, else moderation_log_channel_id)."""
         entry = await db.add_info(
             kind=suggestion.kind,
             title=suggestion.title,
@@ -326,7 +326,7 @@ class SupportInfoCog(ReloadableCog):
             ticket_id=ticket_id,
         )
         settings = self.bot.settings
-        channel_id = settings.support_info_review_channel_id or settings.moderation_log_channel_id
+        channel_id = settings.ai_reports_channel_id or settings.moderation_log_channel_id
         if not channel_id:
             return entry
         message = await self.bot.get_partial_messageable(channel_id).send(

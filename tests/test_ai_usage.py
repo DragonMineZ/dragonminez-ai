@@ -1,7 +1,7 @@
 import os
 import types
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock
 
 os.environ.setdefault("DISCORD_TOKEN", "dummy-discord-token")
@@ -138,6 +138,24 @@ class FlushTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("bulmaai.services.ai_usage", level="INFO"):
             self.assertEqual(await ai_usage.flush(pool), 0)
         self.assertEqual(ai_usage.pending(), [])
+
+
+class BudgetResetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_last_budget_reset_reads_the_single_row(self) -> None:
+        at = datetime(2026, 11, 13, 9, 30, tzinfo=timezone.utc)
+        pool = types.SimpleNamespace(fetchval=AsyncMock(return_value=at))
+        self.assertEqual(await ai_usage.last_budget_reset(pool), at)
+        self.assertIn("ai_budget_reset", pool.fetchval.await_args.args[0])
+        pool = types.SimpleNamespace(fetchval=AsyncMock(return_value=None))
+        self.assertIsNone(await ai_usage.last_budget_reset(pool))
+
+    async def test_mark_budget_reset_upserts_row_one(self) -> None:
+        at = datetime(2026, 11, 13, 9, 30, tzinfo=timezone.utc)
+        pool = types.SimpleNamespace(execute=AsyncMock())
+        await ai_usage.mark_budget_reset(pool, at)
+        sql, value = pool.execute.await_args.args
+        self.assertIn("ON CONFLICT (id) DO UPDATE", sql)
+        self.assertEqual(value, at)
 
 
 if __name__ == "__main__":

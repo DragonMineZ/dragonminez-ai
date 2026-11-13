@@ -284,6 +284,19 @@ async def tokens_by_model_since(pool: Any, since: datetime) -> list[tuple[str, i
     return [(str(row["model"]), int(row["tokens"] or 0)) for row in rows]
 
 
+async def last_budget_reset(pool: Any) -> datetime | None:
+    """When staff last reset the daily token pools from the panel, or None."""
+    return await pool.fetchval("SELECT reset_at FROM ai_budget_reset WHERE id = 1")
+
+
+async def mark_budget_reset(pool: Any, at: datetime) -> None:
+    await pool.execute(
+        "INSERT INTO ai_budget_reset (id, reset_at) VALUES (1, $1) "
+        "ON CONFLICT (id) DO UPDATE SET reset_at = EXCLUDED.reset_at",
+        at,
+    )
+
+
 def cycle_bounds(today: date, cycle_day: Any) -> tuple[date, date]:
     """[start, end) of the billing cycle holding `today`; the credit renews on `cycle_day` (clamped to 1-28)."""
     try:

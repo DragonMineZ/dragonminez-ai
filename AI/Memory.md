@@ -119,6 +119,7 @@ Console actions are private to Bruno:
 - Suggestions come only from tickets staff vouched for: the closed card's Auto-close turned On, or Staff Bulma's `ticket_solve` (the click is enough; staff needn't have typed). They keep the links/file names staff gave, and the AI may repeat links that appear in approved entries (`ai_guard.link_targets`).
 - The daily post shows active temporary entries only, replaces the previous post, and skips the day when none are active.
 - Managing entries is staff-level (`/info`, panel HELPER tier).
+- Everything the AI reports to staff (support info suggestions, the weekly report with Answers to fix, the daily AI metrics) goes to `ai_reports_channel_id` (Bruno, 2026-11-13). Log corpus notices and ticket log cards keep their own channels.
 
 ## Crash-log AI
 

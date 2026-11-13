@@ -499,3 +499,11 @@ th[aria-sort] { color: var(--text); }
 .share-bar > span { display: block; height: 100%; background: var(--accent); }
 .trend.up { color: var(--warn); }
 .trend.down { color: var(--ok); }
+
+/* ---- AI quality (ai.js): reuses the AI usage chart classes above -------------------------------- */
+.chart .series-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .series-dot { stroke: var(--surface); stroke-width: 2; }
+.legend-key.series-key { color: var(--text); }
+.ai-evals .table-wrap { margin-top: 12px; }
+.ai-evals th:nth-child(n+2):not(:last-child) { text-align: right; }
+.ai-evals td .nowrap { white-space: nowrap; }

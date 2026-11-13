@@ -13,6 +13,7 @@ from aiohttp import web
 
 from bulmaai.services.discord_oauth import DiscordOAuthClient, build_discord_authorization_url
 from bulmaai.web import (
+    routes_ai,
     routes_announce,
     routes_appeals,
     routes_log_pages,
@@ -65,6 +66,7 @@ MODULES = (
     routes_support_info,
     routes_appeals,
     routes_usage,
+    routes_ai,
     routes_mcp,
 )
 

@@ -102,7 +102,8 @@ async def security_middleware(request: web.Request, handler) -> web.StreamRespon
             request.method == "POST"
             and request.path == routes_mcp.PATH
             and not origin
-            and request.headers.get("Authorization", "").lower().startswith("bearer ")
+            # The scheme alone: some HTTP parsers strip the space after a token-less "Bearer ", and /mcp answers 401.
+            and request.headers.get("Authorization", "").partition(" ")[0].lower() == "bearer"
         )
         if not mcp_client and (not origin or urlparse(origin).netloc not in allowed):
             return web.json_response({"error": "Cross-origin request rejected."}, status=403)

@@ -55,7 +55,11 @@ class McpTests(unittest.IsolatedAsyncioTestCase):
         return await self.client.post("/mcp", json=body, headers=headers)
 
     async def test_auth_failures(self):
-        for headers in ({"Authorization": "Bearer "}, {"Authorization": "Bearer nope"}, {"Authorization": "Bearer random-token"}):
+        # "Bearer" alone is what a parser that strips trailing whitespace makes of "Bearer " (it failed CI as a 403).
+        for headers in (
+            {"Authorization": "Bearer"}, {"Authorization": "Bearer "}, {"Authorization": "Bearer nope"},
+            {"Authorization": "Bearer random-token"},
+        ):
             response = await self.post(rpc("ping"), headers)
             self.assertEqual(response.status, 401)
             self.assertEqual(response.headers["WWW-Authenticate"], "Bearer")

@@ -10,14 +10,17 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 import discord
+from aiohttp.test_utils import TestClient, TestServer
 
 from bulmaai.cogs import support_report as cog_module
 from bulmaai.services import ai_budget
-from bulmaai.services import ai_feedback as feedback_store
 from bulmaai.services import support_report as report
 from bulmaai.ui.support_report_views import support_report_card
 from bulmaai.ui.v2 import TEXT_LIMIT
-from v2_helpers import buttons, text, texts
+from bulmaai.web.core import SESSION_COOKIE, sign_session
+from bulmaai.web.server import create_app
+from test_admin_panel import HELPER_ID, RANDOM_ID, SECRET, make_bot
+from v2_helpers import text, texts
 
 MONDAY = datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)
 SINCE = MONDAY - timedelta(days=7)
@@ -194,7 +197,6 @@ def settings(**overrides):
     values = dict(
         ai_support_escalation_model="claude-sonnet-5-5",
         ai_daily_small_token_limit=None,
-        ai_reports_channel_id=900,
         discord_staff_role_ids=(STAFF_ROLE,),
         panel_guild_id=1,
         dev_guild_id=None,
@@ -247,13 +249,82 @@ class InsightsTests(unittest.IsolatedAsyncioTestCase):
         client.messages.create.assert_not_called()
 
 
-def make_cog(channel_found=True):
-    channel = MagicMock()
-    channel.send = AsyncMock()
+class StoredReportTests(unittest.IsolatedAsyncioTestCase):
+    def test_numbers_are_what_the_card_shows_and_no_raw_text(self) -> None:
+        rated = report.aggregate(
+            tickets(),
+            [trace(inp=1_000_000, out=200_000, cached=500_000)],
+            [handoff_row("how do I fly?")],
+            since=SINCE,
+            until=MONDAY,
+            feedback_rows=[dict(helpful=True, n=3), dict(helpful=False, n=1)],
+        )
+        numbers = report.numbers_json(rated)
+        self.assertEqual(
+            numbers,
+            {
+                "tickets_closed": 3,
+                "tickets_resolved": 2,
+                "tickets_unresolved": 1,
+                "ai_replies": 1,
+                "escalations": 0,
+                "handoffs": 0,
+                "log_diagnoses": 0,
+                "spend": 0.205,
+                "spend_by_model": [{"model": "claude-haiku-5-5", "cost": 0.205}],
+                "helpful": 3,
+                "not_helpful": 1,
+                "helpful_percent": 75,
+                "top_tags": [["crash", 3], ["java", 1], ["quests", 1]],
+            },
+        )
+        dumped = json.dumps(numbers)
+        for raw in ("Game crashes", "Update Java", "how do I fly?"):
+            self.assertNotIn(raw, dumped)
+        self.assertIsNone(report.numbers_json(sample_data())["helpful_percent"])
+
+    def test_insights_json(self) -> None:
+        self.assertIsNone(report.insights_json(None))
+        insights = report.Insights(themes=["Crashes"], gaps=[("How to fly?", "Flight"), ("What is ki?", "")], notes="n")
+        self.assertEqual(
+            report.insights_json(insights),
+            {
+                "themes": ["Crashes"],
+                "gaps": [{"question": "How to fly?", "page": "Flight"}, {"question": "What is ki?", "page": None}],
+                "notes": "n",
+            },
+        )
+
+    async def test_save_list_and_get(self) -> None:
+        pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=7)
+        data = sample_data()
+        self.assertEqual(await report.save_report(data, None, pool=pool), 7)
+        sql, since, until, numbers, insights = pool.fetchval.await_args.args
+        self.assertIn("INSERT INTO support_reports", sql)
+        self.assertEqual((since, until, insights), (SINCE, MONDAY, None))
+        self.assertEqual(json.loads(numbers), report.numbers_json(data))
+        await report.save_report(data, report.Insights(["T"], [], ""), pool=pool)
+        self.assertEqual(json.loads(pool.fetchval.await_args.args[4]), {"themes": ["T"], "gaps": [], "notes": ""})
+
+        head = dict(id=7, since=SINCE, until=MONDAY, created_at=MONDAY)
+        pool.fetch = AsyncMock(return_value=[head])
+        self.assertEqual(await report.list_reports(pool=pool), [head])
+        sql, limit = pool.fetch.await_args.args
+        self.assertIn("ORDER BY created_at DESC", sql)
+        self.assertEqual(limit, 26)
+
+        pool.fetchrow = AsyncMock(return_value={**head, "data": json.dumps({"tickets_closed": 3}), "insights": None})
+        found = await report.get_report(7, pool=pool)
+        self.assertEqual((found["data"], found["insights"]), ({"tickets_closed": 3}, None))
+        pool.fetchrow = AsyncMock(return_value=None)
+        self.assertIsNone(await report.get_report(8, pool=pool))
+
+
+def make_cog():
     bot = MagicMock()
     bot.settings = settings()
-    bot.get_channel = MagicMock(return_value=channel if channel_found else None)
-    return cog_module.SupportReportCog(bot), channel
+    return cog_module.SupportReportCog(bot)
 
 
 def staff_member(*role_ids, guild_id=1):
@@ -268,102 +339,60 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         ai_budget.reset()
 
-    async def tick(self, cog, *, last=None, claim=(True, None), ai_fails=False, now=MONDAY, fixes=None):
+    async def tick(self, cog, *, last=None, claim=(True, None), ai_fails=False, now=MONDAY, save=None):
         insights = None if ai_fails else report.Insights(["Crashes"], [], "")
-        fixes = fixes if isinstance(fixes, AsyncMock) else AsyncMock(return_value=fixes or [])
+        save = save or AsyncMock(return_value=1)
         with (
             patch.object(report, "last_posted", AsyncMock(return_value=last)),
             patch.object(report, "claim_post", AsyncMock(return_value=claim)) as claim_mock,
             patch.object(report, "release_claim", AsyncMock()) as release_mock,
-            patch.object(report, "collect", AsyncMock(return_value=sample_data())),
+            patch.object(report, "collect", AsyncMock(return_value=sample_data())) as collect,
             patch.object(report, "generate_insights", AsyncMock(return_value=insights)),
-            patch.object(feedback_store, "answers_to_fix", fixes),
+            patch.object(report, "save_report", save),
         ):
             await cog._post_tick(now)
-        return claim_mock, release_mock
+        self.collect = collect
+        return claim_mock, release_mock, save
 
-    async def test_posts_when_due_without_pings(self) -> None:
-        cog, channel = make_cog()
-        await self.tick(cog)
-        channel.send.assert_awaited_once()
-        allowed = channel.send.call_args.kwargs["allowed_mentions"]
-        self.assertFalse(allowed.everyone or allowed.users or allowed.roles)
-
-    async def test_ai_failure_still_posts_the_numbers(self) -> None:
-        cog, channel = make_cog()
-        await self.tick(cog, ai_fails=True)
-        out = text(channel.send.call_args.kwargs["view"])
-        self.assertIn("Tickets closed", out)
-        self.assertIn("No AI summary", out)
-
-    async def test_not_due_or_disabled_or_lost_claim_posts_nothing(self) -> None:
-        cog, channel = make_cog()
-        await self.tick(cog, now=MONDAY.replace(hour=8))
-        await self.tick(cog, last=MONDAY - timedelta(hours=1))
-        await self.tick(cog, claim=(False, None))
-        cog.bot.settings = settings(ai_reports_channel_id=None)
-        await self.tick(cog)
-        channel.send.assert_not_called()
-
-    async def test_missing_channel_does_not_claim_and_logs_once(self) -> None:
-        cog, _ = make_cog(channel_found=False)
-        with self.assertLogs(cog_module.log, level="INFO") as logs:
-            claim, _ = await self.tick(cog)
-            await self.tick(cog)
-        claim.assert_not_called()
-        self.assertEqual(len(logs.records), 1)
-
-    async def test_forbidden_skips_the_week_and_other_errors_release_the_claim(self) -> None:
-        cog, channel = make_cog()
-        channel.send.side_effect = discord.Forbidden(MagicMock(status=403), "no")
-        _, release = await self.tick(cog)
-        release.assert_not_called()
-        channel.send.side_effect = discord.HTTPException(MagicMock(status=500), "oops")
-        with self.assertRaises(discord.HTTPException):
-            _, release = await self.tick(cog, claim=(True, MONDAY - timedelta(days=7)))
-
-    async def test_answers_to_fix_follow_the_report_in_the_same_claim(self) -> None:
-        cog, channel = make_cog()
-        fixes = [
-            feedback_store.AnswerToFix(55, 900, "es", MONDAY - timedelta(days=1), "How to fly?", "Press V."),
-            feedback_store.AnswerToFix(56, 901, "en", MONDAY - timedelta(days=2), "What is ki?", "Energy."),
-        ]
-        lookup = AsyncMock(return_value=fixes)
-        claim, release = await self.tick(cog, fixes=lookup)
+    async def test_saves_the_report_when_due(self) -> None:
+        cog = make_cog()
+        claim, release, save = await self.tick(cog)
         claim.assert_awaited_once()
+        self.collect.assert_awaited_once_with(SINCE, MONDAY)
+        data, insights = save.await_args.args
+        self.assertEqual(data.tickets_closed, 3)
+        self.assertEqual(insights.themes, ["Crashes"])
         release.assert_not_awaited()
-        lookup.assert_awaited_once_with(SINCE, MONDAY, limit=10)
-        views = [call.kwargs["view"] for call in channel.send.await_args_list]
-        self.assertEqual(len(views), 4)  # the report, the header, one card per answer
-        self.assertIn("Weekly support report", text(views[0]))
-        self.assertIn("2 answers rated 👎", text(views[1]))
-        self.assertIn("How to fly?", text(views[2]))
-        self.assertEqual([b.custom_id for b in buttons(views[3])], ["fbfix:write:56", "fbfix:skip:56"])
-        for call in channel.send.await_args_list:
-            allowed = call.kwargs["allowed_mentions"]
-            self.assertFalse(allowed.everyone or allowed.users or allowed.roles)
+        cog.bot.get_channel.assert_not_called()
 
-    async def test_no_answers_to_fix_posts_only_the_report(self) -> None:
-        cog, channel = make_cog()
-        await self.tick(cog)
-        channel.send.assert_awaited_once()
+    async def test_ai_failure_still_saves_the_numbers(self) -> None:
+        cog = make_cog()
+        _, _, save = await self.tick(cog, ai_fails=True)
+        self.assertIsNone(save.await_args.args[1])
 
-    async def test_a_failing_review_never_reposts_the_report(self) -> None:
-        cog, channel = make_cog()
-        with self.assertLogs(cog_module.log, level="ERROR"):
-            _, release = await self.tick(cog, fixes=AsyncMock(side_effect=RuntimeError("db down")))
-        release.assert_not_awaited()
-        channel.send.assert_awaited_once()
+    async def test_not_due_or_lost_claim_saves_nothing(self) -> None:
+        cog = make_cog()
+        for kwargs in (dict(now=MONDAY.replace(hour=8)), dict(last=MONDAY - timedelta(hours=1)), dict(claim=(False, None))):
+            _, _, save = await self.tick(cog, **kwargs)
+            save.assert_not_awaited()
 
-    async def test_no_review_when_the_report_could_not_be_posted(self) -> None:
-        cog, channel = make_cog()
-        channel.send.side_effect = discord.Forbidden(MagicMock(status=403), "no")
-        lookup = AsyncMock(return_value=[])
-        await self.tick(cog, fixes=lookup)
-        lookup.assert_not_awaited()
+    async def test_a_failed_save_releases_the_claim(self) -> None:
+        cog = make_cog()
+        previous = MONDAY - timedelta(days=7)
+        with (
+            patch.object(report, "last_posted", AsyncMock(return_value=None)),
+            patch.object(report, "claim_post", AsyncMock(return_value=(True, previous))),
+            patch.object(report, "release_claim", AsyncMock()) as release,
+            patch.object(report, "collect", AsyncMock(return_value=sample_data())),
+            patch.object(report, "generate_insights", AsyncMock(return_value=None)),
+            patch.object(report, "save_report", AsyncMock(side_effect=RuntimeError("db down"))),
+            self.assertRaises(RuntimeError),
+        ):
+            await cog._post_tick(MONDAY)
+        release.assert_awaited_once_with(previous)
 
     async def test_command_is_staff_only(self) -> None:
-        cog, _ = make_cog()
+        cog = make_cog()
         command = cog_module.SupportReportCog.support_report.callback
         for member in (staff_member(99), staff_member(STAFF_ROLE, guild_id=2), SimpleNamespace(id=1)):
             ctx = MagicMock()
@@ -376,7 +405,7 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
             ctx.defer.assert_not_called()
 
     async def test_command_sends_ephemeral_report_without_recording_a_post(self) -> None:
-        cog, _ = make_cog()
+        cog = make_cog()
         ctx = MagicMock()
         ctx.author = staff_member(STAFF_ROLE)
         ctx.defer = AsyncMock()
@@ -385,14 +414,90 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
             patch.object(report, "collect", AsyncMock(return_value=sample_data())),
             patch.object(report, "generate_insights", AsyncMock(return_value=None)),
             patch.object(report, "claim_post", AsyncMock()) as claim,
-            patch.object(feedback_store, "answers_to_fix", AsyncMock(return_value=[])) as fixes,
+            patch.object(report, "save_report", AsyncMock()) as save,
         ):
             await cog_module.SupportReportCog.support_report.callback(cog, ctx)
         ctx.defer.assert_awaited_once_with(ephemeral=True)
         self.assertTrue(ctx.followup.send.call_args.kwargs["ephemeral"])
         ctx.followup.send.assert_awaited_once()
         claim.assert_not_called()
-        fixes.assert_not_awaited()  # the review cards only come with the weekly post
+        save.assert_not_called()
+
+
+# ---- panel API ---------------------------------------------------------------------------------------------------
+
+
+class ReportsApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.client = TestClient(TestServer(create_app(make_bot())))
+        await self.client.start_server()
+        patcher = patch("bulmaai.web.core.get_pool", AsyncMock())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    def login(self, user_id=HELPER_ID):
+        self.client.session.cookie_jar.update_cookies({SESSION_COOKIE: sign_session(SECRET, user_id)})
+
+    async def test_list_newest_first(self):
+        self.login()
+        rows = [
+            dict(id=2, since=SINCE, until=MONDAY, created_at=MONDAY),
+            dict(id=1, since=SINCE - timedelta(days=7), until=SINCE, created_at=SINCE),
+        ]
+        with patch("bulmaai.web.routes_ai.report.list_reports", AsyncMock(return_value=rows)) as listed:
+            response = await self.client.get("/api/ai/reports")
+        self.assertEqual(response.status, 200, await response.text())
+        listed.assert_awaited_once_with(26)
+        self.assertEqual(
+            (await response.json())["reports"],
+            [
+                {"id": 2, "since": SINCE.isoformat(), "until": MONDAY.isoformat(), "created_at": MONDAY.isoformat()},
+                {
+                    "id": 1,
+                    "since": (SINCE - timedelta(days=7)).isoformat(),
+                    "until": SINCE.isoformat(),
+                    "created_at": SINCE.isoformat(),
+                },
+            ],
+        )
+
+    async def test_get_one(self):
+        self.login()
+        numbers = report.numbers_json(sample_data())
+        insights = {"themes": ["Crashes"], "gaps": [{"question": "Fly?", "page": None}], "notes": ""}
+        found = dict(id=2, since=SINCE, until=MONDAY, created_at=MONDAY, data=numbers, insights=insights)
+        with patch("bulmaai.web.routes_ai.report.get_report", AsyncMock(return_value=found)) as get:
+            response = await self.client.get("/api/ai/reports/2")
+        self.assertEqual(response.status, 200, await response.text())
+        get.assert_awaited_once_with(2)
+        self.assertEqual(
+            await response.json(),
+            {
+                "id": 2,
+                "since": SINCE.isoformat(),
+                "until": MONDAY.isoformat(),
+                "created_at": MONDAY.isoformat(),
+                "numbers": numbers,
+                "insights": insights,
+            },
+        )
+
+    async def test_unknown_or_bad_id_is_404(self):
+        self.login()
+        with patch("bulmaai.web.routes_ai.report.get_report", AsyncMock(return_value=None)) as get:
+            self.assertEqual((await self.client.get("/api/ai/reports/9")).status, 404)
+            response = await self.client.get("/api/ai/reports/abc")
+        self.assertEqual(response.status, 404)
+        self.assertEqual(await response.json(), {"error": "Unknown report."})
+        get.assert_awaited_once_with(9)
+
+    async def test_needs_a_staff_session(self):
+        self.assertEqual((await self.client.get("/api/ai/reports")).status, 401)
+        self.login(RANDOM_ID)
+        self.assertEqual((await self.client.get("/api/ai/reports/1")).status, 401)
 
 
 if __name__ == "__main__":

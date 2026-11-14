@@ -51,7 +51,6 @@ META: dict[str, tuple[str, str, str]] = {
     "ticket_closed_category_id": ("tickets", "Closed tickets category", "Category closed tickets are moved to."),
     "ticket_dm_transcript": ("tickets", "DM transcript link", "DM the ticket owner a link to the hosted transcript when their ticket is archived."),
     "support_info_channel_id": ("tickets", "Support info channel", "Where the active temporary support info is posted every 24h."),
-    "ai_reports_channel_id": ("ai", "AI reports channel", "Staff channel for everything the AI reports: support info suggestions waiting for approval, the weekly support report with its Answers to fix cards, and the daily AI metrics post; empty turns those posts off (suggestions then go to the moderation log)."),
     "ticket_log_channel_id": ("tickets", "Ticket log channel", "Staff channel that gets a record of every ticket close (owner, AI summary, transcript link); empty disables it."),
     "ticket_transcript_retention_days": ("tickets", "Transcript retention", "Days a hosted ticket transcript stays online; 0 keeps them forever."),
     # Moderation

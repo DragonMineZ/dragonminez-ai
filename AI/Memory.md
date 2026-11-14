@@ -114,12 +114,12 @@ Console actions are private to Bruno:
 
 ## Support info
 
-- Nothing the AI suggests goes live without a staff click (Approve / Edit & approve on the review card, or the panel). Approved temporary suggestions without an expiry expire after 7 days.
-- The weekly "Answers to fix" cards (the week's 👎 answers, posted after the weekly report only, never by `/support-report`): what staff write there goes live at once as active support info with source `feedback`, since staff wrote it. The first staff Write or Skip claims the answer; a text that doesn't validate gives it back.
+- Nothing the AI suggests goes live without a staff click (Approve / Discard on the panel's support info page). Approved temporary suggestions without an expiry expire after 7 days.
+- "Answers to fix" (👎 answers of the last 30 days, on the panel's AI page): what staff write there goes live at once as active support info with source `feedback`, since staff wrote it. The first staff Write or Skip claims the answer; a text that doesn't validate gives it back.
 - Suggestions come only from tickets staff vouched for: the closed card's Auto-close turned On, or Staff Bulma's `ticket_solve` (the click is enough; staff needn't have typed). They keep the links/file names staff gave, and the AI may repeat links that appear in approved entries (`ai_guard.link_targets`).
 - The daily post shows active temporary entries only, replaces the previous post, and skips the day when none are active.
 - Managing entries is staff-level (`/info`, panel HELPER tier).
-- Everything the AI reports to staff (support info suggestions, the weekly report with Answers to fix, the daily AI metrics) goes to `ai_reports_channel_id` (Bruno, 2026-11-13). Log corpus notices and ticket log cards keep their own channels.
+- Everything the AI reports to staff (support info suggestions, the weekly report, Answers to fix, the daily AI metrics) lives only on the staff panel; none of it is posted to Discord (Bruno, 2026-11-14; the `ai_reports_channel_id` channel is gone). `/support-report` and `/ai-daily` stay as ephemeral staff commands. Log corpus notices and ticket log cards keep their own channels.
 
 ## Crash-log AI
 

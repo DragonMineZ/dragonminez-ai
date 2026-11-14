@@ -1,6 +1,5 @@
-"""Daily AI metrics post: 00:10 UTC for the UTC day that ended, to ai_reports_channel_id, and on demand with
-/ai-daily (today so far). One ai_daily_posts row per day is claimed before any work, so a second loop or a restart
-can't post it twice; a day without activity is claimed and skipped."""
+"""/ai-daily: today's AI metrics so far, as an ephemeral card for staff. The panel's AI quality page shows the same
+numbers over time."""
 
 import asyncio
 import io
@@ -9,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
-from discord.ext import tasks
 
 from bulmaai.services import ai_daily, evals
 from bulmaai.ui.ai_daily_chart import render_chart
@@ -56,61 +54,12 @@ def _last_eval(language: str = "en") -> str | None:
 class AIDailyCog(ReloadableCog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self._warned = False
-
-    async def on_startup(self) -> None:
-        if not self.daily_post.is_running():
-            self.daily_post.start()
-
-    async def on_shutdown(self) -> None:
-        self.daily_post.cancel()
-
-    @tasks.loop(minutes=10)
-    async def daily_post(self) -> None:
-        try:
-            await self._post_tick(datetime.now(timezone.utc))
-        except Exception:
-            log.exception("AI daily post failed")
-
-    @daily_post.before_loop
-    async def _before_daily_post(self) -> None:
-        await self.bot.wait_until_ready()
-
-    def _warn_once(self, text: str) -> None:
-        if not self._warned:
-            self._warned = True
-            log.info(text)
 
     async def _card_and_file(self, data, language: str):
         png = await asyncio.to_thread(render_chart, data.points)
         eval_line = await asyncio.to_thread(_last_eval, language)
         view = daily_card(data, eval_line=eval_line, language=language, image=IMAGE)
         return view, discord.File(io.BytesIO(png), filename=IMAGE)
-
-    async def _post_tick(self, now: datetime) -> None:
-        channel_id = self.bot.settings.ai_reports_channel_id
-        if not channel_id:
-            return
-        day = ai_daily.post_due(now)
-        if day is None:
-            return
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            return self._warn_once(f"AI daily: channel {channel_id} not found; skipping")
-        if not await ai_daily.claim(day):
-            return
-        try:
-            data = await ai_daily.collect(day, self.bot.settings, now=now)
-            if not data.has_activity:
-                return
-            view, file = await self._card_and_file(data, "en")
-            await channel.send(view=view, file=file, allowed_mentions=discord.AllowedMentions.none())
-        except (discord.Forbidden, discord.NotFound):
-            # Retrying every 10 minutes would never succeed; the day is skipped.
-            return self._warn_once(f"AI daily: can't post in channel {channel_id}; skipping {day}")
-        except BaseException:
-            await ai_daily.release(day)
-            raise
 
     @discord.slash_command(name="ai-daily", **described(DESC, "ai-daily"))
     async def ai_daily_command(self, ctx: discord.ApplicationContext):

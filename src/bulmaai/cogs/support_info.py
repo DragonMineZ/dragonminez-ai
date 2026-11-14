@@ -1,7 +1,6 @@
-"""Staff support info: /info to manage entries, the daily public post of active temporary ones, the staff review
-card for suggestions the ticket close summary makes (suggest_from_ticket / finish_suggestion), and the weekly
-"Answers to fix" cards (ui/feedback_fix, posted by cogs/support_report.py): staff write the right answer to a 👎 answer,
-which goes live as support info (source feedback), or skip it.
+"""Staff support info: /info to manage entries, the daily public post of active temporary ones, and the suggestions
+the ticket close summary makes (suggest_from_ticket stores them; the panel's support info page approves or discards
+them through finish_suggestion).
 
 The post is DB-driven (support_info_post.posted_at) and checked every POLL_MINUTES, so restarts don't skip or repeat
 it; claim_daily_post makes sure only one loop posts."""
@@ -10,22 +9,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import tasks
 
-from bulmaai.services import ai_feedback as feedback_store
-from bulmaai.services import eval_cases
 from bulmaai.services import support_info as db
-from bulmaai.ui import feedback_fix
-from bulmaai.ui.support_info_views import (
-    APPROVE,
-    EDIT,
-    daily_post_card,
-    info_list_card,
-    parse_review_custom_id,
-    review_card,
-    review_handled_card,
-)
-from bulmaai.ui.v2 import unbusy, while_busy
+from bulmaai.ui.support_info_views import daily_post_card, info_list_card
 from bulmaai.utils.i18n import described, reader_language, t, table
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import in_main_guild, is_staff
@@ -38,68 +25,35 @@ TEXT = table({
     "en": {
         "staff_only": "Only staff can manage support info.",
         "not_found": "No active support info #{id}.",
-        "already_handled": "Already handled.",
-        "review_failed": "Couldn't update that suggestion. Try again.",
-        "days": "Expires in days must be a whole number from 1 to 365.",
-        "fix_handled": "Someone already handled this one.",
-        "fix_failed": "Couldn't save that. Try again.",
         "saved": "Saved #{id}.",
-        "saved_as": "Saved as support info #{id}.",
-        "approved": "Approved as support info #{id}.",
         "removed": "Removed #{id}.",
         "title": "Title",
         "text": "Text",
-        "kind": "Kind",
-        "expires": "Expires in days",
-        "expires_hint": "Temporary only. Empty: {days} days after approval.",
         "edit_heading": "Edit support info #{id}",
         "new_temporary": "New temporary support info",
         "new_permanent": "New permanent support info",
-        "approve_heading": "Edit & approve #{id}",
     },
     "es": {
         "staff_only": "Solo el staff puede gestionar la info de soporte.",
         "not_found": "No hay info de soporte activa #{id}.",
-        "already_handled": "Ya se atendió.",
-        "review_failed": "No pude actualizar esa sugerencia. Inténtalo de nuevo.",
-        "days": "Los días para que expire deben ser un número entero del 1 al 365.",
-        "fix_handled": "Alguien ya se encargó de esta.",
-        "fix_failed": "No pude guardar eso. Inténtalo de nuevo.",
         "saved": "Guardada la #{id}.",
-        "saved_as": "Guardada como info de soporte #{id}.",
-        "approved": "Aprobada como info de soporte #{id}.",
         "removed": "Se quitó la #{id}.",
         "title": "Título",
         "text": "Texto",
-        "kind": "Tipo",
-        "expires": "Expira en días",
-        "expires_hint": "Solo temporales. Vacío: {days} días después de aprobarla.",
         "edit_heading": "Editar info de soporte #{id}",
         "new_temporary": "Nueva info de soporte temporal",
         "new_permanent": "Nueva info de soporte permanente",
-        "approve_heading": "Editar y aprobar #{id}",
     },
     "pt": {
         "staff_only": "Só a staff pode gerenciar as infos de suporte.",
         "not_found": "Não há info de suporte ativa #{id}.",
-        "already_handled": "Já foi resolvido.",
-        "review_failed": "Não consegui atualizar essa sugestão. Tente novamente.",
-        "days": "Os dias para expirar devem ser um número inteiro de 1 a 365.",
-        "fix_handled": "Alguém já cuidou desta.",
-        "fix_failed": "Não consegui salvar isso. Tente novamente.",
         "saved": "#{id} salva.",
-        "saved_as": "Salva como info de suporte #{id}.",
-        "approved": "Aprovada como info de suporte #{id}.",
         "removed": "#{id} removida.",
         "title": "Título",
         "text": "Texto",
-        "kind": "Tipo",
-        "expires": "Expira em dias",
-        "expires_hint": "Só temporárias. Vazio: {days} dias depois da aprovação.",
         "edit_heading": "Editar info de suporte #{id}",
         "new_temporary": "Nova info de suporte temporária",
         "new_permanent": "Nova info de suporte permanente",
-        "approve_heading": "Editar e aprovar #{id}",
     },
 })
 DESC = table({
@@ -134,10 +88,8 @@ DESC = table({
         "remove": "Remova uma info de suporte",
     },
 })
-# English copies the tests compare against.
-STAFF_ONLY_MSG, ALREADY_HANDLED_MSG, DAYS_MSG, FIX_HANDLED_MSG, FIX_FAILED_MSG = (
-    TEXT["en"][key] for key in ("staff_only", "already_handled", "days", "fix_handled", "fix_failed")
-)
+# English copy the tests compare against.
+STAFF_ONLY_MSG = TEXT["en"]["staff_only"]
 
 
 def _say(interaction, key: str, **values) -> str:
@@ -201,69 +153,11 @@ class InfoModal(discord.ui.DesignerModal):
         await interaction.response.send_message(_say(interaction, "saved", id=entry.id), ephemeral=True)
 
 
-class SuggestionModal(discord.ui.DesignerModal):
-    """Edit & approve on a review card: title, text, kind and an optional expiry in days, then approve."""
-
-    def __init__(self, cog: "SupportInfoCog", entry: db.SupportInfo, language: str = "en") -> None:
-        self.title_input = discord.ui.InputText(
-            style=discord.InputTextStyle.short, max_length=db.TITLE_MAX, value=entry.title
-        )
-        self.body_input = discord.ui.InputText(
-            style=discord.InputTextStyle.paragraph, max_length=db.BODY_MAX, value=entry.body
-        )
-        self.kind_select = discord.ui.Select(
-            options=[
-                discord.SelectOption(label=kind.capitalize(), value=kind, default=kind == entry.kind)
-                for kind in db.KINDS
-            ],
-            required=True,
-        )
-        self.days_input = discord.ui.InputText(style=discord.InputTextStyle.short, max_length=3, required=False)
-        super().__init__(
-            discord.ui.Label(t(TEXT, "title", language), self.title_input),
-            discord.ui.Label(t(TEXT, "text", language), self.body_input),
-            discord.ui.Label(t(TEXT, "kind", language), self.kind_select),
-            discord.ui.Label(
-                t(TEXT, "expires", language),
-                self.days_input,
-                description=t(TEXT, "expires_hint", language, days=SUGGESTION_EXPIRY.days),
-            ),
-            title=t(TEXT, "approve_heading", language, id=entry.id),
-        )
-        self.cog, self.info_id, self.kind = cog, entry.id, entry.kind
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        kind = (self.kind_select.values or [self.kind])[0]
-        days = (self.days_input.value or "").strip()
-        if days and not (days.isdigit() and 1 <= int(days) <= 365):
-            return await interaction.response.send_message(_say(interaction, "days"), ephemeral=True)
-        expires_at = datetime.now(timezone.utc) + timedelta(days=int(days)) if days else None
-        try:
-            updated = await db.update_info(
-                self.info_id,
-                kind=kind,
-                title=self.title_input.value or "",
-                body=self.body_input.value or "",
-                expires_at=expires_at,
-                updated_by=interaction.user.id,
-                only_from=("suggested",),
-            )
-        except ValueError as error:
-            return await interaction.response.send_message(str(error), ephemeral=True)
-        if updated is None:
-            return await interaction.response.send_message(_say(interaction, "already_handled"), ephemeral=True)
-        await interaction.response.defer(ephemeral=True, invisible=False)
-        entry = await self.cog.finish_suggestion(self.info_id, status="active", by_id=interaction.user.id)
-        done = _say(interaction, "approved", id=entry.id) if entry else _say(interaction, "already_handled")
-        await interaction.followup.send(done, ephemeral=True)
-
-
 class SupportInfoCog(ReloadableCog):
     info = discord.SlashCommandGroup("info", **described(DESC, "info"))
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self._working: set[int] = set()  # review cards with a click in flight (ui/v2.while_busy)
 
     async def on_startup(self) -> None:
         if not self.daily_post.is_running():
@@ -311,12 +205,10 @@ class SupportInfoCog(ReloadableCog):
 
     # ---- AI suggestions from solved tickets ----------------------------------------------------------------------
 
-    async def suggest_from_ticket(
-        self, suggestion, *, ticket_id: int | None, page_link: str | None = None
-    ) -> db.SupportInfo:
-        """Stores a ticket summary's SupportInfoSuggestion as 'suggested' and posts its review card to the review
-        channel (ai_reports_channel_id, else moderation_log_channel_id)."""
-        entry = await db.add_info(
+    async def suggest_from_ticket(self, suggestion, *, ticket_id: int | None) -> db.SupportInfo:
+        """Stores a ticket summary's SupportInfoSuggestion as 'suggested'; staff review it on the panel's support
+        info page."""
+        return await db.add_info(
             kind=suggestion.kind,
             title=suggestion.title,
             body=suggestion.body,
@@ -325,161 +217,16 @@ class SupportInfoCog(ReloadableCog):
             source="ai",
             ticket_id=ticket_id,
         )
-        settings = self.bot.settings
-        channel_id = settings.ai_reports_channel_id or settings.moderation_log_channel_id
-        if not channel_id:
-            return entry
-        message = await self.bot.get_partial_messageable(channel_id).send(
-            view=review_card(entry, page_link=page_link, expiry_days=SUGGESTION_EXPIRY.days),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        await db.set_review_message(entry.id, channel_id, message.id)
-        return entry
 
     async def finish_suggestion(self, info_id: int, *, status: str, by_id: int) -> db.SupportInfo | None:
-        """Approve ("active") or discard ("discarded") a suggestion and collapse its review card. None if someone
-        else handled it first. Approving a temporary entry without an expiry gives it SUGGESTION_EXPIRY."""
+        """Approve ("active") or discard ("discarded") a suggestion. None if someone else handled it first. Approving
+        a temporary entry without an expiry gives it SUGGESTION_EXPIRY."""
         if status not in ("active", "discarded"):
             raise ValueError(f"Can't finish a suggestion as {status!r}.")
         default_expiry = datetime.now(timezone.utc) + SUGGESTION_EXPIRY if status == "active" else None
-        entry = await db.set_status(
+        return await db.set_status(
             info_id, status, updated_by=by_id, only_from=("suggested",), default_expires_at=default_expiry
         )
-        if entry is not None:
-            await self._collapse_review(entry)
-        return entry
-
-    async def _collapse_review(self, entry: db.SupportInfo) -> None:
-        if not (entry.review_channel_id and entry.review_message_id):
-            return
-        message = self.bot.get_partial_messageable(entry.review_channel_id).get_partial_message(entry.review_message_id)
-        try:
-            await message.edit(view=review_handled_card(entry), allowed_mentions=discord.AllowedMentions.none())
-        except (discord.NotFound, discord.Forbidden):
-            log.info("Could not edit support info review card", extra={"info_id": entry.id})
-        except discord.HTTPException:
-            # The decision is already saved; a card that didn't collapse must not undo it.
-            log.exception("Failed to edit support info review card", extra={"info_id": entry.id})
-
-    @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction) -> None:
-        custom_id = (interaction.data or {}).get("custom_id") or ""
-        if interaction.type == discord.InteractionType.modal_submit:
-            if (message_id := feedback_fix.parse_modal_id(custom_id)) is not None:
-                await self._on_fix_submit(interaction, message_id)
-            return
-        if interaction.type != discord.InteractionType.component:
-            return
-        if (fix := feedback_fix.parse_custom_id(custom_id)) is not None:
-            return await self._on_fix_button(interaction, *fix)
-        parsed = parse_review_custom_id(custom_id)
-        if parsed is None:
-            return
-        action, info_id = parsed
-        if not _is_staff_member(interaction.user, self.bot.settings):
-            return await interaction.response.send_message(_say(interaction, "staff_only"), ephemeral=True)
-        if action == EDIT:
-            entry = await db.get_info(info_id)
-            if entry is None or entry.status != "suggested":
-                return await interaction.response.send_message(_say(interaction, "already_handled"), ephemeral=True)
-            return await interaction.response.send_modal(SuggestionModal(self, entry, reader_language(interaction)))
-        status = "active" if action == APPROVE else "discarded"
-
-        async def finish() -> bool:
-            if await self.finish_suggestion(info_id, status=status, by_id=interaction.user.id) is None:
-                current = await db.get_info(info_id)
-                if current is not None and current.status != "suggested":
-                    await interaction.edit_original_response(view=review_handled_card(current))
-                else:
-                    await unbusy(interaction)
-                await interaction.followup.send(_say(interaction, "already_handled"), ephemeral=True)
-            return True
-
-        await while_busy(interaction, self._working, finish, failed=_say(interaction, "review_failed"))
-
-    # ---- weekly "Answers to fix" (👎 answers; cogs/support_report.py posts the cards) ---------------------------------
-
-    async def _fix_outcome(self, message_id: int) -> discord.ui.DesignerView | None:
-        """The collapsed card of an answer someone already reviewed; None while nobody has."""
-        row = await feedback_store.get(message_id)
-        if row is None or row.reviewed_at is None:
-            return None
-        entry = await db.get_info(row.info_id) if row.info_id else None
-        return feedback_fix.handled_card(row.reviewed_by, row.info_id, entry.title if entry else "")
-
-    async def _on_fix_button(self, interaction: discord.Interaction, action: str, message_id: int) -> None:
-        if not _is_staff_member(interaction.user, self.bot.settings):
-            return await interaction.response.send_message(_say(interaction, "staff_only"), ephemeral=True)
-        if action == feedback_fix.WRITE:
-            row = await feedback_store.get(message_id)
-            if row is None or row.reviewed_at is not None:
-                outcome = await self._fix_outcome(message_id)
-                if outcome is None:
-                    return await interaction.response.send_message(_say(interaction, "fix_handled"), ephemeral=True)
-                await interaction.response.edit_message(view=outcome)
-                return await interaction.followup.send(_say(interaction, "fix_handled"), ephemeral=True)
-            answer = await feedback_store.answer_to_fix(row)
-            return await interaction.response.send_modal(
-                feedback_fix.fix_modal(message_id, answer.question if answer else "")
-            )
-
-        async def skip() -> bool:
-            if await feedback_store.claim_review(message_id, interaction.user.id):
-                await interaction.edit_original_response(view=feedback_fix.skipped_card(interaction.user.id))
-                return True
-            outcome = await self._fix_outcome(message_id)
-            if outcome is not None:
-                await interaction.edit_original_response(view=outcome)
-            else:
-                await unbusy(interaction)
-            await interaction.followup.send(_say(interaction, "fix_handled"), ephemeral=True)
-            return True
-
-        await while_busy(interaction, self._working, skip, failed=_say(interaction, "fix_failed"))
-
-    async def _on_fix_submit(self, interaction: discord.Interaction, message_id: int) -> None:
-        """The Write form: claims the answer (first wins), saves the text as active support info (source feedback,
-        created by the staff member) and collapses the card. A text that doesn't validate releases the claim."""
-        if not _is_staff_member(interaction.user, self.bot.settings):
-            return await interaction.response.send_message(_say(interaction, "staff_only"), ephemeral=True)
-        form = feedback_fix.read_form((interaction.data or {}).get("components"))
-        if form.days and not (form.days.isdigit() and 1 <= int(form.days) <= 365):
-            return await interaction.response.send_message(_say(interaction, "days"), ephemeral=True)
-        expires_at = (
-            datetime.now(timezone.utc) + timedelta(days=int(form.days))
-            if form.days and form.kind == db.KIND_TEMPORARY
-            else None
-        )
-        staff_id = interaction.user.id
-        if not await feedback_store.claim_review(message_id, staff_id):
-            return await interaction.response.send_message(_say(interaction, "fix_handled"), ephemeral=True)
-        try:
-            entry = await db.add_info(
-                kind=form.kind,
-                title=form.title,
-                body=form.answer,
-                created_by=staff_id,
-                expires_at=expires_at,
-                status="active",
-                source="feedback",
-            )
-        except Exception as error:
-            if not isinstance(error, ValueError):
-                log.exception("Could not save the right answer", extra={"message_id": message_id})
-            await feedback_store.release_review(message_id, staff_id)
-            reply = str(error) if isinstance(error, ValueError) else _say(interaction, "fix_failed")
-            return await interaction.response.send_message(reply, ephemeral=True)
-        try:
-            await feedback_store.set_info(message_id, entry.id)
-        except Exception:
-            # The support info is live already; only the link back from the answer is missing.
-            log.exception("Could not link the right answer to its feedback row", extra={"message_id": message_id})
-        eval_cases.spawn(eval_cases.track_feedback(message_id, form.answer))
-        view = feedback_fix.fixed_card(staff_id, entry.id, entry.title)
-        if getattr(interaction, "message", None) is not None:
-            await interaction.response.edit_message(view=view)
-        else:
-            await interaction.response.send_message(_say(interaction, "saved_as", id=entry.id), ephemeral=True)
 
     # ---- /info -----------------------------------------------------------------------------------------------------
 

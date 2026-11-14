@@ -187,17 +187,6 @@ async def set_status(
     return _info(row)
 
 
-async def set_review_message(info_id: int, channel_id: int, message_id: int, *, pool: Any | None = None) -> None:
-    """Where a suggestion's staff review card was posted."""
-    resolved_pool = pool or await get_pool()
-    await resolved_pool.execute(
-        "UPDATE support_info SET review_channel_id = $2, review_message_id = $3 WHERE id = $1",
-        info_id,
-        channel_id,
-        message_id,
-    )
-
-
 async def get_info(info_id: int, *, pool: Any | None = None) -> SupportInfo | None:
     resolved_pool = pool or await get_pool()
     return _info(await resolved_pool.fetchrow(f"SELECT {_COLUMNS} FROM support_info WHERE id = $1", info_id))

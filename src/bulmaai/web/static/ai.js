@@ -59,6 +59,47 @@
     "{title} from {from} to {to}.": "{title} del {from} al {to}.",
     "Use the arrow keys to read each day.": "Usa las flechas para leer cada día.",
     "Use the arrow keys to read each run.": "Usa las flechas para leer cada evaluación.",
+    "Answers to fix": "Respuestas por corregir",
+    "No 👎 answers waiting.": "No hay respuestas con 👎 pendientes.",
+    "DM": "MD",
+    "Question": "Pregunta",
+    "Bulma's reply": "Respuesta de Bulma",
+    "Show more": "Ver más",
+    "Show less": "Ver menos",
+    "Write the right answer": "Escribir la respuesta correcta",
+    "Skip": "Omitir",
+    "Skipped": "Omitida",
+    "Already handled": "Ya atendida",
+    "Title": "Título",
+    "Answer": "Respuesta",
+    "Kind": "Tipo",
+    "Permanent": "Permanente",
+    "Temporary": "Temporal",
+    "Days (optional)": "Días (opcional)",
+    "Save": "Guardar",
+    "Cancel": "Cancelar",
+    "Title and answer are required.": "El título y la respuesta son obligatorios.",
+    "Days must be between 1 and 365.": "Los días deben estar entre 1 y 365.",
+    "Saved as support info #{id}: {title}": "Guardada como info de soporte #{id}: {title}",
+    "Weekly reports": "Reportes semanales",
+    "Week": "Semana",
+    "No weekly report yet. The first one is built on Monday.": "Aún no hay reporte semanal. El primero se genera el lunes.",
+    "Tickets closed": "Tickets cerrados",
+    "Solved": "Resueltos",
+    "Unresolved": "Sin resolver",
+    "AI replies": "Respuestas de la IA",
+    "Escalations": "Escalaciones",
+    "Handoffs": "Pases al staff",
+    "Crash-log diagnoses": "Diagnósticos de crash logs",
+    "Support AI spend (est.)": "Gasto de la IA de soporte (est.)",
+    "Answer feedback": "Calificación de respuestas",
+    "{percent}% helpful": "{percent}% útiles",
+    "Top tags": "Etiquetas principales",
+    "Recurring themes": "Temas recurrentes",
+    "Questions the AI couldn't answer": "Preguntas que la IA no pudo responder",
+    "Notes": "Notas",
+    "No AI summary this time.": "Sin resumen de la IA esta vez.",
+    "AI-written sections can be wrong. Nothing here goes live on its own.": "Las secciones escritas por la IA pueden tener errores. Nada de esto se publica por sí solo.",
   });
 
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -470,6 +511,181 @@
     return card;
   }
 
+  // ---- Answers to fix (👎 answers staff can turn into support info) -------------------------------
+  const TITLE_MAX = 100;
+  const CLAMP_AT = 280;
+
+  function excerpt(label, text) {
+    const body = h("div", { class: "ai-clamp clamped" }, String(text || ""));
+    const toggle = h("button", { class: "btn small ghost", type: "button", "aria-expanded": "false" }, t("Show more"));
+    toggle.addEventListener("click", () => {
+      const open = body.classList.toggle("clamped") === false;
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.textContent = open ? t("Show less") : t("Show more");
+    });
+    return h("div", { class: "stack tight" }, h("div", { class: "muted small" }, label), body,
+      String(text || "").length > CLAMP_AT || String(text || "").includes("\n") ? toggle : null);
+  }
+
+  function fixItem(a, onResolved) {
+    const el = h("div", { class: "ai-fix-item stack" });
+    const collapse = (text) => el.replaceChildren(h("div", { class: "muted" }, text));
+    const base = `/api/ai/answers-to-fix/${encodeURIComponent(a.message_id)}`;
+    const date = a.created_at ? new Date(a.created_at).toLocaleDateString(locale(), { month: "short", day: "numeric", year: "numeric" }) : null;
+    const meta = [a.where || t("DM"), String(a.language || "").toUpperCase(), date].filter(Boolean).join(" · ");
+
+    // Runs a request, collapsing the item on success or on a 409 (someone else got there first).
+    const submit = async (buttons, path, body, done) => {
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        done(await api(`${base}/${path}`, { method: "POST", body }));
+        onResolved();
+      } catch (error) {
+        if (/\(409\)|already/i.test(error.message)) {
+          Panel.toast(error.message, true);
+          collapse(t("Already handled"));
+          onResolved();
+        } else Panel.toast(error.message, true);
+      } finally {
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    };
+
+    const write = h("button", { class: "btn small primary", type: "button" }, t("Write the right answer"));
+    const skip = h("button", { class: "btn small ghost", type: "button" }, t("Skip"));
+    const actions = h("div", { class: "row" }, write, skip);
+    const formBox = h("div");
+    skip.addEventListener("click", () => submit([write, skip], "skip", {}, () => collapse(`⏭️ ${t("Skipped")}`)));
+    write.addEventListener("click", () => {
+      if (formBox.firstChild) { formBox.firstChild.querySelector("input").focus(); return; }
+      const title = h("input", { type: "text", maxlength: String(TITLE_MAX), required: "", value: String(a.question || "").slice(0, TITLE_MAX) });
+      const answer = h("textarea", { rows: "6", required: "" });
+      const kind = h("select", {}, h("option", { value: "permanent" }, t("Permanent")), h("option", { value: "temporary" }, t("Temporary")));
+      const days = h("input", { type: "number", min: "1", max: "365", step: "1" });
+      const daysField = Panel.field(t("Days (optional)"), days);
+      daysField.hidden = true;
+      kind.addEventListener("change", () => { daysField.hidden = kind.value !== "temporary"; });
+      const save = h("button", { class: "btn small primary", type: "button" }, t("Save"));
+      const cancel = h("button", { class: "btn small ghost", type: "button", onclick: () => formBox.replaceChildren() }, t("Cancel"));
+      save.addEventListener("click", () => {
+        if (!title.value.trim() || !answer.value.trim()) { Panel.toast(t("Title and answer are required."), true); return; }
+        const n = kind.value === "temporary" && days.value !== "" ? Math.round(Number(days.value)) : null;
+        if (n !== null && !(n >= 1 && n <= 365)) { Panel.toast(t("Days must be between 1 and 365."), true); return; }
+        submit([write, skip, save, cancel], "write", { title: title.value.trim(), answer: answer.value.trim(), kind: kind.value, days: n },
+          (r) => collapse(`✅ ${t("Saved as support info #{id}: {title}", { id: r.info_id, title: r.title })}`));
+      });
+      formBox.append(h("div", { class: "stack ai-fix-form" },
+        Panel.field(t("Title"), title), Panel.field(t("Answer"), answer), Panel.field(t("Kind"), kind), daysField,
+        h("div", { class: "row" }, save, cancel)));
+      title.focus();
+    });
+
+    el.append(h("div", { class: "muted small" }, meta), excerpt(t("Question"), a.question), excerpt(t("Bulma's reply"), a.reply), actions, formBox);
+    return el;
+  }
+
+  function fixCard() {
+    const card = h("div", { class: "card", hidden: true });
+    let pending = 0;
+    const heading = h("h2", {});
+    const list = h("div", { class: "stack" });
+    card.append(heading, list);
+    const head = () => { heading.textContent = `${t("Answers to fix")} (${count(pending)})`; };
+    const onResolved = () => { pending = Math.max(0, pending - 1); head(); };
+    return {
+      el: card,
+      async load() {
+        let answers;
+        try { answers = (await api("/api/ai/answers-to-fix")).answers || []; } catch { card.hidden = true; return; }
+        pending = answers.length;
+        head();
+        list.replaceChildren(...(answers.length ? answers.map((a) => fixItem(a, onResolved)) : [h("div", { class: "empty" }, t("No 👎 answers waiting."))]));
+        card.hidden = false;
+      },
+    };
+  }
+
+  // ---- Weekly reports -----------------------------------------------------------------------------
+  const reportDay = (iso) => new Date(iso).toLocaleDateString(locale(), { day: "numeric", month: "short", timeZone: "UTC" });
+  const reportLabel = (r) => {
+    const last = new Date(new Date(r.until).getTime() - 86400000);
+    return `${reportDay(r.since)} – ${last.toLocaleDateString(locale(), { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })}`;
+  };
+
+  function numberCell(label, value) {
+    return h("div", { class: "stat" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value));
+  }
+
+  function list(items, render) {
+    return h("ul", { class: "ai-list" }, items.map((item) => h("li", {}, render(item))));
+  }
+
+  function reportBody(r) {
+    const n = r.numbers || {};
+    const rated = (Number(n.helpful) || 0) + (Number(n.not_helpful) || 0);
+    const split = n.spend_by_model || [];
+    const cells = [
+      numberCell(t("Tickets closed"), count(n.tickets_closed)),
+      numberCell(t("Solved"), count(n.tickets_resolved)),
+      numberCell(t("Unresolved"), count(n.tickets_unresolved)),
+      numberCell(t("AI replies"), count(n.ai_replies)),
+      numberCell(t("Escalations"), count(n.escalations)),
+      numberCell(t("Handoffs"), count(n.handoffs)),
+      numberCell(t("Crash-log diagnoses"), count(n.log_diagnoses)),
+      h("div", { class: "stat" }, h("div", { class: "label" }, t("Support AI spend (est.)")), h("div", { class: "value" }, money(n.spend)),
+        split.length ? small(split.map((s) => `${modelName(s.model)} ${money(s.cost)}`).join(" · ")) : null),
+      rated > 0 ? h("div", { class: "stat" }, h("div", { class: "label" }, t("Answer feedback")),
+        h("div", { class: "value" }, `👍 ${count(n.helpful)} · 👎 ${count(n.not_helpful)}`),
+        n.helpful_percent === null || n.helpful_percent === undefined ? null
+          : small(t("{percent}% helpful", { percent: Math.round(n.helpful_percent) }))) : null,
+    ];
+    const tags = n.top_tags || [];
+    const ins = r.insights;
+    return h("div", { class: "stack" },
+      h("div", { class: "grid" }, cells),
+      tags.length ? h("div", {}, h("h3", {}, t("Top tags")), list(tags, ([tag, c]) => `${tag} · ${count(c)}`)) : null,
+      ins ? [
+        (ins.themes || []).length ? h("div", {}, h("h3", {}, t("Recurring themes")), list(ins.themes, (x) => x)) : null,
+        (ins.gaps || []).length ? h("div", {}, h("h3", {}, t("Questions the AI couldn't answer")),
+          list(ins.gaps, (g) => (g.page ? `${g.question} → ${g.page}` : g.question))) : null,
+        ins.notes ? h("div", {}, h("h3", {}, t("Notes")), h("p", { class: "ai-notes" }, ins.notes)) : null,
+      ] : h("div", { class: "muted" }, t("No AI summary this time.")),
+      small(t("AI-written sections can be wrong. Nothing here goes live on its own.")));
+  }
+
+  function reportsCard() {
+    const card = h("div", { class: "card" }, h("h2", {}, t("Weekly reports")));
+    const detail = h("div", { class: "stack" });
+    let seq = 0;
+    const open = async (id) => {
+      const mine = ++seq;
+      try {
+        const r = await api(`/api/ai/reports/${encodeURIComponent(id)}`);
+        if (mine === seq) detail.replaceChildren(reportBody(r));
+      } catch (error) {
+        if (mine === seq) detail.replaceChildren(h("p", { class: "error" }, error.message));
+      }
+    };
+    return {
+      el: card,
+      async load() {
+        let reports;
+        try { reports = (await api("/api/ai/reports")).reports || []; } catch (error) {
+          card.replaceChildren(h("h2", {}, t("Weekly reports")), h("p", { class: "error" }, error.message));
+          return;
+        }
+        if (!reports.length) {
+          card.replaceChildren(h("h2", {}, t("Weekly reports")), h("div", { class: "empty" }, t("No weekly report yet. The first one is built on Monday.")));
+          return;
+        }
+        const select = h("select", {}, reports.map((r) => h("option", { value: r.id }, reportLabel(r))));
+        select.addEventListener("change", () => open(select.value));
+        card.replaceChildren(h("h2", {}, t("Weekly reports")), Panel.field(t("Week"), select), detail);
+        await open(select.value);
+      },
+    };
+  }
+
   Panel.page({
     id: "ai",
     title: "AI quality",
@@ -478,8 +694,12 @@
       let seq = 0;
       const body = h("div");
 
+      const fix = fixCard();
+      const reports = reportsCard();
       const paint = (data) => body.replaceChildren(
         h("div", { class: "grid" }, statCards(data)),
+        fix.el,
+        reports.el,
         dayCard(data, "Answers per day", ANSWER_SERIES, (p, key) => p.answers[key], columnChart, "No answers in this range yet."),
         dayCard(data, "Tickets opened and closed", TICKET_SERIES, (p, key) => p[key], lineChart, "No tickets opened or closed in this range yet."),
         dayCard(data, "Answer ratings per day", RATING_SERIES, (p, key) => p[key], columnChart, "No ratings in this range yet."),
@@ -490,9 +710,11 @@
         const next = await api(`/api/ai/quality?days=${encodeURIComponent(state.days)}`);
         if (mine === seq) paint(next);
       };
+      // The range buttons only reload the charts; Refresh and the first load fetch everything.
+      const loadAll = () => Promise.all([load(), fix.load(), reports.load()]);
 
       const refresh = h("button", { class: "btn small ghost", type: "button" }, t("Refresh"));
-      refresh.addEventListener("click", () => run(refresh, load));
+      refresh.addEventListener("click", () => run(refresh, loadAll));
       const range = segmented(t("Range"), RANGES, state.days, (key) => {
         state.days = key;
         save();
@@ -501,6 +723,7 @@
       view.append(h("div", { class: "row spread usage-head" }, h("h1", {}, t("AI quality")), h("div", { class: "row" }, range, refresh)));
       await load();
       view.append(body);
+      await Promise.all([fix.load(), reports.load()]);
     },
   });
 })();

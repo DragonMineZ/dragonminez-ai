@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 import discord
 
 from bulmaai.services.ai_guard import defuse_mentions
-from bulmaai.ui.feedback_fix import _submitted
 from bulmaai.ui.v2 import card, fit, trim
 from bulmaai.utils.i18n import t, table
 
@@ -287,6 +286,23 @@ def setup_modal(mode: str, language: str, *, nickname: str = "", stored_language
     return discord.ui.DesignerModal(
         *items, title=trim(t(TEXT, f"modal_{mode}", language), 45), custom_id=form_id(mode), store=False
     )
+
+
+def _submitted(components: Any) -> dict[str, Any]:
+    """custom id -> submitted value(s) of a modal_submit payload (Label components wrap their item in "component")."""
+    out: dict[str, Any] = {}
+
+    def walk(items: Any) -> None:
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("custom_id"):
+                out[item["custom_id"]] = item["values"] if "values" in item else item.get("value")
+            walk([item["component"]] if isinstance(item.get("component"), dict) else [])
+            walk(item.get("components"))
+
+    walk(components)
+    return out
 
 
 def read_form(components: Any) -> dict[str, Any]:

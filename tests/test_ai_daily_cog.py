@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +21,6 @@ STAFF_ROLE = 7
 
 def settings(**overrides):
     values = dict(
-        ai_reports_channel_id=900,
         ai_monthly_budget_usd=100,
         ai_budget_cycle_day=1,
         ai_daily_small_token_limit=1000,
@@ -100,13 +99,10 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(blocks[1].split("\n")), 4)
 
 
-def make_cog(channel_found=True, **setting_overrides):
-    channel = MagicMock()
-    channel.send = AsyncMock()
+def make_cog(**setting_overrides):
     bot = MagicMock()
     bot.settings = settings(**setting_overrides)
-    bot.get_channel = MagicMock(return_value=channel if channel_found else None)
-    return cog_module.AIDailyCog(bot), channel
+    return cog_module.AIDailyCog(bot)
 
 
 def staff_member(*role_ids, guild_id=1):
@@ -117,69 +113,9 @@ def staff_member(*role_ids, guild_id=1):
     return member
 
 
-NOW = datetime(2026, 11, 13, 0, 30, tzinfo=timezone.utc)
-
-
 class CogTests(unittest.IsolatedAsyncioTestCase):
-    async def tick(self, cog, *, now=NOW, claim=True, data=None):
-        with (
-            patch.object(ai_daily, "collect", AsyncMock(return_value=data or busy_data())) as collect,
-            patch.object(ai_daily, "claim", AsyncMock(return_value=claim)) as claim_mock,
-            patch.object(ai_daily, "release", AsyncMock()) as release,
-            patch.object(cog_module, "render_chart", MagicMock(return_value=b"png")),
-            patch.object(cog_module, "_last_eval", MagicMock(return_value=None)),
-        ):
-            try:
-                await cog._post_tick(now)
-            except RuntimeError:
-                pass
-        return collect, claim_mock, release
-
-    async def test_posts_once_with_file_and_no_pings(self) -> None:
-        cog, channel = make_cog()
-        _, claim, release = await self.tick(cog)
-        claim.assert_awaited_once_with(date(2026, 11, 12))
-        channel.send.assert_awaited_once()
-        kwargs = channel.send.call_args.kwargs
-        self.assertEqual(kwargs["file"].filename, "ai-daily.png")
-        self.assertEqual(kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
-        release.assert_not_awaited()
-
-    async def test_lost_claim_does_nothing(self) -> None:
-        cog, channel = make_cog()
-        collect, _, _ = await self.tick(cog, claim=False)
-        collect.assert_not_awaited()
-        channel.send.assert_not_awaited()
-
-    async def test_no_activity_posts_nothing_and_keeps_the_claim(self) -> None:
-        cog, channel = make_cog()
-        _, _, release = await self.tick(cog, data=ai_daily.aggregate(DAY, settings()))
-        channel.send.assert_not_awaited()
-        release.assert_not_awaited()
-
-    async def test_generic_error_releases_the_claim(self) -> None:
-        cog, channel = make_cog()
-        channel.send.side_effect = RuntimeError("boom")
-        _, _, release = await self.tick(cog)
-        release.assert_awaited_once_with(date(2026, 11, 12))
-
-    async def test_forbidden_keeps_the_claim(self) -> None:
-        cog, channel = make_cog()
-        channel.send.side_effect = discord.Forbidden(MagicMock(status=403, reason="Forbidden"), "no")
-        _, _, release = await self.tick(cog)
-        release.assert_not_awaited()
-
-    async def test_disabled_too_early_or_missing_channel(self) -> None:
-        cog, _ = make_cog(ai_reports_channel_id=None)
-        self.assertFalse((await self.tick(cog))[1].await_count)
-        cog, _ = make_cog()
-        early = datetime(2026, 11, 13, 0, 5, tzinfo=timezone.utc)
-        self.assertFalse((await self.tick(cog, now=early))[1].await_count)
-        cog, _ = make_cog(channel_found=False)
-        self.assertFalse((await self.tick(cog))[1].await_count)
-
     async def test_command_is_staff_only(self) -> None:
-        cog, _ = make_cog()
+        cog = make_cog()
         for member in (staff_member(99), staff_member(STAFF_ROLE, guild_id=2), SimpleNamespace(id=1)):
             ctx = MagicMock()
             ctx.author = member
@@ -191,14 +127,13 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
             ctx.defer.assert_not_called()
 
     async def test_command_sends_ephemeral_card(self) -> None:
-        cog, _ = make_cog()
+        cog = make_cog()
         ctx = MagicMock()
         ctx.author = staff_member(STAFF_ROLE)
         ctx.defer = AsyncMock()
         ctx.followup.send = AsyncMock()
         with (
             patch.object(ai_daily, "collect", AsyncMock(return_value=busy_data())),
-            patch.object(ai_daily, "claim", AsyncMock()) as claim,
             patch.object(cog_module, "render_chart", MagicMock(return_value=b"png")),
             patch.object(cog_module, "_last_eval", MagicMock(return_value=None)),
         ):
@@ -206,7 +141,9 @@ class CogTests(unittest.IsolatedAsyncioTestCase):
         ctx.defer.assert_awaited_once_with(ephemeral=True)
         self.assertTrue(ctx.followup.send.call_args.kwargs["ephemeral"])
         self.assertEqual(ctx.followup.send.call_args.kwargs["file"].filename, "ai-daily.png")
-        claim.assert_not_called()
+
+    def test_no_scheduled_post(self) -> None:
+        self.assertFalse(hasattr(cog_module.AIDailyCog, "daily_post"))
 
 
 if __name__ == "__main__":

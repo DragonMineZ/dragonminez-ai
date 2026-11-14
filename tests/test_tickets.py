@@ -1470,10 +1470,7 @@ class SolvedTests(unittest.IsolatedAsyncioTestCase):
         m.take.assert_awaited_once_with(900)  # takes and clears it, so a second On has nothing left to send
         suggestion = m.support.suggest_from_ticket.await_args.args[0]
         self.assertEqual((suggestion.kind, suggestion.title, suggestion.body), ("permanent", "Q", "A"))
-        self.assertEqual(
-            m.support.suggest_from_ticket.await_args.kwargs,
-            {"ticket_id": 42, "page_link": f"{SETTINGS.ticket_transcript_public_url}/t/{'f' * 32}"},
-        )
+        self.assertEqual(m.support.suggest_from_ticket.await_args.kwargs, {"ticket_id": 42})
         self.assertEqual(self.busy(interaction), (v2.WORKING, True))
         card = interaction.edit_original_response.await_args.kwargs["view"]
         self.assertIn(f"-# 🗑️ Deletes <t:{int(self.LATER.timestamp())}:R> unless re-opened.", texts(card))

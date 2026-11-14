@@ -187,6 +187,7 @@ _ERRORS: dict[int, type[web.HTTPException]] = {
     403: web.HTTPForbidden,
     404: web.HTTPNotFound,
     409: web.HTTPConflict,
+    500: web.HTTPInternalServerError,
     502: web.HTTPBadGateway,
     503: web.HTTPServiceUnavailable,
 }

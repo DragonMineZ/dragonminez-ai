@@ -507,3 +507,9 @@ th[aria-sort] { color: var(--text); }
 .ai-evals .table-wrap { margin-top: 12px; }
 .ai-evals th:nth-child(n+2):not(:last-child) { text-align: right; }
 .ai-evals td .nowrap { white-space: nowrap; }
+
+.ai-fix-item + .ai-fix-item { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.ai-clamp { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-clamp.clamped { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.ai-list { margin: 4px 0 0; padding-left: 20px; }
+.ai-notes { white-space: pre-wrap; margin: 4px 0 0; }

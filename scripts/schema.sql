@@ -630,10 +630,21 @@ CREATE TABLE IF NOT EXISTS support_info_post (
     posted_at   TIMESTAMPTZ
 );
 
--- Single row (id = 1): when the weekly staff support report last went out (cogs/support_report.py).
+-- Single row (id = 1): when the weekly staff support report was last saved (cogs/support_report.py).
 CREATE TABLE IF NOT EXISTS support_report_posts (
     id          INT PRIMARY KEY CHECK (id = 1),
     posted_at   TIMESTAMPTZ
+);
+
+-- One row per weekly support report (cogs/support_report.py), read by the panel's AI page: data holds the numbers,
+-- insights the AI's themes, wiki gaps and notes (NULL when that call failed or had nothing to read).
+CREATE TABLE IF NOT EXISTS support_reports (
+    id          BIGSERIAL PRIMARY KEY,
+    since       TIMESTAMPTZ NOT NULL,
+    until       TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    data        JSONB NOT NULL,
+    insights    JSONB
 );
 
 -- One row per AI diagnosis on a crash-log card, for the per-uploader rolling 24h limit (services/log_ai_quota.py).
@@ -911,11 +922,8 @@ CREATE TABLE IF NOT EXISTS eval_cases (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- One row per UTC day whose daily AI metrics post went out (services/ai_daily.py); the INSERT is the claim.
-CREATE TABLE IF NOT EXISTS ai_daily_posts (
-    day        DATE PRIMARY KEY,
-    posted_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- The daily AI metrics are no longer posted to Discord (the panel's AI page shows them).
+DROP TABLE IF EXISTS ai_daily_posts;
 
 -- Single row (id = 1): when staff last reset the daily AI token pools from the panel (services/ai_budget.py).
 -- Startup seeding counts ai_usage only from max(00:00 UTC, reset_at), so a restart doesn't undo the reset.

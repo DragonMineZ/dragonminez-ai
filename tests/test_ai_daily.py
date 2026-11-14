@@ -183,41 +183,6 @@ class AggregateTests(unittest.TestCase):
         )
 
 
-class PostDueTests(unittest.TestCase):
-    def test_waits_for_ten_past_midnight_utc(self) -> None:
-        self.assertIsNone(ai_daily.post_due(datetime(2026, 11, 13, 0, 9, 59, tzinfo=timezone.utc)))
-        self.assertEqual(ai_daily.post_due(datetime(2026, 11, 13, 0, 10, tzinfo=timezone.utc)), DAY)
-        self.assertEqual(ai_daily.post_due(datetime(2026, 11, 13, 23, 59, tzinfo=timezone.utc)), DAY)
-
-    def test_month_boundary_and_other_timezones(self) -> None:
-        self.assertEqual(ai_daily.post_due(datetime(2026, 12, 1, 0, 10, tzinfo=timezone.utc)), date(2026, 11, 30))
-        self.assertEqual(ai_daily.post_due(datetime(2027, 1, 1, 5, 0, tzinfo=timezone.utc)), date(2026, 12, 31))
-        # 21:30 at UTC-3 is 00:30 UTC of the next day.
-        local = datetime(2026, 11, 12, 21, 30, tzinfo=timezone(timedelta(hours=-3)))
-        self.assertEqual(ai_daily.post_due(local), DAY)
-
-
-class ClaimTests(unittest.IsolatedAsyncioTestCase):
-    async def test_first_caller_wins(self) -> None:
-        pool = SimpleNamespace(fetchval=AsyncMock(side_effect=[DAY, None]))
-
-        self.assertTrue(await ai_daily.claim(DAY, pool=pool))
-        self.assertFalse(await ai_daily.claim(DAY, pool=pool))
-        sql, arg = pool.fetchval.await_args.args
-        self.assertIn("INSERT INTO ai_daily_posts", sql)
-        self.assertIn("ON CONFLICT DO NOTHING", sql)
-        self.assertEqual(arg, DAY)
-
-    async def test_release_deletes_the_row(self) -> None:
-        pool = SimpleNamespace(execute=AsyncMock())
-
-        await ai_daily.release(DAY, pool=pool)
-
-        sql, arg = pool.execute.await_args.args
-        self.assertIn("DELETE FROM ai_daily_posts", sql)
-        self.assertEqual(arg, DAY)
-
-
 class CollectTests(unittest.IsolatedAsyncioTestCase):
     def fake_pool(self):
         async def fetch(sql, *args):

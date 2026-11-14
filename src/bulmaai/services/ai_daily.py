@@ -1,8 +1,8 @@
-"""Numbers for the daily "AI metrics" staff post: the last 14 UTC days of support answers, AI spend, tickets and
-answer ratings, plus the budget cycle and what waits on staff. Data only; the cog decides when and where to post."""
+"""Numbers for the AI metrics (/ai-daily and the panel's AI quality page): the last 14 UTC days of support answers,
+AI spend, tickets and answer ratings, plus the budget cycle and what waits on staff. Data only."""
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from bulmaai.database.db import get_pool
@@ -10,7 +10,6 @@ from bulmaai.services import ai_budget, ai_usage
 from bulmaai.services.support_report import SENT_WORKFLOWS
 
 WINDOW_DAYS = 14
-POST_AFTER = time(0, 10)  # UTC; the post for a day goes out once the next day reaches this time
 ANSWER_KINDS = ("answer", "clarify", "handoff", "other")
 COST_GROUPS = ("support", "tickets", "staff", "other")
 UNREVIEWED_DAYS = 30
@@ -279,26 +278,3 @@ async def collect(
         days=days,
     )
 
-
-# ---- schedule state (one ai_daily_posts row per posted day) ------------------------------------------------------
-
-
-def post_due(now: datetime) -> date | None:
-    """The UTC day to post: yesterday once now's UTC time reaches POST_AFTER. now must be timezone-aware."""
-    now = now.astimezone(timezone.utc)
-    return now.date() - timedelta(days=1) if now.time() >= POST_AFTER else None
-
-
-async def claim(day: date, *, pool: Any | None = None) -> bool:
-    """True only for the first caller for that day, so a second loop or a restart can't post it twice."""
-    resolved_pool = pool or await get_pool()
-    claimed = await resolved_pool.fetchval(
-        "INSERT INTO ai_daily_posts (day) VALUES ($1) ON CONFLICT DO NOTHING RETURNING day", day
-    )
-    return claimed is not None
-
-
-async def release(day: date, *, pool: Any | None = None) -> None:
-    """Sending failed: drop the claim so the next tick retries."""
-    resolved_pool = pool or await get_pool()
-    await resolved_pool.execute("DELETE FROM ai_daily_posts WHERE day = $1", day)

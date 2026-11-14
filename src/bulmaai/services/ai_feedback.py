@@ -2,13 +2,13 @@
 with helpful NULL when the card is sent (it keeps the reply's response id for later study); the requester's first
 click sets helpful. The weekly support report counts them (services/support_report).
 
-The weekly "Answers to fix" review (cogs/support_info.py, posted right after the report) shows the week's 👎 answers
-with their trace; the first staff click claims a row (reviewed_at), and a written fix keeps its support info id.
+The "Answers to fix" review (the panel's AI page, web/routes_ai.py) shows the last 30 days' unreviewed 👎 answers
+with their trace; the first staff Write or Skip claims a row (reviewed_at), and a written fix keeps its support info id.
 
 ponytail: rows are never purged; one small row per answer card."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from bulmaai.database.db import get_pool
@@ -32,7 +32,7 @@ class FeedbackRow:
 
 @dataclass(frozen=True)
 class AnswerToFix:
-    """A 👎 answer for the weekly review: the requester's question and the reply they rated, from its trace."""
+    """A 👎 answer to review: the requester's question and the reply they rated, from its trace."""
 
     message_id: int
     channel_id: int
@@ -100,7 +100,10 @@ async def rate(*, message_id: int, channel_id: int, requester_id: int, helpful: 
     return rated is not None
 
 
-# ---- the weekly "Answers to fix" review ---------------------------------------------------------------------------
+# ---- the "Answers to fix" review ----------------------------------------------------------------------------------
+
+FIX_WINDOW = timedelta(days=30)
+FIX_LIMIT = 50
 
 
 async def downvoted(since: datetime, until: datetime, *, limit: int = 10) -> list[FeedbackRow]:
@@ -138,6 +141,12 @@ async def answers_to_fix(since: datetime, until: datetime, *, limit: int = 10) -
     rows = await downvoted(since, until, limit=limit)
     traces = await get_reply_traces([row.response_id for row in rows])
     return [_answer(row, traces[row.response_id]) for row in rows if row.response_id in traces]
+
+
+async def recent_answers_to_fix(now: datetime | None = None, *, limit: int = FIX_LIMIT) -> list[AnswerToFix]:
+    """The unreviewed 👎 answers of the last FIX_WINDOW, newest first."""
+    until = now or datetime.now(timezone.utc)
+    return await answers_to_fix(until - FIX_WINDOW, until, limit=limit)
 
 
 async def answer_to_fix(row: FeedbackRow) -> AnswerToFix | None:

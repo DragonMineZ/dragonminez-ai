@@ -1050,8 +1050,8 @@ class TicketsCog(ReloadableCog):
         await while_busy(interaction, self._working, toggle, failed=t(self._lang(interaction), "failed"))
 
     async def _suggest_support_info(self, channel: discord.TextChannel, ticket: Ticket) -> None:
-        """A staff member vouched for the ticket as solved: the close summary's stored suggestion (if any) goes to
-        SupportInfoCog's review, and is cleared so it goes only once. Never breaks the caller."""
+        """A staff member vouched for the ticket as solved: the close summary's stored suggestion (if any) is saved
+        for staff review (SupportInfoCog.suggest_from_ticket), and is cleared so it goes only once. Never breaks the caller."""
         support_cog = self.bot.get_cog("SupportInfoCog")
         if support_cog is None:
             return
@@ -1060,12 +1060,7 @@ class TicketsCog(ReloadableCog):
             if stored is None:
                 return
             suggestion = SupportInfoSuggestion(str(stored["kind"]), str(stored["title"]), str(stored["body"]))
-            page = await get_page_for_channel(channel.id)
-            await support_cog.suggest_from_ticket(
-                suggestion,
-                ticket_id=ticket.ticket_id,
-                page_link=page_url(self.settings, page.token) if page else None,
-            )
+            await support_cog.suggest_from_ticket(suggestion, ticket_id=ticket.ticket_id)
         except Exception:
             log.exception("Failed to suggest support info", extra={"channel_id": channel.id})
 

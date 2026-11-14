@@ -13,8 +13,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services import ai_usage, eval_cases, evals, knowledge
 
-import test_feedback_fix as fix_tests  # modules only: importing their TestCase classes would run them twice here
-import test_tickets as ticket_tests
+import test_tickets as ticket_tests  # module only: importing its TestCase classes would run them twice here
 
 
 def case(**overrides):
@@ -401,31 +400,6 @@ class BotHookTests(unittest.IsolatedAsyncioTestCase):
         track.assert_called_once_with(900)
         spawn.assert_called_once_with("track")
         spawn, track = await self.solve(staff=False)
-        track.assert_not_called()
-        spawn.assert_not_called()
-
-    async def submit(self, add):
-        ff = fix_tests
-        cog = ff.make_cog()
-        interaction = ff.interaction_for(ff.staff_member(ff.STAFF_ROLE), "fbfix_modal:55", modal_components=ff.form_payload())
-        with (
-            patch.object(ff.feedback_store, "claim_review", AsyncMock(return_value=True)),
-            patch.object(ff.feedback_store, "release_review", AsyncMock()),
-            patch.object(ff.feedback_store, "set_info", AsyncMock()),
-            patch.object(ff.db, "add_info", add),
-            patch.object(eval_cases, "spawn") as spawn,
-            patch.object(eval_cases, "track_feedback", MagicMock(return_value="fb")) as track,
-        ):
-            await cog.on_interaction(interaction)
-        return spawn, track
-
-    async def test_answers_to_fix_submit_tracks_the_staff_answer(self):
-        spawn, track = await self.submit(AsyncMock(return_value=fix_tests.info_entry()))
-        track.assert_called_once_with(55, "Set kiGriefing to false.")
-        spawn.assert_called_once_with("fb")
-
-    async def test_a_rejected_answer_tracks_nothing(self):
-        spawn, track = await self.submit(AsyncMock(side_effect=ValueError("too long")))
         track.assert_not_called()
         spawn.assert_not_called()
 

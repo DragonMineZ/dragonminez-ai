@@ -1,6 +1,7 @@
 """Weekly support report for staff: numbers from closed tickets and the support AI's traces, plus one Claude call that
 reads the (already anonymized) ticket summaries and the questions the AI handed off and names recurring themes and
-wiki gaps. Nothing here goes live on its own; cogs/support_report.py posts the card and decides when."""
+wiki gaps. Nothing here goes live on its own; cogs/support_report.py decides when, and the weekly report is stored in
+support_reports for the panel's AI page."""
 
 import asyncio
 import json
@@ -326,6 +327,80 @@ async def generate_insights(data: ReportData, settings: Any, *, client: Any | No
     except Exception:
         log.exception("Weekly support report: AI summary failed; posting numbers only")
         return None
+
+
+# ---- stored reports (support_reports, read by the panel's AI page) -----------------------------------------------
+
+
+def numbers_json(data: ReportData) -> dict[str, Any]:
+    """What the report shows of data, as stored: the numbers only, never the ticket summaries or handed-off
+    questions it was built from."""
+    return {
+        "tickets_closed": data.tickets_closed,
+        "tickets_resolved": data.tickets_resolved,
+        "tickets_unresolved": data.tickets_unresolved,
+        "ai_replies": data.ai_replies,
+        "escalations": data.escalations,
+        "handoffs": data.handoffs,
+        "log_diagnoses": data.log_diagnoses,
+        "spend": round(data.spend, 6),
+        "spend_by_model": [{"model": item.model, "cost": round(item.cost, 6)} for item in data.usage],
+        "helpful": data.helpful,
+        "not_helpful": data.not_helpful,
+        "helpful_percent": data.helpful_percent,
+        "top_tags": [[tag, count] for tag, count in data.top_tags],
+    }
+
+
+def insights_json(insights: Insights | None) -> dict[str, Any] | None:
+    if insights is None:
+        return None
+    return {
+        "themes": list(insights.themes),
+        "gaps": [{"question": question, "page": page or None} for question, page in insights.gaps],
+        "notes": insights.notes,
+    }
+
+
+def _json_value(value: Any) -> Any:
+    # asyncpg hands jsonb back as text unless a codec is set.
+    return json.loads(value) if isinstance(value, str) else value
+
+
+async def save_report(data: ReportData, insights: Insights | None, *, pool: Any | None = None) -> int:
+    resolved_pool = pool or await get_pool()
+    return await resolved_pool.fetchval(
+        """
+        INSERT INTO support_reports (since, until, data, insights) VALUES ($1, $2, $3::jsonb, $4::jsonb)
+        RETURNING id
+        """,
+        data.since,
+        data.until,
+        json.dumps(numbers_json(data), ensure_ascii=False),
+        None if insights is None else json.dumps(insights_json(insights), ensure_ascii=False),
+    )
+
+
+async def list_reports(limit: int = 26, *, pool: Any | None = None) -> list[dict[str, Any]]:
+    """id, since, until and created_at of the newest reports, newest first."""
+    resolved_pool = pool or await get_pool()
+    rows = await resolved_pool.fetch(
+        "SELECT id, since, until, created_at FROM support_reports ORDER BY created_at DESC, id DESC LIMIT $1", limit
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_report(report_id: int, *, pool: Any | None = None) -> dict[str, Any] | None:
+    """One stored report (id, since, until, created_at, data, insights); None when unknown."""
+    resolved_pool = pool or await get_pool()
+    row = await resolved_pool.fetchrow(
+        "SELECT id, since, until, created_at, data, insights FROM support_reports WHERE id = $1", report_id
+    )
+    if row is None:
+        return None
+    report = dict(row)
+    report["data"], report["insights"] = _json_value(report["data"]), _json_value(report["insights"])
+    return report
 
 
 # ---- schedule state (single row, id = 1) ------------------------------------------------------------------------

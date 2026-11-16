@@ -304,6 +304,13 @@ class LoopBodyTests(unittest.IsolatedAsyncioTestCase):
             await self.cog._tick(NOW)
         collect.assert_not_awaited()
 
+    async def test_loop_body_logs_failures_instead_of_raising(self):
+        with (
+            patch.object(self.cog, "_tick", AsyncMock(side_effect=RuntimeError("db down"))),
+            self.assertLogs("bulmaai.cogs.mod_digest", "ERROR"),
+        ):
+            await self.cog.send_digest.coro(self.cog)
+
 
 
 class DigestViewTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a running loop

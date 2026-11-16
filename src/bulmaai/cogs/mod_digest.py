@@ -41,7 +41,10 @@ class ModDigestCog(ReloadableCog):
 
     @tasks.loop(time=time(DIGEST_HOUR_UTC, 0, tzinfo=timezone.utc))
     async def send_digest(self) -> None:
-        await self._tick(discord.utils.utcnow())
+        try:
+            await self._tick(discord.utils.utcnow())
+        except Exception:
+            log.exception("Weekly moderation digest failed")  # an escaping error would stop the loop for good
 
     @send_digest.before_loop
     async def _before_loop(self) -> None:

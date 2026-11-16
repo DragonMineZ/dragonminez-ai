@@ -1,5 +1,6 @@
 import logging
 import os
+import ssl
 import unittest
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -130,7 +131,12 @@ class ParseTests(unittest.TestCase):
         with patch.object(store.imaplib, "IMAP4_SSL", return_value=imap) as connect:
             out = store.fetch_new("imap.example", USER, "pw", {"<old@x>"})
         self.assertEqual(out, [b"full 3"])
-        connect.assert_called_once_with("imap.example", 993, timeout=30)
+        connect.assert_called_once()
+        self.assertEqual(connect.call_args.args, ("imap.example", 993))
+        self.assertEqual(connect.call_args.kwargs["timeout"], 30)
+        context = connect.call_args.kwargs["ssl_context"]
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
         imap.select.assert_called_once_with("INBOX", readonly=True)
         self.assertTrue(all("PEEK" in call.args[1] for call in imap.fetch.call_args_list))
         imap.logout.assert_called_once()
@@ -213,6 +219,14 @@ class ReplyTests(unittest.TestCase):
         message = store.build_reply(mail(subject="hi\r\nBcc: evil@example.com"), USER, "x")
         self.assertEqual(message["Subject"], "Re: hi Bcc: evil@example.com")
         self.assertIsNone(message["Bcc"])
+
+    def test_smtp_verifies_the_server_certificate(self):
+        with patch.object(store.smtplib, "SMTP_SSL") as connect:
+            store.send_reply("smtp.example", USER, "pw", store.build_reply(mail(), USER, "x"))
+        self.assertEqual(connect.call_args.args, ("smtp.example", 465))
+        context = connect.call_args.kwargs["context"]
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
 
 
 def make_cog():

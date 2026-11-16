@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import smtplib
+import ssl
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email import policy
@@ -212,7 +213,7 @@ def _header_fields(raw: bytes) -> tuple[str, str]:
 def fetch_new(host: str, user: str, password: str, known: set[str], limit: int = FETCH_LIMIT) -> list[bytes]:
     """Raw messages of the newest mail since yesterday (oldest first), skipping mail already stored (by Message-ID)
     and mail sent by the mailbox itself. Read-only: BODY.PEEK never sets \\Seen, nothing is moved or deleted."""
-    imap = imaplib.IMAP4_SSL(host, IMAP_PORT, timeout=TIMEOUT)
+    imap = imaplib.IMAP4_SSL(host, IMAP_PORT, ssl_context=ssl.create_default_context(), timeout=TIMEOUT)
     try:
         imap.login(user, password)
         imap.select("INBOX", readonly=True)
@@ -255,7 +256,7 @@ def build_reply(mail: Any, mail_user: str, text: str) -> EmailMessage:
 
 
 def send_reply(host: str, user: str, password: str, message: EmailMessage) -> None:
-    with smtplib.SMTP_SSL(host, SMTP_PORT, timeout=TIMEOUT) as smtp:
+    with smtplib.SMTP_SSL(host, SMTP_PORT, context=ssl.create_default_context(), timeout=TIMEOUT) as smtp:
         smtp.login(user, password)
         smtp.send_message(message)
 

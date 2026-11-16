@@ -32,6 +32,11 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt
 
+      - name: Lint
+        run: |
+          pip install ruff==0.17.5
+          ruff check --isolated --no-fix --select E9,F63,F7,F82 src tests scripts
+
       - name: Run tests
         env:
           PYTHONPATH: "src"
@@ -39,4 +44,4 @@ jobs:
           ANTHROPIC_API_KEY: "dummy"
           GH_APP_PRIVATE_KEY_PEM: "dummy"
         run: |
-          python -m unittest discover -s tests
+          python -m pytest tests -q

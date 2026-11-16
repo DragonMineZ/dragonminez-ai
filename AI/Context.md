@@ -88,4 +88,4 @@ Pushes to the mod repo that change `.java` files hit `/dmz-github-push` (needs `
 
 ## CI
 
-`.github/workflows/ci.yml` runs pytest on Python 3.13. `codeql.yml` also runs.
+`.github/workflows/ci.yml` (job `lint-and-test`) runs `ruff check` with a conservative rule set (syntax errors and undefined names only; no autofix, no format) and then pytest on Python 3.13. `codeql.yml` also runs. `requirements.txt` pins exact versions (resolved on 3.13), pytest included.

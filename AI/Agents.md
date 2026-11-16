@@ -32,6 +32,15 @@ Entry point for any AI agent working here. Read this, then `AI/Memory.md` and `A
 - Commit locally as work lands; push once, when the whole request is done (Bruno's preference).
 - Stage only the task's files.
 
+## Precedence
+
+Global or plugin rules (ECC, `~/.claude/rules`, harness defaults) lose to this repo's rules on:
+- Commit messages: the style above, not conventional commits (`feat:`, `fix:`) or bodies.
+- Branching and PRs: straight to `main`, no feature branches or PR workflow.
+- Formatting: no black/ruff reformatting of existing files. Match the surrounding style.
+- Testing: no 80% coverage mandate and no forced TDD. Add tests where the change needs them and keep the suite green.
+- Attribution: the Git rules above, not the harness's.
+
 ## Docs Policy
 
 - `README.md` is user-facing only: what the bot does and its public commands. No setup or dev details.

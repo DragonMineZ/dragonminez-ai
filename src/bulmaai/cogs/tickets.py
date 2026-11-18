@@ -27,6 +27,7 @@ from bulmaai.services.ticket_transcripts import SupportInfoSuggestion
 from bulmaai.services.tickets import (
     STATUS_CLOSED,
     STATUS_OPEN,
+    STATUS_PERMANENT,
     ClosedGap,
     Span,
     Ticket,
@@ -44,6 +45,7 @@ from bulmaai.services.tickets import (
     list_active_tickets,
     list_due_solved,
     list_inactive_tickets,
+    make_permanent,
     mark_closed,
     mark_deleted,
     mark_reopened,
@@ -52,6 +54,7 @@ from bulmaai.services.tickets import (
     reserve_ticket,
     schedule_delete,
     set_language,
+    set_translate,
     set_transcript_resolved,
     take_support_suggestion,
 )
@@ -73,6 +76,7 @@ from bulmaai.ui.ticket_views import (
     SOLVED_REOPEN_PREFIX,
     SUMMARY_BUTTON_ID,
     TRANSCRIPT_BUTTON_ID,
+    TRANSLATE_BUTTON_ID,
     CLOSED_RED,
     ClosePrompt,
     TicketCategory,
@@ -94,6 +98,8 @@ from bulmaai.ui.ticket_views import (
     notice,
     panel_view,
     parse_form_custom_id,
+    permanent_row,
+    permanent_view,
     relanguage_welcome,
     reopened_view,
     request_text,
@@ -249,6 +255,21 @@ def build_overwrites(
             if (role := guild.get_role(role_id)) is not None:
                 overwrites[role] = overwrite
     return overwrites
+
+
+def permanent_access(channel: discord.TextChannel) -> tuple[list[str], int]:
+    """Who sees a channel as it is: the mentions of the roles whose overwrite lets them view it (not @everyone), highest
+    first, and how many non-bot members can view it."""
+    default_role = channel.guild.default_role
+    roles = sorted(
+        (
+            target
+            for target, overwrite in channel.overwrites.items()
+            if isinstance(target, discord.Role) and target != default_role and overwrite.view_channel is True
+        ),
+        key=lambda role: (-role.position, role.id),
+    )
+    return [role.mention for role in roles], sum(1 for member in channel.members if not member.bot)
 
 
 def polish_transcript(html: str, *, title: str, description: str, image: str | None) -> str:
@@ -444,6 +465,7 @@ class TicketsCog(ReloadableCog):
                 DELETE_BUTTON_ID: self.on_delete,
                 AUTOCLOSE_BUTTON_ID: self.on_autoclose,
                 SUMMARY_BUTTON_ID: self.on_summary,
+                TRANSLATE_BUTTON_ID: self.on_translate_toggle,
             }.get(custom_id)
         if handler is None:
             return
@@ -778,13 +800,18 @@ class TicketsCog(ReloadableCog):
             return log.warning("Ticket welcome message is gone", extra={"channel_id": channel.id})
         await self._set_row(message, row)
 
-    async def _set_row(self, message: discord.Message, row: discord.ui.ActionRow | None) -> None:
-        """Swap a card's button row (ACTIONS_ID) for row, or drop it."""
+    @staticmethod
+    def _row_view(message: discord.Message, row: discord.ui.ActionRow | None) -> discord.ui.DesignerView:
         view = discord.ui.DesignerView.from_message(message, timeout=None)
         if view.get_item(ACTIONS_ID) is not None:
             view.remove_item(ACTIONS_ID)
         if row is not None:
             view.add_item(row)
+        return view
+
+    async def _set_row(self, message: discord.Message, row: discord.ui.ActionRow | None) -> None:
+        """Swap a card's button row (ACTIONS_ID) for row, or drop it."""
+        view = self._row_view(message, row)
         await self._safely(message.edit(view=view, allowed_mentions=discord.AllowedMentions.none()), message.channel)
 
     # ---- button handlers (called from ui/ticket_views.py) ----------------------------------------
@@ -888,6 +915,34 @@ class TicketsCog(ReloadableCog):
         channel = self.bot.get_channel(channel_id)
         if ticket is not None and ticket.status == STATUS_OPEN and isinstance(channel, discord.TextChannel):
             await self._set_buttons(channel, ticket, control_row(enabled, ticket.language))
+
+    async def on_translate_toggle(self, interaction: discord.Interaction) -> None:
+        """The permanent channel card's Translations button (moderators and up). The row the UPDATE returns is the
+        truth: the button and the AI cog's map follow it."""
+        ticket = await get_ticket_by_channel(interaction.channel_id, permanent=True) if interaction.channel_id else None
+        if ticket is None or ticket.status != STATUS_PERMANENT:
+            return await interaction.response.send_message(t(self._lang(interaction), "not_ticket"), ephemeral=True)
+        if member_rank(interaction.user, ticket.owner_id, self.settings) < Rank.MOD:
+            return await interaction.response.send_message(t(self._lang(interaction), "mod_only"), ephemeral=True)
+
+        async def toggle() -> bool:
+            current = await get_ticket_by_channel(interaction.channel_id, permanent=True)
+            if current is None or current.status != STATUS_PERMANENT:
+                return False
+            updated = await set_translate(interaction.channel_id, not current.translate)
+            if updated is None:
+                return False
+            ai = self.bot.get_cog(AI_COG)
+            if ai is not None:
+                ai.set_permanent_channel(interaction.channel_id, updated.translate)
+            await interaction.edit_original_response(view=self._row_view(interaction.message, permanent_row(updated.translate)))
+            await interaction.followup.send(
+                f"🌐 Translations are now **{'on' if updated.translate else 'off'}** (by {interaction.user.mention}).",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
+        await while_busy(interaction, self._working, toggle, failed=t(self._lang(interaction), "failed"))
 
     async def on_language(self, interaction: discord.Interaction) -> None:
         """The welcome card's language select or a new-ticket picker: owner or staff set the support language.
@@ -1445,6 +1500,93 @@ class TicketsCog(ReloadableCog):
             await ctx.interaction.delete_original_response()  # keep the failure private
             return await ctx.followup.send(t(self._lang(ctx), "transcript_failed"), ephemeral=True)
         await ctx.respond(file=discord.File(io.BytesIO(html), filename=f"ticket-{ticket.ticket_id:04d}.html"))
+
+    # ---- /unticket -------------------------------------------------------------------------------
+
+    @discord.slash_command(name="unticket", description="Turn this ticket into a permanent private channel (admins only)")
+    @discord.option("category", discord.CategoryChannel, description="Category the channel moves to")
+    async def unticket(self, ctx: discord.ApplicationContext, category: discord.CategoryChannel):
+        if not is_admin(ctx.author):
+            return await ctx.respond("Only admins can use this.", ephemeral=True)
+        channel = ctx.channel
+        ticket = await get_ticket_by_channel(ctx.channel_id) if isinstance(channel, discord.TextChannel) else None
+        if ticket is None:
+            return await ctx.respond("This isn't a ticket channel.", ephemeral=True)
+        if ticket.status != STATUS_OPEN:
+            return await ctx.respond("This ticket is closed. Re-open it first.", ephemeral=True)
+        if category.id in (self.settings.ai_ticket_category_id, self.settings.ticket_closed_category_id):
+            return await ctx.respond("Pick a category that isn't one of the ticket categories.", ephemeral=True)
+        await ctx.defer(ephemeral=True)
+        await ctx.respond(await self.make_permanent_channel(channel, ticket, category, ctx.author), ephemeral=True)
+
+    async def make_permanent_channel(
+        self, channel: discord.TextChannel, ticket: Ticket, category: discord.CategoryChannel, by: discord.abc.User
+    ) -> str:
+        """/unticket's work; returns what to tell the admin. Moving the channel and posting the card come first and are
+        undone if the claim fails; the claim (make_permanent) is the point of no return, after which only best-effort
+        steps remain."""
+        old_category = channel.category
+        try:
+            await channel.edit(category=category, reason=f"/unticket by {by}")  # overwrites stay (no sync)
+        except discord.HTTPException as exc:
+            log.warning("/unticket could not move the channel", extra={"channel_id": channel.id}, exc_info=exc)
+            return "Couldn't move the channel (check the bot's Manage Channels permission on that category). Nothing changed."
+        roles, member_count = permanent_access(channel)
+        ai = self.bot.get_cog(AI_COG)
+        if ai is not None:
+            try:
+                await ai.ticket_closed(channel.id)
+            except Exception:
+                log.exception("/unticket could not tell the AI cog", extra={"channel_id": channel.id})
+        try:
+            card = await channel.send(
+                view=permanent_view(by_mention=by.mention, roles=roles, member_count=member_count, translate=True),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            log.exception("/unticket could not post the card", extra={"channel_id": channel.id})
+            await self._undo_unticket(channel, None, old_category)
+            return "Couldn't post the channel card. Nothing changed."
+        try:
+            claimed = await make_permanent(channel.id, control_message_id=card.id)
+        except Exception:
+            log.exception("/unticket could not claim the ticket", extra={"channel_id": channel.id})
+            await self._undo_unticket(channel, card, old_category)
+            return "Couldn't save the change. Nothing changed."
+        if claimed is None:
+            await self._undo_unticket(channel, card, old_category)
+            return "This ticket is no longer open. Nothing changed."
+        await self._remove_welcome(channel, ticket.control_message_id)
+        await self._pin_welcome(channel, card)
+        if ai is not None:
+            ai.set_permanent_channel(channel.id, True)
+        return f"✅ {channel.mention} is now a permanent channel in **{category.name}**."
+
+    async def _undo_unticket(
+        self, channel: discord.TextChannel, card: discord.Message | None, old_category: discord.CategoryChannel | None
+    ) -> None:
+        steps = [lambda: channel.edit(category=old_category, reason="/unticket undone")]
+        if card is not None:
+            steps.insert(0, card.delete)
+        for step in steps:
+            try:
+                await step()
+            except discord.HTTPException:
+                log.warning("/unticket could not undo a step", extra={"channel_id": channel.id})
+
+    async def _remove_welcome(self, channel: discord.TextChannel, message_id: int | None) -> None:
+        """The old welcome card: unpinned, then deleted. Best effort."""
+        if message_id is None:
+            return
+        try:
+            message = await channel.fetch_message(message_id)
+            try:
+                await message.unpin(reason="/unticket")
+            except discord.HTTPException:
+                pass
+            await message.delete()
+        except discord.HTTPException:
+            log.info("/unticket could not remove the old welcome card", extra={"channel_id": channel.id})
 
 
 def setup(bot: discord.Bot):

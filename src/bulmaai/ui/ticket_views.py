@@ -9,6 +9,7 @@ custom id and looks the ticket up by channel, so they survive bot restarts.
 """
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -27,6 +28,7 @@ AI_BUTTON_ID = "ticket_btn_ai"
 AUTOCLOSE_BUTTON_ID = "ticket_btn_autoclose"
 # Staff copilot (ui/staff_copilot): the ticket so far, ephemeral.
 SUMMARY_BUTTON_ID = "ticket_btn_summary"
+TRANSLATE_BUTTON_ID = "ticket_btn_translate"
 # + ticket id; the Re-open button older "solved" DMs still carry. It now only answers that staff re-open tickets.
 SOLVED_REOPEN_PREFIX = "ticket_solved_reopen:"
 ACTIONS_ID = 800  # the button row on the welcome / closed cards
@@ -826,6 +828,40 @@ def closed_row(url: str | None = None, *, saving: bool = False, auto_close: bool
         discord.ui.Button(label="Re-Open", emoji="🔓", style=discord.ButtonStyle.success, custom_id=REOPEN_BUTTON_ID),
         discord.ui.Button(label="Delete", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id=DELETE_BUTTON_ID),
         id=ACTIONS_ID,
+    )
+
+
+def permanent_row(translate: bool) -> discord.ui.ActionRow:
+    """The permanent channel's one button: the translations switch, which shows its state."""
+    return discord.ui.ActionRow(
+        discord.ui.Button(
+            label="Translations: On" if translate else "Translations: Off",
+            emoji="🌐",
+            style=discord.ButtonStyle.success if translate else discord.ButtonStyle.secondary,
+            custom_id=TRANSLATE_BUTTON_ID,
+        ),
+        id=ACTIONS_ID,
+    )
+
+
+def permanent_view(
+    *, by_mention: str, roles: Sequence[str], member_count: int, translate: bool = True
+) -> discord.ui.DesignerView:
+    """Pinned card of a channel /unticket made permanent. English (staff only); nothing in it pings."""
+    head = (
+        "### 📌 Permanent channel\n"
+        f"No longer a ticket (made permanent by {by_mention}). "
+        "The AI, reminders and auto-close are off; only translations remain."
+    )
+    access = "**Access** " + (trim(" ".join(roles), 2500) if roles else "no role overwrites")
+    people = f"**{member_count} members** can see this channel."
+    return discord.ui.DesignerView(
+        discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(fit([head, access, people], 3500))),
+            color=BLURPLE,
+        ),
+        permanent_row(translate),
+        timeout=None,
     )
 
 

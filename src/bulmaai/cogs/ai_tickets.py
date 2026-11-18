@@ -79,6 +79,7 @@ from bulmaai.services.tickets import (
     get_open_tickets_by_owner,
     get_ticket_by_channel,
     hide_closed_messages,
+    list_permanent_translation,
     note_ticket_message,
     store_support_suggestion,
 )
@@ -774,12 +775,21 @@ class AITicketsCog(ReloadableCog):
         # Ticket channel -> the humans besides its owner who wrote there (_ticket_participants): read off the channel
         # once, then kept up to date by _translate_message and staff_replied; a restart reads it again.
         self._participants: dict[int, set[int]] = {}
+        # Permanent channel (/unticket) -> translations on; loaded in on_startup, kept by set_permanent_channel.
+        self._permanent_channels: dict[int, bool] = {}
 
     async def on_startup(self) -> None:
         try:
             self._escalated_ticket_channels |= await get_ai_disabled_ticket_channels()
         except Exception:
             log.exception("Failed to load persisted AI ticket disabled channels")
+        try:
+            self._permanent_channels.update(await list_permanent_translation())
+        except Exception:
+            log.exception("Failed to load permanent channels")
+
+    def set_permanent_channel(self, channel_id: int, translate: bool) -> None:
+        self._permanent_channels[channel_id] = translate
 
     async def on_shutdown(self) -> None:
         for pending_key in list(self._pending_tasks):
@@ -972,7 +982,7 @@ class AITicketsCog(ReloadableCog):
         """The ticket's support language; None without a tickets row, or when the lookup fails (that isn't cached)."""
         if channel_id not in self._ticket_languages:
             try:
-                ticket = await get_ticket_by_channel(channel_id)
+                ticket = await get_ticket_by_channel(channel_id, permanent=True)
             except Exception:
                 log.exception("Could not look up ticket language", extra={"channel_id": channel_id})
                 return None
@@ -1960,8 +1970,9 @@ class AITicketsCog(ReloadableCog):
         task.add_done_callback(self._translations.discard)
 
     async def _translate_message(self, message: discord.Message) -> None:
-        """A human message in an open ticket, translated so the other side can read it; the original stays and the
-        translation (ui/staff_copilot.translations_card) is posted through the ticket's webhook as its author
+        """A human message in an open ticket or a permanent channel (/unticket), translated so the other side can
+        read it; the original stays and the translation (ui/staff_copilot.translations_card) is posted through the
+        ticket's webhook as its author
         (_post_translation).
         - Anyone but the owner (staff, a member added to it), written in another language than the ticket's: into
           the ticket's language (translation_source, translate_staff_text).
@@ -2011,7 +2022,9 @@ class AITicketsCog(ReloadableCog):
                 return
             if translation.strip():
                 screened[code] = translation
-        if not screened or not _is_ticket_channel(channel, settings=settings):
+        if not screened or not (
+            _is_ticket_channel(channel, settings=settings) or self._permanent_channels.get(channel.id, False)
+        ):
             return
         await self._post_translation(message, text, screened, source)
 
@@ -2136,7 +2149,7 @@ class AITicketsCog(ReloadableCog):
         mentions."""
         if self._ticket_owners.get(channel.id) is None:
             try:
-                ticket = await get_ticket_by_channel(channel.id)
+                ticket = await get_ticket_by_channel(channel.id, permanent=True)
             except Exception:
                 log.exception("Could not look up ticket owner", extra={"channel_id": channel.id})
                 ticket = None
@@ -3207,6 +3220,12 @@ class AITicketsCog(ReloadableCog):
             return
 
         in_ticket = _channel_kind(channel, settings=settings) == "ticket"
+        if (
+            self._permanent_channels.get(channel.id)
+            and isinstance(message.author, discord.Member)
+            and not message.author.bot
+        ):
+            self._schedule_translation(message)  # permanent channels are never in_ticket: no double scheduling
         bot_pinged = _is_pinging_bot(message, self.bot.user)
         mention_request = bot_pinged and _has_support_request_content(message, self.bot.user)
         # In a help thread of Bulma's, the member it is for needs no ping; everyone else still pings her.

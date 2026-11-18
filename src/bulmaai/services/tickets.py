@@ -14,12 +14,13 @@ STATUS_CREATING = "creating"
 STATUS_OPEN = "open"
 STATUS_CLOSED = "closed"
 STATUS_DELETED = "deleted"
+STATUS_PERMANENT = "permanent"
 
 # A crash between reserving a number and creating the channel leaves a 'creating' row; stop counting it after this.
 _CREATING_GRACE = "5 minutes"
 _COLUMNS = (
     "ticket_id, guild_id, owner_id, channel_id, category, status, channel_name, language, "
-    "control_message_id, claimed_by, closed_by, close_reason, created_at, closed_at, closed_periods, delete_at"
+    "control_message_id, claimed_by, closed_by, close_reason, created_at, closed_at, closed_periods, delete_at, translate"
 )
 _MAX_SLUG_LENGTH = 40
 
@@ -47,6 +48,8 @@ class Ticket:
     closed_periods: tuple[tuple[datetime, datetime], ...] = ()
     # Closed as solved, or a deletion under way: the sweep deletes the channel then, unless staff re-open it first.
     delete_at: datetime | None = None
+    # Permanent channels only: whether messages still get translated.
+    translate: bool = True
 
 
 def _ticket(row: Any) -> Ticket | None:
@@ -194,12 +197,52 @@ async def abandon_ticket(ticket_id: int, *, pool: Any | None = None) -> None:
     )
 
 
-async def get_ticket_by_channel(channel_id: int, *, pool: Any | None = None) -> Ticket | None:
+async def get_ticket_by_channel(
+    channel_id: int, *, permanent: bool = False, pool: Any | None = None
+) -> Ticket | None:
+    """The channel's open or closed ticket; permanent=True also finds it once /unticket made it permanent."""
     resolved_pool = pool or await get_pool()
+    statuses = "'open', 'closed', 'permanent'" if permanent else "'open', 'closed'"
     row = await resolved_pool.fetchrow(
-        f"SELECT {_COLUMNS} FROM tickets WHERE channel_id = $1 AND status IN ('open', 'closed')", channel_id
+        f"SELECT {_COLUMNS} FROM tickets WHERE channel_id = $1 AND status IN ({statuses})", channel_id
     )
     return _ticket(row)
+
+
+async def make_permanent(channel_id: int, *, control_message_id: int, pool: Any | None = None) -> Ticket | None:
+    """Open → permanent in one statement (None when it wasn't open, e.g. a close got there first). The reminder
+    clocks are cleared; the owner's slot is free since a permanent row isn't open."""
+    resolved_pool = pool or await get_pool()
+    row = await resolved_pool.fetchrow(
+        f"""
+        UPDATE tickets
+        SET status = 'permanent', control_message_id = $2, awaiting_owner_since = NULL, owner_reminded_at = NULL
+        WHERE channel_id = $1 AND status = 'open'
+        RETURNING {_COLUMNS}
+        """,
+        channel_id,
+        control_message_id,
+    )
+    return _ticket(row)
+
+
+async def set_translate(channel_id: int, enabled: bool, *, pool: Any | None = None) -> Ticket | None:
+    resolved_pool = pool or await get_pool()
+    row = await resolved_pool.fetchrow(
+        f"UPDATE tickets SET translate = $2 WHERE channel_id = $1 AND status = 'permanent' RETURNING {_COLUMNS}",
+        channel_id,
+        enabled,
+    )
+    return _ticket(row)
+
+
+async def list_permanent_translation(*, pool: Any | None = None) -> dict[int, bool]:
+    """channel_id → translations on, for every permanent channel."""
+    resolved_pool = pool or await get_pool()
+    rows = await resolved_pool.fetch(
+        "SELECT channel_id, translate FROM tickets WHERE status = 'permanent' AND channel_id IS NOT NULL"
+    )
+    return {row["channel_id"]: row["translate"] for row in rows}
 
 
 async def get_ticket_by_id(ticket_id: int, *, pool: Any | None = None) -> Ticket | None:
@@ -417,7 +460,7 @@ async def mark_deleted(channel_id: int, *, pool: Any | None = None) -> None:
     resolved_pool = pool or await get_pool()
     await resolved_pool.execute(
         "UPDATE tickets SET status = 'deleted', deleted_at = now() "
-        "WHERE channel_id = $1 AND status IN ('open', 'closed')",
+        "WHERE channel_id = $1 AND status IN ('open', 'closed', 'permanent')",
         channel_id,
     )
 

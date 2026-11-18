@@ -478,7 +478,7 @@ class FakeConn:
     async def fetchrow(self, query, *args):
         self.rows.append(args)
         keys = db.Ticket.__slots__
-        values = dict(zip(keys, [args[0], args[1], args[2], None, args[3], "creating", None, args[4], None, None, None, None, None, None, [], None]))
+        values = dict(zip(keys, [args[0], args[1], args[2], None, args[3], "creating", None, args[4], None, None, None, None, None, None, [], None, True]))
         return values
 
 
@@ -515,6 +515,96 @@ class NumberingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(ticket)
         self.assertEqual(conn.executed, [])
+
+
+class RecordingPool:
+    """Plain pool: records each query and answers fetchrow / fetch with canned data."""
+
+    def __init__(self, row=None, rows=()):
+        self.row, self.rows, self.queries = row, list(rows), []
+
+    async def fetchrow(self, query, *args):
+        self.queries.append((query, args))
+        return self.row
+
+    async def fetch(self, query, *args):
+        self.queries.append((query, args))
+        return self.rows
+
+    async def execute(self, query, *args):
+        self.queries.append((query, args))
+
+
+def ticket_row(**overrides):
+    values = {key: None for key in db.Ticket.__slots__}
+    values.update(
+        ticket_id=42, guild_id=1, owner_id=OWNER_ID, channel_id=900, category="contribute", status="permanent",
+        language="en", created_at=None, closed_periods=[], translate=True,
+    )
+    values.update(overrides)
+    return values
+
+
+class PermanentTicketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_channel_lookup_only_sees_permanent_when_asked(self):
+        pool = RecordingPool()
+        await db.get_ticket_by_channel(900, pool=pool)
+        await db.get_ticket_by_channel(900, permanent=True, pool=pool)
+        self.assertNotIn("permanent", pool.queries[0][0])
+        self.assertIn("'permanent'", pool.queries[1][0])
+
+    async def test_make_permanent_only_takes_open_tickets(self):
+        pool = RecordingPool(row=None)
+        self.assertIsNone(await db.make_permanent(900, control_message_id=5, pool=pool))
+        query, args = pool.queries[0]
+        self.assertIn("status = 'open'", query)
+        self.assertEqual(args, (900, 5))
+        pool.row = ticket_row()
+        ticket = await db.make_permanent(900, control_message_id=5, pool=pool)
+        self.assertEqual((ticket.status, ticket.translate), (db.STATUS_PERMANENT, True))
+
+    async def test_set_translate_only_touches_permanent_rows(self):
+        pool = RecordingPool(row=ticket_row(translate=False))
+        ticket = await db.set_translate(900, False, pool=pool)
+        self.assertFalse(ticket.translate)
+        self.assertIn("status = 'permanent'", pool.queries[0][0])
+        self.assertEqual(pool.queries[0][1], (900, False))
+        self.assertIsNone(await db.set_translate(900, True, pool=RecordingPool(row=None)))
+
+    async def test_permanent_translation_map(self):
+        pool = RecordingPool(rows=[{"channel_id": 900, "translate": True}, {"channel_id": 901, "translate": False}])
+        self.assertEqual(await db.list_permanent_translation(pool=pool), {900: True, 901: False})
+
+    async def test_mark_deleted_includes_permanent_rows(self):
+        pool = RecordingPool()
+        await db.mark_deleted(900, pool=pool)
+        self.assertIn("'permanent'", pool.queries[0][0])
+
+
+class PermanentCardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_row_shows_the_switch_state(self):
+        for on, label in ((True, "Translations: On"), (False, "Translations: Off")):
+            row = views.permanent_row(on)
+            self.assertEqual(row.id, views.ACTIONS_ID)
+            (button,) = row.children
+            self.assertEqual((button.label, button.custom_id), (label, views.TRANSLATE_BUTTON_ID))
+            self.assertEqual(button.style, discord.ButtonStyle.success if on else discord.ButtonStyle.secondary)
+
+    async def test_card_lists_roles_and_count(self):
+        view = views.permanent_view(by_mention="<@1>", roles=["<@&10>", "<@&11>"], member_count=7, translate=False)
+        text = texts(view)
+        self.assertIn("<@1>", text)
+        self.assertIn("<@&10> <@&11>", text)
+        self.assertIn("**7 members**", text)
+        self.assertEqual(custom_ids(view), [views.TRANSLATE_BUTTON_ID])
+        self.assertIsNotNone(view.get_item(views.ACTIONS_ID))
+        self.assertIn("no role overwrites", texts(views.permanent_view(by_mention="<@1>", roles=[], member_count=0)))
+
+    async def test_long_role_list_stays_under_the_limit(self):
+        roles = [f"<@&{10**17 + i}>" for i in range(500)]
+        text = texts(views.permanent_view(by_mention="<@1>", roles=roles, member_count=3))
+        self.assertLess(len(text), 4000)
+        self.assertIn("**3 members**", text)
 
 
 class InlineImageTests(unittest.IsolatedAsyncioTestCase):
@@ -902,7 +992,7 @@ class ClosedStretchTests(unittest.IsolatedAsyncioTestCase):
         from asyncpg import Range
 
         values = [42, 1, OWNER_ID, 900, "bug", "open", None, "en", None, None, None, None, at(0), None]
-        row = dict(zip(db.Ticket.__slots__, [*values, [Range(at(2), at(5)), Range(None, at(6)), Range(empty=True)], None]))
+        row = dict(zip(db.Ticket.__slots__, [*values, [Range(at(2), at(5)), Range(None, at(6)), Range(empty=True)], None, True]))
         self.assertEqual(db._ticket(row).closed_periods, ((at(2), at(5)),))
 
     def test_closed_messages_collapse_into_one_count_per_stretch_and_bot_cards_stay(self):
@@ -2034,3 +2124,223 @@ class RequestTranslationTests(unittest.IsolatedAsyncioTestCase):
         out, _ = await self.run_translate(result={"en": "ping @everyone now"})
         self.assertNotIn("@everyone", out)
         self.assertIn("everyone", out)
+
+
+def fake_role(role_id, position):
+    role = MagicMock(spec=discord.Role)
+    role.id, role.position, role.mention = role_id, position, f"<@&{role_id}>"
+    return role
+
+
+class PermanentAccessTests(unittest.TestCase):
+    def test_lists_only_roles_that_can_view_highest_first_and_counts_human_members(self):
+        channel = make_channel()
+        everyone = channel.guild.default_role
+        low, high, denied, unset = fake_role(1, 2), fake_role(2, 9), fake_role(3, 5), fake_role(4, 7)
+        channel.overwrites = {
+            everyone: discord.PermissionOverwrite(view_channel=True),
+            low: discord.PermissionOverwrite(view_channel=True),
+            high: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            denied: discord.PermissionOverwrite(view_channel=False),
+            unset: discord.PermissionOverwrite(send_messages=True),
+            Snow(5): discord.PermissionOverwrite(view_channel=True),  # a member, not a role
+        }
+        channel.members = [SimpleNamespace(bot=False), SimpleNamespace(bot=True), SimpleNamespace(bot=False)]
+        self.assertEqual(cog_module.permanent_access(channel), (["<@&2>", "<@&1>"], 2))
+
+
+class UnticketTests(unittest.IsolatedAsyncioTestCase):
+    CATEGORY = SimpleNamespace(id=5, name="Contributors")
+    OLD_CATEGORY = SimpleNamespace(id=1, name="Tickets")
+
+    def setup_flow(self, claim="claimed"):
+        """A cog whose collaborators all log into self.calls, so the order of the flow can be asserted."""
+        self.calls = []
+        cog = make_cog()
+        channel = make_channel()
+        channel.category = self.OLD_CATEGORY
+        channel.overwrites, channel.members = {}, []
+        channel.mention = "<#900>"
+        self.card = SimpleNamespace(id=555, delete=AsyncMock(side_effect=lambda: self.calls.append("card_deleted")))
+        self.welcome = SimpleNamespace(
+            unpin=AsyncMock(side_effect=lambda **_: self.calls.append("welcome_unpinned")),
+            delete=AsyncMock(side_effect=lambda: self.calls.append("welcome_deleted")),
+        )
+        channel.edit = AsyncMock(side_effect=lambda **kw: self.calls.append(("edit", kw["category"])))
+        channel.send = AsyncMock(side_effect=lambda **_: self.calls.append("card_sent") or self.card)
+        channel.fetch_message = AsyncMock(return_value=self.welcome)
+        self.ai = SimpleNamespace(
+            ticket_closed=AsyncMock(side_effect=lambda _id: self.calls.append("ai_closed")),
+            set_permanent_channel=MagicMock(side_effect=lambda *a: self.calls.append(("ai_permanent", *a))),
+        )
+        cog.bot.get_cog = lambda name: self.ai if name == "AITicketsCog" else None
+        cog._pin_welcome = AsyncMock(side_effect=lambda *a: self.calls.append("pinned"))
+        result = make_ticket(status="permanent") if claim == "claimed" else None
+        self.claim = AsyncMock(side_effect=lambda *a, **kw: self.calls.append("claimed") or result)
+        return cog, channel
+
+    async def run_flow(self, cog, channel):
+        by = SimpleNamespace(mention="<@7>")
+        with patch.object(cog_module, "make_permanent", self.claim):
+            return await cog.make_permanent_channel(channel, make_ticket(), self.CATEGORY, by)
+
+    async def test_flow_order_moves_first_claims_then_swaps_the_cards(self):
+        cog, channel = self.setup_flow()
+        message = await self.run_flow(cog, channel)
+        self.assertEqual(
+            self.calls,
+            [("edit", self.CATEGORY), "ai_closed", "card_sent", "claimed",
+             "welcome_unpinned", "welcome_deleted", "pinned", ("ai_permanent", 900, True)],
+        )
+        channel.fetch_message.assert_awaited_once_with(77)  # the old welcome card (control_message_id)
+        self.claim.assert_awaited_once_with(900, control_message_id=555)
+        cog._pin_welcome.assert_awaited_once_with(channel, self.card)
+        self.assertEqual(channel.send.await_args.kwargs["allowed_mentions"].users, False)
+        self.assertEqual(message, "✅ <#900> is now a permanent channel in **Contributors**.")
+
+    async def test_a_lost_claim_removes_the_card_and_moves_back(self):
+        cog, channel = self.setup_flow(claim=None)
+        message = await self.run_flow(cog, channel)
+        self.assertEqual(
+            self.calls, [("edit", self.CATEGORY), "ai_closed", "card_sent", "claimed", "card_deleted", ("edit", self.OLD_CATEGORY)]
+        )
+        self.assertIn("no longer open", message)
+        channel.fetch_message.assert_not_called()
+        cog._pin_welcome.assert_not_called()
+        self.ai.set_permanent_channel.assert_not_called()
+
+    async def test_a_failed_move_changes_nothing_else(self):
+        cog, channel = self.setup_flow()
+        channel.edit = AsyncMock(side_effect=discord.HTTPException(SimpleNamespace(status=403, reason="no"), "Missing Permissions"))
+        with self.assertLogs(cog_module.log, "WARNING"):
+            message = await self.run_flow(cog, channel)
+        self.assertIn("Nothing changed", message)
+        channel.send.assert_not_called()
+        self.claim.assert_not_called()
+        self.ai.ticket_closed.assert_not_called()
+
+    async def test_a_failed_card_moves_the_channel_back_without_claiming(self):
+        cog, channel = self.setup_flow()
+        channel.send = AsyncMock(side_effect=discord.HTTPException(SimpleNamespace(status=500, reason="x"), "boom"))
+        with self.assertLogs(cog_module.log, "ERROR"):
+            message = await self.run_flow(cog, channel)
+        self.assertIn("Nothing changed", message)
+        self.claim.assert_not_called()
+        self.assertEqual(self.calls, [("edit", self.CATEGORY), "ai_closed", ("edit", self.OLD_CATEGORY)])
+
+    async def test_a_welcome_card_that_is_already_gone_does_not_stop_the_rest(self):
+        cog, channel = self.setup_flow()
+        channel.fetch_message = AsyncMock(side_effect=discord.NotFound(SimpleNamespace(status=404, reason="x"), "gone"))
+        message = await self.run_flow(cog, channel)
+        self.assertIn("is now a permanent channel", message)
+        self.assertEqual(self.calls[-2:], ["pinned", ("ai_permanent", 900, True)])
+
+    async def test_without_the_ai_cog_the_flow_still_runs(self):
+        cog, channel = self.setup_flow()
+        cog.bot.get_cog = lambda name: None
+        self.assertIn("is now a permanent channel", await self.run_flow(cog, channel))
+
+    async def run_command(self, *, admin=True, ticket="open", category=None, channel=None):
+        cog, text_channel = self.setup_flow()
+        ctx = SimpleNamespace(
+            author=SimpleNamespace(mention="<@7>"), channel=channel or text_channel, channel_id=900,
+            respond=AsyncMock(), defer=AsyncMock(),
+        )
+        row = make_ticket(status=ticket) if ticket else None
+        with patch.object(cog_module, "is_admin", return_value=admin), \
+                patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=row)), \
+                patch.object(cog, "make_permanent_channel", AsyncMock(return_value="done")) as flow:
+            await cog.unticket.callback(cog, ctx, category or self.CATEGORY)
+        return ctx, flow
+
+    async def test_refusals_are_ephemeral_and_change_nothing(self):
+        cases = {
+            "Only admins": dict(admin=False),
+            "isn't a ticket channel": dict(ticket=None),
+            "This isn't a ticket channel": dict(channel=SimpleNamespace(id=900)),
+            "Re-open": dict(ticket="closed"),
+            "ticket categories": dict(category=SimpleNamespace(id=SETTINGS.ai_ticket_category_id, name="x")),
+            "isn't one of the ticket categories": dict(category=SimpleNamespace(id=SETTINGS.ticket_closed_category_id, name="x")),
+        }
+        for expected, kwargs in cases.items():
+            with self.subTest(expected):
+                ctx, flow = await self.run_command(**kwargs)
+                flow.assert_not_called()
+                ctx.defer.assert_not_called()
+                ctx.respond.assert_awaited_once()
+                self.assertTrue(ctx.respond.await_args.kwargs["ephemeral"])
+
+    async def test_an_admin_on_an_open_ticket_runs_the_flow_and_gets_its_answer_privately(self):
+        ctx, flow = await self.run_command()
+        ctx.defer.assert_awaited_once_with(ephemeral=True)
+        flow.assert_awaited_once()
+        ctx.respond.assert_awaited_once_with("done", ephemeral=True)
+
+
+class TranslateToggleTests(unittest.IsolatedAsyncioTestCase):
+    def interaction(self, user):
+        card = views.permanent_view(by_mention="<@1>", roles=[], member_count=3, translate=True)
+        return SimpleNamespace(
+            type=discord.InteractionType.component, user=user, channel_id=900,
+            data={"custom_id": views.TRANSLATE_BUTTON_ID}, message=sent_message(card),
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock(), edit_message=AsyncMock()),
+            edit_original_response=AsyncMock(), followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+    def setup_cog(self):
+        cog = make_cog()
+        self.ai = SimpleNamespace(set_permanent_channel=MagicMock())
+        cog.bot.get_cog = lambda name: self.ai if name == "AITicketsCog" else None
+        return cog
+
+    async def test_non_permanent_channel_is_refused(self):
+        cog = self.setup_cog()
+        interaction = self.interaction(member(STAFF_ID, MOD_ROLE))
+        with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=None)):
+            await cog.on_translate_toggle(interaction)
+        self.assertEqual(interaction.response.send_message.await_args.args[0], views.t("en", "not_ticket"))
+
+    async def test_only_moderators_may_flip_it(self):
+        cog = self.setup_cog()
+        permanent = make_ticket(status="permanent")
+        for user in (member(STAFF_ID, HELPER_ROLE), member(OWNER_ID), member(STAFF_ID)):
+            interaction = self.interaction(user)
+            with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=permanent)), \
+                    patch.object(cog_module, "set_translate", AsyncMock()) as flip:
+                await cog.on_translate_toggle(interaction)
+            flip.assert_not_called()
+            self.assertEqual(interaction.response.send_message.await_args.args[0], views.t("en", "mod_only"))
+            self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+        self.ai.set_permanent_channel.assert_not_called()
+
+    async def test_flip_follows_the_db_row_in_the_ai_cog_the_button_and_the_channel(self):
+        cog = self.setup_cog()
+        interaction = self.interaction(SimpleNamespace(id=STAFF_ID, roles=[SimpleNamespace(id=MOD_ROLE)], mention="<@200>"))
+        on, off = make_ticket(status="permanent", translate=True), make_ticket(status="permanent", translate=False)
+        with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=on)), \
+                patch.object(cog_module, "set_translate", AsyncMock(return_value=off)) as flip:
+            await cog.on_translate_toggle(interaction)
+        flip.assert_awaited_once_with(900, False)
+        self.ai.set_permanent_channel.assert_called_once_with(900, False)
+        view = interaction.edit_original_response.await_args.kwargs["view"]
+        button = [item for item in walk(view) if isinstance(item, discord.ui.Button)]
+        self.assertEqual([(b.label, b.disabled) for b in button], [("Translations: Off", False)])
+        self.assertEqual(interaction.followup.send.await_args.args[0], "🌐 Translations are now **off** (by <@200>).")
+        self.assertEqual(interaction.followup.send.await_args.kwargs["allowed_mentions"].users, False)
+
+    async def test_a_ticket_that_stopped_being_permanent_restores_the_card_and_says_it_failed(self):
+        cog = self.setup_cog()
+        interaction = self.interaction(member(STAFF_ID, MOD_ROLE))
+        with patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(status="permanent"))), \
+                patch.object(cog_module, "set_translate", AsyncMock(return_value=None)):
+            await cog.on_translate_toggle(interaction)
+        self.ai.set_permanent_channel.assert_not_called()
+        interaction.followup.send.assert_awaited_once()
+        self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
+
+    async def test_the_button_is_routed_by_its_custom_id(self):
+        cog = self.setup_cog()
+        interaction = self.interaction(member(STAFF_ID, MOD_ROLE))
+        with patch.object(TicketsCog, "on_translate_toggle", AsyncMock()) as handler:
+            await cog.on_interaction(interaction)
+        handler.assert_awaited_once()

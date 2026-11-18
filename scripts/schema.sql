@@ -576,6 +576,13 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS delete_at TIMESTAMPTZ;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS awaiting_owner_since TIMESTAMPTZ;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS owner_reminded_at TIMESTAMPTZ;
 
+-- /unticket: a permanent channel is no longer a ticket; its row keeps the translations switch.
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_status_check;
+ALTER TABLE tickets ADD CONSTRAINT tickets_status_check
+    CHECK (status IN ('creating', 'open', 'closed', 'deleted', 'permanent'));
+-- Permanent channels' translations switch.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS translate BOOLEAN NOT NULL DEFAULT TRUE;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_channel_id
     ON tickets (channel_id) WHERE channel_id IS NOT NULL;
 

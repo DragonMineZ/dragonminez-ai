@@ -17,6 +17,7 @@ class BugReport:
     ai_summary: str | None
     created_at: datetime | None
     updated_at: datetime | None
+    notion_page_id: str | None = None
 
 
 def _row_to_bug_report(row) -> BugReport:
@@ -32,6 +33,7 @@ def _row_to_bug_report(row) -> BugReport:
         ai_summary=row["ai_summary"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        notion_page_id=row.get("notion_page_id"),
     )
 
 
@@ -91,6 +93,12 @@ async def set_tracked(thread_id: int, *, repo: str, issue_number: int) -> None:
             repo,
             issue_number,
         )
+
+
+async def set_notion_page(thread_id: int, page_id: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE bug_reports SET notion_page_id = $2 WHERE thread_id = $1", thread_id, page_id)
 
 
 async def set_status(thread_id: int, status: str) -> None:

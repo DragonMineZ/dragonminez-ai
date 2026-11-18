@@ -8,7 +8,7 @@ from requests import HTTPError
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
-from bulmaai.services import ai_client
+from bulmaai.services import ai_client, notion_tracker
 from bulmaai.services.bug_report_ai import (
     BugTriage,
     DuplicateAssessment,
@@ -19,6 +19,7 @@ from bulmaai.services.bug_report_ai import (
 from bulmaai.services.bug_reports import (
     get_bug_report,
     list_tracked,
+    set_notion_page,
     set_status,
     set_tracked,
     upsert_triage,
@@ -122,6 +123,7 @@ class BugReportsCog(ReloadableCog):
         self._creating_issues: set[int] = set()
         self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
         self._opening_tickets: set[int] = set()
+        self._notion_tasks: set[asyncio.Task] = set()
 
     @property
     def settings(self):
@@ -227,6 +229,55 @@ class BugReportsCog(ReloadableCog):
             ai_summary=triage.summary,
         )
         log.info("Triaged bug report thread %s (is_bug=%s)", thread.id, triage.is_bug)
+        if triage.is_bug:
+            self._notion(self._notion_create(thread, triage, reporter_id))
+
+    # ==================== Notion Tracker =============
+
+    def _notion(self, coro) -> None:
+        """Runs a Notion call in the background: the bot never waits on Notion, and a failure only logs."""
+        if not self.settings.notion_token:
+            coro.close()
+            return
+        task = asyncio.get_running_loop().create_task(coro)
+        self._notion_tasks.add(task)
+        task.add_done_callback(self._notion_tasks.discard)
+
+    async def _notion_create(self, thread: discord.Thread, triage: BugTriage, reporter_id: int | None) -> None:
+        try:
+            report = await get_bug_report(thread.id)
+            if report is None or report.notion_page_id:
+                return
+            member = thread.guild.get_member(reporter_id) if thread.guild and reporter_id else None
+            page_id = await notion_tracker.create_item(
+                self.settings.notion_token,
+                self.settings.notion_tracker_data_source_id,
+                title=triage.title,
+                summary=triage.summary,
+                severity=triage.severity,
+                reporter=f"{member} (Discord)" if member else (f"Discord user {reporter_id}" if reporter_id else ""),
+                thread_url=_thread_jump_url(thread.guild.id if thread.guild else None, thread.id),
+            )
+            if page_id:
+                await set_notion_page(thread.id, page_id)
+        except Exception:
+            log.warning("Couldn't copy bug report %s into Notion", thread.id, exc_info=True)
+
+    async def _notion_update(self, thread_id: int, *, status: str | None = None, github: str | None = None) -> None:
+        try:
+            report = await get_bug_report(thread_id)
+            if report is not None and report.notion_page_id:
+                await notion_tracker.update_item(
+                    self.settings.notion_token, report.notion_page_id, status=status, github=github
+                )
+        except Exception:
+            log.warning("Couldn't update the Notion item of bug report %s", thread_id, exc_info=True)
+
+    async def _set_status(self, thread_id: int, status: str) -> None:
+        """set_status plus the Notion item's final status (Done / Won't do)."""
+        await set_status(thread_id, status)
+        if status in notion_tracker.STATUS:
+            self._notion(self._notion_update(thread_id, status=notion_tracker.STATUS[status]))
 
     async def _fetch_starter_message(self, thread: discord.Thread) -> discord.Message | None:
         if thread.starting_message is not None:
@@ -347,6 +398,7 @@ class BugReportsCog(ReloadableCog):
             issue = await service.create_issue(title=triage.title, body=body, labels=labels)
 
             await set_tracked(thread_id, repo=repo, issue_number=issue["number"])
+            self._notion(self._notion_update(thread_id, github=issue["html_url"]))
             await interaction.message.edit(**restatus(interaction.message, "tracked"))
             await interaction.followup.send(f"🐛 Issue created and now tracked: {issue['html_url']}")
 
@@ -365,7 +417,7 @@ class BugReportsCog(ReloadableCog):
             )
 
         async def dismiss() -> None:
-            await set_status(thread_id, "dismissed")
+            await self._set_status(thread_id, "dismissed")
             await interaction.message.edit(**restatus(interaction.message, "dismissed"))
 
             thread = interaction.channel
@@ -520,7 +572,7 @@ class BugReportsCog(ReloadableCog):
             )
 
         async def close() -> None:
-            await set_status(thread_id, stored_status)
+            await self._set_status(thread_id, stored_status)
             await interaction.message.edit(**restatus(interaction.message, display_status))
 
             thread = interaction.channel
@@ -607,7 +659,7 @@ class BugReportsCog(ReloadableCog):
             except HTTPError as error:
                 status_code = getattr(getattr(error, "response", None), "status_code", None)
                 if status_code == 404:
-                    await set_status(report.thread_id, "dismissed")
+                    await self._set_status(report.thread_id, "dismissed")
                 continue
             except Exception:
                 log.exception("Failed to fetch tracked issue #%s", report.issue_number)
@@ -616,7 +668,7 @@ class BugReportsCog(ReloadableCog):
             if issue.get("state") != "closed":
                 continue
             if issue.get("state_reason") == "not_planned":
-                await set_status(report.thread_id, "dismissed")
+                await self._set_status(report.thread_id, "dismissed")
                 continue
 
             await self._resolve_report(report)
@@ -628,11 +680,11 @@ class BugReportsCog(ReloadableCog):
                 thread = await self.bot.fetch_channel(report.thread_id)
             except Exception:
                 log.warning("Could not fetch thread %s to resolve bug report", report.thread_id)
-                await set_status(report.thread_id, "resolved")
+                await self._set_status(report.thread_id, "resolved")
                 return
 
         if not isinstance(thread, discord.Thread):
-            await set_status(report.thread_id, "resolved")
+            await self._set_status(report.thread_id, "resolved")
             return
 
         mention = f"<@{report.reporter_id}> " if report.reporter_id else ""
@@ -653,7 +705,7 @@ class BugReportsCog(ReloadableCog):
             log.exception("Failed to post resolution for thread %s", report.thread_id)
             return
 
-        await set_status(report.thread_id, "resolved")
+        await self._set_status(report.thread_id, "resolved")
         log.info(
             "Resolved bug report thread %s from closed issue #%s",
             report.thread_id,

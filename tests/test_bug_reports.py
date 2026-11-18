@@ -255,7 +255,8 @@ class BugReportIngestionTests(unittest.IsolatedAsyncioTestCase):
         cog = BugReportsCog.__new__(BugReportsCog)
         cog.bot = SimpleNamespace()
         cog.settings = SimpleNamespace(
-            bug_reports_enabled=True, bug_report_forum_channel_id=500, ai_bugreport_model="claude-test", bug_report_repo=None
+            bug_reports_enabled=True, bug_report_forum_channel_id=500, ai_bugreport_model="claude-test", bug_report_repo=None,
+            notion_token=None,
         )
         cog.client = object()
         return cog

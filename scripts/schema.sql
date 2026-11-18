@@ -234,6 +234,9 @@ ALTER TABLE bug_reports DROP CONSTRAINT IF EXISTS bug_reports_status_check;
 ALTER TABLE bug_reports ADD CONSTRAINT bug_reports_status_check
     CHECK (status IN ('triaged', 'tracked', 'resolved', 'dismissed', 'ticket'));
 
+-- The bug's item in the team's Notion Tracker (services/notion_tracker), when one was made.
+ALTER TABLE bug_reports ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_bug_reports_status
     ON bug_reports (status);
 

@@ -299,6 +299,7 @@ NON_OVERRIDABLE_SETTINGS = {
     "panel_session_secret",
     "mail_user",
     "mail_password",
+    "notion_token",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -542,6 +543,10 @@ class Settings:
     mail_user: str | None = None
     mail_password: str | None = None
     mail_imap_host: str = "imap.hostinger.com"
+    # Notion Tracker (services/notion_tracker): bug-report posts the AI calls a bug become Tracker items. On only with
+    # NOTION_TOKEN (an internal integration the Tracker is shared with).
+    notion_token: str | None = None
+    notion_tracker_data_source_id: str = "41cb2ae3-2ac2-811e-aab2-000bac58bf46"
     mail_smtp_host: str = "smtp.hostinger.com"
     moderation_lockdown_channel_ids: Sequence[int] = ()  # empty = every text channel @everyone can talk in
     # Extra automod filters; 0 turns a count/limit off. Banned words accept * wildcards.
@@ -624,6 +629,7 @@ def _build_settings_from_env() -> Settings:
         panel_session_secret=_get_env("PANEL_SESSION_SECRET"),
         mail_user=_get_env("MAIL_USER"),
         mail_password=_get_env("MAIL_PASSWORD"),
+        notion_token=_get_env("NOTION_TOKEN"),
         discord_oauth_redirect_uri=(
             _get_env("DISCORD_OAUTH_REDIRECT_URI", DEFAULT_DISCORD_OAUTH_REDIRECT_URI)
             or DEFAULT_DISCORD_OAUTH_REDIRECT_URI

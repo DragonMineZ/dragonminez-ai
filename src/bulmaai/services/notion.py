@@ -1,11 +1,9 @@
 """The team's Notion workspace over its REST API, with the internal integration's token (env NOTION_TOKEN). It sees only
 the pages shared with that integration (share DMZ HQ and everything under it inherits).
 
-Users: bug reports staff confirmed (Create issue) become Tracker items (cogs/bug_reports); Staff Bulma's notion_* tools
-(services/staff_tools) read and, after the staff member's confirm click, write; and every push to the mod and bot repos
-becomes a Changelog entry (cogs/build_gate, cogs/self_update)."""
+Two users: bug reports staff confirmed (Create issue) become Tracker items (cogs/bug_reports), and Staff Bulma's notion_*
+tools (services/staff_tools) read and, after the staff member's confirm click, write. Pushes are never logged here."""
 
-import asyncio
 import logging
 import re
 from typing import Any
@@ -248,102 +246,3 @@ async def append_text(token: str, page_id: str, text: str) -> None:
 
 async def comment(token: str, page_id: str, text: str) -> None:
     await _call(token, "POST", "/comments", {"parent": {"page_id": page_id}, "rich_text": _text(text)})
-
-
-# --- push changelog ----------------------------------------------------------------------------
-
-_REF = re.compile(r"\bDMZ-(\d+)\b", re.I)
-_CLOSES = re.compile(r"\b(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s+DMZ-(\d+)\b", re.I)
-_KINDS = (("🐛 Fix", ("fix", "hotfix", "bugfix")), ("🧪 Tests", ("test", "tests")), ("📝 Docs", ("docs", "doc", "readme")),
-          ("✨ Feature", ("add", "feat", "new")))
-MAX_REFS = 10
-MAX_LISTED = 50
-
-
-def push_kind(message: str) -> str:
-    first = re.split(r"[\s:(]", message.strip().lower(), maxsplit=1)[0] if message.strip() else ""
-    return next((kind for kind, words in _KINDS if first in words), "🔧 Change")
-
-
-def push_refs(messages: list[str]) -> tuple[list[int], set[int]]:
-    """(every DMZ-n mentioned, in order, at most MAX_REFS; the ones a 'fixes/closes/resolves DMZ-n' ships)."""
-    text = "\n".join(messages)
-    refs = list(dict.fromkeys(int(n) for n in _REF.findall(text)))[:MAX_REFS]
-    return refs, {int(n) for n in _CLOSES.findall(text)} & set(refs)
-
-
-def push_entry(data_source_id: str, payload: dict, commits: list, *, project: str, item_ids: list[str]) -> dict:
-    """A Changelog page for one push: newest commit as the title, every commit linked in the body."""
-    repo = (payload.get("repository") or {}).get("full_name", "")
-    newest = commits[-1]
-    title = newest.message.splitlines()[0] if newest.message else newest.sha[:7]
-    if len(commits) > 1:
-        title += f" (+{len(commits) - 1} more)"
-    author = (payload.get("pusher") or {}).get("name") or newest.author_login or newest.author_name
-    pushed = newest.committed_at.isoformat() if newest.committed_at else None
-    properties: dict = {
-        "Name": {"title": _text(title)},
-        "Project": {"select": {"name": project}},
-        "Kind": {"select": {"name": push_kind(newest.message)}},
-        "Branch": {"select": {"name": newest.branch[:100]}},
-        "Commits": {"number": len(commits)},
-    }
-    if pushed:
-        properties["Pushed"] = {"date": {"start": pushed}}
-    if author:
-        properties["Author"] = {"rich_text": _text(author)}
-    if payload.get("compare"):
-        properties["Compare"] = {"url": payload["compare"]}
-    if item_ids:
-        properties["Items"] = {"relation": [{"id": page_id} for page_id in item_ids]}
-    children = [
-        {"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [
-            {"type": "text", "text": {"content": commit.sha[:7], "link": {"url": f"https://github.com/{repo}/commit/{commit.sha}"}},
-             "annotations": {"code": True}},
-            {"type": "text", "text": {"content": " " + (commit.message.splitlines()[0] if commit.message else "")[:1900]}},
-        ]}}
-        for commit in reversed(commits[-MAX_LISTED:])
-    ]
-    return {
-        "parent": {"type": "data_source_id", "data_source_id": data_source_id},
-        "icon": {"type": "emoji", "emoji": "🐉" if project == "Mod" else "🤖"},
-        "properties": properties,
-        "children": children,
-    }
-
-
-async def log_push(token: str, changelog_id: str, tracker_id: str, payload: dict, commits: list, *, project: str) -> None:
-    """Log a push in the Changelog, link the Tracker items it mentions, and on the default branch mark the ones it
-    fixes Done."""
-    refs, closes = push_refs([commit.message for commit in commits])
-    found: dict[int, str] = {}
-    for number in refs:
-        try:
-            found[number] = await resolve_page(token, tracker_id, f"DMZ-{number}")
-        except NotionError:
-            pass  # a typo or a deleted item: the entry still goes in
-    await create_page(token, push_entry(changelog_id, payload, commits, project=project, item_ids=list(found.values())))
-    if commits[-1].branch != (payload.get("repository") or {}).get("default_branch", "main"):
-        return
-    for number in closes:
-        if number in found:
-            await update_page(token, found[number], status="Done")
-
-
-def log_push_later(settings: Any, payload: dict, commits: list, *, project: str, loop: asyncio.AbstractEventLoop) -> None:
-    """From a webhook thread: log the push in the background. Off without a token or Changelog; never raises."""
-    token = getattr(settings, "notion_token", None)
-    changelog_id = getattr(settings, "notion_changelog_data_source_id", None)
-    if not token or not changelog_id or not commits:
-        return
-    future = asyncio.run_coroutine_threadsafe(
-        log_push(token, changelog_id, settings.notion_tracker_data_source_id, payload, commits, project=project), loop
-    )
-
-    def done(result: "asyncio.Future[None]") -> None:
-        try:
-            result.result()
-        except Exception:
-            log.info("Notion push log failed", exc_info=True)
-
-    future.add_done_callback(done)

@@ -547,8 +547,6 @@ class Settings:
     # read and write the workspace. On only with NOTION_TOKEN (an internal integration DMZ HQ is shared with).
     notion_token: str | None = None
     notion_tracker_data_source_id: str = "41cb2ae3-2ac2-811e-aab2-000bac58bf46"
-    # Every push to the mod and bot repos becomes a Changelog entry; empty turns it off.
-    notion_changelog_data_source_id: str | None = "41cb2ae3-2ac2-8127-a39f-000b8e71771c"
     mail_smtp_host: str = "smtp.hostinger.com"
     moderation_lockdown_channel_ids: Sequence[int] = ()  # empty = every text channel @everyone can talk in
     # Extra automod filters; 0 turns a count/limit off. Banned words accept * wildcards.

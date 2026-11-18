@@ -19,7 +19,7 @@ from discord.ext import commands, tasks
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
-from bulmaai.services import ai_budget, build_gate, code_notes, notion
+from bulmaai.services import ai_budget, build_gate, code_notes
 from bulmaai.services.release_webhook import (
     ReleaseWebhookHttpResponse,
     register_extra_raw_webhook_route,
@@ -129,10 +129,6 @@ class BuildGateCog(ReloadableCog):
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return text_http_response(400, "Invalid JSON body")
             self._queue_code_notes(payload, loop)
-            notion.log_push_later(
-                self.settings, payload, code_notes.push_commits(payload, repo_full_name=self.repo_full_name),
-                project="Mod", loop=loop,
-            )
             push = build_gate.parse_push(
                 payload, repo_full_name=self.repo_full_name, ignore_branches=(self.settings.GITHUB_BASE_BRANCH,)
             )

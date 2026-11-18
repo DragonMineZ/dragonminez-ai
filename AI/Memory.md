@@ -156,8 +156,8 @@ Console actions are private to Bruno:
 
 - Only bug reports staff confirmed (Create issue) go to the Notion Tracker, never every triaged post.
 - Staff Bulma's Notion writes (create/update items, add text, comment) are proposals confirmed with a click, like every other action.
-- Notion is auto-updated on every push: the bot logs each push to the mod and bot repos in the Changelog and closes the `DMZ-n` items a push to the default branch fixes. Agents keep the Tracker current after shipping (see `AI/Agents.md` Notion).
-- DMZ HQ stays one set of shared databases (Tracker, Releases, Changelog, ...) shown per project in its spaces (DragonMineZ, BulmaAI, Web & Forum, Community); no per-project copies.
+- Notion is for the game, web/forum and community, not the bot: no push or changelog logging at all, and no bot work tracked there (Bruno, 2026-11-18). The bot's only automatic write is the confirmed-bug Tracker item.
+- The workspace is on Notion's free block allowance: keep whatever the bot writes lean.
 
 ## Evals (Bruno, 2026-11-12)
 

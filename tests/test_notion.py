@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -10,7 +11,7 @@ os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.cogs import bug_reports as bug_cog
 from bulmaai.cogs.bug_reports import BugReportsCog
-from bulmaai.services import notion, staff_tools
+from bulmaai.services import code_notes, notion, staff_tools
 from bulmaai.services.bug_report_ai import BugTriage
 from bulmaai.web.core import Tier
 
@@ -164,6 +165,61 @@ class StaffToolTests(unittest.IsolatedAsyncioTestCase):
             text = await staff_tools._execute_notion("notion_update_item", args, settings, member)
         update.assert_awaited_once_with("secret", "p1", status="Done", priority=None, title=None)
         self.assertIn("https://notion.so/p1", text)
+
+
+def _commit(sha: str, message: str, branch: str = "main"):
+    return code_notes.PushCommit(sha=sha, branch=branch, message=message, author_login="goku", author_name="Goku",
+                                 committed_at=datetime(2026, 11, 18, tzinfo=timezone.utc))
+
+
+PAYLOAD = {"repository": {"full_name": "DragonMineZ/dragonminez", "default_branch": "main"},
+           "pusher": {"name": "bruno"}, "compare": "https://github.com/c"}
+
+
+class PushLogTests(unittest.IsolatedAsyncioTestCase):
+    def test_kind_and_refs(self) -> None:
+        self.assertEqual(notion.push_kind("fix ticket sweep"), "🐛 Fix")
+        self.assertEqual(notion.push_kind("tests for ai_guard"), "🧪 Tests")
+        self.assertEqual(notion.push_kind("refactor stuff"), "🔧 Change")
+        refs, closes = notion.push_refs(["work on DMZ-3", "fixes dmz-7 and DMZ-3"])
+        self.assertEqual((refs, closes), ([3, 7], {7}))
+
+    def test_entry_has_title_props_and_linked_commits(self) -> None:
+        commits = [_commit("a" * 40, "first"), _commit("b" * 40, "fix crash\n\nbody")]
+        body = notion.push_entry("cl", PAYLOAD, commits, project="Mod", item_ids=["p1"])
+        props = body["properties"]
+        self.assertEqual(props["Name"]["title"][0]["text"]["content"], "fix crash (+1 more)")
+        self.assertEqual(props["Kind"]["select"]["name"], "🐛 Fix")
+        self.assertEqual(props["Commits"]["number"], 2)
+        self.assertEqual(props["Items"]["relation"], [{"id": "p1"}])
+        link = body["children"][0]["bulleted_list_item"]["rich_text"][0]["text"]["link"]["url"]
+        self.assertEqual(link, "https://github.com/DragonMineZ/dragonminez/commit/" + "b" * 40)
+
+    async def test_fixes_on_default_branch_mark_done(self) -> None:
+        async def resolve(_token, _data_source, ref):
+            if ref != "DMZ-7":
+                raise notion.NotionError("missing")
+            return "p7"
+
+        with patch.object(notion, "resolve_page", resolve), \
+                patch.object(notion, "create_page", AsyncMock()) as create, \
+                patch.object(notion, "update_page", AsyncMock()) as update:
+            await notion.log_push("t", "cl", "tr", PAYLOAD, [_commit("a" * 40, "fixes DMZ-7, see DMZ-99")], project="Mod")
+            await notion.log_push("t", "cl", "tr", PAYLOAD, [_commit("b" * 40, "fixes DMZ-7", branch="wip")], project="Mod")
+        self.assertEqual(create.await_count, 2)
+        self.assertEqual(create.await_args_list[0].args[1]["properties"]["Items"]["relation"], [{"id": "p7"}])
+        update.assert_awaited_once_with("t", "p7", status="Done")
+
+    def test_off_without_token_or_changelog(self) -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            for settings in (SimpleNamespace(notion_token=None, notion_changelog_data_source_id="cl"),
+                             SimpleNamespace(notion_token="t", notion_changelog_data_source_id=None)):
+                with patch.object(asyncio, "run_coroutine_threadsafe") as run:
+                    notion.log_push_later(settings, PAYLOAD, [_commit("a" * 40, "x")], project="Mod", loop=loop)
+                run.assert_not_called()
+        finally:
+            loop.close()
 
 
 if __name__ == "__main__":

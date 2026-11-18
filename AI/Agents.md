@@ -32,6 +32,16 @@ Entry point for any AI agent working here. Read this, then `AI/Memory.md` and `A
 - Commit locally as work lands; push once, when the whole request is done (Bruno's preference).
 - Stage only the task's files.
 
+## Notion (DMZ HQ)
+
+The team's Notion workspace is DMZ HQ (`https://app.notion.com/p/41cb2ae32ac281d0af25f0dc12c9b788`). With the Notion connector, keep it current as part of shipping:
+- Layout: one shared Tracker (bugs, features, tasks, ideas, content; ids like `DMZ-12`), Releases and Changelog, shown per project in the spaces 🐉 DragonMineZ (Project = Mod), 🤖 BulmaAI (Bot), 🌐 Web & Forum (Website, Forum) and 🌍 Community. A space is filtered views of the shared databases, never a copy: add items to the Tracker with the right Project and they appear in their space.
+- Ids: Tracker data source `41cb2ae3-2ac2-811e-aab2-000bac58bf46`, Releases `41cb2ae3-2ac2-8120-a54a-000bddbb531d`, Changelog `41cb2ae3-2ac2-8127-a39f-000b8e71771c`.
+- The bot logs every push to the mod and bot repos in the Changelog by itself (`services/notion.log_push`), links the `DMZ-n` items commit messages mention, and marks Done the ones a push to the default branch `fixes`/`closes`/`resolves`. Don't add Changelog entries for those pushes by hand.
+- After pushing: move the Tracker items the work touched (status, GitHub link) and add follow-ups or ideas you found as Inbox items with Type, Project and Priority set. Put `DMZ-n` in the commit message when an item exists (still short: "fix ticket sweep DMZ-12").
+- Website and forum work isn't wired to the bot: add its Changelog entry with the connector (Project Website/Forum, Kind, Branch, Pushed, Commits, Items).
+- Keep the structure: change properties and views, don't create parallel databases. New trackers are views of the Tracker.
+
 ## Precedence
 
 Global or plugin rules (ECC, `~/.claude/rules`, harness defaults) lose to this repo's rules on:

@@ -17,7 +17,7 @@ import sys
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.services import build_gate, panel_logs, update_engine
+from bulmaai.services import build_gate, code_notes, notion, panel_logs, update_engine
 from bulmaai.services.release_webhook import (
     register_extra_raw_webhook_route,
     text_http_response,
@@ -140,6 +140,9 @@ class SelfUpdateCog(ReloadableCog):
             status, text, check = push_webhook_response(secret, body, headers, branch=self.bot.settings.GITHUB_BASE_BRANCH)
             if check:
                 asyncio.run_coroutine_threadsafe(self._check(), loop)
+                payload = json.loads(body.decode("utf-8"))
+                commits = code_notes.push_commits(payload, repo_full_name=BOT_REPO)
+                notion.log_push_later(self.bot.settings, payload, commits, project="Bot", loop=loop)
             return text_http_response(status, text)
 
         self._route_path = BOT_PUSH_WEBHOOK_PATH

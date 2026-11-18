@@ -543,8 +543,8 @@ class Settings:
     mail_user: str | None = None
     mail_password: str | None = None
     mail_imap_host: str = "imap.hostinger.com"
-    # Notion Tracker (services/notion_tracker): bug-report posts the AI calls a bug become Tracker items. On only with
-    # NOTION_TOKEN (an internal integration the Tracker is shared with).
+    # Notion (services/notion): bugs staff confirm (Create issue) become Tracker items, and Staff Bulma's notion_* tools
+    # read and write the workspace. On only with NOTION_TOKEN (an internal integration DMZ HQ is shared with).
     notion_token: str | None = None
     notion_tracker_data_source_id: str = "41cb2ae3-2ac2-811e-aab2-000bac58bf46"
     mail_smtp_host: str = "smtp.hostinger.com"

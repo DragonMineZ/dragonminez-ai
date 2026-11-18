@@ -149,7 +149,7 @@ META: dict[str, tuple[str, str, str]] = {
     "bug_report_forum_channel_id": ("devbuilds", "Bug-report forum", "Forum channel whose new posts are triaged; empty turns triage off."),
     "bug_report_repo": ("devbuilds", "Bug-report repo", "GitHub repository searched for matching issues."),
     "bug_report_poll_minutes": ("devbuilds", "Issue poll interval", "Minutes between checks of tracked GitHub issues."),
-    "notion_tracker_data_source_id": ("devbuilds", "Notion Tracker", "Data source id of the Notion Tracker that bug reports are copied into (needs NOTION_TOKEN)."),
+    "notion_tracker_data_source_id": ("devbuilds", "Notion Tracker", "Data source id of the Notion Tracker: confirmed bugs go there and Staff Bulma reads and edits it (needs NOTION_TOKEN)."),
     # Community
     "power_level_enabled": ("community", "Power Level", "Members gain Power Level from chatting."),
     "power_level_excluded_channel_ids": ("community", "Excluded channels", "Messages in these channels earn no Power Level."),

@@ -152,6 +152,11 @@ Console actions are private to Bruno:
 - Excluded from Staff Bulma tools: `/database`, the VPS console, the mail inbox, the log corpus.
 - Replies are short but not too short; no answer-style setting.
 
+## Notion (Bruno, 2026-11-18)
+
+- Only bug reports staff confirmed (Create issue) go to the Notion Tracker, never every triaged post.
+- Staff Bulma's Notion writes (create/update items, add text, comment) are proposals confirmed with a click, like every other action.
+
 ## Evals (Bruno, 2026-11-12)
 
 - The support AI eval set (`eval_cases`) only grows from staff-vouched sources: Auto-close turned On by staff, Staff Bulma's solve, "Answers to fix" answers, approved support info. Never from owner-solved tickets, inactivity closes or AI output.

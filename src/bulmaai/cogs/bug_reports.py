@@ -8,7 +8,7 @@ from requests import HTTPError
 
 from bulmaai.github.github_app_auth import GitHubAppAuth
 from bulmaai.github.github_service import GitHubService
-from bulmaai.services import ai_client, notion_tracker
+from bulmaai.services import ai_client, notion
 from bulmaai.services.bug_report_ai import (
     BugTriage,
     DuplicateAssessment,
@@ -229,8 +229,6 @@ class BugReportsCog(ReloadableCog):
             ai_summary=triage.summary,
         )
         log.info("Triaged bug report thread %s (is_bug=%s)", thread.id, triage.is_bug)
-        if triage.is_bug:
-            self._notion(self._notion_create(thread, triage, reporter_id))
 
     # ==================== Notion Tracker =============
 
@@ -243,41 +241,41 @@ class BugReportsCog(ReloadableCog):
         self._notion_tasks.add(task)
         task.add_done_callback(self._notion_tasks.discard)
 
-    async def _notion_create(self, thread: discord.Thread, triage: BugTriage, reporter_id: int | None) -> None:
+    async def _notion_create(self, interaction: discord.Interaction, report, triage: BugTriage, github: str) -> None:
+        """Staff confirmed the bug (Create issue): it becomes a Tracker item, once per thread."""
         try:
-            report = await get_bug_report(thread.id)
-            if report is None or report.notion_page_id:
+            if report.notion_page_id:
                 return
-            member = thread.guild.get_member(reporter_id) if thread.guild and reporter_id else None
-            page_id = await notion_tracker.create_item(
-                self.settings.notion_token,
+            guild = interaction.guild
+            member = guild.get_member(report.reporter_id) if guild and report.reporter_id else None
+            reporter = f"{member} (Discord)" if member else (f"Discord user {report.reporter_id}" if report.reporter_id else "")
+            body = notion.bug_item(
                 self.settings.notion_tracker_data_source_id,
                 title=triage.title,
                 summary=triage.summary,
                 severity=triage.severity,
-                reporter=f"{member} (Discord)" if member else (f"Discord user {reporter_id}" if reporter_id else ""),
-                thread_url=_thread_jump_url(thread.guild.id if thread.guild else None, thread.id),
+                reporter=reporter,
+                thread_url=_thread_jump_url(report.guild_id or interaction.guild_id, report.thread_id),
+                github=github,
             )
-            if page_id:
-                await set_notion_page(thread.id, page_id)
+            page = await notion.create_page(self.settings.notion_token, body)
+            await set_notion_page(report.thread_id, page["id"])
         except Exception:
-            log.warning("Couldn't copy bug report %s into Notion", thread.id, exc_info=True)
+            log.warning("Couldn't copy bug report %s into Notion", report.thread_id, exc_info=True)
 
-    async def _notion_update(self, thread_id: int, *, status: str | None = None, github: str | None = None) -> None:
+    async def _notion_update(self, thread_id: int, *, status: str) -> None:
         try:
             report = await get_bug_report(thread_id)
             if report is not None and report.notion_page_id:
-                await notion_tracker.update_item(
-                    self.settings.notion_token, report.notion_page_id, status=status, github=github
-                )
+                await notion.update_page(self.settings.notion_token, report.notion_page_id, status=status)
         except Exception:
             log.warning("Couldn't update the Notion item of bug report %s", thread_id, exc_info=True)
 
     async def _set_status(self, thread_id: int, status: str) -> None:
         """set_status plus the Notion item's final status (Done / Won't do)."""
         await set_status(thread_id, status)
-        if status in notion_tracker.STATUS:
-            self._notion(self._notion_update(thread_id, status=notion_tracker.STATUS[status]))
+        if status in notion.STATUS:
+            self._notion(self._notion_update(thread_id, status=notion.STATUS[status]))
 
     async def _fetch_starter_message(self, thread: discord.Thread) -> discord.Message | None:
         if thread.starting_message is not None:
@@ -398,7 +396,7 @@ class BugReportsCog(ReloadableCog):
             issue = await service.create_issue(title=triage.title, body=body, labels=labels)
 
             await set_tracked(thread_id, repo=repo, issue_number=issue["number"])
-            self._notion(self._notion_update(thread_id, github=issue["html_url"]))
+            self._notion(self._notion_create(interaction, report, triage, issue["html_url"]))
             await interaction.message.edit(**restatus(interaction.message, "tracked"))
             await interaction.followup.send(f"🐛 Issue created and now tracked: {issue['html_url']}")
 

@@ -19,6 +19,7 @@ from bulmaai.services import (
     knowledge,
     mod_actions,
     mod_cases,
+    notion,
     staff_store,
     support_info,
     tags,
@@ -429,6 +430,103 @@ async def _forget_note(args: dict, ctx: ToolContext) -> dict:
     return {"forgotten": await staff_store.delete_note(ctx.member.id, note_id)}
 
 
+# --- Notion (the team workspace; reads run at once, writes are proposed) ------------------------
+
+
+def _notion_token(ctx_or_settings: Any) -> str:
+    settings = getattr(ctx_or_settings, "settings", ctx_or_settings)
+    token = getattr(settings, "notion_token", None)
+    if not token:
+        raise ToolError("Notion isn't connected (NOTION_TOKEN is not set).")
+    return token
+
+
+def _choice(args: dict, key: str, options: tuple[str, ...]) -> str | None:
+    raw = _s(args.get(key), 40)
+    if not raw:
+        return None
+    for option in options:
+        if option.lower() == raw.lower() or option.lower().startswith(raw.lower() + " "):
+            return option
+    raise ToolError(f"{key} must be one of: {', '.join(options)}.")
+
+
+async def _notion_call(call: Awaitable[Any]) -> Any:
+    try:
+        return await call
+    except notion.NotionError as error:
+        raise ToolError(str(error))
+
+
+async def _notion_page(args: dict, ctx: ToolContext, key: str = "page") -> str:
+    token = _notion_token(ctx)
+    return await _notion_call(notion.resolve_page(token, ctx.settings.notion_tracker_data_source_id, args.get(key)))
+
+
+async def _notion_search(args: dict, ctx: ToolContext) -> dict:
+    query = _s(args.get("query"), 200)
+    return {"results": await _notion_call(notion.search(_notion_token(ctx), query, limit=LIST_CAP))}
+
+
+async def _notion_tracker(args: dict, ctx: ToolContext) -> dict:
+    token = _notion_token(ctx)
+    items = await _notion_call(notion.query_tracker(
+        token, ctx.settings.notion_tracker_data_source_id, limit=LIST_CAP,
+        status=_choice(args, "status", notion.TRACKER_STATUSES),
+        project=_choice(args, "project", notion.TRACKER_PROJECTS),
+        text=_s(args.get("text"), 100) or None,
+        include_done=bool(args.get("include_done")),
+    ))
+    return {"items": items}
+
+
+async def _notion_read(args: dict, ctx: ToolContext) -> dict:
+    page_id = await _notion_page(args, ctx)
+    return await _notion_call(notion.read_page(_notion_token(ctx), page_id))
+
+
+async def _propose_notion_create(args: dict, ctx: ToolContext) -> dict:
+    _notion_token(ctx)
+    title = _s(args.get("title"), 200)
+    if not title:
+        raise ToolError("The item needs a title.")
+    stored = {
+        "title": title,
+        "item_type": _choice(args, "type", notion.TRACKER_TYPES) or "Task",
+        "project": _choice(args, "project", notion.TRACKER_PROJECTS),
+        "priority": _choice(args, "priority", notion.TRACKER_PRIORITIES),
+        "summary": _s(args.get("notes"), 1500),
+    }
+    extras = ", ".join(value for value in (stored["item_type"], stored["project"], stored["priority"]) if value)
+    return await _propose(ctx, "notion_create_item", stored, f"Add a Tracker item in Notion: **{title}** ({extras}).")
+
+
+async def _propose_notion_update(args: dict, ctx: ToolContext) -> dict:
+    stored = {
+        "label": _s(args.get("item"), 80),
+        "status": _choice(args, "status", notion.TRACKER_STATUSES),
+        "priority": _choice(args, "priority", notion.TRACKER_PRIORITIES),
+        "title": _s(args.get("title"), 200) or None,
+    }
+    changes = [f"{key} → {stored[key]}" for key in ("status", "priority", "title") if stored[key]]
+    if not changes:
+        raise ToolError("Say what to change: status, priority or title.")
+    stored["page_id"] = await _notion_page(args, ctx, "item")
+    return await _propose(ctx, "notion_update_item", stored, f"Update Notion item {stored['label']}: {', '.join(changes)}.")
+
+
+def _notion_writer(action: str, verb: str) -> Callable[[dict, ToolContext], Awaitable[dict]]:
+    async def propose(args: dict, ctx: ToolContext) -> dict:
+        text = _s(args.get("text"), 4000 if action == "notion_add_text" else 1500)
+        if not text:
+            raise ToolError("What should it say?")
+        stored = {"page_id": await _notion_page(args, ctx), "label": _s(args.get("page"), 80), "text": text}
+        preview = discord.utils.escape_markdown(text[:200]) + ("…" if len(text) > 200 else "")
+        return await _propose(ctx, action, stored, f"{verb} on Notion page {stored['label']}: {preview}")
+
+    return propose
+
+
 # --- action tools: proposal --------------------------------------------------------------------
 
 
@@ -571,6 +669,13 @@ _TOOL_LIST = [
     Tool("ticket_close", "Propose closing an open ticket. Waits for confirmation.", {"ticket": _TICKET, "reason": _str("Optional.")}, ("ticket",), "tickets.view", _ticket_action("ticket_close"), True),
     Tool("ticket_solve", "Propose closing an open ticket as solved. Waits for confirmation.", {"ticket": _TICKET}, ("ticket",), "tickets.view", _ticket_action("ticket_solve"), True),
     Tool("ticket_add_member", "Propose giving a member access to an open ticket. Waits for confirmation.", {"ticket": _TICKET, "user": _USER}, ("ticket", "user"), "tickets.view", _ticket_action("ticket_add_member"), True),
+    Tool("notion_search", "Search the team's Notion workspace (pages and databases) by title.", {"query": _str("Words in the title.")}, ("query",), "status.view", _notion_search),
+    Tool("notion_tracker", "List Notion Tracker items (bugs, tasks, ideas), newest edits first; open ones unless include_done or a status is given.", {"status": _str("Inbox, Backlog, In progress, In review, Done or Won't do."), "project": _str("Mod, Bot, Website, Forum or Community."), "text": _str("Words in the item's name."), "include_done": {"type": "boolean", "description": "Also list Done and Won't do."}}, (), "status.view", _notion_tracker),
+    Tool("notion_read", "Read a Notion page: its properties and text.", {"page": _str("A Notion link, page id or Tracker id like DMZ-12.")}, ("page",), "status.view", _notion_read),
+    Tool("notion_create_item", "Propose adding an item to the Notion Tracker (status Inbox). Waits for confirmation.", {"title": _str("Short title."), "type": _str("Bug, Feature, Task, Idea or Content (default Task)."), "project": _str("Mod, Bot, Website, Forum or Community."), "priority": _str("P0 Critical, P1 High, P2 Normal or P3 Low."), "notes": _str("Details for the page body (optional).")}, ("title",), "status.view", _propose_notion_create, True),
+    Tool("notion_update_item", "Propose changing a Notion Tracker item's status, priority or title. Waits for confirmation.", {"item": _str("Tracker id like DMZ-12, or a Notion link."), "status": _str("Inbox, Backlog, In progress, In review, Done or Won't do."), "priority": _str("P0 Critical, P1 High, P2 Normal or P3 Low."), "title": _str("New title.")}, ("item",), "status.view", _propose_notion_update, True),
+    Tool("notion_add_text", "Propose appending text to a Notion page (blank lines split paragraphs). Waits for confirmation.", {"page": _str("A Notion link, page id or Tracker id like DMZ-12."), "text": _str("The text to add.")}, ("page", "text"), "status.view", _notion_writer("notion_add_text", "Add text"), True),
+    Tool("notion_comment", "Propose a comment on a Notion page. Waits for confirmation.", {"page": _str("A Notion link, page id or Tracker id like DMZ-12."), "text": _str("The comment.")}, ("page", "text"), "status.view", _notion_writer("notion_comment", "Comment"), True),
     Tool("ticket_reply", "Propose a public reply in an open ticket, signed with the caller's name. Waits for confirmation.", {"ticket": _TICKET, "text": _str("The reply, in the ticket's language.")}, ("ticket", "text"), "tickets.view", _ticket_action("ticket_reply"), True),
 ]
 TOOLS: dict[str, Tool] = {tool.name: tool for tool in _TOOL_LIST}
@@ -622,6 +727,8 @@ async def execute_action(row: dict, bot, member: discord.Member) -> str:
         return await _execute_clearwarns(args, bot, guild, member)
     if action == "purge":
         return await _execute_purge(args, bot, guild, member)
+    if action.startswith("notion_"):
+        return await _execute_notion(action, args, bot.settings, member)
     return await _execute_ticket(action, args, bot, guild, member)
 
 
@@ -712,4 +819,29 @@ async def _execute_ticket(action: str, args: dict, bot, guild: discord.Guild, me
         if not await cog._post_staff_reply(channel, member, args["text"]):
             raise ValueError("Discord refused the reply.")
         return f"Posted your reply in {number}."
+    raise ValueError("That action isn't available any more.")
+
+
+async def _execute_notion(action: str, args: dict, settings, member: discord.Member) -> str:
+    try:
+        token = _notion_token(settings)
+    except ToolError as error:
+        raise ValueError(str(error))
+    try:
+        if action == "notion_create_item":
+            body = notion.new_item(settings.notion_tracker_data_source_id, reporter=f"{member} via {SOURCE}", **args)
+            page = await notion.create_page(token, body)
+            return f"Added to the Notion Tracker: {page['url']}"
+        if action == "notion_update_item":
+            changes = {key: args.get(key) for key in ("status", "priority", "title")}
+            page = await notion.update_page(token, args["page_id"], **changes)
+            return f"Updated the Notion item: {page['url']}"
+        if action == "notion_add_text":
+            await notion.append_text(token, args["page_id"], args["text"])
+            return f"Added the text to Notion page {args.get('label') or ''}."
+        if action == "notion_comment":
+            await notion.comment(token, args["page_id"], f"{args['text']}\n— {member.display_name} via {SOURCE}")
+            return f"Commented on Notion page {args.get('label') or ''}."
+    except notion.NotionError as error:
+        raise ValueError(str(error))
     raise ValueError("That action isn't available any more.")

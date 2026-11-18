@@ -35,7 +35,7 @@ Entry point for any AI agent working here. Read this, then `AI/Memory.md` and `A
 ## Notion (DMZ HQ)
 
 The team's Notion workspace is DMZ HQ (`https://app.notion.com/p/41cb2ae32ac281d0af25f0dc12c9b788`). It is for the game, the website and forum, and community work, not for this bot (Bruno, 2026-11-18):
-- Don't track bot work there: no Tracker items, Changelog entries or status updates for dragonminez-ai changes. The bot logs no pushes to Notion.
+- Don't track bot work there: no Tracker items or status updates for dragonminez-ai changes. The bot logs no pushes to Notion.
 - What the bot still writes: a Tracker item for each bug report staff confirm (Create issue), and Staff Bulma's Notion actions after a staff click. Ids: Tracker data source `41cb2ae3-2ac2-811e-aab2-000bac58bf46`.
 - The workspace is on Notion's free plan, which caps blocks once it has more than one member: anything written there stays lean (properties over page content, no long bodies).
 

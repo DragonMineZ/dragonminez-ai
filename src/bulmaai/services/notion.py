@@ -21,7 +21,7 @@ STATUS = {"resolved": "Done", "dismissed": "Won't do"}
 # Tracker options, so tool input is checked before Notion sees it.
 TRACKER_STATUSES = ("Inbox", "Backlog", "In progress", "In review", "Done", "Won't do")
 TRACKER_TYPES = ("Bug", "Feature", "Task", "Idea", "Content")
-TRACKER_PROJECTS = ("Mod", "Bot", "Website", "Forum", "Community")
+TRACKER_PROJECTS = ("Mod", "Website", "Forum", "Community")
 TRACKER_PRIORITIES = ("P0 Critical", "P1 High", "P2 Normal", "P3 Low")
 DONE_STATUSES = ("Done", "Won't do")
 _PAGE_ID = re.compile(r"([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})", re.I)

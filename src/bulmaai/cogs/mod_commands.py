@@ -11,7 +11,7 @@ from datetime import timedelta
 import discord
 from discord.ext import commands, tasks
 
-from bulmaai.services import member_activity, mod_actions, mod_cases, panel_logs, patreon_grants, scam_images
+from bulmaai.services import log_forum, member_activity, mod_actions, mod_cases, panel_logs, patreon_grants, scam_images
 from bulmaai.services import tickets as ticket_store
 from bulmaai.services.mod_actions import (
     MAX_TIMEOUT_SECONDS,
@@ -507,11 +507,13 @@ class ModCommandsCog(ReloadableCog):
         else:
             await ctx.respond(text, ephemeral=True)
 
-    async def _post_mod_log(self, kind: str, title: str, text: str, *, user_id: int, data: dict | None = None) -> None:
-        """Best effort: the panel log plus a grey card in the moderation log channel."""
+    async def _post_mod_log(
+        self, kind: str, title: str, text: str, *, user_id: int, data: dict | None = None, post: str = "commands"
+    ) -> None:
+        """Best effort: the panel log plus a grey card in the moderation log (post: its forum post, if a forum)."""
         try:
             await panel_logs.record(kind, title, text, user_id=user_id, data=data)
-            channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self.bot.settings))
+            channel = await mod_actions.mod_log(self.bot, post)
             if channel is not None:
                 card = reply_card(f"### {title}\n{text}"[:3800], discord.Color.dark_grey())
                 await channel.send(view=card, allowed_mentions=NO_PINGS)
@@ -701,11 +703,16 @@ class ModCommandsCog(ReloadableCog):
             return await ctx.respond(self._say(ctx, "already_removed", case_id=case_id), ephemeral=True)
         text = f"Removed {label} #{case_id} for <@{case.user_id}>."
         await ctx.respond(text, allowed_mentions=NO_PINGS)
-        await self._log_removal(f"{label.title()} removed", text, ctx.user.id, case.user_id)
+        await self._log_removal(f"{label.title()} removed", text, ctx.user.id, case.user_id, action)
 
-    async def _log_removal(self, title: str, text: str, moderator_id: int, user_id: int) -> None:
+    async def _log_removal(self, title: str, text: str, moderator_id: int, user_id: int, action: str) -> None:
         await self._post_mod_log(
-            "case_removed", title, f"{text}\nBy <@{moderator_id}>", user_id=moderator_id, data={"target_id": user_id}
+            "case_removed",
+            title,
+            f"{text}\nBy <@{moderator_id}>",
+            user_id=moderator_id,
+            data={"target_id": user_id},
+            post=log_forum.post_for_action(action),
         )
 
     @discord.slash_command(name="delwarn", **described(DESC, "delwarn"))

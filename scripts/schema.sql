@@ -941,3 +941,12 @@ CREATE TABLE IF NOT EXISTS ai_budget_reset (
     id        INT PRIMARY KEY CHECK (id = 1),
     reset_at  TIMESTAMPTZ NOT NULL
 );
+
+-- Staff log forums (services/log_forum.py): the post each kind of entry goes to, made on first use.
+CREATE TABLE IF NOT EXISTS log_forum_posts (
+    forum_id    BIGINT NOT NULL,
+    key         TEXT NOT NULL,
+    thread_id   BIGINT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (forum_id, key)
+);

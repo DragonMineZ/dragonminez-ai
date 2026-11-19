@@ -151,7 +151,7 @@ class RaidModeTests(unittest.IsolatedAsyncioTestCase):
 
         self.perform = AsyncMock()
         self.resolve_channel_patch = patch(
-            "bulmaai.services.mod_actions.resolve_channel", AsyncMock(return_value=self.channel)
+            "bulmaai.services.mod_actions.mod_log", AsyncMock(return_value=self.channel)
         )
         self.perform_patch = patch("bulmaai.services.mod_actions.perform", self.perform)
         self.resolve_channel_patch.start()
@@ -230,7 +230,7 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
 
         self.channel = SimpleNamespace(send=AsyncMock())
         self.resolve_channel_patch = patch(
-            "bulmaai.services.mod_actions.resolve_channel", AsyncMock(return_value=self.channel)
+            "bulmaai.services.mod_actions.mod_log", AsyncMock(return_value=self.channel)
         )
         self.resolve_channel_patch.start()
         self.addCleanup(self.resolve_channel_patch.stop)
@@ -311,7 +311,7 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(JOINER_ALERTS_SET_OUTCOME, AsyncMock(return_value=True)) as set_outcome,
             patch("bulmaai.services.mod_cases.record_case", AsyncMock()) as record_case,
-            patch("bulmaai.services.mod_actions.resolve_channel", AsyncMock(return_value=channel)),
+            patch("bulmaai.services.mod_actions.mod_log", AsyncMock(return_value=channel)),
         ):
             await cog._auto_dismiss_joiner_alert(self.make_alert())
         set_outcome.assert_awaited_once_with(1, joiner_alerts.AUTO_DISMISSED, None)
@@ -326,7 +326,7 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(JOINER_ALERTS_SET_OUTCOME, AsyncMock(return_value=False)) as set_outcome,
             patch("bulmaai.services.mod_cases.record_case", AsyncMock()) as record_case,
-            patch("bulmaai.services.mod_actions.resolve_channel", AsyncMock()) as resolve_channel,
+            patch("bulmaai.services.mod_actions.mod_log", AsyncMock()) as resolve_channel,
         ):
             await cog._auto_dismiss_joiner_alert(self.make_alert())
         set_outcome.assert_awaited_once()
@@ -349,7 +349,7 @@ class ReturningOffenderAndNewAccountTests(unittest.IsolatedAsyncioTestCase):
         cog_channel = SimpleNamespace(send=AsyncMock())
         perform = AsyncMock()
         with (
-            patch("bulmaai.services.mod_actions.resolve_channel", AsyncMock(return_value=cog_channel)),
+            patch("bulmaai.services.mod_actions.mod_log", AsyncMock(return_value=cog_channel)),
             patch("bulmaai.services.mod_actions.perform", perform),
             patch("bulmaai.services.mod_cases.list_cases", AsyncMock(return_value=[])),
         ):

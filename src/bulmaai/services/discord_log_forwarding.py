@@ -8,7 +8,7 @@ from typing import Any
 
 import discord
 
-from bulmaai.services import panel_logs
+from bulmaai.services import log_forum, panel_logs
 from bulmaai.ui.v2 import card
 
 log =logging.getLogger(__name__)
@@ -331,10 +331,7 @@ class DiscordLogForwarder:
             pass
 
     async def _resolve_channel(self) -> Any:
-        channel = self._bot.get_channel(self._channel_id)
-        if channel is None:
-            channel = await self._bot.fetch_channel(self._channel_id)
-        return channel if hasattr(channel, "send") else None
+        return await log_forum.destination(self._bot, self._channel_id, "errors")
 
     async def _send_loop(self) -> None:
         await self._bot.wait_until_ready()

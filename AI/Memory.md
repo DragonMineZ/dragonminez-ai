@@ -54,6 +54,7 @@ Lasting decisions and prohibitions. This is not a changelog or task log: record 
 
 - `services/mod_actions.perform()` is the single action path. New settings are dataclass defaults, editable from the panel.
 - Slash commands only, no prefix commands.
+- The mod-log is a forum split per action, one post each (Warns, Timeouts, Kicks, Bans, Automod, Raid & joins, Commands, Reports, Bot errors), not one post per case (Bruno, 2026-11-19). Msg-logs are not built yet.
 - Warn ladder: 2 in 7d = 24h timeout, 5 in 30d = 3d, 7 in 30d = ban.
   - Capped by the warner: helpers escalate to timeout at most; moderators and up can kick or ban; automod has the full ladder.
   - Skipped steps are noted on the case.

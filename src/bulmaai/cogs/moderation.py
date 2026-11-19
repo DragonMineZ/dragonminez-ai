@@ -11,7 +11,7 @@ import discord
 from discord.ext import commands, tasks
 
 from bulmaai.config import Settings
-from bulmaai.services import automod_hits, mod_actions, mod_cases, scam_images
+from bulmaai.services import automod_hits, log_forum, mod_actions, mod_cases, scam_images
 from bulmaai.services.mod_actions import ModActionError
 from bulmaai.services.phishdestroy import PhishDestroyClient, PhishDestroyUnavailable, PhishDestroyVerdict
 from bulmaai.services.moderation import (
@@ -260,23 +260,7 @@ class ModerationCog(ReloadableCog):
         )
 
     async def _resolve_log_channel(self) -> discord.abc.Messageable | None:
-        settings = self._settings()
-        channel_id = settings.moderation_log_channel_id
-        if channel_id is None:
-            return None
-
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except Exception:
-                log.exception(
-                    "Failed to fetch moderation log channel",
-                    extra={"event": "moderation_log_channel_fetch_failed", "channel_id": channel_id},
-                )
-                return None
-
-        return channel if hasattr(channel, "send") else None
+        return await log_forum.destination(self.bot, self._settings().moderation_log_channel_id, "automod")
 
     @staticmethod
     def _alert_head(message: discord.Message, incident: "_Incident") -> str:

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 import discord
 
-from bulmaai.services import ban_appeals, mod_cases, panel_logs
+from bulmaai.services import ban_appeals, log_forum, mod_cases, panel_logs
 from bulmaai.ui import mod_cards
 from bulmaai.ui.mod_views import appeal_link_button
 from bulmaai.web.core import PERMISSIONS, Tier, resolve_member, tier_for
@@ -369,9 +369,15 @@ def mod_log_channel_id(settings) -> int | None:
     return settings.moderation_log_channel_id
 
 
-async def staff_channel(bot: discord.Bot, channel_id: int | None) -> discord.abc.Messageable | None:
-    """A configured staff channel (appeals, reports), falling back to the moderation log."""
-    return await resolve_channel(bot, channel_id or mod_log_channel_id(bot.settings))
+async def mod_log(bot: discord.Bot, post: str) -> discord.abc.Messageable | None:
+    """The mod-log destination for one kind of entry (a log_forum.MOD_LOG_POSTS key): the mod-log channel,
+    or its post for that kind when the channel is a forum."""
+    return await log_forum.destination(bot, mod_log_channel_id(bot.settings), post)
+
+
+async def staff_channel(bot: discord.Bot, channel_id: int | None, post: str) -> discord.abc.Messageable | None:
+    """A configured staff channel (reports), falling back to that kind's place in the moderation log."""
+    return await resolve_channel(bot, channel_id) if channel_id else await mod_log(bot, post)
 
 
 def _ordinal(number: int) -> str:
@@ -438,6 +444,8 @@ async def refresh_case_card(bot: discord.Bot, case: mod_cases.ModCase) -> None:
         channel = await resolve_channel(bot, case.log_channel_id)
         if channel is None:
             return
+        if isinstance(channel, discord.Thread) and channel.archived and not channel.locked:
+            channel = await channel.edit(archived=False)  # a forum post that went quiet; edits need it open
         view = await render_case_card(bot, case)
         await channel.get_partial_message(case.log_message_id).edit(view=view, allowed_mentions=NO_MENTIONS)
     except discord.HTTPException:
@@ -491,7 +499,7 @@ async def post_case_log(
             body += f"\nDuration: {format_duration(duration_seconds)}"
         body += f"\nReason: {reason or 'No reason given'}"
         await panel_logs.record("case", title, body, user_id=user_id, data={"case_id": case_id})
-        channel = await resolve_channel(bot, mod_log_channel_id(bot.settings))
+        channel = await mod_log(bot, log_forum.post_for_action(action))
         if channel is None:
             return
         context = await _case_context(bot, guild_id, user_id, case_id)

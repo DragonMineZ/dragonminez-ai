@@ -669,7 +669,7 @@ class ModInteractionsCog(commands.Cog):
         self._last_report = {uid: at for uid, at in self._last_report.items() if now - at < REPORT_COOLDOWN_SECONDS}
         self._last_report[reporter.id] = now
         await interaction.response.defer(ephemeral=True, invisible=False)
-        channel = await mod_actions.staff_channel(self.bot, self.settings.moderation_reports_channel_id)
+        channel = await mod_actions.staff_channel(self.bot, self.settings.moderation_reports_channel_id, "reports")
         try:
             if channel is None:
                 raise LookupError("no reports or moderation log channel configured")

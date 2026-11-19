@@ -249,7 +249,7 @@ class RaidGuardCog(ReloadableCog):
         self._pending_joiners.pop(member.id, None)
 
     async def _post_joiner_alert(self, member: discord.Member, *, is_new: bool, breakdown: dict[str, int], action_taken: str) -> None:
-        channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self._settings()))
+        channel = await mod_actions.mod_log(self.bot, "raid")
         if channel is None:
             return
         head = ["### 🧭 Flagged joiner"]
@@ -354,7 +354,7 @@ class RaidGuardCog(ReloadableCog):
             )
         if alert.alert_message_id is None:
             return
-        channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self._settings()))
+        channel = await mod_actions.mod_log(self.bot, "raid")
         if channel is None or not hasattr(channel, "get_partial_message"):
             return
         try:
@@ -390,7 +390,7 @@ class RaidGuardCog(ReloadableCog):
         return discord.ui.DesignerView(discord.ui.Container(*items, color=color), timeout=None)
 
     async def _post_raid_alert(self) -> None:
-        channel = await mod_actions.resolve_channel(self.bot, mod_actions.mod_log_channel_id(self._settings()))
+        channel = await mod_actions.mod_log(self.bot, "raid")
         if channel is None:
             log.warning("Raid mode entered but no mod-log channel is configured", extra={"event": "raid_guard_no_log_channel"})
             return

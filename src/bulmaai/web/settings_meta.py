@@ -55,7 +55,7 @@ META: dict[str, tuple[str, str, str]] = {
     "ticket_transcript_retention_days": ("tickets", "Transcript retention", "Days a hosted ticket transcript stays online; 0 keeps them forever."),
     # Moderation
     "moderation_enabled": ("moderation", "Automod & raid guard", "Master switch: off stops every automod filter and the raid guard."),
-    "moderation_log_channel_id": ("moderation", "Moderation log channel", "Channel for automod alerts and mod actions; also the fallback for appeals and reports, and where bot warnings are forwarded."),
+    "moderation_log_channel_id": ("moderation", "Moderation log channel", "Channel or forum for automod alerts and mod actions; also the fallback for reports, and where bot warnings are forwarded. A forum gets one post per kind (Warns, Timeouts, Kicks, Bans, Automod, Raid & joins, Commands, Reports, Bot errors), made on first use."),
     "moderation_warn_ladder": ("moderation", "Warn ladder", "What active warns lead to, as \"count[/window]=action\" pairs, e.g. 1=1h, 2=1d, 3=3d, 4=ban:7d; the highest matched step wins."),
     "moderation_warn_expiry": ("moderation", "Warn expiry", "How long the 1st, 2nd, 3rd… active warn lasts, e.g. 2w, 3w, 4w, 60d; the last value covers every later warn."),
     "moderation_dm_on_action": ("moderation", "DM on action", "DM members when they are warned, timed out, kicked or banned."),

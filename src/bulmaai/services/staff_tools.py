@@ -233,7 +233,7 @@ async def _member_lookup(args: dict, ctx: ToolContext) -> dict:
         result.update(
             joined=_day(member.joined_at),
             top_roles=roles[:6],
-            timed_out_until=_day(member.timed_out_until) if member.timed_out_until else None,
+            timed_out_until=_day(member.communication_disabled_until) if member.timed_out else None,
             panel_tier=tier_for(member, ctx.settings).name.lower(),
         )
     return result

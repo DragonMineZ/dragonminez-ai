@@ -77,6 +77,26 @@ class TierGatingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", await staff_tools.run_tool("nope", {}, make_ctx()))
 
 
+class MemberLookupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_member_in_the_server_reports_their_timeout(self):
+        ctx = make_ctx(Tier.MODERATOR)
+        target = ctx.guild.get_member(TARGET_ID)
+        target.joined_at = NOW - timedelta(days=30)
+        target.timed_out = True
+        target.communication_disabled_until = NOW + timedelta(days=1)
+        ctx.guild.fetch_ban = AsyncMock(side_effect=staff_tools.discord.NotFound(SimpleNamespace(status=404, reason=""), ""))
+        with (
+            patch.object(staff_tools, "resolve_member", AsyncMock(return_value=target)),
+            patch.object(staff_tools, "tier_for", lambda m, s: Tier.NONE),
+            patch.object(staff_tools.mod_cases, "count_active_since", AsyncMock(return_value=2)),
+        ):
+            result = await staff_tools.run_tool("member_lookup", {"user": str(TARGET_ID)}, ctx)
+        self.assertNotIn("error", result)
+        self.assertTrue(result["in_server"])
+        self.assertEqual(result["timed_out_until"], staff_tools._day(NOW + timedelta(days=1)))
+        self.assertEqual(result["active_warnings"], 2)
+
+
 class ActionProposalTests(unittest.IsolatedAsyncioTestCase):
     async def test_ban_creates_pending_row_and_never_performs(self):
         ctx = make_ctx(Tier.MODERATOR)

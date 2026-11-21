@@ -25,6 +25,7 @@ BulmaAI is the official Discord bot for the [DragonMineZ](https://github.com/Dra
 | `/patreon edit-gift` | Move a gift to someone else or change its Minecraft username. |
 | *Ask Bulma* | Right-click a message → Apps → **Ask Bulma** to get help with it (a crash log, an error, a question). |
 | *Report message* | Right-click a message → Apps → **Report message** to flag it to the staff team. |
+| *Translate* | Right-click a message → Apps → **Translate** to read it in English, Spanish or Portuguese (only you see it). |
 
 Support tickets, bug reports, and log parsing don't need a command — just post in the relevant channel/thread or attach your log file, and BulmaAI responds automatically.
 

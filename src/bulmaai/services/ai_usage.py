@@ -42,6 +42,7 @@ FEATURE_LABELS: dict[str, str] = {
     "ticket_translation": "Ticket translation (to the ticket language)",
     "ticket_owner_translation": "Ticket translation (owner to staff)",
     "announcement_translation": "Announcement translation",
+    "message_translation": "Translate (message app)",
     "bug_report_triage": "Bug report triage",
     "bug_report_duplicates": "Bug report duplicate check",
     "code_notes": "Code notes",

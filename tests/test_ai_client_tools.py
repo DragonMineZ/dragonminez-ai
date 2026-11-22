@@ -26,8 +26,10 @@ from bulmaai.services.ai_client import (
     _is_repeat,
     _select_reasoning_effort,
     _split_confidence,
+    _escalation_reason,
     _split_close,
     _split_kind,
+    _split_staff_task,
     _append_source_links,
     get_schemas,
     run_support_agent,
@@ -221,6 +223,13 @@ class MarkerAndRepeatTests(unittest.TestCase):
     def test_split_close_marker(self):
         self.assertEqual(_split_close("Done, the ticket can be closed.\n[close: Yes]"), ("Done, the ticket can be closed.", True))
         self.assertEqual(_split_close("Try reinstalling."), ("Try reinstalling.", False))
+
+    def test_staff_task_marker_skips_second_opinion(self):
+        self.assertEqual(_split_staff_task("The team will take it.\n[staff_task: yes]"), ("The team will take it.", True))
+        self.assertEqual(_split_staff_task("Staff will look."), ("Staff will look.", False))
+        handoff = {"reply": "x", "kind": "handoff", "confidence": 0.9, "tool_results": []}
+        self.assertEqual(_escalation_reason(handoff, repeat=False, threshold=0.6), "handoff")
+        self.assertIsNone(_escalation_reason({**handoff, "staff_task": True}, repeat=False, threshold=0.6))
 
     def test_source_links_are_one_per_page_and_skip_non_urls(self) -> None:
         cited = [

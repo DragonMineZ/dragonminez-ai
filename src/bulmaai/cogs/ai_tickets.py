@@ -835,6 +835,12 @@ class AITicketsCog(ReloadableCog):
         changed = channel_id not in self._escalated_ticket_channels
         self._escalated_ticket_channels.add(channel_id)
         self._cancel_pending_task((channel_id, 0))
+        prompt = self._resolve_prompts.pop(channel_id, None)  # staff have it now: no "solved?" question
+        if prompt is not None:
+            try:
+                await prompt.delete()
+            except discord.HTTPException:
+                pass
         try:
             await set_ticket_ai_disabled(channel_id, True)
         except Exception:
@@ -1592,10 +1598,23 @@ class AITicketsCog(ReloadableCog):
         self._paused_notices[channel.id] = today
         await self._send_messages_with_typing(channel, [AI_PAUSED_TEXT])
 
-    async def _ping_escalation_roles(self, channel: discord.TextChannel, requester_id: int) -> None:
+    async def _ping_escalation_roles(
+        self, channel: discord.TextChannel, requester_id: int, *, staff_task: bool = False
+    ) -> None:
         """The escalation roles (Helpers), except in a mod-only ticket (Report a Member, Appeal a Punishment), which
         Helpers can't see: there the moderator roles."""
         settings = self.bot.settings
+        if staff_task and settings.ai_staff_task_user_ids:
+            user_ids = list(settings.ai_staff_task_user_ids)
+            try:
+                await channel.send(
+                    " ".join(f"<@{user_id}>" for user_id in user_ids)
+                    + f" <@{requester_id}> has a Patreon request for the team.",
+                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=u) for u in user_ids]),
+                )
+            except discord.HTTPException:
+                log.exception("Failed to ping the team for a Patreon request", extra={"channel_id": channel.id})
+            return
         role_ids = settings.ai_ticket_escalation_role_ids
         try:
             ticket = await get_ticket_by_channel(channel.id)
@@ -1838,7 +1857,9 @@ class AITicketsCog(ReloadableCog):
             if sent and should_mark_escalated:
                 await self._mark_ticket_escalated(channel.id)
                 if kind == "handoff":
-                    await self._ping_escalation_roles(channel, message.author.id)
+                    await self._ping_escalation_roles(
+                        channel, message.author.id, staff_task=bool(result.get("staff_task"))
+                    )
             elif (
                 sent
                 and in_ticket
@@ -1917,7 +1938,7 @@ class AITicketsCog(ReloadableCog):
             return
         if result.get("kind") == "handoff":
             await self._mark_ticket_escalated(channel.id)
-            await self._ping_escalation_roles(channel, member.id)
+            await self._ping_escalation_roles(channel, member.id, staff_task=bool(result.get("staff_task")))
         else:
             await self._awaiting_owner(channel.id)
 

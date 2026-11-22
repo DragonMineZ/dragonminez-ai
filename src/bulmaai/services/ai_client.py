@@ -92,6 +92,7 @@ class AgentResult(TypedDict, total=False):
     suggested_close: bool
     confidence: float | None
     kind: str | None
+    staff_task: bool  # a handoff meant for the team (Patreon skin, commission...), not a failure
     model: str
     escalated: bool
     paused: bool
@@ -305,6 +306,7 @@ MAX_WIKI_SOURCE_LINKS = 3
 CONFIDENCE_MARKER_RE = re.compile(r"\[\s*confidence\s*[:=]\s*([0-9]*\.?[0-9]+)\s*\]", re.IGNORECASE)
 KIND_MARKER_RE = re.compile(r"\[\s*kind\s*[:=]\s*(answer|clarify|handoff|offtopic)\s*\]", re.IGNORECASE)
 CLOSE_MARKER_RE = re.compile(r"\[\s*close\s*[:=]\s*yes\s*\]", re.IGNORECASE)
+STAFF_TASK_MARKER_RE = re.compile(r"\[\s*staff_task\s*[:=]\s*yes\s*\]", re.IGNORECASE)
 
 
 def _split_confidence(reply_text: str) -> tuple[str, float | None]:
@@ -330,6 +332,13 @@ def _split_close(reply_text: str) -> tuple[str, bool]:
     if not CLOSE_MARKER_RE.search(reply_text):
         return reply_text, False
     return CLOSE_MARKER_RE.sub("", reply_text).strip() or "(no reply)", True
+
+
+def _split_staff_task(reply_text: str) -> tuple[str, bool]:
+    """Strip every `[staff_task: yes]` marker: a handoff meant for staff (a Patreon skin, a commission...)."""
+    if not STAFF_TASK_MARKER_RE.search(reply_text):
+        return reply_text, False
+    return STAFF_TASK_MARKER_RE.sub("", reply_text).strip() or "(no reply)", True
 
 
 def _last_ask(tool_results: list[ToolCallResult]) -> dict[str, Any] | None:
@@ -572,6 +581,8 @@ def _escalation_reason(result: AgentResult, *, repeat: bool, threshold: float, c
     """Why this reply needs a second opinion (stored on the escalation's trace), or None when it can be sent."""
     if _reply_suppressed(result.get("tool_results") or []):
         return None
+    if result.get("staff_task"):
+        return None  # meant for staff: no second opinion
     if repeat:
         return "repeat"
     if clarify_loop:
@@ -876,6 +887,8 @@ async def _run_once(
     reply_text, confidence = _split_confidence(raw_text)
     reply_text, kind = _split_kind(reply_text)
     reply_text, suggested_close = _split_close(reply_text)
+    reply_text, staff_task = _split_staff_task(reply_text)
+    staff_task = staff_task and kind == "handoff"
     # Before the wiki links are appended: those are ours, everything above them is model output.
     reply_text, guard_flags = ai_guard.screen_reply(reply_text, settings, staff_links)
     # Controls only go with a reply that is actually sent (a blocked one is "(no reply)"), never with a handoff.
@@ -928,6 +941,7 @@ async def _run_once(
         suggested_close=suggested_close,
         confidence=confidence,
         kind=kind,
+        staff_task=staff_task,
         model=model,
         guard_flags=guard_flags,
         ask=ask,

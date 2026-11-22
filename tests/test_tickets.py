@@ -1396,7 +1396,7 @@ class AnswerNewTicketTests(unittest.IsolatedAsyncioTestCase):
     async def test_handoff_escalates_and_pings_staff(self):
         await self.answer({"reply": "Staff will help.", "tool_results": [], "kind": "handoff"})
         self.cog._mark_ticket_escalated.assert_awaited_once_with(900)
-        self.cog._ping_escalation_roles.assert_awaited_once_with(self.channel, OWNER_ID)
+        self.cog._ping_escalation_roles.assert_awaited_once_with(self.channel, OWNER_ID, staff_task=False)
         self.noted.assert_not_called()  # waiting on staff, not on the owner
 
     async def test_silent_when_there_is_nothing_to_say(self):

@@ -183,6 +183,7 @@ DEFAULT_AI_SUPPORT_TYPING_LEAD_SECONDS = 0
 DEFAULT_AI_SUPPORT_DEBOUNCE_SECONDS = 1.5
 DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE = 0.6
 DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT = 3.0
+DEFAULT_AI_STAFF_TASK_USER_IDS: Sequence[int] = (348174141121101824,)  # Bruno; add Shokkoh and Yuseix in the panel
 DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS: Sequence[int] = (1341595261960589343,)  # DMZ Helper
 DEFAULT_MESSAGE_PRESETS_PATH = "data/message_presets.json"
 DEFAULT_ANNOUNCEMENT_SOURCE_CHANNEL_ID = 1260409720733175838
@@ -404,6 +405,7 @@ class Settings:
     ai_ticket_resolve_min_confidence: float
     ai_ticket_resolve_prompt_exponent: float
     ai_ticket_escalation_role_ids: Sequence[int]
+    ai_staff_task_user_ids: Sequence[int]
     ai_ticket_summary_model: str
     message_presets_path: str
     announcement_source_channel_id: int | None
@@ -870,6 +872,7 @@ def _build_settings_from_env() -> Settings:
         ),
         ai_ticket_resolve_min_confidence=_get_env_float_default("AI_TICKET_RESOLVE_MIN_CONFIDENCE", DEFAULT_AI_TICKET_RESOLVE_MIN_CONFIDENCE),
         ai_ticket_resolve_prompt_exponent=_get_env_float_default("AI_TICKET_RESOLVE_PROMPT_EXPONENT", DEFAULT_AI_TICKET_RESOLVE_PROMPT_EXPONENT),
+        ai_staff_task_user_ids=_get_env_int_list("AI_STAFF_TASK_USER_IDS", DEFAULT_AI_STAFF_TASK_USER_IDS),
         ai_ticket_escalation_role_ids=_get_env_int_list("AI_TICKET_ESCALATION_ROLE_IDS", DEFAULT_AI_TICKET_ESCALATION_ROLE_IDS),
         ticket_closed_category_id=_get_env_int("TICKET_CLOSED_CATEGORY_ID", 1303543643377893466),
         support_info_channel_id=_get_env_int("SUPPORT_INFO_CHANNEL_ID", 1567803358432067735),

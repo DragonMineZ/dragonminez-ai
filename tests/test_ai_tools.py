@@ -1,7 +1,7 @@
 import os
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 
@@ -10,6 +10,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 os.environ.setdefault("GH_APP_PRIVATE_KEY_PEM", "dummy-github-key")
 
 from bulmaai.services import ai_tools
+from bulmaai.services.patreon_access import PatreonMemberDetails
 from bulmaai.services.patreon_grants import PatreonGrant, PatreonGrantKind, PatreonLink
 
 
@@ -86,6 +87,33 @@ class PatreonStatusToolTests(unittest.IsolatedAsyncioTestCase):
         rendered = repr(status)
         for secret in ("Son Goku", "p-secret", "m-secret", "23999392", "2026-09-01"):
             self.assertNotIn(secret, rendered)
+
+
+class RecentPaymentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_last_charge_is_relative_days_without_amounts_or_dates(self) -> None:
+        now = datetime.now(timezone.utc)
+        details = PatreonMemberDetails(
+            patron_status="active_patron", tier_ids=("23999392",), tier_names={"23999392": "Saiyan"},
+            currently_entitled_amount_cents=500, lifetime_support_cents=4200, pledge_relationship_start=None,
+            last_charge_date=now - timedelta(days=3, hours=1), last_charge_status="Paid",
+            next_charge_date=now + timedelta(days=27, hours=1), pledge_cadence="month",
+        )
+        settings = types.SimpleNamespace(PATREON_CREATOR_TOKEN="t", PATREON_CAMPAIGN_ID="c")
+        link = types.SimpleNamespace(patreon_member_id="m-secret")
+        with patch.object(ai_tools.PatreonCreatorClient, "fetch_member_details", AsyncMock(return_value=details)) as fetch:
+            payment = await ai_tools._recent_payment(settings, link)
+        fetch.assert_awaited_once_with("m-secret", timeout=4)
+        self.assertEqual(
+            payment,
+            {"last_charge_days_ago": 3, "last_charge_status": "Paid", "tiers": ["Saiyan"], "next_charge_in_days": 27},
+        )
+
+    async def test_no_token_or_failed_lookup(self) -> None:
+        link = types.SimpleNamespace(patreon_member_id="m")
+        self.assertIsNone(await ai_tools._recent_payment(types.SimpleNamespace(), link))
+        settings = types.SimpleNamespace(PATREON_CREATOR_TOKEN="t")
+        with patch.object(ai_tools.PatreonCreatorClient, "fetch_member_details", AsyncMock(side_effect=RuntimeError)):
+            self.assertEqual(await ai_tools._recent_payment(settings, link), {"lookup_failed": True})
 
 
 class KnownIssuesToolTests(unittest.IsolatedAsyncioTestCase):

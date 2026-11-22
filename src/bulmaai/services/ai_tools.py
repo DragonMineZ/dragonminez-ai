@@ -5,14 +5,14 @@ The same handlers serve two paths:
 - every run also gets `build_prefetch_lines` output injected as context up front.
 
 Identity tools only ever receive the triggering user's id (forced in ai_client._hydrate_tool_args).
-Outputs are minimized: no real names, Patreon ids, tier ids or billing dates.
+Outputs are minimized: no real names, Patreon ids, tier ids, amounts or billing dates (the last charge is days ago).
 """
 
 import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from bulmaai.config import load_settings
@@ -25,6 +25,7 @@ from bulmaai.services.dev_jar_download_records import has_completed_dev_jar_down
 from bulmaai.services.dev_jar_downloads import parse_dev_jar_filename
 from bulmaai.services.dev_jar_published_state import get_published_dev_jar_file_name, get_published_dev_jar_state
 from bulmaai.services.patch_notes import build_patch_notes_url, get_patch_notes_state
+from bulmaai.services.patreon_access import PatreonCreatorClient
 from bulmaai.services.patreon_grants import (
     get_patreon_link,
     list_active_gifts_for_beneficiary,
@@ -75,6 +76,30 @@ def _is_patron(bot: Any, settings: Any, discord_user_id: str | None) -> bool:
     )
 
 
+def _days(moment: datetime | None, now: datetime) -> int | None:
+    return None if moment is None else abs(now - moment).days
+
+
+async def _recent_payment(settings: Any, link: Any) -> dict[str, Any] | None:
+    """The requester's last Patreon charge, live from the creator API, as relative days (no dates or amounts)."""
+    token = getattr(settings, "PATREON_CREATOR_TOKEN", None)
+    if link is None or not link.patreon_member_id or not token:
+        return None
+    client = PatreonCreatorClient(creator_token=token, campaign_id=getattr(settings, "PATREON_CAMPAIGN_ID", None))
+    try:
+        details = await client.fetch_member_details(link.patreon_member_id, timeout=4)
+    except Exception:
+        log.info("Live Patreon payment lookup failed", exc_info=True)
+        return {"lookup_failed": True}
+    now = datetime.now(timezone.utc)
+    return {
+        "last_charge_days_ago": _days(details.last_charge_date, now),
+        "last_charge_status": details.last_charge_status,
+        "tiers": sorted(details.tier_names.values()),
+        "next_charge_in_days": _days(details.next_charge_date, now),
+    }
+
+
 async def get_patreon_status(discord_user_id: str | None = None, _bot_context: Any = None) -> dict[str, Any]:
     user_id = int(discord_user_id or 0)
     settings = _settings(_bot_context)
@@ -109,6 +134,7 @@ async def get_patreon_status(discord_user_id: str | None = None, _bot_context: A
         "downloaded_current_dev_jar": bool(
             published and await has_completed_dev_jar_download(user_id, published)
         ),
+        "recent_payment": await _recent_payment(settings, link),
     }
 
 

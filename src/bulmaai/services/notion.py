@@ -2,15 +2,21 @@
 the pages shared with that integration (share DMZ HQ and everything under it inherits).
 
 Two users: bug reports staff confirmed (Create issue) become Tracker items (cogs/bug_reports), and Staff Bulma's notion_*
-tools (services/staff_tools) read and, after the staff member's confirm click, write. Pushes are never logged here."""
+tools (services/staff_tools) read and, after the staff member's confirm click, write. Pushes are never logged here.
+The forum feed (cogs/notion_feed) only reads: Notion's webhooks say what changed, these calls fetch the item."""
 
+import hashlib
+import hmac
 import logging
 import re
 from typing import Any
 
+import requests
+
 from bulmaai.services import http
 
 log = logging.getLogger(__name__)
+_USER_NAMES: dict[str, str] = {}  # user id -> name; names barely change and the feed asks for the same few people
 
 API = "https://api.notion.com/v1"
 VERSION = "2025-09-03"
@@ -150,6 +156,50 @@ async def resolve_page(token: str, data_source_id: str, raw: Any) -> str:
             return data["results"][0]["id"]
         raise NotionError(f"There's no Tracker item DMZ-{match.group(1)}.")
     raise NotionError("Give a Notion link, a page id or a Tracker id like DMZ-12.")
+
+
+async def get_page(token: str, page_id: str) -> dict:
+    """The raw page JSON (a trashed page still comes back, with in_trash)."""
+    return await _call(token, "GET", f"/pages/{page_id}")
+
+
+async def user_name(token: str, user_id: str) -> str | None:
+    """A workspace member's or bot's name, cached; None when Notion won't say (logged at INFO, not as a refusal)."""
+    if not user_id:
+        return None
+    if user_id in _USER_NAMES:
+        return _USER_NAMES[user_id]
+    try:
+        response = await http.request("GET", f"{API}/users/{user_id}", headers=_headers(token), timeout=20)
+        name = response.json().get("name") if response.status_code < 400 else None
+    except (requests.RequestException, ValueError):
+        name = None
+    if not name:
+        log.info("Couldn't read Notion user %s", user_id)
+        return None
+    _USER_NAMES[user_id] = name
+    return name
+
+
+async def get_comment(token: str, comment_id: str) -> dict:
+    """A comment as {"text", "author_id", "author_type", "page_id"}; author_type is None when Notion leaves it out."""
+    data = await _call(token, "GET", f"/comments/{comment_id}")
+    author = data.get("created_by") or {}
+    parent = data.get("parent") or {}
+    return {
+        "text": _plain(data.get("rich_text")),
+        "author_id": author.get("id"),
+        "author_type": author.get("type"),
+        "page_id": parent.get("page_id"),
+    }
+
+
+def verify_webhook(token: str | None, body: bytes | None, signature: str | None) -> bool:
+    """Notion's X-Notion-Signature: "sha256=" + HMAC-SHA256 of the raw body, keyed with the verification token."""
+    if not token or body is None or not signature:
+        return False
+    expected = "sha256=" + hmac.new(token.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature.strip())
 
 
 async def read_page(token: str, page_id: str, *, block_limit: int = 50) -> dict:

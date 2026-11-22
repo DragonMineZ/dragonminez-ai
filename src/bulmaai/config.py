@@ -103,6 +103,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.mail_inbox",
     "bulmaai.cogs.staff_assistant",
     "bulmaai.cogs.translate",
+    "bulmaai.cogs.notion_feed",
 )
 
 DEFAULT_AI_MODEL = "claude-haiku-5-5"
@@ -302,6 +303,7 @@ NON_OVERRIDABLE_SETTINGS = {
     "mail_user",
     "mail_password",
     "notion_token",
+    "notion_webhook_token",
 }
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -550,6 +552,10 @@ class Settings:
     # read and write the workspace. On only with NOTION_TOKEN (an internal integration DMZ HQ is shared with).
     notion_token: str | None = None
     notion_tracker_data_source_id: str = "41cb2ae3-2ac2-811e-aab2-000bac58bf46"
+    # Tracker items mirrored one-way into this staff forum (cogs/notion_feed) from Notion's webhooks, signed with
+    # NOTION_WEBHOOK_TOKEN (the subscription's verification token, logged at INFO on Notion's handshake). None = off.
+    notion_forum_channel_id: int | None = 1573958346221027409
+    notion_webhook_token: str | None = None
     mail_smtp_host: str = "smtp.hostinger.com"
     moderation_lockdown_channel_ids: Sequence[int] = ()  # empty = every text channel @everyone can talk in
     # Extra automod filters; 0 turns a count/limit off. Banned words accept * wildcards.
@@ -633,6 +639,7 @@ def _build_settings_from_env() -> Settings:
         mail_user=_get_env("MAIL_USER"),
         mail_password=_get_env("MAIL_PASSWORD"),
         notion_token=_get_env("NOTION_TOKEN"),
+        notion_webhook_token=_get_env("NOTION_WEBHOOK_TOKEN"),
         discord_oauth_redirect_uri=(
             _get_env("DISCORD_OAUTH_REDIRECT_URI", DEFAULT_DISCORD_OAUTH_REDIRECT_URI)
             or DEFAULT_DISCORD_OAUTH_REDIRECT_URI

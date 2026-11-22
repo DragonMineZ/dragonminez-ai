@@ -941,3 +941,15 @@ CREATE TABLE IF NOT EXISTS ai_budget_reset (
     id        INT PRIMARY KEY CHECK (id = 1),
     reset_at  TIMESTAMPTZ NOT NULL
 );
+
+-- Notion Tracker items mirrored into the staff forum (services/notion_feed, cogs/notion_feed): one forum post per item.
+-- status/priority/title are what the post last showed, so a webhook can tell what changed; status 'Deleted' = trashed.
+CREATE TABLE IF NOT EXISTS notion_posts (
+    page_id     TEXT PRIMARY KEY,
+    thread_id   BIGINT NOT NULL,
+    status      TEXT,
+    priority    TEXT,
+    title       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

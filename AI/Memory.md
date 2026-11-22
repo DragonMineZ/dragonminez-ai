@@ -160,6 +160,7 @@ Console actions are private to Bruno:
 - Staff Bulma's Notion writes (create/update items, add text, comment) are proposals confirmed with a click, like every other action.
 - Notion is for the game, web/forum and community, not the bot: no push or changelog logging at all, and no bot work tracked there (Bruno, 2026-11-18). The bot's only automatic write is the confirmed-bug Tracker item.
 - The workspace is on Notion's free block allowance: keep whatever the bot writes lean.
+- Tracker items are mirrored one-way into the staff forum `notion_forum_channel_id` (one post per item, tags, no pings); the bot never writes to Notion for it (Bruno, 2026-11-22).
 
 ## Evals (Bruno, 2026-11-12)
 

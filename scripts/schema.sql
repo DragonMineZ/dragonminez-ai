@@ -128,6 +128,20 @@ ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS entitlement_active BOOLEAN NO
 ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS linked_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE patreon_links ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
+CREATE TABLE IF NOT EXISTS patreon_members (
+    member_id                TEXT PRIMARY KEY,
+    discord_user_id          BIGINT NOT NULL,
+    patron_status            TEXT,
+    tier_ids                 TEXT[] NOT NULL DEFAULT '{}',
+    tier_titles              TEXT[] NOT NULL DEFAULT '{}',
+    last_charge_date         TIMESTAMPTZ,
+    last_charge_status       TEXT,
+    next_charge_date         TIMESTAMPTZ,
+    synced_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patreon_members_discord_user_id ON patreon_members (discord_user_id);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patreon_links_patreon_user_id
     ON patreon_links (patreon_user_id);
 

@@ -18,7 +18,7 @@ import discord
 from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget, eval_cases
+from bulmaai.services import ai_budget, eval_cases, patreon_members
 from bulmaai.services.ai_guard import BLOCKING_FLAGS, defuse_mentions, link_targets, screen_reply
 from bulmaai.services.staff_copilot import LANGUAGE_NAMES, translate_owner_text
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
@@ -59,7 +59,7 @@ from bulmaai.services.tickets import (
     take_support_suggestion,
 )
 from bulmaai.services.patron_page import PATREON_URL
-from bulmaai.ui import staff_copilot
+from bulmaai.ui import patreon_check, staff_copilot
 from bulmaai.ui.ticket_views import (
     ACTIONS_ID,
     AI_BUTTON_ID,
@@ -90,6 +90,7 @@ from bulmaai.ui.ticket_views import (
     dm_reminder,
     dm_solved,
     dm_transcript,
+    form_custom_id,
     form_language_card,
     language_changed,
     language_set,
@@ -112,9 +113,11 @@ from bulmaai.utils.forwards import inline_forwards
 from bulmaai.utils.i18n import described, reader_language, table, user_language
 from bulmaai.utils.language import detect_language_from_text, role_languages
 from bulmaai.utils.lifecycle import ReloadableCog
-from bulmaai.utils.permissions import is_admin, is_bruno
+from bulmaai.utils.permissions import has_patreon_access_role, is_admin, is_bruno
 
 log = logging.getLogger(__name__)
+
+PATREON_CATEGORY_KEY = "patreon"
 
 AI_COG = "AITicketsCog"
 # ponytail: newest 1000 messages, same cap as the AI transcript; page through history if tickets outgrow it.
@@ -840,7 +843,9 @@ class TicketsCog(ReloadableCog):
         languages = role_languages(interaction.user, self.settings)
         if category is None:
             return await interaction.response.send_message(t(self._lang(interaction), "failed"), ephemeral=True)
-        if len(languages) == 1:
+        if category.key == PATREON_CATEGORY_KEY and await self._send_patreon_check(interaction, category, languages):
+            pass
+        elif len(languages) == 1:
             await interaction.response.send_modal(TicketModal(category, languages[0]))
         else:
             await interaction.response.send_message(view=form_language_card(category), ephemeral=True)
@@ -850,6 +855,28 @@ class TicketsCog(ReloadableCog):
             # Re-sending the card clears the option the dropdown still shows as picked (and brings old panels up to
             # date with the current categories).
             await self._safely(message.edit(view=panel_view()), interaction.channel)
+
+    async def _send_patreon_check(self, interaction: discord.Interaction, category, languages) -> bool:
+        """The Patreon category's first answer: what Patreon says about the clicker and the usual fix, ephemeral,
+        with a "Still need help" button that opens the form. False (nothing sent) when Patreon data isn't there."""
+        if not getattr(self.settings, "PATREON_CREATOR_TOKEN", None):
+            return False
+        try:
+            if not await patreon_members.has_synced():
+                return False
+            member = await patreon_members.get_member_by_discord(interaction.user.id)
+        except Exception:
+            log.warning("Patreon check lookup failed; opening the form", exc_info=True)
+            return False
+        language = languages[0] if len(languages) == 1 else self._lang(interaction)
+        diagnosis = patreon_check.diagnose(
+            has_role=has_patreon_access_role(interaction.user, settings=self.settings),  # a User (DM) has no roles
+            member=member,
+            eligible_tier_ids=self.settings.patreon_eligible_tier_ids,
+        )
+        view = patreon_check.check_card(diagnosis, member, language, form_custom_id(category.key, language))
+        await interaction.response.send_message(view=view, ephemeral=True)
+        return True
 
     async def on_form_language(self, interaction: discord.Interaction) -> None:
         """A language button of form_language_card: that category's form in that language. The custom id carries

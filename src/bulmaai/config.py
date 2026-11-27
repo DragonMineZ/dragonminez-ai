@@ -79,6 +79,7 @@ DEFAULT_INITIAL_EXTENSIONS: Sequence[str] = (
     "bulmaai.cogs.welcome",
     "bulmaai.cogs.mod_digest",
     "bulmaai.cogs.patreon_announcements",
+    "bulmaai.cogs.patreon_members",
     "bulmaai.cogs.curseforge_updates",
     "bulmaai.cogs.release_approval",
     "bulmaai.cogs.dev_jar_downloads",

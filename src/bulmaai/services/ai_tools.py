@@ -25,6 +25,7 @@ from bulmaai.services.dev_jar_download_records import has_completed_dev_jar_down
 from bulmaai.services.dev_jar_downloads import parse_dev_jar_filename
 from bulmaai.services.dev_jar_published_state import get_published_dev_jar_file_name, get_published_dev_jar_state
 from bulmaai.services.patch_notes import build_patch_notes_url, get_patch_notes_state
+from bulmaai.services import patreon_members
 from bulmaai.services.patreon_access import PatreonCreatorClient
 from bulmaai.services.patreon_grants import (
     get_patreon_link,
@@ -80,14 +81,16 @@ def _days(moment: datetime | None, now: datetime) -> int | None:
     return None if moment is None else abs(now - moment).days
 
 
-async def _recent_payment(settings: Any, link: Any) -> dict[str, Any] | None:
-    """The requester's last Patreon charge, live from the creator API, as relative days (no dates or amounts)."""
+async def _recent_payment(settings: Any, link: Any, member_id: str | None = None) -> dict[str, Any] | None:
+    """The requester's last Patreon charge, live from the creator API, as relative days (no dates or amounts).
+    member_id (the synced membership) stands in when they never linked with the bot."""
     token = getattr(settings, "PATREON_CREATOR_TOKEN", None)
-    if link is None or not link.patreon_member_id or not token:
+    member_id = (link.patreon_member_id if link is not None else None) or member_id
+    if not member_id or not token:
         return None
     client = PatreonCreatorClient(creator_token=token, campaign_id=getattr(settings, "PATREON_CAMPAIGN_ID", None))
     try:
-        details = await client.fetch_member_details(link.patreon_member_id, timeout=4)
+        details = await client.fetch_member_details(member_id, timeout=4)
     except Exception:
         log.info("Live Patreon payment lookup failed", exc_info=True)
         return {"lookup_failed": True}
@@ -104,11 +107,12 @@ async def get_patreon_status(discord_user_id: str | None = None, _bot_context: A
     user_id = int(discord_user_id or 0)
     settings = _settings(_bot_context)
     member = _find_member(_bot_context, user_id)
-    link, grants, gifted, published = await asyncio.gather(
+    link, grants, gifted, published, synced = await asyncio.gather(
         get_patreon_link(user_id),
         list_active_grants_for_owner(user_id),
         list_active_gifts_for_beneficiary(user_id),
         get_published_dev_jar_file_name(),
+        _synced_member(user_id),
     )
     can_download = bool(
         member is not None
@@ -134,7 +138,30 @@ async def get_patreon_status(discord_user_id: str | None = None, _bot_context: A
         "downloaded_current_dev_jar": bool(
             published and await has_completed_dev_jar_download(user_id, published)
         ),
-        "recent_payment": await _recent_payment(settings, link),
+        "patreon_membership": _membership_summary(synced, settings),
+        "recent_payment": await _recent_payment(settings, link, synced.member_id if synced else None),
+    }
+
+
+async def _synced_member(user_id: int) -> patreon_members.PatreonMember | None:
+    try:
+        return await patreon_members.get_member_by_discord(user_id)
+    except Exception:
+        log.info("Synced Patreon member lookup failed", exc_info=True)
+        return None
+
+
+def _membership_summary(member: patreon_members.PatreonMember | None, settings: Any) -> dict[str, Any]:
+    """What Patreon itself says about the Discord account connected in Patreon's settings (hourly sync),
+    whether or not they linked with the bot. Not found = no Patreon account has this Discord connected."""
+    if member is None:
+        return {"discord_connected_in_patreon": False}
+    return {
+        "discord_connected_in_patreon": True,
+        "patron_status": member.patron_status,
+        "tiers": list(member.tier_titles),
+        "entitled_to_patron_role": patreon_members.is_entitled(member, settings.patreon_eligible_tier_ids),
+        "last_charge_status": member.last_charge_status,
     }
 
 
@@ -349,7 +376,9 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "get_patreon_status": _function_schema(
         "get_patreon_status",
         "The requester's Patreon link, Discord patron role, beta whitelist entries, gifts and dev jar "
-        "access/download state. Use for any Patreon, whitelist, beta/alpha access or dev jar question.",
+        "access/download state, plus patreon_membership: what Patreon says about the Discord account connected "
+        "in their Patreon settings (status, tiers, whether that entitles them to the patron role), even when they "
+        "never linked with the bot. Use for any Patreon, whitelist, beta/alpha access or dev jar question.",
         {"discord_user_id": _USER_ID_PROPERTY},
     ),
     "get_user_bug_reports": _function_schema(

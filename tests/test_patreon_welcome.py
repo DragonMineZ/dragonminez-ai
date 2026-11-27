@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 
 from bulmaai.cogs.patreon_announcements import (
+    PatreonAnnouncementsCog,
     _build_dm_welcome_card,
     _downloads_channel_url,
 )
@@ -58,6 +59,38 @@ class PatreonWelcomeDmTests(unittest.IsolatedAsyncioTestCase):  # py-cord views 
         self.assertIn("one-time per user per build", card_text)
         self.assertIn("Supporter perk does NOT include", card_text)
         self.assertEqual([b.label for b in buttons(view)], ["Verify & Get Beta Access"])
+
+    async def test_closed_dms_post_onboarding_in_welcome_channel_pinging_only_the_member(self) -> None:
+        cog = PatreonAnnouncementsCog.__new__(PatreonAnnouncementsCog)
+        cog.bot = SimpleNamespace(settings=SimpleNamespace(dev_jar_download_channel_id=None))
+        channel = SimpleNamespace(send=AsyncMock())
+        cog._resolve_patreon_welcome_channel = AsyncMock(return_value=channel)
+        member = _fake_member()
+        member.send = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "closed"))
+
+        await cog._send_patreon_welcome(member, _fake_role())
+
+        self.assertEqual(channel.send.await_count, 2)
+        fallback = channel.send.await_args_list[1].kwargs
+        self.assertIn("<@42>", text(fallback["view"]))
+        self.assertEqual([b.label for b in buttons(fallback["view"])], ["Verify & Get Beta Access"])
+        mentions = fallback["allowed_mentions"]
+        self.assertEqual([u.id for u in mentions.users], [42])
+        self.assertFalse(mentions.everyone)
+        self.assertFalse(mentions.roles)
+
+    async def test_delivered_dm_posts_no_fallback(self) -> None:
+        cog = PatreonAnnouncementsCog.__new__(PatreonAnnouncementsCog)
+        cog.bot = SimpleNamespace(settings=SimpleNamespace(dev_jar_download_channel_id=None))
+        channel = SimpleNamespace(send=AsyncMock())
+        cog._resolve_patreon_welcome_channel = AsyncMock(return_value=channel)
+        member = _fake_member()
+        member.send = AsyncMock()
+
+        await cog._send_patreon_welcome(member, _fake_role())
+
+        self.assertEqual(channel.send.await_count, 1)
+        self.assertNotIn("<@42>", text(member.send.await_args.kwargs["view"]))
 
     def test_downloads_channel_url_built_from_member_guild(self) -> None:
         self.assertEqual(

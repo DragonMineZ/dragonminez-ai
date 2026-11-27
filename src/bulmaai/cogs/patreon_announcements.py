@@ -227,7 +227,11 @@ def _build_channel_welcome_card(*, member: discord.Member, role: discord.Role) -
 
 
 def _build_dm_welcome_card(
-    *, member: discord.Member, role: discord.Role, buttons: list[discord.ui.Button] | None = None
+    *,
+    member: discord.Member,
+    role: discord.Role,
+    buttons: list[discord.ui.Button] | None = None,
+    mention: bool = False,
 ) -> discord.ui.DesignerView:
     def render(template: str) -> str:
         return _render_welcome_text(template, member=member, role=role)
@@ -235,6 +239,7 @@ def _build_dm_welcome_card(
     steps = "\n".join(f"**{name}**\n{render(value)}" for name, value in PATREON_WELCOME_DM_STEPS)
     footer = render(PATREON_WELCOME_DM_FOOTER)
     return card(
+        f"<@{member.id}>" if mention else None,
         head(f"## {render(PATREON_WELCOME_DM_TITLE)}\n{render(PATREON_WELCOME_DM_DESCRIPTION)}", member.display_avatar.url),
         discord.ui.Separator(),
         steps,
@@ -338,24 +343,36 @@ class PatreonAnnouncementsCog(ReloadableCog):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
 
-        try:
-            await member.send(
-                view=_build_dm_welcome_card(
-                    member=member,
-                    role=role,
-                    buttons=welcome_buttons(
-                        downloads_channel_url=_downloads_channel_url(
-                            member,
-                            self.bot.settings.dev_jar_download_channel_id,
-                        ),
+        def onboarding(*, mention: bool = False) -> discord.ui.DesignerView:
+            return _build_dm_welcome_card(
+                member=member,
+                role=role,
+                buttons=welcome_buttons(
+                    downloads_channel_url=_downloads_channel_url(
+                        member,
+                        self.bot.settings.dev_jar_download_channel_id,
                     ),
                 ),
-                allowed_mentions=discord.AllowedMentions.none(),
+                mention=mention,
             )
+
+        try:
+            await member.send(view=onboarding(), allowed_mentions=discord.AllowedMentions.none())
+            return
         except discord.Forbidden:
             logger.info("Could not DM Patreon welcome message to user %s", member.id)
         except Exception:
             logger.exception("Failed to DM Patreon welcome message to user %s", member.id)
+        if welcome_channel is None:
+            return
+        try:
+            # DMs closed: the onboarding goes in the welcome channel instead, pinging only this member.
+            await welcome_channel.send(
+                view=onboarding(mention=True),
+                allowed_mentions=discord.AllowedMentions(users=[member], everyone=False, roles=False),
+            )
+        except Exception:
+            logger.exception("Failed to post Patreon onboarding fallback for user %s", member.id)
 
     def _start_polling_if_configured(self) -> None:
         if self.poll_patreon.is_running():

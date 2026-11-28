@@ -142,6 +142,21 @@ CREATE TABLE IF NOT EXISTS patreon_members (
 
 CREATE INDEX IF NOT EXISTS idx_patreon_members_discord_user_id ON patreon_members (discord_user_id);
 
+CREATE TABLE IF NOT EXISTS patreon_perk_claims (
+    id                       BIGSERIAL PRIMARY KEY,
+    discord_user_id          BIGINT NOT NULL,
+    perk                     TEXT NOT NULL,
+    status                   TEXT NOT NULL DEFAULT 'pending',
+    minecraft_username       TEXT NOT NULL DEFAULT '',
+    details                  TEXT NOT NULL DEFAULT '',
+    ticket_channel_id        BIGINT,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One live claim per member and perk; a rejected claim frees the perk again.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patreon_perk_claims_live
+    ON patreon_perk_claims (discord_user_id, perk) WHERE status <> 'rejected';
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patreon_links_patreon_user_id
     ON patreon_links (patreon_user_id);
 

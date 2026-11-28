@@ -140,6 +140,7 @@ Console actions are private to Bruno:
 
 - `revoke_owner_access` never revokes: testers (`dev_jar_tester_role_ids`), anyone Patreon still reports active, or anyone whose lookup fails.
 - Patron roles move from the Patreon bot to ours in steps (Bruno, 2026-11-27): 1) member sync + lookups + the ticket panel's Patreon check, read-only (done); 2) shadow mode: work out who should have which role and report the differences, changing nothing; 3) only once the differences stay at zero, our bot manages the roles and the Patreon bot is removed. Never skip to role changes.
+- Patreon perks (custom clothing, hairstyle, NPC skin) are claimed from the ticket panel's Patreon check, once per perk. A claim stays the member's once made: losing the role or tier later never cancels it, the work goes on (Bruno, 2026-11-27). Yuseix makes them (`patreon_perk_user_ids`). Plan: A claims + ticket (done), B staff Accept → Notion Tracker item, C bot opens a PR on the mod repo from Yuseix's Blockbench export (a person merges, never the bot), D release DM.
 - `DragonMineZ/.github/allowed_betatesters.txt` has a `# Manually added` section above `# Auto-added`. The bot never removes names above that header and appends at the end, so `# Auto-added` stays the last section. No blank lines (the bot's rewrite drops them).
 
 ## Mail inbox

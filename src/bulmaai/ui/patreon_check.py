@@ -83,7 +83,13 @@ def diagnose(*, has_role: bool, member: PatreonMember | None, eligible_tier_ids)
     return ENTITLED_NO_ROLE if is_entitled(member, eligible_tier_ids) else NOT_ENTITLED
 
 
-def check_card(diagnosis: str, member: PatreonMember | None, language: str, form_custom_id: str):
+def check_card(
+    diagnosis: str,
+    member: PatreonMember | None,
+    language: str,
+    form_custom_id: str,
+    claim_button: discord.ui.Button | None = None,
+):
     tiers = ", ".join(member.tier_titles) if member and member.tier_titles else t(TEXT, "tiers_none", language)
     status = (member.patron_status if member else None) or ""
     status_text = t(TEXT, status, language) if status in TEXT["en"] else status
@@ -91,4 +97,5 @@ def check_card(diagnosis: str, member: PatreonMember | None, language: str, form
     button = discord.ui.Button(
         label=t(TEXT, "button", language), emoji="🎫", style=discord.ButtonStyle.secondary, custom_id=form_custom_id
     )
-    return card(t(TEXT, "title", language), body, t(TEXT, "footer", language), color=PATREON_COLOUR, buttons=[button])
+    buttons = [claim_button, button] if claim_button else [button]
+    return card(t(TEXT, "title", language), body, t(TEXT, "footer", language), color=PATREON_COLOUR, buttons=buttons)

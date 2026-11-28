@@ -18,7 +18,7 @@ import discord
 from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget, eval_cases, patreon_members
+from bulmaai.services import ai_budget, eval_cases, patreon_members, patreon_perks
 from bulmaai.services.ai_guard import BLOCKING_FLAGS, defuse_mentions, link_targets, screen_reply
 from bulmaai.services.staff_copilot import LANGUAGE_NAMES, translate_owner_text
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
@@ -60,6 +60,7 @@ from bulmaai.services.tickets import (
 )
 from bulmaai.services.patron_page import PATREON_URL
 from bulmaai.ui import patreon_check, staff_copilot
+from bulmaai.ui import patreon_perks as patreon_perks_ui
 from bulmaai.ui.ticket_views import (
     ACTIONS_ID,
     AI_BUTTON_ID,
@@ -108,9 +109,10 @@ from bulmaai.ui.ticket_views import (
     transcript_link_view,
     welcome_view,
 )
-from bulmaai.ui.v2 import already_working, unbusy, while_busy
+from bulmaai.ui.v2 import already_working, card, unbusy, while_busy
 from bulmaai.utils.forwards import inline_forwards
 from bulmaai.utils.i18n import described, reader_language, table, user_language
+from bulmaai.utils.i18n import t as i18n_t
 from bulmaai.utils.language import detect_language_from_text, role_languages
 from bulmaai.utils.lifecycle import ReloadableCog
 from bulmaai.utils.permissions import has_patreon_access_role, is_admin, is_bruno
@@ -118,6 +120,7 @@ from bulmaai.utils.permissions import has_patreon_access_role, is_admin, is_brun
 log = logging.getLogger(__name__)
 
 PATREON_CATEGORY_KEY = "patreon"
+PATREON_PERK_COLOUR = discord.Colour.from_rgb(255, 85, 0)
 
 AI_COG = "AITicketsCog"
 # ponytail: newest 1000 messages, same cap as the AI transcript; page through history if tickets outgrow it.
@@ -457,6 +460,8 @@ class TicketsCog(ReloadableCog):
             handler = self.on_language
         elif custom_id.startswith(FORM_BUTTON_PREFIX):
             handler = self.on_form_language
+        elif custom_id.startswith(patreon_perks_ui.PERK_BUTTON_PREFIX):
+            handler = self.on_perk_claim
         else:
             handler = {
                 PANEL_SELECT_ID: self.on_panel_select,
@@ -532,11 +537,12 @@ class TicketsCog(ReloadableCog):
         owner: discord.Member | None = None,
         files: list[discord.File] | None = None,
         language: str | None = None,
+        team_only: bool = False,
     ) -> discord.TextChannel | None:
         """owner: open it for someone else (staff acting for a bug reporter). files go in right after the welcome,
         before the AI reads the ticket. language: the form's language (the panel's: their one language role or their
         pick), which is the ticket's support language; without it, a single language role decides, else the form's
-        text (the welcome card's select switches it). Returns the channel, or None after telling the clicker why
+        text (the welcome card's select switches it). team_only: no AI answer and the AI off (a perk claim). Returns the channel, or None after telling the clicker why
         not (in language, else the clicker's role language)."""
         guild, member, settings = interaction.guild, owner or interaction.user, self.settings
         # invisible=False: a modal submit's default ("invisible") defer would edit the public panel message instead.
@@ -622,10 +628,10 @@ class TicketsCog(ReloadableCog):
             pass  # DMs closed; the ephemeral message above already has the link
 
         ai_cog = self.bot.get_cog(AI_COG)
-        if ai_cog is not None and (category.mod_only or category.hands_off):
+        if ai_cog is not None and (category.mod_only or category.hands_off or team_only):
             # moderators or the team handle these; staff may turn it back on
             await ai_cog.set_ticket_ai_enabled(channel.id, False)
-        if ai_cog is not None and category.ai_reply:
+        if ai_cog is not None and category.ai_reply and not team_only:
             await ai_cog.answer_new_ticket(
                 channel, member, category_label=category.name, form_text=form_text, language=language
             )
@@ -874,9 +880,89 @@ class TicketsCog(ReloadableCog):
             member=member,
             eligible_tier_ids=self.settings.patreon_eligible_tier_ids,
         )
-        view = patreon_check.check_card(diagnosis, member, language, form_custom_id(category.key, language))
+        claim = (
+            patreon_perks_ui.claim_button(language)
+            if patreon_perks.can_claim(member, self.settings.patreon_perk_tier_titles)
+            else None
+        )
+        view = patreon_check.check_card(diagnosis, member, language, form_custom_id(category.key, language), claim)
         await interaction.response.send_message(view=view, ephemeral=True)
         return True
+
+    async def on_perk_claim(self, interaction: discord.Interaction) -> None:
+        """The check card's "Claim a perk": the form with the perks they haven't claimed yet. Eligibility is read
+        again here (the card may be old); the modal has to be the click's first response."""
+        custom_id = (interaction.data or {}).get("custom_id") or ""
+        language = patreon_perks_ui.parse_language(custom_id)
+        language = language if language in LANGUAGES else self._lang(interaction)
+        member = await patreon_members.get_member_by_discord(interaction.user.id)
+        if not patreon_perks.can_claim(member, self.settings.patreon_perk_tier_titles):
+            text = i18n_t(patreon_perks_ui.TEXT, "not_eligible", language)
+            return await interaction.response.send_message(text, ephemeral=True)
+        claims = await patreon_perks.list_claims(interaction.user.id)
+        claimed = {claim.perk for claim in claims}
+        left = [perk for perk in patreon_perks.PERKS if perk not in claimed]
+        if not left:
+            text = i18n_t(
+                patreon_perks_ui.TEXT, "all_claimed", language, claims=patreon_perks_ui.claims_text(claims, language)
+            )
+            return await interaction.response.send_message(text, ephemeral=True)
+        await interaction.response.send_modal(patreon_perks_ui.PerkClaimModal(left, language))
+
+    async def submit_perk_claim(
+        self,
+        interaction: discord.Interaction,
+        *,
+        perk: str,
+        minecraft_username: str,
+        details: str,
+        references: list,
+        language: str,
+    ) -> None:
+        """Records the claim (once per perk, kept even if they stop being a patron) and opens a Patreon ticket for the
+        team: no AI answer, the AI off, the perk makers pinged. A ticket that can't be opened gives the claim back."""
+        await interaction.response.defer(ephemeral=True, invisible=False)
+        member = await patreon_members.get_member_by_discord(interaction.user.id)
+        if perk not in patreon_perks.PERKS or not patreon_perks.can_claim(
+            member, self.settings.patreon_perk_tier_titles
+        ):
+            text = i18n_t(patreon_perks_ui.TEXT, "not_eligible", language)
+            return await interaction.edit_original_response(content=text)
+        claim_id = await patreon_perks.claim(
+            discord_user_id=interaction.user.id, perk=perk, minecraft_username=minecraft_username, details=details
+        )
+        if claim_id is None:
+            return await interaction.edit_original_response(content=i18n_t(patreon_perks_ui.TEXT, "already", language))
+        perk_name = i18n_t(patreon_perks_ui.TEXT, perk, "en")
+        answers = [("Perk", perk_name), ("Minecraft username", minecraft_username), ("Details", details)]
+        files = []
+        for attachment in references:
+            try:
+                files.append(await attachment.to_file())
+            except Exception:
+                log.info("Could not carry a perk reference over", extra={"user_id": interaction.user.id})
+        channel = await self.create_ticket(
+            interaction, CATEGORIES[PATREON_CATEGORY_KEY], answers, files=files, language=language, team_only=True
+        )
+        if channel is None:
+            return await patreon_perks.release(claim_id)
+        await patreon_perks.attach_ticket(claim_id, channel.id)
+        makers = list(self.settings.patreon_perk_user_ids)
+        if not makers:
+            return
+        try:
+            await channel.send(
+                view=card(
+                    f"### 🎨 Perk claim: {perk_name}",
+                    " ".join(f"<@{user_id}>" for user_id in makers) + " this one is yours.",
+                    color=PATREON_PERK_COLOUR,
+                ),
+                allowed_mentions=discord.AllowedMentions(
+                    users=[discord.Object(id=user_id) for user_id in makers], everyone=False, roles=False
+                ),
+            )
+        except discord.HTTPException:
+            log.warning("Could not ping the perk makers", extra={"channel_id": channel.id})
 
     async def on_form_language(self, interaction: discord.Interaction) -> None:
         """A language button of form_language_card: that category's form in that language. The custom id carries

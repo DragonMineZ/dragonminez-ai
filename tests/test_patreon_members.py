@@ -125,7 +125,7 @@ class PanelCheckTests(unittest.IsolatedAsyncioTestCase):
     def cog(self, token="tok"):
         settings = SimpleNamespace(
             **vars(SETTINGS), PATREON_CREATOR_TOKEN=token, patreon_access_role_ids=(PATRON_ROLE,),
-            patreon_eligible_tier_ids=(ELIGIBLE_TIER,),
+            patreon_eligible_tier_ids=(ELIGIBLE_TIER,), patreon_perk_tier_titles=(),
         )
         bot = SimpleNamespace(settings=settings, get_cog=lambda name: None, get_channel=lambda _id: None, user=SimpleNamespace(id=9))
         return TicketsCog(bot)

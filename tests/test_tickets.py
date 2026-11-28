@@ -1738,7 +1738,7 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         unset = SimpleNamespace(announcement_role_en_id=None, announcement_role_es_id=ES_ROLE, announcement_role_pt_id=None)
         self.assertEqual(role_languages(member(1, EN_ROLE, ES_ROLE), unset), ["es"])
 
-    async def create(self, *role_ids, language=None, category="bug", translation=None):
+    async def create(self, *role_ids, language=None, category="bug", translation=None, team_only=False):
         cog = make_cog()
         owner = MagicMock(spec=discord.Member)
         owner.id, owner.mention = OWNER_ID, f"<@{OWNER_ID}>"
@@ -1770,7 +1770,9 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
             patch.object(cog, "_triage", AsyncMock(return_value=intake)),
             patch.object(cog, "_translate_request", AsyncMock(return_value=translation)) as translate,
         ):
-            await cog.create_ticket(interaction, views.CATEGORIES[category], [("Summary", "boom")], language=language)
+            await cog.create_ticket(
+                interaction, views.CATEGORIES[category], [("Summary", "boom")], language=language, team_only=team_only
+            )
         return SimpleNamespace(
             mod_only=overwrites.call_args.kwargs["mod_only"],
             replies=[call.kwargs["content"] for call in interaction.edit_original_response.await_args_list],
@@ -1801,6 +1803,11 @@ class SupportLanguageTests(unittest.IsolatedAsyncioTestCase):
         request = made.sends[0].kwargs["view"].children[1]
         self.assertEqual(request.items[0].content, "-# Summary\n### boom")
         self.assertEqual(request.items[2].content, "-# 🇬🇧 English translation\n-# Summary\n### it crashes")
+
+    async def test_team_only_tickets_get_no_ai_answer_and_the_ai_off(self):
+        made = await self.create(EN_ROLE, category="patreon", team_only=True)
+        self.assertIsNone(made.answer)
+        self.assertEqual(made.ai_off, [(900, False)])
 
     async def test_one_language_role_sets_the_ticket_language(self):
         made = await self.create(ES_ROLE)

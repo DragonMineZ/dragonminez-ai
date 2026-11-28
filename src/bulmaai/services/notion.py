@@ -261,6 +261,18 @@ def bug_item(data_source_id: str, *, title: str, summary: str, severity: str, re
     return body
 
 
+def perk_item(data_source_id: str, *, title: str, summary: str, reporter: str, ticket_url: str) -> dict:
+    """An accepted Patreon perk claim: Mod Content in Backlog, Area Patreon, linking the ticket."""
+    body = new_item(
+        data_source_id, title=title, summary=summary, item_type="Content", project="Mod", priority="P2 Normal",
+        reporter=reporter, link=ticket_url,
+    )
+    body["properties"]["Status"] = {"status": {"name": "Backlog"}}
+    body["properties"]["Area"] = {"multi_select": [{"name": "Patreon"}]}
+    body["icon"] = {"type": "emoji", "emoji": "🎨"}
+    return body
+
+
 def item_update(*, status: str | None = None, priority: str | None = None, title: str | None = None,
                 github: str | None = None) -> dict:
     properties: dict = {}

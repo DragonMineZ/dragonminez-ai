@@ -140,7 +140,7 @@ Console actions are private to Bruno:
 
 - `revoke_owner_access` never revokes: testers (`dev_jar_tester_role_ids`), anyone Patreon still reports active, or anyone whose lookup fails.
 - Patron roles move from the Patreon bot to ours in steps (Bruno, 2026-11-27): 1) member sync + lookups + the ticket panel's Patreon check, read-only (done); 2) shadow mode: work out who should have which role and report the differences, changing nothing; 3) only once the differences stay at zero, our bot manages the roles and the Patreon bot is removed. Never skip to role changes.
-- Patreon perks (custom clothing, hairstyle, NPC skin) are claimed from the ticket panel's Patreon check, once per perk. A claim stays the member's once made: losing the role or tier later never cancels it, the work goes on (Bruno, 2026-11-27). Yuseix makes them (`patreon_perk_user_ids`). Plan: A claims + ticket (done), B staff Accept → Notion Tracker item, C bot opens a PR on the mod repo from Yuseix's Blockbench export (a person merges, never the bot), D release DM.
+- Patreon perks (custom clothing, hairstyle, NPC skin) are claimed from the ticket panel's Patreon check, once per perk. A claim stays the member's once made: losing the role or tier later never cancels it, the work goes on (Bruno, 2026-11-27). Yuseix makes them (`patreon_perk_user_ids`, his id is the default on purpose: Bruno, 2026-11-27). Plan: A claims + ticket (done), B Accept/Reject → Notion Tracker item (done; the second automatic Notion write besides confirmed bugs, allowed by Bruno), C bot opens a PR on the mod repo from Yuseix's Blockbench export (a person merges, never the bot), D release DM.
 - `DragonMineZ/.github/allowed_betatesters.txt` has a `# Manually added` section above `# Auto-added`. The bot never removes names above that header and appends at the end, so `# Auto-added` stays the last section. No blank lines (the bot's rewrite drops them).
 
 ## Mail inbox
@@ -160,7 +160,7 @@ Console actions are private to Bruno:
 
 - Only bug reports staff confirmed (Create issue) go to the Notion Tracker, never every triaged post.
 - Staff Bulma's Notion writes (create/update items, add text, comment) are proposals confirmed with a click, like every other action.
-- Notion is for the game, web/forum and community, not the bot: no push or changelog logging at all, and no bot work tracked there (Bruno, 2026-11-18). The bot's only automatic write is the confirmed-bug Tracker item.
+- Notion is for the game, web/forum and community, not the bot: no push or changelog logging at all, and no bot work tracked there (Bruno, 2026-11-18). The bot's only automatic writes are the confirmed-bug Tracker item and the accepted Patreon perk claim's item (both after a staff click).
 - The workspace is on Notion's free block allowance: keep whatever the bot writes lean.
 - Tracker items are mirrored one-way into the staff forum `notion_forum_channel_id` (one post per item, tags, no pings); the bot never writes to Notion for it (Bruno, 2026-11-22).
 

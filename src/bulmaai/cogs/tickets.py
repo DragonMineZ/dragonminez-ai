@@ -18,7 +18,7 @@ import discord
 from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget, eval_cases, patreon_members, patreon_perks
+from bulmaai.services import ai_budget, eval_cases, notion, patreon_members, patreon_perks
 from bulmaai.services.ai_guard import BLOCKING_FLAGS, defuse_mentions, link_targets, screen_reply
 from bulmaai.services.staff_copilot import LANGUAGE_NAMES, translate_owner_text
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
@@ -109,7 +109,7 @@ from bulmaai.ui.ticket_views import (
     transcript_link_view,
     welcome_view,
 )
-from bulmaai.ui.v2 import already_working, card, unbusy, while_busy
+from bulmaai.ui.v2 import already_working, unbusy, while_busy
 from bulmaai.utils.forwards import inline_forwards
 from bulmaai.utils.i18n import described, reader_language, table, user_language
 from bulmaai.utils.i18n import t as i18n_t
@@ -120,7 +120,6 @@ from bulmaai.utils.permissions import has_patreon_access_role, is_admin, is_brun
 log = logging.getLogger(__name__)
 
 PATREON_CATEGORY_KEY = "patreon"
-PATREON_PERK_COLOUR = discord.Colour.from_rgb(255, 85, 0)
 
 AI_COG = "AITicketsCog"
 # ponytail: newest 1000 messages, same cap as the AI transcript; page through history if tickets outgrow it.
@@ -462,6 +461,8 @@ class TicketsCog(ReloadableCog):
             handler = self.on_form_language
         elif custom_id.startswith(patreon_perks_ui.PERK_BUTTON_PREFIX):
             handler = self.on_perk_claim
+        elif custom_id.startswith(patreon_perks_ui.DECISION_PREFIX):
+            handler = self.on_perk_decision
         else:
             handler = {
                 PANEL_SELECT_ID: self.on_panel_select,
@@ -948,21 +949,81 @@ class TicketsCog(ReloadableCog):
             return await patreon_perks.release(claim_id)
         await patreon_perks.attach_ticket(claim_id, channel.id)
         makers = list(self.settings.patreon_perk_user_ids)
-        if not makers:
-            return
         try:
             await channel.send(
-                view=card(
-                    f"### 🎨 Perk claim: {perk_name}",
-                    " ".join(f"<@{user_id}>" for user_id in makers) + " this one is yours.",
-                    color=PATREON_PERK_COLOUR,
-                ),
+                view=patreon_perks_ui.claim_card(perk=perk, claim_id=claim_id, status="pending", makers=makers),
                 allowed_mentions=discord.AllowedMentions(
                     users=[discord.Object(id=user_id) for user_id in makers], everyone=False, roles=False
                 ),
             )
         except discord.HTTPException:
-            log.warning("Could not ping the perk makers", extra={"channel_id": channel.id})
+            log.warning("Could not post the perk claim card", extra={"channel_id": channel.id})
+
+    async def on_perk_decision(self, interaction: discord.Interaction) -> None:
+        """Accept / Reject on a perk claim card: the perk makers or moderators, first click wins. Accept adds a
+        Tracker item (Mod / Content / Patreon) linking the ticket; Reject frees the perk for a new claim. The member
+        is told in the ticket's language."""
+        parsed = patreon_perks_ui.parse_decision((interaction.data or {}).get("custom_id") or "")
+        if parsed is None:
+            return await interaction.response.send_message(t(self._lang(interaction), "failed"), ephemeral=True)
+        action, claim_id = parsed
+        user = interaction.user
+        if user.id not in self.settings.patreon_perk_user_ids and member_rank(user, None, self.settings) < Rank.MOD:
+            return await interaction.response.send_message(t(self._lang(interaction), "no_permission"), ephemeral=True)
+
+        async def work():
+            status = "accepted" if action == "accept" else "rejected"
+            claim = await patreon_perks.decide(claim_id, status, user.id)
+            if claim is None:  # someone else got there first: show where it stands
+                claim = await patreon_perks.get_claim(claim_id)
+                if claim is None:
+                    return False
+                return await interaction.edit_original_response(view=self._perk_card(claim))
+            notion_url, notion_failed = None, False
+            if claim.status == "accepted":
+                notion_url, notion_failed = await self._perk_to_notion(interaction, claim)
+            await interaction.edit_original_response(
+                view=self._perk_card(claim, notion_url=notion_url, notion_failed=notion_failed),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            ticket = await get_ticket_by_channel(interaction.channel_id) if interaction.channel_id else None
+            notice = "accepted_notice" if claim.status == "accepted" else "rejected_notice"
+            await interaction.channel.send(
+                i18n_t(patreon_perks_ui.TEXT, notice, ticket.language if ticket else "en"),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        await while_busy(interaction, self._working, work)
+
+    def _perk_card(self, claim, **tracker) -> discord.ui.DesignerView:
+        return patreon_perks_ui.claim_card(
+            perk=claim.perk, claim_id=claim.claim_id, status=claim.status, makers=self.settings.patreon_perk_user_ids,
+            decided_by=claim.decided_by, **tracker,
+        )
+
+    async def _perk_to_notion(self, interaction: discord.Interaction, claim) -> tuple[str | None, bool]:
+        """(Tracker item url, failed). No Notion token = neither: nothing to add it to."""
+        settings = self.settings
+        if not settings.notion_token:
+            return None, False
+        owner = interaction.guild.get_member(claim.discord_user_id) if interaction.guild else None
+        perk_name = i18n_t(patreon_perks_ui.TEXT, claim.perk, "en")
+        try:
+            page = await notion.create_page(
+                settings.notion_token,
+                notion.perk_item(
+                    settings.notion_tracker_data_source_id,
+                    title=f"{perk_name.removesuffix(' (one time)')} for {claim.minecraft_username}",
+                    summary=f"{claim.details}\n\nMinecraft username: {claim.minecraft_username}",
+                    reporter=f"{owner or claim.discord_user_id} (Discord, Patreon perk)",
+                    ticket_url=f"https://discord.com/channels/{interaction.guild_id}/{claim.ticket_channel_id}",
+                ),
+            )
+            await patreon_perks.set_notion_page(claim.claim_id, page["id"])
+            return page.get("url"), False
+        except Exception:
+            log.warning("Couldn't add perk claim %s to Notion", claim.claim_id, exc_info=True)
+            return None, True
 
     async def on_form_language(self, interaction: discord.Interaction) -> None:
         """A language button of form_language_card: that category's form in that language. The custom id carries

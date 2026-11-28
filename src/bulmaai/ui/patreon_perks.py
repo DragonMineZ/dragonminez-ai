@@ -2,9 +2,12 @@
 
 import discord
 
+from bulmaai.ui.v2 import card
 from bulmaai.utils.i18n import t, table
 
 PERK_BUTTON_PREFIX = "patreon_perk:"
+DECISION_PREFIX = "perk_claim:"
+PERK_COLOUR = discord.Colour.from_rgb(255, 85, 0)
 COG_NAME = "TicketsCog"
 MAX_REFERENCES = 3
 USERNAME_MAX = 16
@@ -30,6 +33,8 @@ TEXT = table({
         "pending": "waiting",
         "accepted": "in progress",
         "delivered": "delivered",
+        "accepted_notice": "✅ The team accepted your claim and is on it. You'll hear back here.",
+        "rejected_notice": "❌ The team couldn't take this claim as it is; they'll explain here. You can claim this perk again.",
     },
     "es": {
         "button": "Reclamar un beneficio",
@@ -50,6 +55,8 @@ TEXT = table({
         "pending": "en espera",
         "accepted": "en progreso",
         "delivered": "entregado",
+        "accepted_notice": "✅ El equipo aceptó tu solicitud y ya está trabajando en ella. Te avisarán aquí.",
+        "rejected_notice": "❌ El equipo no pudo tomar esta solicitud así; te explicarán aquí. Puedes volver a reclamar este beneficio.",
     },
     "pt": {
         "button": "Resgatar um benefício",
@@ -70,6 +77,8 @@ TEXT = table({
         "pending": "aguardando",
         "accepted": "em andamento",
         "delivered": "entregue",
+        "accepted_notice": "✅ A equipe aceitou seu pedido e já está trabalhando nele. Você terá notícias aqui.",
+        "rejected_notice": "❌ A equipe não pôde aceitar este pedido assim; vão explicar aqui. Você pode resgatar este benefício de novo.",
     },
 })
 
@@ -130,3 +139,52 @@ class PerkClaimModal(discord.ui.DesignerModal):
             references=list(self.references.values or [])[:MAX_REFERENCES],
             language=self.language,
         )
+
+
+def decision_id(action: str, claim_id: int) -> str:
+    return f"{DECISION_PREFIX}{action}:{claim_id}"
+
+
+def parse_decision(custom_id: str) -> tuple[str, int] | None:
+    """(accept|reject, claim id) of a claim card button, None when it isn't one."""
+    if not custom_id.startswith(DECISION_PREFIX):
+        return None
+    action, _, raw_id = custom_id.removeprefix(DECISION_PREFIX).partition(":")
+    if action not in ("accept", "reject") or not raw_id.isdigit():
+        return None
+    return action, int(raw_id)
+
+
+def claim_card(
+    *,
+    perk: str,
+    claim_id: int,
+    status: str,
+    makers,
+    decided_by: int | None = None,
+    notion_url: str | None = None,
+    notion_failed: bool = False,
+) -> discord.ui.DesignerView:
+    """The staff card in a perk claim's ticket (English), rebuilt on every change. Waiting: pings the makers (the
+    sender passes users=makers) with Accept / Reject; decided: who decided and the Tracker item."""
+    title = f"### 🎨 Perk claim: {t(TEXT, perk, 'en')}"
+    if status == "pending":
+        buttons = [
+            discord.ui.Button(label="Accept", emoji="✅", style=discord.ButtonStyle.success,
+                              custom_id=decision_id("accept", claim_id)),
+            discord.ui.Button(label="Reject", emoji="❌", style=discord.ButtonStyle.secondary,
+                              custom_id=decision_id("reject", claim_id)),
+        ]
+        mentions = " ".join(f"<@{user_id}>" for user_id in makers)
+        body = f"{mentions} this one is yours. Accept adds it to the Notion Tracker." if mentions else (
+            "Accept adds it to the Notion Tracker."
+        )
+        return card(title, body, color=PERK_COLOUR, buttons=buttons)
+    if status == "rejected":
+        return card(title, f"❌ Rejected by <@{decided_by}>. The member can claim this perk again.", color=PERK_COLOUR)
+    tracker = (
+        f" · [Tracker item]({notion_url})" if notion_url
+        else " · couldn't add it to Notion, add it by hand" if notion_failed
+        else ""
+    )
+    return card(title, f"✅ Accepted by <@{decided_by}>{tracker}", color=PERK_COLOUR)

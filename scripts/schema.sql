@@ -153,6 +153,9 @@ CREATE TABLE IF NOT EXISTS patreon_perk_claims (
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE patreon_perk_claims ADD COLUMN IF NOT EXISTS decided_by BIGINT;
+ALTER TABLE patreon_perk_claims ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
+
 -- One live claim per member and perk; a rejected claim frees the perk again.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patreon_perk_claims_live
     ON patreon_perk_claims (discord_user_id, perk) WHERE status <> 'rejected';

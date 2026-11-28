@@ -771,8 +771,7 @@ def _build_settings_from_env() -> Settings:
             DEFAULT_PATREON_ELIGIBLE_TIER_IDS,
         ),
         patreon_perk_tier_titles=_get_env_str_list("PATREON_PERK_TIER_TITLES", ("Benefactor",)),
-        # Bruno until Yuseix is added on the panel
-        patreon_perk_user_ids=_get_env_int_list("PATREON_PERK_USER_IDS", DEFAULT_AI_STAFF_TASK_USER_IDS),
+        patreon_perk_user_ids=_get_env_int_list("PATREON_PERK_USER_IDS", (403023260012249089,)),  # Yuseix
         patreon_oauth_client_id=_get_env("PATREON_OAUTH_CLIENT_ID"),
         patreon_oauth_client_secret=PATREON_OAUTH_CLIENT_SECRET,
         patreon_oauth_redirect_uri=DEFAULT_PATREON_OAUTH_REDIRECT_URI,

@@ -20,6 +20,10 @@ class PerkClaim:
     status: str
     ticket_channel_id: int | None
     created_at: datetime
+    minecraft_username: str = ""
+    details: str = ""
+    decided_by: int | None = None
+    notion_page_id: str | None = None
 
 
 def can_claim(member: PatreonMember | None, perk_tier_titles) -> bool:
@@ -41,6 +45,10 @@ def _claim(row) -> PerkClaim:
         status=row["status"],
         ticket_channel_id=row["ticket_channel_id"],
         created_at=row["created_at"],
+        minecraft_username=row["minecraft_username"],
+        details=row["details"],
+        decided_by=row["decided_by"],
+        notion_page_id=row["notion_page_id"],
     )
 
 
@@ -84,3 +92,29 @@ async def release(claim_id: int) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM patreon_perk_claims WHERE id = $1 AND ticket_channel_id IS NULL", claim_id)
+
+
+async def get_claim(claim_id: int) -> PerkClaim | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM patreon_perk_claims WHERE id = $1", claim_id)
+    return _claim(row) if row else None
+
+
+async def decide(claim_id: int, status: str, decided_by: int) -> PerkClaim | None:
+    """Accept or reject a waiting claim; the first click wins (None when it was already decided)."""
+    if status not in ("accepted", "rejected"):
+        raise ValueError(f"unknown decision {status!r}")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE patreon_perk_claims SET status = $2, decided_by = $3 WHERE id = $1 AND status = 'pending' RETURNING *",
+            claim_id, status, decided_by,
+        )
+    return _claim(row) if row else None
+
+
+async def set_notion_page(claim_id: int, page_id: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE patreon_perk_claims SET notion_page_id = $2 WHERE id = $1", claim_id, page_id)

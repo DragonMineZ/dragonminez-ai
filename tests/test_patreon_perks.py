@@ -155,3 +155,79 @@ class ButtonIdTests(unittest.TestCase):
     def test_language_round_trips(self):
         self.assertEqual(perks_ui.parse_language("patreon_perk:pt"), "pt")
         self.assertIsNone(perks_ui.parse_language("ticket_form:patreon:pt"))
+
+
+class ClaimCardTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a running loop
+    async def test_waiting_card_pings_the_makers_with_accept_and_reject(self):
+        view = perks_ui.claim_card(perk="hairstyle", claim_id=7, status="pending", makers=[YUSEIX])
+        self.assertIn(f"<@{YUSEIX}> this one is yours", text(view))
+        self.assertEqual([b.custom_id for b in buttons(view)], ["perk_claim:accept:7", "perk_claim:reject:7"])
+
+    async def test_decided_cards_say_who_and_have_no_buttons(self):
+        accepted = perks_ui.claim_card(perk="hairstyle", claim_id=7, status="accepted", makers=[YUSEIX],
+                                       decided_by=YUSEIX, notion_url="https://notion.example/p")
+        self.assertIn(f"✅ Accepted by <@{YUSEIX}> · [Tracker item](https://notion.example/p)", text(accepted))
+        self.assertEqual(buttons(accepted), [])
+        failed = perks_ui.claim_card(perk="hairstyle", claim_id=7, status="accepted", makers=[], decided_by=1, notion_failed=True)
+        self.assertIn("add it by hand", text(failed))
+        rejected = perks_ui.claim_card(perk="hairstyle", claim_id=7, status="rejected", makers=[], decided_by=1)
+        self.assertIn("can claim this perk again", text(rejected))
+
+    def test_decision_ids_round_trip(self):
+        self.assertEqual(perks_ui.parse_decision("perk_claim:accept:7"), ("accept", 7))
+        for bad in ("perk_claim:approve:7", "perk_claim:accept:x", "patreon_perk:es"):
+            self.assertIsNone(perks_ui.parse_decision(bad))
+
+
+class DecisionTests(unittest.IsolatedAsyncioTestCase):
+    async def decide(self, user, action="accept", decided="fresh", notion_token="ntok"):
+        from test_tickets import click, make_ticket
+        from bulmaai.cogs import tickets as cog_module
+
+        cog = _cog()
+        cog.settings.notion_token = notion_token
+        cog.settings.notion_tracker_data_source_id = "ds"
+        card = perks_ui.claim_card(perk="hairstyle", claim_id=7, status="pending", makers=[YUSEIX])
+        interaction = click(user, f"perk_claim:{action}:7", card)
+        interaction.guild = SimpleNamespace(get_member=lambda _id: "Bel#0001")
+        interaction.guild_id = 1
+        interaction.channel = SimpleNamespace(send=AsyncMock())
+        status = "accepted" if action == "accept" else "rejected"
+        claim = replace(_claim("hairstyle", status), claim_id=7, decided_by=user.id, minecraft_username="Goku",
+                        details="spiky, blue")
+        with patch.object(patreon_perks, "decide", AsyncMock(return_value=claim if decided == "fresh" else None)) as decide, \
+                patch.object(patreon_perks, "get_claim", AsyncMock(return_value=replace(claim, decided_by=999))), \
+                patch.object(patreon_perks, "set_notion_page", AsyncMock()) as set_page, \
+                patch.object(cog_module.notion, "create_page", AsyncMock(return_value={"id": "p1", "url": "https://notion.example/p1"})) as create, \
+                patch.object(cog_module, "get_ticket_by_channel", AsyncMock(return_value=make_ticket(language="es"))):
+            await cog.on_interaction(interaction)
+        return SimpleNamespace(interaction=interaction, decide=decide, create=create, set_page=set_page)
+
+    async def test_others_cant_decide(self):
+        done = await self.decide(member(42))
+        done.decide.assert_not_awaited()
+        done.interaction.response.send_message.assert_awaited_once()
+
+    async def test_accept_adds_a_tracker_item_and_tells_the_member(self):
+        done = await self.decide(member(YUSEIX))
+        done.decide.assert_awaited_once_with(7, "accepted", YUSEIX)
+        body = done.create.await_args.args[1]
+        self.assertEqual(body["properties"]["Name"]["title"][0]["text"]["content"], "Custom hairstyle for Goku")
+        self.assertEqual(body["properties"]["Status"], {"status": {"name": "Backlog"}})
+        self.assertEqual(body["properties"]["Area"], {"multi_select": [{"name": "Patreon"}]})
+        self.assertEqual(body["children"][-1]["bookmark"]["url"], "https://discord.com/channels/1/900")
+        done.set_page.assert_awaited_once_with(7, "p1")
+        edited = done.interaction.edit_original_response.await_args.kwargs["view"]
+        self.assertIn("[Tracker item](https://notion.example/p1)", text(edited))
+        self.assertIn("El equipo aceptó tu solicitud", done.interaction.channel.send.await_args.args[0])
+
+    async def test_reject_frees_the_perk_without_notion(self):
+        done = await self.decide(member(YUSEIX), action="reject")
+        done.create.assert_not_awaited()
+        self.assertIn("Rejected by", text(done.interaction.edit_original_response.await_args.kwargs["view"]))
+
+    async def test_a_second_click_only_shows_the_first_decision(self):
+        done = await self.decide(member(YUSEIX), decided="already")
+        done.create.assert_not_awaited()
+        self.assertIn("Accepted by <@999>", text(done.interaction.edit_original_response.await_args.kwargs["view"]))
+        done.interaction.channel.send.assert_not_awaited()

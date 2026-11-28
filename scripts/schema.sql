@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS patreon_perk_claims (
 
 ALTER TABLE patreon_perk_claims ADD COLUMN IF NOT EXISTS decided_by BIGINT;
 ALTER TABLE patreon_perk_claims ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
+ALTER TABLE patreon_perk_claims ADD COLUMN IF NOT EXISTS pr_url TEXT;
 
 -- One live claim per member and perk; a rejected claim frees the perk again.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patreon_perk_claims_live

@@ -185,6 +185,47 @@ class GitHubService:
         r.raise_for_status()
         return r.json()["commit"]["html_url"]
 
+    async def head_sha(self, branch: str) -> str:
+        r = await request("GET", f"{self.api}/git/ref/heads/{quote(branch, safe='')}", headers=await self._headers())
+        r.raise_for_status()
+        return r.json()["object"]["sha"]
+
+    async def open_pr_with_files(
+        self, *, base_sha: str, base: str, branch: str, files: dict[str, bytes], message: str, title: str, body: str
+    ) -> str:
+        """One commit on top of base_sha with files (path -> bytes, text or binary) on a new branch, then a PR into
+        base. Returns the PR's URL. Never merges."""
+        headers = await self._headers()
+        r = await request("GET", f"{self.api}/git/commits/{base_sha}", headers=headers)
+        r.raise_for_status()
+        tree = []
+        for path, content in files.items():
+            blob = await request(
+                "POST", f"{self.api}/git/blobs", headers=headers,
+                json={"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
+            )
+            blob.raise_for_status()
+            tree.append({"path": path, "mode": "100644", "type": "blob", "sha": blob.json()["sha"]})
+        made = await request(
+            "POST", f"{self.api}/git/trees", headers=headers, json={"base_tree": r.json()["tree"]["sha"], "tree": tree}
+        )
+        made.raise_for_status()
+        commit = await request(
+            "POST", f"{self.api}/git/commits", headers=headers,
+            json={"message": message, "tree": made.json()["sha"], "parents": [base_sha]},
+        )
+        commit.raise_for_status()
+        ref = await request(
+            "POST", f"{self.api}/git/refs", headers=headers,
+            json={"ref": f"refs/heads/{branch}", "sha": commit.json()["sha"]},
+        )
+        ref.raise_for_status()
+        pr = await request(
+            "POST", f"{self.api}/pulls", headers=headers, json={"title": title, "head": branch, "base": base, "body": body}
+        )
+        pr.raise_for_status()
+        return pr.json()["html_url"]
+
     # ==================== PULL REQUESTS ====================
 
     async def list_prs(self, *, state: str = "open", per_page: int = 25, head: str | None = None) -> list[dict]:

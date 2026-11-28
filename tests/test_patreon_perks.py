@@ -164,7 +164,7 @@ class ClaimCardTests(unittest.IsolatedAsyncioTestCase):  # py-cord views need a 
         self.assertEqual([b.custom_id for b in buttons(view)], ["perk_claim:accept:7", "perk_claim:reject:7"])
 
     async def test_decided_cards_say_who_and_have_no_buttons(self):
-        accepted = perks_ui.claim_card(perk="hairstyle", claim_id=7, status="accepted", makers=[YUSEIX],
+        accepted = perks_ui.claim_card(perk="npc_skin", claim_id=7, status="accepted", makers=[YUSEIX],
                                        decided_by=YUSEIX, notion_url="https://notion.example/p")
         self.assertIn(f"✅ Accepted by <@{YUSEIX}> · [Tracker item](https://notion.example/p)", text(accepted))
         self.assertEqual(buttons(accepted), [])

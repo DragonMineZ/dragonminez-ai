@@ -10,6 +10,8 @@ import html as html_lib
 import io
 import logging
 import re
+import secrets
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 
@@ -18,7 +20,8 @@ import discord
 from chat_exporter import AttachmentHandler
 from discord.ext import commands, tasks
 
-from bulmaai.services import ai_budget, eval_cases, notion, patreon_members, patreon_perks
+from bulmaai.services import ai_budget, eval_cases, notion, patreon_members, patreon_perks, perk_ship
+from bulmaai.services.mod_source import _service as mod_repo_github
 from bulmaai.services.ai_guard import BLOCKING_FLAGS, defuse_mentions, link_targets, screen_reply
 from bulmaai.services.staff_copilot import LANGUAGE_NAMES, translate_owner_text
 from bulmaai.services.ticket_intake import TicketIntake, triage_intake
@@ -343,6 +346,7 @@ class TicketsCog(ReloadableCog):
         # ponytail: in-memory guard against double-clicks; one bot process owns the guild.
         self._deleting: set[int] = set()
         self._working: set[int] = set()  # messages whose button click is still being handled (ui.v2.while_busy)
+        self._shipping: set[int] = set()  # perk claims whose pull request is being opened
         self._copilot_working: set[tuple[int, int]] = set()  # (ticket channel, staff) with a Summary/Draft running
 
     @property
@@ -968,8 +972,13 @@ class TicketsCog(ReloadableCog):
             return await interaction.response.send_message(t(self._lang(interaction), "failed"), ephemeral=True)
         action, claim_id = parsed
         user = interaction.user
-        if user.id not in self.settings.patreon_perk_user_ids and member_rank(user, None, self.settings) < Rank.MOD:
+        if not self._perk_staff(user):
             return await interaction.response.send_message(t(self._lang(interaction), "no_permission"), ephemeral=True)
+        if action == "ship":
+            claim = await patreon_perks.get_claim(claim_id)
+            if not self._shippable(claim):
+                return await interaction.response.send_message("Nothing to ship on this claim.", ephemeral=True)
+            return await interaction.response.send_modal(patreon_perks_ui.ship_modal(claim.perk, claim_id))
 
         async def work():
             status = "accepted" if action == "accept" else "rejected"
@@ -995,11 +1004,88 @@ class TicketsCog(ReloadableCog):
 
         await while_busy(interaction, self._working, work)
 
+    def _perk_staff(self, user) -> bool:
+        return user.id in self.settings.patreon_perk_user_ids or member_rank(user, None, self.settings) >= Rank.MOD
+
+    @staticmethod
+    def _shippable(claim) -> bool:
+        return bool(
+            claim and claim.status == "accepted" and claim.perk in patreon_perks_ui.SHIPPABLE and not claim.pr_url
+        )
+
     def _perk_card(self, claim, **tracker) -> discord.ui.DesignerView:
+        if claim.notion_page_id and "notion_url" not in tracker:
+            tracker["notion_url"] = f"https://www.notion.so/{claim.notion_page_id.replace('-', '')}"
         return patreon_perks_ui.claim_card(
             perk=claim.perk, claim_id=claim.claim_id, status=claim.status, makers=self.settings.patreon_perk_user_ids,
-            decided_by=claim.decided_by, **tracker,
+            decided_by=claim.decided_by, pr_url=claim.pr_url, **tracker,
         )
+
+    async def submit_perk_ship(
+        self, interaction: discord.Interaction, claim_id: int, *, display_name: str, files: list, code: str = ""
+    ) -> None:
+        """Ship it's form: opens the PR on the mod repo (services/perk_ship), stores it on the claim, moves the
+        Tracker item to In review with the PR, refreshes the card and tells the member. One ship per claim at a time;
+        anything to fix comes back ephemerally."""
+        await interaction.response.defer(ephemeral=True, invisible=False)
+        reply = interaction.followup.send
+        claim = await patreon_perks.get_claim(claim_id)
+        if not self._perk_staff(interaction.user) or not self._shippable(claim):
+            return await reply("Nothing to ship on this claim.", ephemeral=True)
+        if claim_id in self._shipping:
+            return await reply("Already shipping this one.", ephemeral=True)
+        self._shipping.add(claim_id)
+        try:
+            contents = [await attachment.read() for attachment in files]
+            if claim.perk == "hairstyle" and contents:
+                code = contents[0].decode("utf-8", errors="replace").strip()
+            if claim.perk == "clothing" and len(contents) != 2:
+                return await reply("Upload both texture layers.", ephemeral=True)
+            try:
+                url = await perk_ship.open_pr(
+                    mod_repo_github(self.settings),
+                    base=self.settings.mod_source_branch,
+                    claim_id=claim_id,
+                    perk=claim.perk,
+                    perk_label=i18n_t(patreon_perks_ui.TEXT, claim.perk, "en"),
+                    patron=claim.minecraft_username,
+                    ticket_url=f"https://discord.com/channels/{interaction.guild_id}/{claim.ticket_channel_id}",
+                    made_by=interaction.user.display_name,
+                    display_name=display_name,
+                    layer1=contents[0] if claim.perk == "clothing" else b"",
+                    layer2=contents[1] if claim.perk == "clothing" else b"",
+                    code=code,
+                    suffix=f"-{secrets.token_hex(2)}",
+                )
+            except perk_ship.ShipError as exc:
+                return await reply(str(exc), ephemeral=True)
+            except Exception:
+                log.warning("Couldn't open the perk PR for claim %s", claim_id, exc_info=True)
+                return await reply(
+                    "GitHub refused the pull request. Check the bot's access to the mod repo, or add it by hand.",
+                    ephemeral=True,
+                )
+            await patreon_perks.set_pr_url(claim_id, url)
+            shipped = replace(claim, pr_url=url)
+            if interaction.message is not None:
+                await self._safely(
+                    interaction.message.edit(view=self._perk_card(shipped), allowed_mentions=discord.AllowedMentions.none()),
+                    interaction.channel,
+                )
+            if claim.notion_page_id and self.settings.notion_token:
+                try:
+                    await notion.update_page(self.settings.notion_token, claim.notion_page_id, status="In review", github=url)
+                except Exception:
+                    log.warning("Couldn't move perk claim %s's Tracker item to In review", claim_id, exc_info=True)
+            ticket = await get_ticket_by_channel(claim.ticket_channel_id) if claim.ticket_channel_id else None
+            if interaction.channel is not None:
+                await interaction.channel.send(
+                    i18n_t(patreon_perks_ui.TEXT, "shipped_notice", ticket.language if ticket else "en"),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            await reply(f"🚀 Pull request opened: {url}", ephemeral=True)
+        finally:
+            self._shipping.discard(claim_id)
 
     async def _perk_to_notion(self, interaction: discord.Interaction, claim) -> tuple[str | None, bool]:
         """(Tracker item url, failed). No Notion token = neither: nothing to add it to."""

@@ -24,6 +24,7 @@ class PerkClaim:
     details: str = ""
     decided_by: int | None = None
     notion_page_id: str | None = None
+    pr_url: str | None = None
 
 
 def can_claim(member: PatreonMember | None, perk_tier_titles) -> bool:
@@ -49,6 +50,7 @@ def _claim(row) -> PerkClaim:
         details=row["details"],
         decided_by=row["decided_by"],
         notion_page_id=row["notion_page_id"],
+        pr_url=row["pr_url"],
     )
 
 
@@ -118,3 +120,14 @@ async def set_notion_page(claim_id: int, page_id: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("UPDATE patreon_perk_claims SET notion_page_id = $2 WHERE id = $1", claim_id, page_id)
+
+
+async def set_pr_url(claim_id: int, url: str) -> bool:
+    """Stores the mod PR on an accepted claim that has none yet; False when another ship got there first."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        done = await conn.execute(
+            "UPDATE patreon_perk_claims SET pr_url = $2 WHERE id = $1 AND status = 'accepted' AND pr_url IS NULL",
+            claim_id, url,
+        )
+    return done.endswith(" 1")

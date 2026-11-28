@@ -8,6 +8,8 @@ from bulmaai.utils.i18n import t, table
 PERK_BUTTON_PREFIX = "patreon_perk:"
 DECISION_PREFIX = "perk_claim:"
 PERK_COLOUR = discord.Colour.from_rgb(255, 85, 0)
+SHIPPABLE = ("clothing", "hairstyle")  # npc_skin stays by hand
+HAIR_CODE_FIELD_MAX = 4000  # Discord's text field limit; longer codes come as a .txt file
 COG_NAME = "TicketsCog"
 MAX_REFERENCES = 3
 USERNAME_MAX = 16
@@ -35,6 +37,7 @@ TEXT = table({
         "delivered": "delivered",
         "accepted_notice": "✅ The team accepted your claim and is on it. You'll hear back here.",
         "rejected_notice": "❌ The team couldn't take this claim as it is; they'll explain here. You can claim this perk again.",
+        "shipped_notice": "🚀 Your perk is done and on its way into the mod. You'll hear when it's in a release.",
     },
     "es": {
         "button": "Reclamar un beneficio",
@@ -57,6 +60,7 @@ TEXT = table({
         "delivered": "entregado",
         "accepted_notice": "✅ El equipo aceptó tu solicitud y ya está trabajando en ella. Te avisarán aquí.",
         "rejected_notice": "❌ El equipo no pudo tomar esta solicitud así; te explicarán aquí. Puedes volver a reclamar este beneficio.",
+        "shipped_notice": "🚀 Tu beneficio está listo y en camino al mod. Te avisaremos cuando esté en una versión.",
     },
     "pt": {
         "button": "Resgatar um benefício",
@@ -79,6 +83,7 @@ TEXT = table({
         "delivered": "entregue",
         "accepted_notice": "✅ A equipe aceitou seu pedido e já está trabalhando nele. Você terá notícias aqui.",
         "rejected_notice": "❌ A equipe não pôde aceitar este pedido assim; vão explicar aqui. Você pode resgatar este benefício de novo.",
+        "shipped_notice": "🚀 Seu benefício está pronto e a caminho do mod. Você vai saber quando estiver numa versão.",
     },
 })
 
@@ -146,11 +151,11 @@ def decision_id(action: str, claim_id: int) -> str:
 
 
 def parse_decision(custom_id: str) -> tuple[str, int] | None:
-    """(accept|reject, claim id) of a claim card button, None when it isn't one."""
+    """(accept|reject|ship, claim id) of a claim card button, None when it isn't one."""
     if not custom_id.startswith(DECISION_PREFIX):
         return None
     action, _, raw_id = custom_id.removeprefix(DECISION_PREFIX).partition(":")
-    if action not in ("accept", "reject") or not raw_id.isdigit():
+    if action not in ("accept", "reject", "ship") or not raw_id.isdigit():
         return None
     return action, int(raw_id)
 
@@ -164,6 +169,7 @@ def claim_card(
     decided_by: int | None = None,
     notion_url: str | None = None,
     notion_failed: bool = False,
+    pr_url: str | None = None,
 ) -> discord.ui.DesignerView:
     """The staff card in a perk claim's ticket (English), rebuilt on every change. Waiting: pings the makers (the
     sender passes users=makers) with Accept / Reject; decided: who decided and the Tracker item."""
@@ -187,4 +193,75 @@ def claim_card(
         else " · couldn't add it to Notion, add it by hand" if notion_failed
         else ""
     )
-    return card(title, f"✅ Accepted by <@{decided_by}>{tracker}", color=PERK_COLOUR)
+    lines = [f"✅ Accepted by <@{decided_by}>{tracker}"]
+    buttons = None
+    if pr_url:
+        lines.append(f"🚀 [Mod pull request]({pr_url}): review, build and merge it by hand.")
+    elif perk in SHIPPABLE:
+        lines.append("-# When it's done, Ship it opens the pull request on the mod.")
+        buttons = [discord.ui.Button(label="Ship it", emoji="🚀", style=discord.ButtonStyle.primary,
+                                     custom_id=decision_id("ship", claim_id))]
+    return card(title, *lines, color=PERK_COLOUR, buttons=buttons)
+
+
+
+def _required(item, required: bool):
+    item.required = required  # py-cord drops required=False in some constructors (see TicketModal)
+    return item
+
+
+class ArmorShipModal(discord.ui.DesignerModal):
+    """Custom clothing: its in-game name and the two armor texture layers from Blockbench."""
+
+    def __init__(self, claim_id: int) -> None:
+        self.claim_id = claim_id
+        self.name = discord.ui.InputText(style=discord.InputTextStyle.short, min_length=3, max_length=40,
+                                         placeholder="Scarlet Blaze")
+        self.layer1 = discord.ui.FileUpload(min_values=1, max_values=1)
+        self.layer2 = discord.ui.FileUpload(min_values=1, max_values=1)
+        super().__init__(
+            discord.ui.Label("Armor name (in game)", self.name),
+            discord.ui.Label("Layer 1 texture (.png)", self.layer1),
+            discord.ui.Label("Layer 2 texture (.png)", self.layer2),
+            title="Ship custom clothing",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog = interaction.client.get_cog(COG_NAME)
+        if cog is None:
+            return await interaction.response.send_message("The ticket system isn't loaded.", ephemeral=True)
+        await cog.submit_perk_ship(
+            interaction, self.claim_id, display_name=(self.name.value or "").strip(),
+            files=[*(self.layer1.values or [])[:1], *(self.layer2.values or [])[:1]],
+        )
+
+
+class HairShipModal(discord.ui.DesignerModal):
+    """Hairstyle: the preset's name and the code from the in-game hair editor (pasted, or a .txt when longer)."""
+
+    def __init__(self, claim_id: int) -> None:
+        self.claim_id = claim_id
+        self.name = discord.ui.InputText(style=discord.InputTextStyle.short, min_length=2, max_length=40,
+                                         placeholder="Gojo")
+        self.code = _required(discord.ui.InputText(style=discord.InputTextStyle.paragraph, max_length=HAIR_CODE_FIELD_MAX,
+                                                   required=False, placeholder="DMZF1:..."), False)
+        self.code_file = _required(discord.ui.FileUpload(min_values=0, max_values=1, required=False), False)
+        super().__init__(
+            discord.ui.Label("Preset name", self.name),
+            discord.ui.Label("Hair code", self.code),
+            discord.ui.Label("Or the code as a .txt (long codes)", self.code_file),
+            title="Ship a hairstyle",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog = interaction.client.get_cog(COG_NAME)
+        if cog is None:
+            return await interaction.response.send_message("The ticket system isn't loaded.", ephemeral=True)
+        await cog.submit_perk_ship(
+            interaction, self.claim_id, display_name=(self.name.value or "").strip(),
+            code=(self.code.value or "").strip(), files=list(self.code_file.values or [])[:1],
+        )
+
+
+def ship_modal(perk: str, claim_id: int) -> discord.ui.DesignerModal:
+    return ArmorShipModal(claim_id) if perk == "clothing" else HairShipModal(claim_id)

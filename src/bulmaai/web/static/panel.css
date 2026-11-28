@@ -23,28 +23,45 @@
   --radius: 8px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  /* Floating menu: dragonminez.com's own colors, so it looks the same as on the site. */
+  --fab-fg: #ffffff;
+  --fab-bg: #0a0a0b;
+  --fab-surface: #121214;
+  --fab-elevated: #18181b;
+  --fab-glass: rgba(255, 255, 255, .05);
+  --fab-glass-strong: rgba(255, 255, 255, .1);
+  --fab-shadow: 0 4px 20px rgba(0, 0, 0, .3);
+  --fab-glow: 0 0 20px rgba(255, 255, 255, .2);
+  --fab-dropdown: 0 10px 40px rgba(0, 0, 0, .5);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f5f6f8;
-    --surface: #ffffff;
-    --surface-2: #eef0f3;
-    --border: #d9dde3;
-    --text: #1b1e24;
-    --muted: #5d6573;
-    --accent: #c77700;
-    --accent-text: #ffffff;
-    --series-1: #2a78d6;
-    --series-2: #eb6834;
-    --series-3: #1baf7a;
-    --series-4: #eda100;
-    --series-5: #e87ba4;
-    --series-6: #008300;
-    --series-7: #6250d6;
-    --series-other: #a3a9b4;
-  }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef0f3;
+  --border: #d9dde3;
+  --text: #1b1e24;
+  --muted: #5d6573;
+  --accent: #c77700;
+  --accent-text: #ffffff;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-other: #a3a9b4;
+  --fab-fg: #111827;
+  --fab-bg: #f9fafb;
+  --fab-surface: #ffffff;
+  --fab-elevated: #f3f4f6;
+  --fab-glass: rgba(0, 0, 0, .05);
+  --fab-glass-strong: rgba(0, 0, 0, .1);
+  --fab-shadow: 0 4px 20px rgba(0, 0, 0, .05);
+  --fab-glow: 0 0 20px rgba(0, 0, 0, .15);
+  --fab-dropdown: 0 10px 40px rgba(0, 0, 0, .1);
 }
 
 * { box-sizing: border-box; }
@@ -156,37 +173,52 @@ tr.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -
 dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: min(520px, calc(100vw - 32px)); overflow-x: hidden; }
 dialog::backdrop { background: rgba(0,0,0,.5); }
 
-/* Floating language switch (panel.js mountLangDock). Parked with ~18px of the circle showing. */
-.lang-dock {
-  position: fixed; right: 18px; bottom: 18px; z-index: 50; display: flex; align-items: center; gap: 10px;
-  transform: translateX(52px); /* circle width: leaves its left 18px on screen */ transition: transform .35s cubic-bezier(.34, 1.56, .64, 1);
+/* Floating menu (panel.js mountFabMenu), a copy of dragonminez.com's FloatingMenu. */
+.fab-menu { position: fixed; right: 24px; bottom: 24px; z-index: 60; display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+.fab-options {
+  display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; transform-origin: bottom;
+  opacity: 0; transform: scale(.5); transition: opacity .3s, transform .3s;
 }
-.lang-dock.near { transform: none; }
-.lang-fab {
-  position: relative; width: 52px; height: 52px; padding: 0; border-radius: 50%; overflow: hidden; cursor: pointer;
-  border: 2px solid var(--surface); box-shadow: 0 4px 14px rgba(0, 0, 0, .35), 0 0 0 1px var(--border);
-  transition: transform .2s ease, box-shadow .2s ease;
+.fab-menu.open .fab-options { opacity: 1; transform: none; pointer-events: auto; }
+.fab {
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0; padding: 0; cursor: pointer; pointer-events: auto;
+  background: var(--fab-fg); color: var(--fab-bg); border: 1px solid var(--fab-glass); box-shadow: var(--fab-shadow);
+  border-radius: 1.25rem; transition: all .3s;
 }
-.lang-dock.near .lang-fab:hover { transform: scale(1.08); box-shadow: 0 6px 18px rgba(0, 0, 0, .4), 0 0 0 2px var(--accent); }
-.lang-fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.flag { position: absolute; inset: 0; transition: filter .2s ease; }
-.flag.us { background: repeating-linear-gradient(#b22234 0 7.69%, #fff 7.69% 15.38%); }
-.flag.us::before {
-  content: ""; position: absolute; left: 0; top: 0; width: 50%; height: 54%;
-  background: radial-gradient(circle, #fff 22%, transparent 30%) 0 0 / 25% 25% #3c3b6e;
+.fab:hover { transform: scale(1.05); }
+.fab:active { transform: scale(.95); }
+.fab:focus-visible, .fab-flag:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.fab svg { width: 1em; height: 1em; fill: currentColor; transition: transform .3s; }
+.fab.option { width: 48px; height: 48px; font-size: 28px; }
+.fab.option:hover { border-radius: 999px; opacity: .9; border-color: var(--fab-glass-strong); }
+.fab.main { width: 56px; height: 56px; font-size: 36px; }
+.fab-menu.open .fab.main { background: var(--fab-elevated); color: var(--fab-fg); box-shadow: var(--fab-glow); border-color: transparent; border-radius: 999px; }
+.fab-menu.open .fab.main svg { transform: rotate(90deg); }
+.fab-lang-row { position: relative; display: flex; align-items: center; justify-content: flex-end; }
+.fab-langs {
+  position: absolute; right: 56px; margin-right: 12px; height: 56px; width: 56px; padding: 0 4px;
+  display: flex; align-items: center; justify-content: space-between; transform-origin: right;
+  background: var(--fab-fg); border: 1px solid var(--fab-glass); border-radius: 999px; box-shadow: var(--fab-dropdown);
+  opacity: 0; transform: translateX(16px) scale(.75); pointer-events: none; transition: all .3s;
 }
-.flag.es { background: linear-gradient(#aa151b 0 25%, #f1bf00 25% 75%, #aa151b 75%); clip-path: polygon(100% 0, 100% 100%, 0 100%); }
-.lang-dock[data-lang="en"] .flag.us, .lang-dock[data-lang="es"] .flag.es { filter: grayscale(.7) brightness(.75); }
-.lang-tip {
-  position: relative; padding: 6px 12px; border-radius: 999px; white-space: nowrap; font-size: 13px; font-weight: 600;
-  background: var(--surface); color: var(--text); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, .25);
-  opacity: 0; transform: translateX(8px) scale(.9); transition: opacity .2s ease, transform .2s ease; pointer-events: none;
+.fab-langs.open { width: 108px; padding: 0 8px; opacity: 1; transform: none; pointer-events: auto; }
+.fab-flag {
+  width: 40px; height: 40px; flex-shrink: 0; padding: 0; overflow: hidden; cursor: pointer; border-radius: 50%;
+  background: none; border: 2px solid transparent; box-shadow: 0 1px 2px rgba(0, 0, 0, .05); transition: all .15s;
 }
-.lang-tip::after {
-  content: ""; position: absolute; right: -5px; top: 50%; width: 8px; height: 8px; margin-top: -4px; transform: rotate(45deg);
-  background: var(--surface); border-top: 1px solid var(--border); border-right: 1px solid var(--border);
+.fab-flag img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.fab-flag:hover { transform: scale(1.05); border-color: color-mix(in srgb, var(--fab-bg) 40%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--fab-bg) 10%, transparent); }
+.fab-flag.active { transform: scale(1.1); border-color: var(--fab-bg); box-shadow: 0 0 0 4px color-mix(in srgb, var(--fab-bg) 20%, transparent); }
+/* Tooltip above each button, like the site's Tooltip (position top). */
+.fab[data-tip], .fab-flag[data-tip] { position: relative; overflow: visible; }
+.fab-flag[data-tip] img { border-radius: 50%; }
+:is(.fab, .fab-flag)[data-tip]::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%) scale(.95);
+  padding: 6px 12px; border-radius: 8px; white-space: nowrap; font: 500 14px/20px var(--font);
+  background: var(--fab-surface); color: var(--fab-fg); border: 1px solid var(--fab-glass); box-shadow: var(--fab-dropdown);
+  opacity: 0; pointer-events: none; transition: opacity .2s ease-out, transform .2s ease-out;
 }
-.lang-dock.near .lang-tip { opacity: 1; transform: none; transition-delay: .1s; }
+:is(.fab, .fab-flag)[data-tip]:hover::after { opacity: 1; transform: translateX(-50%) scale(1); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

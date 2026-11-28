@@ -71,7 +71,7 @@ MODULES = (
 )
 
 CSP = (
-    "default-src 'self'; img-src 'self' data: https://cdn.discordapp.com https://media.discordapp.net; "
+    "default-src 'self'; img-src 'self' data: https://cdn.discordapp.com https://media.discordapp.net https://flagcdn.com; "
     "style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
     # The login form's 302 to Discord counts as a form action: without discord.com the button does nothing.
     "base-uri 'none'; form-action 'self' https://discord.com"

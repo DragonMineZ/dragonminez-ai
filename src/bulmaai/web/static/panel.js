@@ -42,7 +42,7 @@ const Panel = (() => {
     lang = LANGS[next] ? next : "en";
     try { localStorage.setItem(LANG_KEY, lang); } catch { /* private mode */ }
     translateStatic();
-    labelLangDock();
+    labelFabMenu();
     if (me) {
       document.getElementById("me-tier").textContent = t(me.tier);
       route();
@@ -373,43 +373,76 @@ const Panel = (() => {
     if (view.isConnected) main.focus({ preventScroll: true });
   }
 
-  // Floating language switch: parked mostly off-screen bottom-right, slides in when the pointer
-  // gets near (or it gets focus/tapped). Both flags show; the current language's half is dimmed.
-  const langDock = h("div", { class: "lang-dock" },
-    h("span", { class: "lang-tip", "aria-hidden": "true" }),
-    h("button", { class: "lang-fab", type: "button" }, h("span", { class: "flag us" }), h("span", { class: "flag es" })));
-  const LANG_NEAR_PX = 150;
+  // Floating menu, copied from dragonminez.com (FloatingMenu.tsx): gear opens the theme and language buttons,
+  // the language button slides out a pill of flags. Icons are Material Symbols paths (the CSP blocks Google Fonts).
+  const THEME_KEY = "panel.theme";
+  const ICONS = {
+    settings: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
+    translate: "M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z",
+    light_mode: "M12 9c1.65 0 3 1.35 3 3s-1.35 3-3 3-3-1.35-3-3 1.35-3 3-3m0-2c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 0 0-1.41 0 .996.996 0 0 0 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 0 0-1.41 0 .996.996 0 0 0 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 0 0 0-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 0 0 0-1.41.996.996 0 0 0-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36a.996.996 0 0 0 0-1.41.996.996 0 0 0-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z",
+    dark_mode: "M9.37 5.51c-.18.64-.27 1.31-.27 1.99 0 4.08 3.32 7.4 7.4 7.4.68 0 1.35-.09 1.99-.27C17.45 17.19 14.93 19 12 19c-3.86 0-7-3.14-7-7 0-2.93 1.81-5.45 4.37-6.49zM12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z",
+  };
+  const FLAGS = [["es", "es", "Español"], ["en", "us", "English"]];  // [lang, flagcdn code, name]
 
-  function labelLangDock() {
-    const text = lang === "es" ? "Cambia a inglés" : "Change to Spanish";
-    langDock.dataset.lang = lang;
-    langDock.firstChild.textContent = text;
-    langDock.lastChild.setAttribute("aria-label", text);
+  let dark = (() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })();
+  dark = dark ? dark === "dark" : !matchMedia("(prefers-color-scheme: light)").matches;
+  const applyTheme = () => { document.documentElement.dataset.theme = dark ? "dark" : "light"; };
+  applyTheme();
+
+  function icon(name) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", ICONS[name]);
+    svg.append(path);
+    return svg;
   }
 
-  function mountLangDock() {
-    labelLangDock();
-    const near = (on) => langDock.classList.toggle("near", on);
-    const fab = langDock.lastChild;
-    document.addEventListener("pointermove", (e) => {
-      if (e.pointerType !== "mouse") return;
-      near(Math.hypot(innerWidth - e.clientX, innerHeight - e.clientY) < LANG_NEAR_PX);
-    }, { passive: true });
-    fab.addEventListener("focus", () => { if (fab.matches(":focus-visible")) near(true); });
-    fab.addEventListener("blur", () => near(false));
-    document.addEventListener("pointerdown", (e) => {
-      if (e.pointerType !== "mouse" && !langDock.contains(e.target)) near(false);
+  const fabTheme = h("button", { class: "fab option", type: "button" });
+  const fabLang = h("button", { class: "fab option", type: "button", "aria-expanded": "false" }, icon("translate"));
+  const fabMain = h("button", { class: "fab main", type: "button", "aria-expanded": "false" }, icon("settings"));
+  const flagButtons = FLAGS.map(([code, flag, name]) =>
+    h("button", { class: "fab-flag", type: "button", "aria-label": name, "data-tip": name, onclick: () => setLang(code) },
+      h("img", { src: `https://flagcdn.com/w40/${flag}.png`, alt: "" })));
+  const langPill = h("div", { class: "fab-langs" }, flagButtons);
+  const fabMenu = h("div", { class: "fab-menu" },
+    h("div", { class: "fab-options" }, fabTheme, h("div", { class: "fab-lang-row" }, langPill, fabLang)),
+    fabMain);
+
+  function labelFabMenu() {
+    const open = fabMenu.classList.contains("open");
+    fabTheme.replaceChildren(icon(dark ? "light_mode" : "dark_mode"));
+    fabTheme.dataset.tip = t(dark ? "Light theme" : "Dark theme");
+    fabLang.dataset.tip = t("Language");
+    fabMain.dataset.tip = t(open ? "Close" : "Options");
+    for (const el of [fabTheme, fabLang, fabMain]) el.setAttribute("aria-label", el.dataset.tip);
+    fabMain.setAttribute("aria-expanded", String(open));
+    fabLang.setAttribute("aria-expanded", String(langPill.classList.contains("open")));
+    FLAGS.forEach(([code], i) => flagButtons[i].classList.toggle("active", code === lang));
+    for (const el of [fabTheme, fabLang]) el.tabIndex = open ? 0 : -1;
+    for (const el of flagButtons) el.tabIndex = open && langPill.classList.contains("open") ? 0 : -1;
+  }
+
+  function mountFabMenu() {
+    fabMain.addEventListener("click", () => {
+      const open = fabMenu.classList.toggle("open");
+      if (!open) langPill.classList.remove("open");
+      labelFabMenu();
     });
-    // Touch has no hover: the first tap on the peeking half pulls it out, the second switches.
-    fab.addEventListener("click", () => {
-      if (!langDock.classList.contains("near")) { near(true); return; }
-      setLang(lang === "es" ? "en" : "es");
+    fabLang.addEventListener("click", () => { langPill.classList.toggle("open"); labelFabMenu(); });
+    fabTheme.addEventListener("click", () => {
+      dark = !dark;
+      try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch { /* private mode */ }
+      applyTheme();
+      labelFabMenu();
     });
-    document.body.append(langDock);
+    labelFabMenu();
+    document.body.append(fabMenu);
   }
 
   async function boot() {
-    mountLangDock();
+    mountFabMenu();
     translateStatic();
     try {
       me = await api("/api/me");
@@ -457,6 +490,11 @@ const Panel = (() => {
     "Support & Community": "Soporte y comunidad",
     "System": "Sistema",
     "Menu": "Menú",
+    "Options": "Opciones",
+    "Close": "Cerrar",
+    "Language": "Idioma",
+    "Light theme": "Tema claro",
+    "Dark theme": "Tema oscuro",
   });
 
   document.addEventListener("DOMContentLoaded", boot);

@@ -152,11 +152,12 @@ class GitHubService:
 
     # ==================== FILE OPERATIONS ====================
 
-    async def get_file(self, path: str, ref: str) -> tuple[str, str]:
+    async def get_file(self, path: str, ref: str, *, strict: bool = False) -> tuple[str, str]:
+        """strict: raise UnicodeDecodeError instead of replacing bad bytes (for files that get written back)."""
         r = await request("GET", f"{self.api}/contents/{path}", headers=await self._headers(), params={"ref": ref})
         r.raise_for_status()
         j = r.json()
-        content = base64.b64decode(j["content"]).decode("utf-8", errors="replace")
+        content = base64.b64decode(j["content"]).decode("utf-8", errors="strict" if strict else "replace")
         return content, j["sha"]
 
     async def list_dir(self, path: str, ref: str) -> list[str]:
@@ -171,7 +172,10 @@ class GitHubService:
             "GET", f"{self.api}/git/trees/{quote(ref, safe='')}", headers=await self._headers(), params={"recursive": "1"}
         )
         r.raise_for_status()
-        return [item["path"] for item in r.json().get("tree", []) if item.get("type") == "blob"]
+        data = r.json()
+        if data.get("truncated"):
+            raise RuntimeError(f"The file tree of {ref} is too big to list in one call")
+        return [item["path"] for item in data.get("tree", []) if item.get("type") == "blob"]
 
     async def put_file(self, *, path: str, branch: str, new_text: str, sha: str, message: str) -> str:
         """Commit straight to `branch`. A stale `sha` gets a 409 instead of clobbering someone else's commit. Returns the commit URL."""
@@ -193,9 +197,13 @@ class GitHubService:
     async def open_pr_with_files(
         self, *, base_sha: str, base: str, branch: str, files: dict[str, bytes], message: str, title: str, body: str
     ) -> str:
-        """One commit on top of base_sha with files (path -> bytes, text or binary) on a new branch, then a PR into
-        base. Returns the PR's URL. Never merges."""
+        """One commit on top of base_sha with files (path -> bytes, text or binary) on branch, then a PR into base.
+        Returns the PR's URL. Safe to retry: an open PR from branch is returned as is, and a branch left over by a
+        failed attempt is moved to the new commit. Never merges."""
         headers = await self._headers()
+        existing = await self.list_prs(state="open", per_page=1, head=f"{self.owner}:{branch}")
+        if existing:
+            return existing[0]["html_url"]
         r = await request("GET", f"{self.api}/git/commits/{base_sha}", headers=headers)
         r.raise_for_status()
         tree = []
@@ -215,10 +223,15 @@ class GitHubService:
             json={"message": message, "tree": made.json()["sha"], "parents": [base_sha]},
         )
         commit.raise_for_status()
+        commit_sha = commit.json()["sha"]
         ref = await request(
-            "POST", f"{self.api}/git/refs", headers=headers,
-            json={"ref": f"refs/heads/{branch}", "sha": commit.json()["sha"]},
+            "POST", f"{self.api}/git/refs", headers=headers, json={"ref": f"refs/heads/{branch}", "sha": commit_sha}
         )
+        if ref.status_code == 422:  # left over from a failed attempt: point it at this commit
+            ref = await request(
+                "PATCH", f"{self.api}/git/refs/heads/{quote(branch, safe='/')}", headers=headers,
+                json={"sha": commit_sha, "force": True},
+            )
         ref.raise_for_status()
         pr = await request(
             "POST", f"{self.api}/pulls", headers=headers, json={"title": title, "head": branch, "base": base, "body": body}

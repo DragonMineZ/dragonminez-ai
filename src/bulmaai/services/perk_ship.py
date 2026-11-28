@@ -7,6 +7,7 @@ and stay manual. Hairstyles: one `register(<next id>, "<code>")` line in HairPre
 Every edit is plain text inserted next to the newest entry of its kind, keeping the file's own line endings, so the
 diff looks like a hand-made one. A person reviews and merges the PR; the bot never merges."""
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -26,6 +27,9 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 MAX_TEXTURE_BYTES = 512 * 1024
 HAIR_CODE = re.compile(r"^DMZF\d+:[A-Za-z0-9_\-]+$")
 MAX_HAIR_CODE = 20_000
+# What a name or Minecraft username may hold before it goes into Java comments, JSON and the PR: no backslash (Java
+# reads \u000a as a line break even inside a // comment), quotes, backticks, @ or control characters.
+SAFE_TEXT = re.compile(r"^[\w .,'&()\-]{1,40}$")
 PIECES = ("chestplate", "leggings", "boots")
 
 
@@ -41,6 +45,21 @@ class Change:
     binaries: dict[str, bytes]
     title: str
     branch: str
+
+
+def _safe(value: str, what: str) -> str:
+    value = value.strip()
+    if not SAFE_TEXT.match(value):
+        raise ShipError(f"The {what} can only use letters, digits, spaces and . , ' & ( ) - _ (40 at most).")
+    return value
+
+
+def _valid_json(text: str, path: str) -> str:
+    try:
+        json.loads(text)
+    except ValueError:
+        raise ShipError(f"The change would break {path.rsplit('/', 1)[-1]}. Add it by hand.") from None
+    return text
 
 
 def item_id(display_name: str) -> str:
@@ -94,7 +113,8 @@ def armor_change(
 ) -> Change:
     """The PR for a custom clothing perk. files: the current text of ARMOR_FILES on the base branch;
     existing_paths: every file on it, so a name whose textures exist already is refused instead of overwriting them."""
-    armor = item_id(display_name)
+    name, patron = _safe(display_name, "armor name"), _safe(patron, "Minecraft username")
+    armor = item_id(name)
     constant = armor.upper() + "_ARMOR"
     for layer in (layer1, layer2):
         if not layer.startswith(PNG_MAGIC):
@@ -105,18 +125,17 @@ def armor_change(
     taken = any(path in existing_paths for path in textures)
     if taken or f'"{armor}_armor"' in files[MAIN_ITEMS] or f" {constant} " in files[MAIN_ITEMS]:
         raise ShipError(f"`{armor}_armor` already exists in the mod. Pick another name.")
-    name = display_name.strip()
     texts = {
         MAIN_ITEMS: _insert_after_last(
             files[MAIN_ITEMS],
-            r"^\s*public static final Map<ArmorItem\.Type, RegistryObject<Item>> \w+ = fullArmorNoHelmetSet\(",
+            r"^\s*public static final Map<ArmorItem\.Type, RegistryObject<Item>> \w+ = fullArmorNoHelmetSet\(.*\);\s*$",
             [f"// {name.upper()} (Patreon: {patron})",
              f'public static final Map<ArmorItem.Type, RegistryObject<Item>> {constant} = '
              f'fullArmorNoHelmetSet("{armor}_armor", "{armor}");'],
             "the armor registration",
         ),
         ITEM_MODELS: _insert_after_last(
-            files[ITEM_MODELS], r"^\s*generateArmorSetModels\(MainItems\.", [f"generateArmorSetModels(MainItems.{constant});"],
+            files[ITEM_MODELS], r"^\s*generateArmorSetModels\(MainItems\.\w+\);\s*$", [f"generateArmorSetModels(MainItems.{constant});"],
             "the item model",
         ),
         LANG: _insert_after_last(
@@ -128,6 +147,8 @@ def armor_change(
     }
     for piece, path in TAGS.items():
         texts[path] = _add_tag_entry(files[path], f"dragonminez:{armor}_armor_{piece}")
+    for path in (LANG, *TAGS.values()):
+        _valid_json(texts[path], path)
     binaries = dict(zip(textures, (layer1, layer2)))
     return Change(texts, binaries, f"feat: patreon armor {name}", f"perk/{claim_id}-{armor}")
 
@@ -140,7 +161,7 @@ def hair_change(text: str, *, preset_name: str, code: str, patron: str, claim_id
     ids = [int(found) for found in re.findall(r"^\s*register\((\d+),\s*\"", text, flags=re.M)]
     if not ids:
         raise ShipError("Couldn't find the hair presets in HairPresets.java. Add it by hand.")
-    name = re.sub(r"[\r\n]+", " ", preset_name).strip()
+    name, patron = _safe(preset_name, "preset name"), _safe(patron, "Minecraft username")
     new_text = _insert_after_last(
         text, r'^\s*register\(\d+,\s*"', [f"// {name} Patreon ({patron})", f'register({max(ids) + 1}, "{code}");'],
         "the hair preset",
@@ -150,6 +171,7 @@ def hair_change(text: str, *, preset_name: str, code: str, patron: str, claim_id
 
 
 def _body(*, perk_label: str, patron: str, ticket_url: str, made_by: str) -> str:
+    made_by = re.sub(r"[^\w .'\-]", "", made_by) or "the perk team"  # nothing GitHub would turn into a mention
     return (
         f"Patreon perk: **{perk_label}** for `{patron}`, made by {made_by}.\n\n"
         f"Claim ticket: {ticket_url}\n\n"
@@ -171,24 +193,35 @@ async def open_pr(
     layer1: bytes = b"",
     layer2: bytes = b"",
     code: str = "",
-    suffix: str = "",
 ) -> str:
-    """Reads the files on base, builds the change and opens the PR; its URL. ShipError for anything to fix first."""
+    """Reads the files on base, builds the change and opens the PR; its URL. ShipError for anything to fix first.
+    The branch is fixed per claim and name, so a retry finds the PR it already opened instead of a second one."""
     base_sha = await github.head_sha(base)
+    try:
+        return await _open_pr(
+            github, base, base_sha, claim_id=claim_id, perk=perk, perk_label=perk_label, patron=patron,
+            ticket_url=ticket_url, made_by=made_by, display_name=display_name, layer1=layer1, layer2=layer2, code=code,
+        )
+    except UnicodeDecodeError:
+        raise ShipError("A mod file isn't valid UTF-8, so the bot won't rewrite it. Add it by hand.") from None
+
+
+async def _open_pr(github, base, base_sha, *, claim_id, perk, perk_label, patron, ticket_url, made_by, display_name,
+                   layer1, layer2, code) -> str:
     if perk == "clothing":
-        files = {path: (await github.get_file(path, base_sha))[0] for path in ARMOR_FILES}
+        files = {path: (await github.get_file(path, base_sha, strict=True))[0] for path in ARMOR_FILES}
         existing = frozenset(await github.list_tree(base_sha))
         change = armor_change(
             files, display_name=display_name, layer1=layer1, layer2=layer2, patron=patron, claim_id=claim_id,
             existing_paths=existing,
         )
     elif perk == "hairstyle":
-        text, _sha = await github.get_file(HAIR_PRESETS, base_sha)
+        text, _sha = await github.get_file(HAIR_PRESETS, base_sha, strict=True)
         change = hair_change(text, preset_name=display_name, code=code, patron=patron, claim_id=claim_id)
     else:
         raise ShipError("Only custom clothing and hairstyles can be shipped from Discord.")
     files = {path: text.encode("utf-8") for path, text in change.texts.items()} | change.binaries
     return await github.open_pr_with_files(
-        base_sha=base_sha, base=base, branch=change.branch + suffix, files=files, message=change.title,
+        base_sha=base_sha, base=base, branch=change.branch, files=files, message=change.title,
         title=change.title, body=_body(perk_label=perk_label, patron=patron, ticket_url=ticket_url, made_by=made_by),
     )

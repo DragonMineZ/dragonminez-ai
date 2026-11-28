@@ -78,6 +78,7 @@ class ClaimButtonTests(unittest.IsolatedAsyncioTestCase):
     async def click(self, synced, claims):
         interaction = _click()
         with patch.object(patreon_members, "get_member_by_discord", AsyncMock(return_value=synced)), \
+                patch.object(patreon_perks, "prune_stale", AsyncMock()), \
                 patch.object(patreon_perks, "list_claims", AsyncMock(return_value=claims)):
             await _cog().on_perk_claim(interaction)
         return interaction
@@ -102,10 +103,13 @@ class ClaimButtonTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SubmitTests(unittest.IsolatedAsyncioTestCase):
-    async def submit(self, *, synced=None, claim_id=7, channel="made"):
+    async def submit(self, *, synced=None, claim_id=7, channel="made", username="Goku"):
         cog = _cog()
         ticket_channel = SimpleNamespace(id=900, send=AsyncMock())
-        cog.create_ticket = AsyncMock(return_value=ticket_channel if channel == "made" else None)
+        if isinstance(channel, Exception):
+            cog.create_ticket = AsyncMock(side_effect=channel)
+        else:
+            cog.create_ticket = AsyncMock(return_value=ticket_channel if channel == "made" else None)
         interaction = SimpleNamespace(
             user=member(OWNER_ID, ES_ROLE),
             response=SimpleNamespace(defer=AsyncMock()),
@@ -113,13 +117,17 @@ class SubmitTests(unittest.IsolatedAsyncioTestCase):
         )
         reference = SimpleNamespace(to_file=AsyncMock(return_value="file"))
         with patch.object(patreon_members, "get_member_by_discord", AsyncMock(return_value=synced or _synced())), \
+                patch.object(patreon_perks, "prune_stale", AsyncMock()), \
                 patch.object(patreon_perks, "claim", AsyncMock(return_value=claim_id)) as claim, \
                 patch.object(patreon_perks, "attach_ticket", AsyncMock()) as attach, \
                 patch.object(patreon_perks, "release", AsyncMock()) as release:
-            await cog.submit_perk_claim(
-                interaction, perk="hairstyle", minecraft_username="Goku", details="spiky, blue",
-                references=[reference], language="es",
-            )
+            try:
+                await cog.submit_perk_claim(
+                    interaction, perk="hairstyle", minecraft_username=username, details="spiky, blue",
+                    references=[reference], language="es",
+                )
+            except RuntimeError:
+                pass
         return SimpleNamespace(cog=cog, interaction=interaction, channel=ticket_channel, claim=claim, attach=attach, release=release)
 
     async def test_a_claim_opens_a_team_only_ticket_and_pings_the_makers(self):
@@ -149,6 +157,17 @@ class SubmitTests(unittest.IsolatedAsyncioTestCase):
         done = await self.submit(channel=None)
         done.release.assert_awaited_once_with(7)
         done.attach.assert_not_awaited()
+
+    async def test_a_crash_while_opening_the_ticket_gives_the_claim_back_too(self):
+        done = await self.submit(channel=RuntimeError("token expired"))
+        done.release.assert_awaited_once_with(7)
+
+    async def test_only_real_minecraft_names_go_through(self):
+        for name in ("\\u000aint a;", "has space", "ab", "x" * 17, "Goku`@x"):
+            with self.subTest(name):
+                done = await self.submit(username=name)
+                done.claim.assert_not_awaited()
+                self.assertIn("usuario de Minecraft", done.interaction.edit_original_response.await_args.kwargs["content"])
 
 
 class ButtonIdTests(unittest.TestCase):

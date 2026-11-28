@@ -131,3 +131,18 @@ async def set_pr_url(claim_id: int, url: str) -> bool:
             claim_id, url,
         )
     return done.endswith(" 1")
+
+
+async def prune_stale(discord_user_id: int) -> None:
+    """Drops their waiting claims whose ticket is no longer open (closed or deleted before anyone decided), so a
+    perk never stays blocked by a ticket that's gone. Decided claims are never touched."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            DELETE FROM patreon_perk_claims c
+            WHERE c.discord_user_id = $1 AND c.status = 'pending' AND c.ticket_channel_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.channel_id = c.ticket_channel_id AND t.status = 'open')
+            """,
+            discord_user_id,
+        )

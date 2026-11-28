@@ -68,7 +68,8 @@ class ArmorChangeTests(unittest.TestCase):
             "must be PNG": dict(layer1=b"GIF89a"),
             "over 512 KB": dict(layer2=PNG + b"x" * perk_ship.MAX_TEXTURE_BYTES),
             "already exists": dict(display_name="Zamasu"),
-            "must start with a letter": dict(display_name="!!"),
+            "must start with a letter": dict(display_name="123 Gi"),
+            "can only use": dict(display_name="!!"),
         }
         for message, overrides in cases.items():
             with self.subTest(message), self.assertRaisesRegex(ShipError, message):
@@ -76,6 +77,26 @@ class ArmorChangeTests(unittest.TestCase):
         taken = frozenset({"src/main/resources/assets/dragonminez/textures/armor/zamasu_gi_layer1.png"})
         with self.assertRaisesRegex(ShipError, "already exists"):
             _armor(display_name="Zamasu Gi", existing_paths=taken)
+
+    def test_unsafe_names_never_reach_the_source(self):
+        for overrides in (dict(display_name=r"Evil \u000a Gi"), dict(patron=r"Goku\u000aint"), dict(display_name='Say "hi"'),
+                          dict(patron="a`@b")):
+            with self.subTest(overrides), self.assertRaisesRegex(ShipError, "can only use"):
+                _armor(**overrides)
+        with self.assertRaisesRegex(ShipError, "can only use"):
+            perk_ship.hair_change(HAIR, preset_name=r"x\u000ay", code="DMZF1:a", patron="Goku", claim_id=1)
+
+    def test_a_change_that_would_break_json_is_refused(self):
+        last_key = FILES | {perk_ship.LANG: '{\n  "item.dragonminez.zamasu_armor_boots": "Zamasu Boots"\n}\n'}
+        with self.assertRaisesRegex(ShipError, "would break en_us.json"):
+            perk_ship.armor_change(last_key, display_name="New Gi", layer1=PNG, layer2=PNG, patron="x", claim_id=1)
+
+    def test_a_statement_split_over_lines_is_not_an_anchor(self):
+        split = FILES | {
+            perk_ship.MAIN_ITEMS: '\tpublic static final Map<ArmorItem.Type, RegistryObject<Item>> A = fullArmorNoHelmetSet(\n\t\t"a_armor", "a");\n'
+        }
+        with self.assertRaisesRegex(ShipError, "armor registration"):
+            perk_ship.armor_change(split, display_name="New Gi", layer1=PNG, layer2=PNG, patron="x", claim_id=1)
 
     def test_a_file_that_changed_shape_is_refused(self):
         broken = FILES | {perk_ship.ITEM_MODELS: "nothing here\n"}
@@ -102,7 +123,7 @@ class OpenPrTests(unittest.IsolatedAsyncioTestCase):
     def github(self):
         return SimpleNamespace(
             head_sha=AsyncMock(return_value="base1"),
-            get_file=AsyncMock(side_effect=lambda path, ref: (FILES.get(path, HAIR), "blob")),
+            get_file=AsyncMock(side_effect=lambda path, ref, strict=False: (FILES.get(path, HAIR), "blob")),
             list_tree=AsyncMock(return_value=[]),
             open_pr_with_files=AsyncMock(return_value="https://github.com/o/r/pull/9"),
         )
@@ -112,12 +133,12 @@ class OpenPrTests(unittest.IsolatedAsyncioTestCase):
         url = await perk_ship.open_pr(
             github, base="main", claim_id=7, perk="clothing", perk_label="Custom clothing", patron="Goku",
             ticket_url="https://discord.com/channels/1/900", made_by="Yuse", display_name="Ultra Saiyan Gi",
-            layer1=PNG, layer2=PNG, suffix="-ab12",
+            layer1=PNG, layer2=PNG,
         )
         self.assertEqual(url, "https://github.com/o/r/pull/9")
         self.assertTrue(all(call.args[1] == "base1" for call in github.get_file.await_args_list))
         kwargs = github.open_pr_with_files.await_args.kwargs
-        self.assertEqual((kwargs["base_sha"], kwargs["base"], kwargs["branch"]), ("base1", "main", "perk/7-ultra_saiyan_gi-ab12"))
+        self.assertEqual((kwargs["base_sha"], kwargs["base"], kwargs["branch"]), ("base1", "main", "perk/7-ultra_saiyan_gi"))
         self.assertEqual(len(kwargs["files"]), 8)  # 6 text files + 2 textures
         self.assertTrue(all(isinstance(content, bytes) for content in kwargs["files"].values()))
         self.assertIn("the bot never merges", kwargs["body"])
@@ -132,6 +153,7 @@ class OpenPrTests(unittest.IsolatedAsyncioTestCase):
 class GitHubPrTests(unittest.IsolatedAsyncioTestCase):
     async def test_one_commit_on_a_new_branch_then_the_pr(self):
         service = GitHubService(auth=SimpleNamespace(get_installation_token=AsyncMock(return_value="t")), owner="o", repo="r")
+        service.list_prs = AsyncMock(return_value=[])
         replies = iter([
             {"tree": {"sha": "tree0"}}, {"sha": "blob1"}, {"sha": "tree1"}, {"sha": "commit1"}, {}, {"html_url": "https://pr"},
         ])
@@ -155,6 +177,44 @@ class GitHubPrTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[3][2]["parents"], ["base1"])
         self.assertEqual(calls[4][2], {"ref": "refs/heads/perk/1-x", "sha": "commit1"})
         self.assertEqual(calls[5][2]["head"], "perk/1-x")
+
+
+class GitHubRetryTests(unittest.IsolatedAsyncioTestCase):
+    def service(self):
+        return GitHubService(auth=SimpleNamespace(get_installation_token=AsyncMock(return_value="t")), owner="o", repo="r")
+
+    async def test_a_retry_returns_the_pr_already_open(self):
+        service = self.service()
+        service.list_prs = AsyncMock(return_value=[{"html_url": "https://pr/1"}])
+        with patch("bulmaai.github.github_service.request", AsyncMock()) as request:
+            url = await service.open_pr_with_files(base_sha="b", base="main", branch="perk/1-x", files={}, message="m", title="t", body="b")
+        self.assertEqual(url, "https://pr/1")
+        request.assert_not_awaited()
+        service.list_prs.assert_awaited_once_with(state="open", per_page=1, head="o:perk/1-x")
+
+    async def test_a_leftover_branch_is_moved_to_the_new_commit(self):
+        service = self.service()
+        service.list_prs = AsyncMock(return_value=[])
+        replies = iter([(200, {"tree": {"sha": "t0"}}), (200, {"sha": "t1"}), (200, {"sha": "c1"}), (422, {}), (200, {}),
+                        (201, {"html_url": "https://pr/2"})])
+        calls = []
+
+        async def fake_request(method, url, **kwargs):
+            calls.append((method, url.rsplit("/repos/o/r", 1)[-1], kwargs.get("json")))
+            status, payload = next(replies)
+            return MagicMock(status_code=status, json=lambda: payload)
+
+        with patch("bulmaai.github.github_service.request", fake_request):
+            url = await service.open_pr_with_files(base_sha="b", base="main", branch="perk/1-x", files={}, message="m", title="t", body="b")
+        self.assertEqual(url, "https://pr/2")
+        self.assertEqual(calls[4][:2], ("PATCH", "/git/refs/heads/perk/1-x"))
+        self.assertEqual(calls[4][2], {"sha": "c1", "force": True})
+
+    async def test_a_truncated_tree_is_an_error(self):
+        service = self.service()
+        reply = MagicMock(json=lambda: {"truncated": True, "tree": []})
+        with patch("bulmaai.github.github_service.request", AsyncMock(return_value=reply)), self.assertRaises(RuntimeError):
+            await service.list_tree("main")
 
 
 class ShipCardTests(unittest.IsolatedAsyncioTestCase):
@@ -199,9 +259,10 @@ class SubmitShipTests(unittest.IsolatedAsyncioTestCase):
             followup=SimpleNamespace(send=AsyncMock()),
         )
         uploads = [SimpleNamespace(read=AsyncMock(return_value=PNG)) for _ in range(files)]
+        stored = getattr(self, "stored", True)
         open_pr = AsyncMock(side_effect=outcome) if isinstance(outcome, Exception) else AsyncMock(return_value=outcome)
         with patch.object(patreon_perks, "get_claim", AsyncMock(return_value=claim)), \
-                patch.object(patreon_perks, "set_pr_url", AsyncMock(return_value=True)) as set_pr, \
+                patch.object(patreon_perks, "set_pr_url", AsyncMock(return_value=stored)) as set_pr, \
                 patch.object(perk_ship, "open_pr", open_pr), \
                 patch.object(cog_module, "mod_repo_github", return_value="gh"), \
                 patch.object(cog_module.notion, "update_page", AsyncMock()) as update_page, \
@@ -213,7 +274,6 @@ class SubmitShipTests(unittest.IsolatedAsyncioTestCase):
         done = await self.ship()
         kwargs = done.open_pr.await_args.kwargs
         self.assertEqual((kwargs["perk"], kwargs["layer1"], kwargs["base"], kwargs["patron"]), ("clothing", PNG, "main", "Goku"))
-        self.assertTrue(kwargs["suffix"].startswith("-"))
         done.set_pr.assert_awaited_once_with(7, "https://github.com/o/r/pull/9")
         self.assertIn("[Mod pull request](https://github.com/o/r/pull/9)", text(done.message.edit.await_args.kwargs["view"]))
         done.update_page.assert_awaited_once_with("ntok", "abc-def", status="In review", github="https://github.com/o/r/pull/9")
@@ -234,6 +294,13 @@ class SubmitShipTests(unittest.IsolatedAsyncioTestCase):
     async def test_clothing_needs_both_layers(self):
         done = await self.ship(files=1)
         done.open_pr.assert_not_awaited()
+
+    async def test_a_claim_that_changed_meanwhile_is_reported_not_overwritten(self):
+        self.stored = False
+        done = await self.ship()
+        self.assertIn("changed meanwhile", done.interaction.followup.send.await_args.args[0])
+        done.message.edit.assert_not_awaited()
+        done.interaction.channel.send.assert_not_awaited()
 
     async def test_only_the_perk_team_ships(self):
         done = await self.ship(user=42)

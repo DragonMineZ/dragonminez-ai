@@ -10,7 +10,6 @@ import html as html_lib
 import io
 import logging
 import re
-import secrets
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
@@ -123,6 +122,7 @@ from bulmaai.utils.permissions import has_patreon_access_role, is_admin, is_brun
 log = logging.getLogger(__name__)
 
 PATREON_CATEGORY_KEY = "patreon"
+MINECRAFT_NAME = re.compile(r"[A-Za-z0-9_]{3,16}")  # it ends up in mod source comments and the PR
 
 AI_COG = "AITicketsCog"
 # ponytail: newest 1000 messages, same cap as the AI transcript; page through history if tickets outgrow it.
@@ -904,6 +904,7 @@ class TicketsCog(ReloadableCog):
         if not patreon_perks.can_claim(member, self.settings.patreon_perk_tier_titles):
             text = i18n_t(patreon_perks_ui.TEXT, "not_eligible", language)
             return await interaction.response.send_message(text, ephemeral=True)
+        await patreon_perks.prune_stale(interaction.user.id)
         claims = await patreon_perks.list_claims(interaction.user.id)
         claimed = {claim.perk for claim in claims}
         left = [perk for perk in patreon_perks.PERKS if perk not in claimed]
@@ -933,6 +934,10 @@ class TicketsCog(ReloadableCog):
         ):
             text = i18n_t(patreon_perks_ui.TEXT, "not_eligible", language)
             return await interaction.edit_original_response(content=text)
+        if not MINECRAFT_NAME.fullmatch(minecraft_username):
+            text = i18n_t(patreon_perks_ui.TEXT, "bad_username", language)
+            return await interaction.edit_original_response(content=text)
+        await patreon_perks.prune_stale(interaction.user.id)
         claim_id = await patreon_perks.claim(
             discord_user_id=interaction.user.id, perk=perk, minecraft_username=minecraft_username, details=details
         )
@@ -946,9 +951,13 @@ class TicketsCog(ReloadableCog):
                 files.append(await attachment.to_file())
             except Exception:
                 log.info("Could not carry a perk reference over", extra={"user_id": interaction.user.id})
-        channel = await self.create_ticket(
-            interaction, CATEGORIES[PATREON_CATEGORY_KEY], answers, files=files, language=language, team_only=True
-        )
+        try:
+            channel = await self.create_ticket(
+                interaction, CATEGORIES[PATREON_CATEGORY_KEY], answers, files=files, language=language, team_only=True
+            )
+        except BaseException:
+            await patreon_perks.release(claim_id)  # never leave a claim without a ticket blocking the perk
+            raise
         if channel is None:
             return await patreon_perks.release(claim_id)
         await patreon_perks.attach_ticket(claim_id, channel.id)
@@ -1055,7 +1064,6 @@ class TicketsCog(ReloadableCog):
                     layer1=contents[0] if claim.perk == "clothing" else b"",
                     layer2=contents[1] if claim.perk == "clothing" else b"",
                     code=code,
-                    suffix=f"-{secrets.token_hex(2)}",
                 )
             except perk_ship.ShipError as exc:
                 return await reply(str(exc), ephemeral=True)
@@ -1065,7 +1073,8 @@ class TicketsCog(ReloadableCog):
                     "GitHub refused the pull request. Check the bot's access to the mod repo, or add it by hand.",
                     ephemeral=True,
                 )
-            await patreon_perks.set_pr_url(claim_id, url)
+            if not await patreon_perks.set_pr_url(claim_id, url):
+                return await reply(f"This claim changed meanwhile; the pull request is {url}", ephemeral=True)
             shipped = replace(claim, pr_url=url)
             if interaction.message is not None:
                 await self._safely(

@@ -144,6 +144,15 @@ class OpenPrTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("the bot never merges", kwargs["body"])
         self.assertNotIn("@", kwargs["body"])  # no GitHub pings
 
+    async def test_test_users_get_a_draft_marked_test(self):
+        github = self.github()
+        await perk_ship.open_pr(
+            github, base="main", claim_id=7, perk="hairstyle", perk_label="Custom hairstyle", patron="Goku",
+            ticket_url="x", made_by="Yuse", display_name="Spiky", code="DMZF1:abc", test=True,
+        )
+        kwargs = github.open_pr_with_files.await_args.kwargs
+        self.assertEqual((kwargs["title"], kwargs["draft"]), ("[TEST] feat: patreon hair preset Spiky", True))
+
     async def test_npc_skins_cant_ship(self):
         with self.assertRaises(ShipError):
             await perk_ship.open_pr(self.github(), base="main", claim_id=1, perk="npc_skin", perk_label="x", patron="x",
@@ -274,6 +283,7 @@ class SubmitShipTests(unittest.IsolatedAsyncioTestCase):
         done = await self.ship()
         kwargs = done.open_pr.await_args.kwargs
         self.assertEqual((kwargs["perk"], kwargs["layer1"], kwargs["base"], kwargs["patron"]), ("clothing", PNG, "main", "Goku"))
+        self.assertFalse(kwargs["test"])
         done.set_pr.assert_awaited_once_with(7, "https://github.com/o/r/pull/9")
         self.assertIn("[Mod pull request](https://github.com/o/r/pull/9)", text(done.message.edit.await_args.kwargs["view"]))
         done.update_page.assert_awaited_once_with("ntok", "abc-def", status="In review", github="https://github.com/o/r/pull/9")

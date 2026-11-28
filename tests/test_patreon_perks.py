@@ -250,3 +250,32 @@ class DecisionTests(unittest.IsolatedAsyncioTestCase):
         done.create.assert_not_awaited()
         self.assertIn("Accepted by <@999>", text(done.interaction.edit_original_response.await_args.kwargs["view"]))
         done.interaction.channel.send.assert_not_awaited()
+
+
+class TestUserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_test_user_is_an_active_paid_perk_patron_without_patreon_or_a_sync(self):
+        cog = _cog()
+        cog.settings.patreon_test_user_ids = (OWNER_ID,)
+        interaction = SimpleNamespace(
+            user=member(OWNER_ID, ES_ROLE),
+            data={"values": ["patreon"]},
+            message=SimpleNamespace(flags=discord.MessageFlags(ephemeral=False), edit=AsyncMock()),
+            channel=make_channel(),
+            response=SimpleNamespace(send_modal=AsyncMock(), send_message=AsyncMock()),
+        )
+        with patch.object(patreon_members, "has_synced", AsyncMock(return_value=False)), \
+                patch.object(patreon_members, "get_member_by_discord", AsyncMock(return_value=None)) as real_lookup:
+            await cog.on_panel_select(interaction)
+        real_lookup.assert_not_awaited()
+        view = interaction.response.send_message.await_args.kwargs["view"]
+        self.assertEqual([b.custom_id for b in buttons(view)], ["patreon_perk:es", "ticket_form:patreon:es"])
+        self.assertIn("patrocinador activo (Saiyan)", text(view))
+
+    async def test_others_still_go_through_the_sync(self):
+        settings = SimpleNamespace(patreon_test_user_ids=(1,), patreon_eligible_tier_ids=("t",), patreon_perk_tier_titles=("B",))
+        with patch.object(patreon_members, "get_member_by_discord", AsyncMock(return_value=None)) as real_lookup:
+            self.assertIsNone(await patreon_members.lookup(2, settings))
+            stand_in = await patreon_members.lookup(1, settings)
+        real_lookup.assert_awaited_once_with(2)
+        self.assertEqual((stand_in.member_id, stand_in.tier_ids, stand_in.tier_titles), ("test-1", ("t",), ("B",)))
+        self.assertTrue(patreon_perks.can_claim(stand_in, ("B",)))

@@ -373,6 +373,7 @@ class Settings:
     patreon_eligible_tier_ids: Sequence[str]
     patreon_perk_tier_titles: Sequence[str]
     patreon_perk_user_ids: Sequence[int]
+    patreon_test_user_ids: Sequence[int]
     patreon_oauth_client_id: str | None
     patreon_oauth_client_secret: str | None
     patreon_oauth_redirect_uri: str
@@ -772,6 +773,7 @@ def _build_settings_from_env() -> Settings:
         ),
         patreon_perk_tier_titles=_get_env_str_list("PATREON_PERK_TIER_TITLES", ("Benefactor",)),
         patreon_perk_user_ids=_get_env_int_list("PATREON_PERK_USER_IDS", (403023260012249089,)),  # Yuseix
+        patreon_test_user_ids=_get_env_int_list("PATREON_TEST_USER_IDS", ()),
         patreon_oauth_client_id=_get_env("PATREON_OAUTH_CLIENT_ID"),
         patreon_oauth_client_secret=PATREON_OAUTH_CLIENT_SECRET,
         patreon_oauth_redirect_uri=DEFAULT_PATREON_OAUTH_REDIRECT_URI,

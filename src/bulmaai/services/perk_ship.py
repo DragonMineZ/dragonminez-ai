@@ -193,21 +193,24 @@ async def open_pr(
     layer1: bytes = b"",
     layer2: bytes = b"",
     code: str = "",
+    test: bool = False,
 ) -> str:
     """Reads the files on base, builds the change and opens the PR; its URL. ShipError for anything to fix first.
-    The branch is fixed per claim and name, so a retry finds the PR it already opened instead of a second one."""
+    The branch is fixed per claim and name, so a retry finds the PR it already opened instead of a second one.
+    test: a test user's claim, opened as a draft titled [TEST] so nobody merges it."""
     base_sha = await github.head_sha(base)
     try:
         return await _open_pr(
             github, base, base_sha, claim_id=claim_id, perk=perk, perk_label=perk_label, patron=patron,
             ticket_url=ticket_url, made_by=made_by, display_name=display_name, layer1=layer1, layer2=layer2, code=code,
+            test=test,
         )
     except UnicodeDecodeError:
         raise ShipError("A mod file isn't valid UTF-8, so the bot won't rewrite it. Add it by hand.") from None
 
 
 async def _open_pr(github, base, base_sha, *, claim_id, perk, perk_label, patron, ticket_url, made_by, display_name,
-                   layer1, layer2, code) -> str:
+                   layer1, layer2, code, test) -> str:
     if perk == "clothing":
         files = {path: (await github.get_file(path, base_sha, strict=True))[0] for path in ARMOR_FILES}
         existing = frozenset(await github.list_tree(base_sha))
@@ -223,5 +226,6 @@ async def _open_pr(github, base, base_sha, *, claim_id, perk, perk_label, patron
     files = {path: text.encode("utf-8") for path, text in change.texts.items()} | change.binaries
     return await github.open_pr_with_files(
         base_sha=base_sha, base=base, branch=change.branch, files=files, message=change.title,
-        title=change.title, body=_body(perk_label=perk_label, patron=patron, ticket_url=ticket_url, made_by=made_by),
+        title=("[TEST] " if test else "") + change.title, draft=test,
+        body=_body(perk_label=perk_label, patron=patron, ticket_url=ticket_url, made_by=made_by),
     )

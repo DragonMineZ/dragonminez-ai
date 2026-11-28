@@ -113,6 +113,7 @@ META: dict[str, tuple[str, str, str]] = {
     "patreon_access_role_ids": ("patreon", "Supporter roles", "Discord roles that mark someone as a Patreon supporter (beta access)."),
     "patreon_perk_tier_titles": ("patreon", "Perk tiers", "Patreon tier names whose members can claim perks (custom clothing, hairstyle, NPC skin) from the ticket panel's Patreon check (comma-separated)."),
     "patreon_perk_user_ids": ("patreon", "Perk claim pings", "Users pinged in the ticket a perk claim opens (the people who make the perks)."),
+    "patreon_test_user_ids": ("patreon", "Patreon test users", "TESTING ONLY. These accounts count as active, paid patrons on the first perk tier without Patreon: they get the ticket panel's Patreon check and can claim perks. Their claim PRs open as drafts titled [TEST] and their Tracker items are marked [TEST]. Roles are not touched. Empty it when testing is done."),
     "patreon_contributor_role_id": ("patreon", "Contributor role", "Supporters with this role can gift beta access to 1 person."),
     "patreon_benefactor_role_id": ("patreon", "Benefactor role", "Supporters with this role can gift beta access to 2 people."),
     "patreon_admin_ping_role_id": ("patreon", "Admin ping role", "Not read by any feature at the moment."),

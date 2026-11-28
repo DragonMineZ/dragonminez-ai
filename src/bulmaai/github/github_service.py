@@ -195,7 +195,8 @@ class GitHubService:
         return r.json()["object"]["sha"]
 
     async def open_pr_with_files(
-        self, *, base_sha: str, base: str, branch: str, files: dict[str, bytes], message: str, title: str, body: str
+        self, *, base_sha: str, base: str, branch: str, files: dict[str, bytes], message: str, title: str, body: str,
+        draft: bool = False,
     ) -> str:
         """One commit on top of base_sha with files (path -> bytes, text or binary) on branch, then a PR into base.
         Returns the PR's URL. Safe to retry: an open PR from branch is returned as is, and a branch left over by a
@@ -234,7 +235,7 @@ class GitHubService:
             )
         ref.raise_for_status()
         pr = await request(
-            "POST", f"{self.api}/pulls", headers=headers, json={"title": title, "head": branch, "base": base, "body": body}
+            "POST", f"{self.api}/pulls", headers=headers, json={"title": title, "head": branch, "base": base, "body": body, "draft": draft}
         )
         pr.raise_for_status()
         return pr.json()["html_url"]

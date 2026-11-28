@@ -112,7 +112,7 @@ async def get_patreon_status(discord_user_id: str | None = None, _bot_context: A
         list_active_grants_for_owner(user_id),
         list_active_gifts_for_beneficiary(user_id),
         get_published_dev_jar_file_name(),
-        _synced_member(user_id),
+        _synced_member(user_id, settings),
     )
     can_download = bool(
         member is not None
@@ -139,13 +139,16 @@ async def get_patreon_status(discord_user_id: str | None = None, _bot_context: A
             published and await has_completed_dev_jar_download(user_id, published)
         ),
         "patreon_membership": _membership_summary(synced, settings),
-        "recent_payment": await _recent_payment(settings, link, synced.member_id if synced else None),
+        # a test user's stand-in membership has no real Patreon member to ask about
+        "recent_payment": await _recent_payment(
+            settings, link, synced.member_id if synced and not synced.member_id.startswith("test-") else None
+        ),
     }
 
 
-async def _synced_member(user_id: int) -> patreon_members.PatreonMember | None:
+async def _synced_member(user_id: int, settings: Any) -> patreon_members.PatreonMember | None:
     try:
-        return await patreon_members.get_member_by_discord(user_id)
+        return await patreon_members.lookup(user_id, settings)
     except Exception:
         log.info("Synced Patreon member lookup failed", exc_info=True)
         return None

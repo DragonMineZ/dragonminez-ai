@@ -873,9 +873,10 @@ class TicketsCog(ReloadableCog):
         if not getattr(self.settings, "PATREON_CREATOR_TOKEN", None):
             return False
         try:
-            if not await patreon_members.has_synced():
+            test_user = patreon_members.is_test_user(interaction.user.id, self.settings)
+            if not test_user and not await patreon_members.has_synced():
                 return False
-            member = await patreon_members.get_member_by_discord(interaction.user.id)
+            member = await patreon_members.lookup(interaction.user.id, self.settings)
         except Exception:
             log.warning("Patreon check lookup failed; opening the form", exc_info=True)
             return False
@@ -900,7 +901,7 @@ class TicketsCog(ReloadableCog):
         custom_id = (interaction.data or {}).get("custom_id") or ""
         language = patreon_perks_ui.parse_language(custom_id)
         language = language if language in LANGUAGES else self._lang(interaction)
-        member = await patreon_members.get_member_by_discord(interaction.user.id)
+        member = await patreon_members.lookup(interaction.user.id, self.settings)
         if not patreon_perks.can_claim(member, self.settings.patreon_perk_tier_titles):
             text = i18n_t(patreon_perks_ui.TEXT, "not_eligible", language)
             return await interaction.response.send_message(text, ephemeral=True)
@@ -928,7 +929,7 @@ class TicketsCog(ReloadableCog):
         """Records the claim (once per perk, kept even if they stop being a patron) and opens a Patreon ticket for the
         team: no AI answer, the AI off, the perk makers pinged. A ticket that can't be opened gives the claim back."""
         await interaction.response.defer(ephemeral=True, invisible=False)
-        member = await patreon_members.get_member_by_discord(interaction.user.id)
+        member = await patreon_members.lookup(interaction.user.id, self.settings)
         if perk not in patreon_perks.PERKS or not patreon_perks.can_claim(
             member, self.settings.patreon_perk_tier_titles
         ):
@@ -1064,6 +1065,7 @@ class TicketsCog(ReloadableCog):
                     layer1=contents[0] if claim.perk == "clothing" else b"",
                     layer2=contents[1] if claim.perk == "clothing" else b"",
                     code=code,
+                    test=patreon_members.is_test_user(claim.discord_user_id, self.settings),
                 )
             except perk_ship.ShipError as exc:
                 return await reply(str(exc), ephemeral=True)
@@ -1108,7 +1110,8 @@ class TicketsCog(ReloadableCog):
                 settings.notion_token,
                 notion.perk_item(
                     settings.notion_tracker_data_source_id,
-                    title=f"{perk_name.removesuffix(' (one time)')} for {claim.minecraft_username}",
+                    title=("[TEST] " if patreon_members.is_test_user(claim.discord_user_id, settings) else "")
+                    + f"{perk_name.removesuffix(' (one time)')} for {claim.minecraft_username}",
                     summary=f"{claim.details}\n\nMinecraft username: {claim.minecraft_username}",
                     reporter=f"{owner or claim.discord_user_id} (Discord, Patreon perk)",
                     ticket_url=f"https://discord.com/channels/{interaction.guild_id}/{claim.ticket_channel_id}",

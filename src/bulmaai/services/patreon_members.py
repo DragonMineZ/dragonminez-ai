@@ -160,3 +160,30 @@ async def has_synced() -> bool:
 def is_entitled(member: PatreonMember | None, eligible_tier_ids) -> bool:
     eligible = {str(tier) for tier in eligible_tier_ids}
     return bool(member and member.patron_status == "active_patron" and eligible.intersection(member.tier_ids))
+
+
+def is_test_user(discord_user_id: int, settings) -> bool:
+    return discord_user_id in tuple(getattr(settings, "patreon_test_user_ids", ()) or ())
+
+
+def _test_member(discord_user_id: int, settings) -> PatreonMember:
+    """A stand-in active, paid patron on the first eligible and first perk tier, for testing without Patreon."""
+    from datetime import datetime, timezone
+
+    return PatreonMember(
+        member_id=f"test-{discord_user_id}",
+        discord_user_id=discord_user_id,
+        patron_status="active_patron",
+        tier_ids=tuple(settings.patreon_eligible_tier_ids)[:1],
+        tier_titles=tuple(getattr(settings, "patreon_perk_tier_titles", ()) or ("Test tier",))[:1],
+        last_charge_date=datetime.now(timezone.utc),
+        last_charge_status="Paid",
+        next_charge_date=None,
+    )
+
+
+async def lookup(discord_user_id: int, settings) -> PatreonMember | None:
+    """get_member_by_discord, except test users (setting patreon_test_user_ids) always get the stand-in patron."""
+    if is_test_user(discord_user_id, settings):
+        return _test_member(discord_user_id, settings)
+    return await get_member_by_discord(discord_user_id)
